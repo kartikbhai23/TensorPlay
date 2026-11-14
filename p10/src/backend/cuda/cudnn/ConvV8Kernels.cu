@@ -199,6 +199,17 @@ __global__ void conv2d_grad_bias_strided_kernel(
 }
 
 
+// Filters reach an engine in one of the two layouts it names: the row-major
+// (K, C, R, S) order, or the channel-last order obtained by permuting those
+// axes.  Any other arrangement of the same values is packed into the row-major
+// order once, before a plan is ranked, so the engine reads the buffer the
+// descriptor describes.
+static Tensor conv_filter_packed(const Tensor& weight) {
+    return (weight.is_contiguous() || is_channels_last_4d(weight))
+               ? weight
+               : weight.contiguous();
+}
+
 static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const Tensor& bias, const std::vector<int64_t>& stride_arg, const std::vector<int64_t>& padding_arg, const std::vector<int64_t>& dilation_arg, int64_t groups, bool fused_relu, Tensor out_provided = {}) {
     convolution::check_conv_shapes(input, weight, bias, groups, false);
     convolution::check_conv_geometry(input, weight, stride_arg, padding_arg,
@@ -1492,6 +1503,7 @@ Tensor conv2d_grad_weight_cudnn_v8(const Tensor& grad_output, const Tensor& inpu
 Tensor conv2d_cuda(const Tensor& input, const Tensor& weight, const Tensor& bias,
                    const std::vector<int64_t>& stride, const std::vector<int64_t>& padding,
                    const std::vector<int64_t>& dilation, int64_t groups) {
+    const Tensor weight_packed = conv_filter_packed(weight);
     // Reduced-precision ungrouped calls run in the channel-major order: the
     // row-major plan for them interleaves repacking kernels around the
     // convolution, while here the operands are repacked once and the result
@@ -1501,13 +1513,13 @@ Tensor conv2d_cuda(const Tensor& input, const Tensor& weight, const Tensor& bias
     // the descriptor fallback spells no filter strides.
 #if defined(TP_HAS_CUDNN_FRONTEND)
     if (groups == 1 && conv_operand_repackable(input, false) &&
-        conv_operand_repackable(weight, true)) {
+        conv_operand_repackable(weight_packed, true)) {
         return conv2d_cuda_impl(conv_to_channel_major(input),
-                                conv_to_channel_major(weight), bias, stride,
+                                conv_to_channel_major(weight_packed), bias, stride,
                                 padding, dilation, groups, false);
     }
 #endif
-    return conv2d_cuda_impl(input, weight, bias, stride, padding, dilation, groups, false);
+    return conv2d_cuda_impl(input, weight_packed, bias, stride, padding, dilation, groups, false);
 }
 
 // Writes a 2-D convolution into the caller's buffer.  Returns whether the
@@ -1516,18 +1528,19 @@ Tensor conv2d_cuda(const Tensor& input, const Tensor& weight, const Tensor& bias
 bool conv2d_into_cuda(const Tensor& input, const Tensor& weight, const Tensor& bias,
                       const std::vector<int64_t>& stride, const std::vector<int64_t>& padding,
                       const std::vector<int64_t>& dilation, int64_t groups, Tensor& out) {
+    const Tensor weight_packed = conv_filter_packed(weight);
 #if defined(USE_CUDNN) && defined(TP_HAS_CUDNN_FRONTEND)
     // The channel-major reduced-precision order produces a layout of its own,
     // so an outside buffer does not fit there and the caller copies instead.
     if (groups == 1 && conv_operand_repackable(input, false) &&
-        conv_operand_repackable(weight, true)) {
+        conv_operand_repackable(weight_packed, true)) {
         return false;
     }
-    Tensor result = conv2d_cuda_impl(input, weight, bias, stride, padding, dilation,
+    Tensor result = conv2d_cuda_impl(input, weight_packed, bias, stride, padding, dilation,
                                      groups, false, out);
     return result.data_ptr() == out.data_ptr();
 #else
-    (void)input; (void)weight; (void)bias; (void)stride; (void)padding;
+    (void)weight_packed; (void)input; (void)weight; (void)bias; (void)stride; (void)padding;
     (void)dilation; (void)groups; (void)out;
     return false;
 #endif
@@ -1540,15 +1553,16 @@ Tensor conv2d_relu_cuda(const Tensor& input, const Tensor& weight, const std::op
                         const std::vector<int64_t>& stride, const std::vector<int64_t>& padding,
                         const std::vector<int64_t>& dilation, int64_t groups) {
     const Tensor bias = bias_opt.has_value() ? *bias_opt : Tensor();
+    const Tensor weight_packed = conv_filter_packed(weight);
 #if defined(TP_HAS_CUDNN_FRONTEND)
     if (groups == 1 && conv_operand_repackable(input, false) &&
-        conv_operand_repackable(weight, true)) {
+        conv_operand_repackable(weight_packed, true)) {
         return conv2d_cuda_impl(conv_to_channel_major(input),
-                                conv_to_channel_major(weight), bias, stride,
+                                conv_to_channel_major(weight_packed), bias, stride,
                                 padding, dilation, groups, true);
     }
 #endif
-    return conv2d_cuda_impl(input, weight, bias, stride, padding, dilation, groups, true);
+    return conv2d_cuda_impl(input, weight_packed, bias, stride, padding, dilation, groups, true);
 }
 
 Tensor conv2d_grad_input_cuda(const Tensor& grad_output, const Tensor& input, const Tensor& weight, const std::vector<int64_t>& stride_arg, const std::vector<int64_t>& padding_arg, const std::vector<int64_t>& dilation_arg, int64_t groups) {
