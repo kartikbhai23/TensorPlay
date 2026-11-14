@@ -113,6 +113,42 @@ __global__ void bincount_weighted_kernel(int64_t n, const int64_t* x, const W* w
     for (; i < n; i += stride) atomic_add_rel(&bins[x[i]], wp[i]);
 }
 
+// A bounded bin count fits one histogram per block in shared memory: the
+// block folds its elements there and adds each bin to the output once, so
+// the per-element atomics stay on chip and only one pass per block reaches
+// global memory.  A wider histogram keeps the flat global pass.
+constexpr int64_t kSharedBinBudgetBytes = 16 * 1024;
+
+template <typename T, typename B>
+__global__ void bincount_shared_kernel(int64_t n, const T* x, const B* wp,
+                                       B* bins, int nbins) {
+    extern __shared__ __align__(16) unsigned char smem_raw[];
+    B* hist = reinterpret_cast<B*>(smem_raw);
+    for (int b = threadIdx.x; b < nbins; b += blockDim.x) hist[b] = B(0);
+    __syncthreads();
+    const int64_t stride = static_cast<int64_t>(blockDim.x) * gridDim.x;
+    for (int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         i < n; i += stride) {
+        const B v = wp != nullptr ? wp[i] : B(1);
+        atomic_add_rel(&hist[x[i]], v);
+    }
+    __syncthreads();
+    for (int b = threadIdx.x; b < nbins; b += blockDim.x) {
+        if (hist[b] != B(0)) atomic_add_rel(&bins[b], hist[b]);
+    }
+}
+
+inline int bincount_shared_blocks(int64_t n) {
+    const int64_t blocks = (n + kThreads - 1) / kThreads;
+    return static_cast<int>(std::min<int64_t>(std::max<int64_t>(blocks, 1), 512));
+}
+
+template <typename B>
+inline bool bincount_shared_ok(int64_t nbins) {
+    return nbins <= std::numeric_limits<int>::max() &&
+           nbins * static_cast<int64_t>(sizeof(B)) <= kSharedBinBudgetBytes;
+}
+
 }
 
 Tensor bincount_cuda(const Tensor& self, const std::optional<Tensor>& weights_opt, int64_t minlength) {
@@ -165,21 +201,45 @@ Tensor bincount_cuda(const Tensor& self, const std::optional<Tensor>& weights_op
         if (weights.dtype() == DType::Float32) {
             Tensor rf = Tensor::zeros({nbins}, DType::Float32, self.device());
             Tensor w = weights.contiguous();
-            bincount_weighted_kernel<float><<<(n + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
-                n, inp.data_ptr<int64_t>(), w.data_ptr<float>(), rf.data_ptr<float>());
+            if (bincount_shared_ok<float>(nbins)) {
+                bincount_shared_kernel<int64_t, float>
+                    <<<bincount_shared_blocks(n), kThreads,
+                       static_cast<size_t>(nbins) * sizeof(float), stream>>>(
+                        n, inp.data_ptr<int64_t>(), w.data_ptr<float>(),
+                        rf.data_ptr<float>(), static_cast<int>(nbins));
+            } else {
+                bincount_weighted_kernel<float><<<(n + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
+                    n, inp.data_ptr<int64_t>(), w.data_ptr<float>(), rf.data_ptr<float>());
+            }
             CUDA_CHECK(cudaGetLastError());
             return rf;
         }
         Tensor rf = Tensor::zeros({nbins}, DType::Float64, self.device());
         Tensor w = weights.to(DType::Float64).contiguous();
-        bincount_weighted_kernel<double><<<(n + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
-            n, inp.data_ptr<int64_t>(), w.data_ptr<double>(), rf.data_ptr<double>());
+        if (bincount_shared_ok<double>(nbins)) {
+            bincount_shared_kernel<int64_t, double>
+                <<<bincount_shared_blocks(n), kThreads,
+                   static_cast<size_t>(nbins) * sizeof(double), stream>>>(
+                    n, inp.data_ptr<int64_t>(), w.data_ptr<double>(),
+                    rf.data_ptr<double>(), static_cast<int>(nbins));
+        } else {
+            bincount_weighted_kernel<double><<<(n + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
+                n, inp.data_ptr<int64_t>(), w.data_ptr<double>(), rf.data_ptr<double>());
+        }
         CUDA_CHECK(cudaGetLastError());
         return rf;
     }
     Tensor result = Tensor::zeros({nbins}, DType::Int64, self.device());
-    bincount_count_kernel<int64_t><<<(n + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
-        n, inp.data_ptr<int64_t>(), result.data_ptr<int64_t>());
+    if (bincount_shared_ok<int64_t>(nbins)) {
+        bincount_shared_kernel<int64_t, int64_t>
+            <<<bincount_shared_blocks(n), kThreads,
+               static_cast<size_t>(nbins) * sizeof(int64_t), stream>>>(
+                n, inp.data_ptr<int64_t>(), nullptr, result.data_ptr<int64_t>(),
+                static_cast<int>(nbins));
+    } else {
+        bincount_count_kernel<int64_t><<<(n + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
+            n, inp.data_ptr<int64_t>(), result.data_ptr<int64_t>());
+    }
     CUDA_CHECK(cudaGetLastError());
     return result;
 }
