@@ -116,10 +116,13 @@ void polar_loop(const Tensor& abs, const Tensor& angle, const Tensor& output) {
 // ---------------------------------------------------------------------------
 
 Tensor real_cuda(const Tensor& self) {
-    // Real input is its own real part (zero-copy view, as the op contract
-    // states); complex input materializes the real component at its paired
+    // Real input is its own real part: a strided view aliases the buffer with
+    // no launch.  Complex input materializes the real component at its paired
     // real precision.
-    if (!is_cplx(self.dtype())) return self;
+    if (!is_cplx(self.dtype())) {
+        return self.as_strided(static_cast<std::vector<int64_t>>(self.shape()),
+                               static_cast<std::vector<int64_t>>(self.strides()));
+    }
     DType rt = toRealValueType(self.dtype());
     Tensor out = Tensor::empty(shape_of(self), rt, self.device());
     if (out.numel() == 0) return out;

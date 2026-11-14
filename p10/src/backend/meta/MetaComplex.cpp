@@ -47,9 +47,14 @@ void check_complex_factory_pair(const Tensor& a, const Tensor& b,
 }
 
 Tensor real_kernel(const Tensor& self) {
-    // A real tensor is its own real part; a complex one answers the value
-    // type of its complex dtype.
-    if (!isComplexType(self.dtype())) return self.clone();
+    // A real tensor is its own real part: the meta answer keeps the input's
+    // geometry as a fresh view.  A complex operand answers the value type of
+    // its complex dtype.
+    if (!isComplexType(self.dtype())) {
+        return self.as_strided(shape_of(self),
+                               static_cast<std::vector<int64_t>>(self.strides()),
+                               static_cast<int64_t>(self.storage_offset()));
+    }
     return empty_meta(shape_of(self), toRealValueType(self.dtype()), self.device());
 }
 

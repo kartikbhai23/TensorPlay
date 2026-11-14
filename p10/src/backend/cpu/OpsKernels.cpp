@@ -709,7 +709,17 @@ Tensor& negative_out_cpu(const Tensor& self, Tensor& out) {
         self, out, negative_cpu,
         [](auto x) { return static_cast<decltype(x)>(-x); }, "negative");
 }
-Tensor positive_cpu(const Tensor& self) { return self.clone(); }
+Tensor positive_cpu(const Tensor& self) {
+    // Unary plus is the identity.  A bool operand has no arithmetic sign, so
+    // the operator is refused for it; otherwise a view of the same storage is
+    // the whole answer and no element move happens.
+    if (self.dtype() == DType::Bool) {
+        TP_THROW(NotImplementedError,
+                 "positive(): the unary plus operator is not defined for bool");
+    }
+    return self.as_strided(static_cast<std::vector<int64_t>>(self.shape()),
+                           static_cast<std::vector<int64_t>>(self.strides()));
+}
 
 // ===========================================================================
 // Comparisons / logic

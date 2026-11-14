@@ -48,7 +48,12 @@ std::vector<int64_t> shape_of(const Tensor& t) {
 }  // namespace
 
 Tensor real_cpu(const Tensor& self) {
-    if (!is_cplx(self.dtype())) return self.clone();
+    // A real tensor is its own real part: the answer is a view over the same
+    // storage, with no element pass.
+    if (!is_cplx(self.dtype())) {
+        return self.as_strided(static_cast<std::vector<int64_t>>(self.shape()),
+                               static_cast<std::vector<int64_t>>(self.strides()));
+    }
     Tensor out = Tensor::empty(shape_of(self), toRealValueType(self.dtype()), self.device());
     Tensor sc = self.contiguous();
     int64_t n = self.numel();

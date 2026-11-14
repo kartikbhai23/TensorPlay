@@ -34,7 +34,16 @@ Tensor negative_cuda(const Tensor& self) {
                             "negative");
 }
 
-Tensor positive_cuda(const Tensor& self) { return self.clone(); }
+Tensor positive_cuda(const Tensor& self) {
+    // Unary plus is the identity: a view over the same buffer answers it, with
+    // no launch.  Bool carries no sign to keep, so it is refused.
+    if (self.dtype() == DType::Bool) {
+        TP_THROW(NotImplementedError,
+                 "positive(): the unary plus operator is not defined for bool");
+    }
+    return self.as_strided(static_cast<std::vector<int64_t>>(self.shape()),
+                           static_cast<std::vector<int64_t>>(self.strides()));
+}
 
 // ===========================================================================
 // Comparisons / logic
@@ -184,6 +193,12 @@ Tensor digamma_cuda(const Tensor& self) {
 Tensor i0_cuda(const Tensor& self) {
     // Chebyshev expansion, valid over the whole range; see i0_cpu.
     return float_math_cuda(self, HFn35{}, "i0");
+}
+
+Tensor& i0_out_cuda(const Tensor& self, Tensor& out) {
+    // The destination is written by the same launch that reads the operand, so
+    // the in-place form needs no staging copy.
+    return float_math_out(self, out, HFn35{}, "i0");
 }
 
 void nan_to_num_into(const Tensor& self, Tensor& out, double nan_v,
@@ -425,6 +440,7 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, UnaryMathKernels) {
     m.impl("logit.out", logit_out_cuda);
     m.impl("digamma", digamma_cuda);
     m.impl("i0", i0_cuda);
+    m.impl("i0.out", i0_out_cuda);
     m.impl("nan_to_num", nan_to_num_cuda);
     m.impl("nan_to_num.out", nan_to_num_out_cuda);
     m.impl("logaddexp", logaddexp_cuda);

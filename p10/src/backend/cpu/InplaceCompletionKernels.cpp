@@ -486,7 +486,7 @@ Tensor& threshold_inplace_kernel(Tensor& self, const Scalar& threshold, const Sc
 }
 Tensor& i0_inplace_kernel(Tensor& self) {
     NoGradGuard __tp_nograd;
-    self.copy_(Tensor::i0(self));
+    tensorplay::detail::redispatch_i0_out_function(self, self);
     return self;
 }
 
