@@ -1436,11 +1436,6 @@ coordinate_descent_search_radius = int(
 #: few blocks still has enough work per block to be worth launching.
 dynamic_scale_rblock = os.environ.get("TP_DYNAMIC_SCALE_RBLOCK", "1") == "1"
 
-#: Write the reduction in the order that gives the same answer for a signed
-#: zero whatever order it is computed in, which is slower than the order that
-## does not.
-strict_signed_zero = False
-
 #: Let the arithmetic be reorganised freely, which lets a multiply be folded
 #: into an addition and a division become a reciprocal.  Off because the answer
 #: is then not the answer the arithmetic says.
@@ -1455,15 +1450,6 @@ write_are_deterministic_algorithms_enabled = (
 #: Which launches the bandwidth figures are written for, as a pattern.  Empty
 #: means every launch.
 profile_bandwidth_regex = ""
-
-#: Whether the tuning is walked by hand rather than searched.
-coordinate_descent_tuning = False
-
-#: Whether the tuning is benchmarked at all.
-benchmark_kernel = False
-
-#: Whether a launch of several kernels is benchmarked as a whole.
-benchmark_combo_kernel = False
 
 
 def is_fbcode() -> bool:
@@ -1693,6 +1679,13 @@ _post_fusion_custom_pass = None
 #: graph as a whole, and one to run over each piece of it.
 joint_custom_pre_pass = None
 joint_custom_post_pass = None
+
+#: Whether a program of the graph's own has been given a pass to run on the
+#: forward and backward graphs once they are settled: one before the rewrites
+#: below and one after them, so a pattern that a program wants to see first, or
+#: last, can be placed on either side.
+post_grad_custom_pre_pass = None
+post_grad_custom_post_pass = None
 
 #: Whether constants that are the same in two pieces of a graph are folded
 #: once for both rather than once for each.
