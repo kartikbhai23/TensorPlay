@@ -231,6 +231,18 @@ def test_dynamic_capture_binds_keywords_and_default_arguments():
     assert len(artifacts) == 2
 
 
+def test_scalar_arguments_are_part_of_the_cached_artifact():
+    def fn(x, scale):
+        return x * scale
+
+    artifacts = []
+    compiled = tp.compile(fn, backend=_counting_backend(artifacts), dynamic=True, strict_native=True)
+    x = tp.arange(4, dtype=tp.float32)
+    for scale in (2, 3, 2, 0.5, 3):
+        assert tp.equal(compiled(x, scale), fn(x, scale))
+    assert len(artifacts) >= 2
+
+
 def test_shape_branch_guards_reuse_both_sides():
     def fn(x):
         return x + 1 if x.shape[0] > 4 else x * 2
@@ -470,11 +482,22 @@ def test_dynamic_low_precision_variance_uses_wide_accumulation(device, dtype, fn
         x = tp.randn(count, dtype=dtype, device=device).requires_grad_()
         ref = x.detach().clone().requires_grad_()
         actual, expected = compiled(x), fn(ref)
+        wide = fn(x.detach().double())
         actuals = actual if isinstance(actual, tuple) else (actual,)
         expecteds = expected if isinstance(expected, tuple) else (expected,)
-        for a, e in zip(actuals, expecteds):
+        wides = wide if isinstance(wide, tuple) else (wide,)
+        # A stored low-precision result only carries the resolution of its type,
+        # so two accurate computations may end up one unit in the last place
+        # apart; a fixed absolute bound is smaller than that unit and would
+        # fail whenever the pair straddles a rounding boundary.
+        unit = float(tp.finfo(dtype).eps)
+        for a, e, w in zip(actuals, expecteds, wides):
             assert a.dtype == e.dtype
-            assert tp.allclose(a, e, atol=2e-4, rtol=2e-3)
+            assert tp.allclose(a, e, atol=unit, rtol=unit)
+            # The same sample reduced at full precision is what a wide
+            # accumulation should approximate; drifting past a few units in the
+            # last place means the sum was carried in the storage type.
+            assert tp.allclose(a.double(), w, atol=4 * unit, rtol=4 * unit)
         tangents = [tp.ones_like(a) for a in actuals]
         tp.autograd.backward(actuals, tangents)
         tp.autograd.backward(expecteds, tangents)
