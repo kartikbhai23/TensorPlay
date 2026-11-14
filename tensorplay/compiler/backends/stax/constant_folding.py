@@ -17,6 +17,11 @@ from tensorplay.graph.experimental.sympy_functions import OrderedSet
 #: it came from.
 operator_set = tp.ops
 
+#: The operator that makes a zero-filled tensor without a kernel, where the
+#: build registers it.  A call to it is not folded: the compiler already writes
+#: it as the allocation it is, and folding it would read that back into memory.
+_efficientzerotensor = getattr(operator_set, "_efficientzerotensor", None)
+
 # We would like to split modules into two subgraphs for runtime weight updates to work correctly.
 # The use case and more information could be found at:
 # https://docs.google.com/document/d/1inZC-8KarJ6gKB7G9egmYLx1V_dKX_apxon0w4zPC0Q/edit?usp=sharing
@@ -120,7 +125,7 @@ class ConstantFolder(Interpreter):
         flattened_node_inps = pytree.arg_tree_leaves(*node.args, **node.kwargs)
         for inp in flattened_node_inps:
             if (
-                isinstance(inp, Any)
+                isinstance(inp, Node)
                 and inp.name not in (self.lifted_constant_names or ())
                 and self.env[inp] is not self.deferred_value
             ):
@@ -130,8 +135,8 @@ class ConstantFolder(Interpreter):
     def is_impure(self, node: Any) -> bool:
         def is_woq_int8_pattern(node: Any) -> bool:
             return (
-                node.target is tp.ops.prims.convert_element_type.default  # type: ignore[return-value]
-                and isinstance(node.args[0], Any)
+                node.target is tp.ops.prims.convert_element_type  # type: ignore[return-value]
+                and isinstance(node.args[0], Node)
                 and "val" in node.args[0].meta
                 and node.args[0].meta["val"].dtype == tp.int8  # type: ignore[union-attr]
                 and node.args[1] == tp.bfloat16
@@ -223,7 +228,8 @@ class ConstantFolder(Interpreter):
         # TODO - fix errors with this
         if (
             node.op == "call_function"
-            and node.target is operator_set._efficientzerotensor.default
+            and _efficientzerotensor is not None
+            and node.target is _efficientzerotensor.default
         ):
             return self.unknown_value
 
@@ -240,7 +246,7 @@ class ConstantFolder(Interpreter):
         if (
             self.skip_constructors
             and not is_const_source(node, self.lifted_constant_names)
-            and not any(isinstance(e, Any) for e in flattened_inputs)
+            and not any(isinstance(e, tp.Tensor) for e in flattened_inputs)
         ):
             return self.unknown_value
 
@@ -251,14 +257,11 @@ class ConstantFolder(Interpreter):
         # form to recognise, so nothing further is excluded on that account.
         out = self._deduce_value(node)
 
-        if isinstance(out, Any):
-            return out
-
         if out is self.unknown_value:
             return self.unknown_value
 
         if not is_const_source(node, self.lifted_constant_names) and (
-            isinstance(out, Any) or out is self.deferred_value
+            isinstance(out, tp.Tensor) or out is self.deferred_value
         ):
             if (
                 out is not self.deferred_value
@@ -279,7 +282,7 @@ class ConstantFolder(Interpreter):
             flattened_node_inps = pytree.arg_tree_leaves(*node.args, **node.kwargs)
 
             for n in flattened_node_inps:
-                if not isinstance(n, Any):
+                if not isinstance(n, Node):
                     continue
 
                 self.replaced_uses[n] += 1

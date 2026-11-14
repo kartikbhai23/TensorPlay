@@ -377,11 +377,22 @@ def should_pad_bench_key(
     def tensor_key(t: tp.Tensor) -> tuple[tp.Size, tuple[int, ...], tp.dtype]:
         return (t.shape, t.stride(), t.dtype)
 
+    def trades_accuracy_for_speed(matmul_module: Any) -> bool:
+        """Whether products there may be rounded for speed.
+
+        A setting is asked for by the name this build gives it; where only the
+        older name is there, that name is the answer.
+        """
+        precision = getattr(matmul_module, "fp32_precision", None)
+        if precision is not None:
+            return precision == "tf32"
+        return bool(getattr(matmul_module, "allow_tf32", False))
+
     tf32_key = (
         None
         if mat1.dtype != tp.float32
-        else tp.backends.cuda.matmul.fp32_precision == "tf32"
-        or tp.backends.mkldnn.fp32_precision == "tf32"
+        else trades_accuracy_for_speed(tp.backends.cuda.matmul)
+        or trades_accuracy_for_speed(tp.backends.mkldnn)
     )
 
     def fmt_pad(name: str) -> str | None:
@@ -589,7 +600,10 @@ def _should_pad(
             return cached_pad
 
         def realize_tensor(t):
-            if is_fake_tensor(t):
+            # A stand-in, and a description that is not a value at all, both
+            # say what a value would be rather than being one, so the value the
+            # benchmark needs is made from what it says.
+            if is_fake_tensor(t) or not isinstance(t, tp.Tensor):
                 size_hints = hint_symbols(t.size())
                 # pyrefly: ignore [bad-argument-type]
                 stride_hint = hint_symbols(t.stride())
@@ -861,7 +875,7 @@ def pad_mat1(
         pad_arg = [0, k_padded_length, 0, m_padded_length]
         if is_bmm:
             pad_arg.extend((0, 0))
-        return tp_ops.constant_pad_nd(mat1, pad_arg)
+        return tp_ops.constant_pad_nd(mat1, pad_arg, 0)
     else:
         return mat1
 
@@ -874,7 +888,7 @@ def pad_mat2(
         pad_arg = [0, n_padded_length, 0, k_padded_length]
         if is_bmm:
             pad_arg.extend((0, 0))
-        return tp_ops.constant_pad_nd(mat2, pad_arg)
+        return tp_ops.constant_pad_nd(mat2, pad_arg, 0)
     else:
         return mat2
 

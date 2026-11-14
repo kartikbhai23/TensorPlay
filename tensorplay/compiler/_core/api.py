@@ -1441,6 +1441,49 @@ class _RecordedTensorMetadata:
             result *= int(size)
         return result
 
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
+
+    def _device_type(self) -> str:
+        return str(getattr(self.device, "type", "")) or ""
+
+    @property
+    def is_cpu(self) -> bool:
+        return self._device_type() == "cpu"
+
+    @property
+    def is_cuda(self) -> bool:
+        return self._device_type().startswith("cuda")
+
+    @property
+    def is_xpu(self) -> bool:
+        return self._device_type() == "xpu"
+
+    def is_floating_point(self) -> bool:
+        return bool(getattr(self.dtype, "is_floating_point", False))
+
+    def is_contiguous(self, memory_format: Any = None) -> bool:
+        """Whether the strides are the dense row-major ones.
+
+        Read off the shape and the strides kept in the description, so that a
+        question about the layout can be answered after the value is gone.  A
+        description written for another memory format, and one holding a size
+        that is not known yet, cannot answer, so they say no: a layout is only
+        reported when it is known to be that layout.
+        """
+        if memory_format is not None and "contiguous" not in str(memory_format):
+            return False
+        expected = 1
+        try:
+            for size, stride in zip(reversed(self.shape), reversed(self._stride)):
+                if int(size) != 1 and int(stride) != expected:
+                    return False
+                expected *= int(size)
+        except (TypeError, ValueError):
+            return False
+        return True
+
 
 def _release_recorded_values(graph_module: Any) -> None:
     """Drop execution artifacts that capture-time propagation parked on nodes.

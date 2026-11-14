@@ -102,6 +102,7 @@ def remove_no_ops(
     gm: GraphModule,
     zeros: OrderedSet[Node],
     ones: OrderedSet[Node],
+    device: Any = None,
 ):
     """
     Removes operations that are essentially no-ops e.g. (+ 0, - 0, * 1, / 1)
@@ -235,13 +236,25 @@ def remove_no_ops(
                 replace_no_op(node, 0)
 
         # meta tensors returned from the graph have no data and can be replaced with empty_strided
+        #
+        # A region that runs somewhere makes values, so a value described on the
+        # meta device there is a description of a value rather than a value made
+        # of nothing; replacing it would empty the region's results.  Only a
+        # region that runs on the meta device itself has nothing to make.
+        region_on_meta = device is not None and (
+            str(getattr(device, "type", device)) == "meta"
+        )
         for output_node in graph.find_nodes(op="output"):
             had_meta_return = False
 
             def visit(n):
                 nonlocal had_meta_return
                 val = n.meta.get("val")
-                if isinstance(val, tp.Tensor) and val.device.type == "meta":
+                if (
+                    isinstance(val, tp.Tensor)
+                    and val.device.type == "meta"
+                    and (device is None or region_on_meta)
+                ):
                     with graph.inserting_before(output_node):
                         # size/stride may be symbolic under dynamic shapes;
                         # materialize them so we never pass raw SymInts as args.
@@ -435,8 +448,11 @@ class UniformValueConstantFolder(ConstantFolder):
             if isinstance(out, tp.Tensor) and out.numel() == 1:
                 return out
 
-        # handle device_put op
-        if node.target == prims.device_put.default:
+        # handle device_put op; an operator written in the namespace is its
+        # own target, and one reached through an overload packet is not.
+        if node.target is prims.device_put or node.target is getattr(
+            prims.device_put, "default", None
+        ):
             return super(ConstantFolder, self).run_node(node)
 
         # constructors ops
@@ -518,8 +534,14 @@ def _has_self_referential_shape(
     return False
 
 
-def constant_fold_uniform_value(gm: GraphModule):
-    """Runs constant folding and replaces constants which can be constructed with a single `full` call. Calls into remove_no_ops."""
+def constant_fold_uniform_value(gm: GraphModule, device: Any = None):
+    """Runs constant folding and replaces constants which can be constructed with a single `full` call. Calls into remove_no_ops.
+
+    ``device`` is where the constant is to be made.  A description of a value
+    recorded while the shape was worked out may only say that the value exists,
+    which is not somewhere a tensor can be made, so the region's own device is
+    passed in and used in preference to what the description says.
+    """
     with _disable_current_modes():
         tp_ops = tp.ops.tp
 
@@ -559,6 +581,11 @@ def constant_fold_uniform_value(gm: GraphModule):
                 continue
 
             fake_tensor = node.meta["val"]
+            target_device = device if device is not None else fake_tensor.device
+            if str(getattr(target_device, "type", target_device)) == "meta":
+                # Nothing can be made where a description only says the value
+                # would live, so the constant is left as the value it was.
+                continue
             if not fake_tensor.is_contiguous(memory_format=tp.contiguous_format):
                 continue
 
@@ -614,8 +641,7 @@ def constant_fold_uniform_value(gm: GraphModule):
                     args=(shapes, value),
                     kwargs={
                         "dtype": fake_tensor.dtype,
-                        "layout": tp.strided,
-                        "device": fake_tensor.device,
+                        "device": target_device,
                         "pin_memory": node.kwargs.get("pin_memory", False),
                     },
                 )
@@ -629,7 +655,7 @@ def constant_fold_uniform_value(gm: GraphModule):
                 elif value == 1:
                     ones.add(new_node)
 
-        remove_no_ops(gm, zeros, ones)
+        remove_no_ops(gm, zeros, ones, device=device)
         remove_redundant_views(gm)
 
 
@@ -752,7 +778,7 @@ def joint_graph_passes(
 
     if config.joint_graph_constant_folding:
         GraphTransformObserver(graph, "constant_fold_uniform_value").apply_gm_pass(
-            constant_fold_uniform_value
+            functools.partial(constant_fold_uniform_value, device=input_device)
         )
 
     if config.pattern_matcher:

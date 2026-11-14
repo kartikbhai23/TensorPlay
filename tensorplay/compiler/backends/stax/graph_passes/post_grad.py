@@ -96,7 +96,7 @@ def register_noop_decomp(targets, nop_arg=0):
 def _needs_spmd_graph_preservation() -> bool:
     """Check if SPMD graph preservation is needed for distributed overlap."""
     return (
-        config.aten_distributed_optimizations.enable_overlap_scheduling
+        config.tp_distributed_optimizations.enable_overlap_scheduling
         or config.reorder_for_compute_comm_overlap
     )
 
@@ -385,12 +385,15 @@ def post_grad_passes(gm, is_inference: bool, input_device=None) -> None:
     preserves what the program computes; only the way it is written changes,
     so the caller is handed the same results through fewer and cheaper
     operations.
+
+    The rewritten graph is left ready to be read; regenerating the module's
+    own code is the business of whoever runs it, and the artifact this region
+    is lowered into reads the graph rather than calling it.
     """
 
     from ..custom_graph_pass import get_custom_graph_passes
     from .group_batch_fusion import group_batch_fusion_passes
     from .joint_graph import lazy_init
-    from .replace_random import replace_random_passes
 
     # Registration is shared with the joint-graph rewrites: one table per
     # family, filled once however either side reaches it first.
@@ -399,7 +402,6 @@ def post_grad_passes(gm, is_inference: bool, input_device=None) -> None:
 
     for custom_pass in get_custom_graph_passes(config.post_grad_custom_pre_pass):
         custom_pass(graph)
-    gm.recompile()
 
     if config.pattern_matcher:
         # Producers of the same kind next to each other are grouped so that
@@ -408,16 +410,8 @@ def post_grad_passes(gm, is_inference: bool, input_device=None) -> None:
         # Operations whose result is their input, or which cancel out, cost a
         # kernel each until they are gone.
         remove_noop_ops(graph)
-        gm.recompile()
         for patterns in pass_patterns:
             patterns.apply(graph)
-            gm.recompile()
-
-    if not config.fallback_random:
-        # A random draw is written as the framework's own generator call, so
-        # every draw of one region consumes one stream in order.
-        replace_random_passes(gm)
 
     for custom_pass in get_custom_graph_passes(config.post_grad_custom_post_pass):
         custom_pass(graph)
-    gm.recompile()

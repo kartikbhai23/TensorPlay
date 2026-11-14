@@ -337,12 +337,15 @@ class Match:
 
         """
         from .loops import V
-        from .ops_handler import NullHandler
+        from .virtualized import NullHandler
 
+        # A stand-in is what says the mode is not set; only a real one can be
+        # entered, so the trace runs inside it when there is one.
+        fake_mode = V.fake_mode
         context = (
-            V.fake_mode
-            if (not isinstance(V.fake_mode, NullHandler) or (V.fake_mode is None))
-            else contextlib.nullcontext()
+            contextlib.nullcontext()
+            if fake_mode is None or isinstance(fake_mode, NullHandler)
+            else fake_mode
         )
 
         def should_propagate_eager_input_vals(nodes: list[Any]) -> bool:

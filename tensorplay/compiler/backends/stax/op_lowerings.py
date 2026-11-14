@@ -439,35 +439,6 @@ def unsupported_output_tensor(t, node=None) -> bool:
     return t.device.type == "cpu" and config.disable_cpp_codegen
 
 
-def fallback_node_due_to_unsupported_type(node) -> bool:
-    """Whether a call reads or writes a value no generated kernel can hold.
-
-    Such a call is handed to the framework on its own; the calls around it are
-    still generated, reading and writing ordinary values in memory.
-    """
-
-    if node.op != "call_function" or node.target is operator.getitem:
-        return False
-
-    def check(item, is_output: bool) -> bool:
-        if not hasattr(item, "meta") or "val" not in item.meta:
-            return False
-        for value in tree_leaves(item.meta["val"]):
-            if not isinstance(value, tp.Tensor):
-                continue
-            if is_output:
-                if unsupported_output_tensor(value, node):
-                    return True
-            elif unsupported_input_tensor(value, node):
-                return True
-        return False
-
-    for arg in arg_tree_leaves(*node.args, **node.kwargs):
-        if check(arg, is_output=False):
-            return True
-    return check(node, is_output=True)
-
-
 def _traced_value_dtype(value):
     """The type of one traced argument, read off the value it stood for."""
 

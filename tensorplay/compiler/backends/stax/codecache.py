@@ -369,7 +369,18 @@ class CacheBase:
     @clear_on_fresh_cache
     @functools.cache
     def get_local_cache_path() -> Path:
-        return Path(os.path.join(cache_dir(), "cache", CacheBase.get_system()["hash"]))
+        # One file per machine, beside the artifacts built for it rather than
+        # at their name: the artifacts of a machine are a directory, and a
+        # second thing filed under that name would be written where a
+        # directory already is.
+        return Path(
+            os.path.join(
+                cache_dir(),
+                "cache",
+                CacheBase.get_system()["hash"],
+                "local_cache.json",
+            )
+        )
 
     def __init__(self) -> None:
         self.system = CacheBase.get_system()
