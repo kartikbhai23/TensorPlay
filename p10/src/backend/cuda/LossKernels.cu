@@ -338,12 +338,34 @@ Tensor cosine_embedding_loss_cuda(const Tensor& x1, const Tensor& x2, const Tens
 }
 
 Tensor triplet_margin_loss_cuda(const Tensor& anchor, const Tensor& positive,
-                                const Tensor& negative, const Scalar& margin, double p) {
-    Tensor dist_pos = ops::pairwise_distance(anchor, positive, p, 1e-6, false);
-    Tensor dist_neg = ops::pairwise_distance(anchor, negative, p, 1e-6, false);
+                                const Tensor& negative, double margin, double p,
+                                double eps, bool swap, int64_t reduction) {
+    tp_validate_reduction(reduction);
+    const int64_t a_dim = anchor.dim();
+    const int64_t p_dim = positive.dim();
+    const int64_t n_dim = negative.dim();
+    if (a_dim != p_dim || p_dim != n_dim) {
+        TP_THROW(RuntimeError,
+                 "The anchor, positive, and negative tensors are expected to "
+                 "have the same number of dimensions, but got: anchor ", a_dim,
+                 "D, positive ", p_dim, "D, and negative ", n_dim, "D inputs");
+    }
+    Tensor dist_pos = ops::pairwise_distance(anchor, positive, p, eps, false);
+    Tensor dist_neg = ops::pairwise_distance(anchor, negative, p, eps, false);
+    // The shorter positive-to-negative distance replaces the anchor-to-negative
+    // one when the pair is asked to swap, so a positive sample that drifted
+    // toward the negative one cannot shorten the margin for free.
+    if (swap) {
+        dist_neg = Tensor::minimum(
+            dist_neg, ops::pairwise_distance(positive, negative, p, eps, false));
+    }
     Tensor raw = dist_pos - dist_neg + margin;
     Tensor loss = Tensor::where(raw.lt(Scalar(0)), Scalar(0), raw);
-    return mean_from_elems(loss, loss.numel(), anchor.dtype(), anchor.device());
+    // The distances blend in floating literals, so a whole-number operand is
+    // answered at single precision.
+    const DType out_dtype =
+        anchor.dtype() == DType::Float64 ? DType::Float64 : DType::Float32;
+    return tp_loss_reduce(loss.to(out_dtype), reduction);
 }
 
 Tensor multilabel_soft_margin_loss_cuda(const Tensor& input, const Tensor& target) {

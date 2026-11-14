@@ -243,33 +243,44 @@ double multilabel_sum_typed(const T* input, const T* target, int64_t n) {
     });
 }
 
+// Order-p norm of (u - v + eps) over one row: the row is shifted by eps
+// elementwise before the magnitude is accumulated, so two rows that agree
+// answer eps rather than zero.  Orders 1, 2 and the two infinite orders walk
+// the row in vector width; the rest (including the zero-order count of unequal
+// entries and negative finite orders) take the scalar recurrence.
 template <typename T>
-double row_norm(const T* u, const T* v, int64_t width, double p) {
+double row_norm(const T* u, const T* v, int64_t width, double p, double eps) {
     using Vec = vec::Vectorized<T>;
     constexpr int64_t W = Vec::size();
+    const Vec shift(static_cast<T>(eps));
     int64_t i = 0;
     if (std::isinf(p)) {
-        Vec best(static_cast<T>(0));
+        const bool largest = p > 0;
+        Vec best(static_cast<T>(largest ? 0
+                                        : std::numeric_limits<T>::max()));
         for (; i + W <= width; i += W) {
-            const Vec d = (Vec::loadu(u + i) - Vec::loadu(v + i)).abs();
-            best = vec::maximum(best, d);
+            const Vec d = ((Vec::loadu(u + i) - Vec::loadu(v + i)) + shift).abs();
+            best = largest ? vec::maximum(best, d) : vec::minimum(best, d);
         }
-        double answer = static_cast<double>(best.reduce_max());
+        double answer = static_cast<double>(
+            largest ? best.reduce_max() : best.reduce_min());
         for (; i < width; ++i) {
-            const double d = static_cast<double>(u[i]) - static_cast<double>(v[i]);
-            answer = std::max(answer, std::fabs(d));
+            const double d =
+                std::fabs(static_cast<double>(u[i]) - static_cast<double>(v[i]) + eps);
+            answer = largest ? std::max(answer, d) : std::min(answer, d);
         }
         return answer;
     }
     if (p == 2.0) {
         Vec acc(static_cast<T>(0));
         for (; i + W <= width; i += W) {
-            const Vec d = Vec::loadu(u + i) - Vec::loadu(v + i);
+            const Vec d = (Vec::loadu(u + i) - Vec::loadu(v + i)) + shift;
             acc = acc + d * d;
         }
         double answer = static_cast<double>(acc.reduce_add());
         for (; i < width; ++i) {
-            const double d = static_cast<double>(u[i]) - static_cast<double>(v[i]);
+            const double d =
+                static_cast<double>(u[i]) - static_cast<double>(v[i]) + eps;
             answer += d * d;
         }
         return std::sqrt(answer);
@@ -277,33 +288,49 @@ double row_norm(const T* u, const T* v, int64_t width, double p) {
     if (p == 1.0) {
         Vec acc(static_cast<T>(0));
         for (; i + W <= width; i += W) {
-            acc = acc + (Vec::loadu(u + i) - Vec::loadu(v + i)).abs();
+            acc = acc + ((Vec::loadu(u + i) - Vec::loadu(v + i)) + shift).abs();
         }
         double answer = static_cast<double>(acc.reduce_add());
         for (; i < width; ++i)
             answer += std::fabs(static_cast<double>(u[i]) -
-                                static_cast<double>(v[i]));
+                                static_cast<double>(v[i]) + eps);
         return answer;
+    }
+    if (p == 0.0) {
+        double count = 0.0;
+        for (; i < width; ++i) {
+            if (static_cast<double>(u[i]) - static_cast<double>(v[i]) + eps != 0.0)
+                count += 1.0;
+        }
+        return count;
     }
     double answer = 0.0;
     for (; i < width; ++i) {
         answer += std::pow(std::fabs(static_cast<double>(u[i]) -
-                                     static_cast<double>(v[i])), p);
+                                     static_cast<double>(v[i]) + eps), p);
     }
     return std::pow(answer, 1.0 / p);
 }
 
 template <typename T>
-double triplet_sum_typed(const T* anchor, const T* positive, const T* negative,
-                         int64_t rows, int64_t width, double margin, double p) {
+double triplet_rows_typed(const T* anchor, const T* positive, const T* negative,
+                          T* out, int64_t rows, int64_t width, double margin,
+                          double p, double eps, bool swap) {
     return parallel_ranges(rows, width,
                            [&](int64_t begin, int64_t end) -> double {
         double total = 0.0;
         for (int64_t r = begin; r < end; ++r) {
             const T* a = anchor + r * width;
-            const double dp = row_norm(a, positive + r * width, width, p);
-            const double dn = row_norm(a, negative + r * width, width, p);
-            total += std::max(0.0, dp - dn + margin);
+            const T* pos = positive + r * width;
+            const T* neg = negative + r * width;
+            double dn = row_norm(a, neg, width, p, eps);
+            if (swap) {
+                dn = std::min(dn, row_norm(pos, neg, width, p, eps));
+            }
+            const double row =
+                std::max(0.0, row_norm(a, pos, width, p, eps) - dn + margin);
+            if (out != nullptr) out[r] = static_cast<T>(row);
+            total += row;
         }
         return total;
     });
@@ -390,20 +417,23 @@ double multilabel_sum_impl(const void* input, const void* target, int64_t n,
     }
 }
 
-double triplet_sum_impl(const void* anchor, const void* positive,
-                        const void* negative, int64_t rows, int64_t width,
-                        double margin, double p, int dtype) {
+double triplet_rows_impl(const void* anchor, const void* positive,
+                         const void* negative, void* out, int64_t rows,
+                         int64_t width, double margin, double p, double eps,
+                         bool swap, int dtype) {
     switch (static_cast<DType>(dtype)) {
         case DType::Float64:
-            return triplet_sum_typed(static_cast<const double*>(anchor),
-                                     static_cast<const double*>(positive),
-                                     static_cast<const double*>(negative), rows,
-                                     width, margin, p);
+            return triplet_rows_typed(static_cast<const double*>(anchor),
+                                      static_cast<const double*>(positive),
+                                      static_cast<const double*>(negative),
+                                      static_cast<double*>(out), rows, width,
+                                      margin, p, eps, swap);
         case DType::Float32:
-            return triplet_sum_typed(static_cast<const float*>(anchor),
-                                     static_cast<const float*>(positive),
-                                     static_cast<const float*>(negative), rows,
-                                     width, margin, p);
+            return triplet_rows_typed(static_cast<const float*>(anchor),
+                                      static_cast<const float*>(positive),
+                                      static_cast<const float*>(negative),
+                                      static_cast<float*>(out), rows, width,
+                                      margin, p, eps, swap);
         default:
             TP_THROW(TypeError, "triplet_margin_loss: unsupported dtype");
     }
@@ -421,14 +451,14 @@ REGISTER_DISPATCH(bce_into_stub, &bce_into_impl);
 REGISTER_DISPATCH(huber_into_stub, &huber_into_impl);
 REGISTER_DISPATCH(huber_sum_stub, &huber_sum_impl);
 REGISTER_DISPATCH(multilabel_sum_stub, &multilabel_sum_impl);
-REGISTER_DISPATCH(triplet_sum_stub, &triplet_sum_impl);
+REGISTER_DISPATCH(triplet_rows_stub, &triplet_rows_impl);
 #else
 ALSO_REGISTER_AVX512_DISPATCH(bce_sum_stub, &bce_sum_impl);
 ALSO_REGISTER_AVX512_DISPATCH(bce_into_stub, &bce_into_impl);
 ALSO_REGISTER_AVX512_DISPATCH(huber_into_stub, &huber_into_impl);
 ALSO_REGISTER_AVX512_DISPATCH(huber_sum_stub, &huber_sum_impl);
 ALSO_REGISTER_AVX512_DISPATCH(multilabel_sum_stub, &multilabel_sum_impl);
-ALSO_REGISTER_AVX512_DISPATCH(triplet_sum_stub, &triplet_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(triplet_rows_stub, &triplet_rows_impl);
 #endif
 
 } // namespace cpu

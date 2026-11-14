@@ -177,50 +177,116 @@ Tensor soft_margin_loss_cpu(const Tensor& input, const Tensor& target) {
 // Distances along the last axis for one row, read from the operand buffers.
 template <typename scalar_t>
 inline double row_distance(const scalar_t* u, const scalar_t* v, int64_t D,
-                           double p) {
-    if (p == std::numeric_limits<double>::infinity()) {
-        double mx = 0;
+                           double p, double eps) {
+    if (p == 0.0) {
+        double count = 0;
         for (int64_t j = 0; j < D; ++j) {
-            const double d = static_cast<double>(u[j]) - static_cast<double>(v[j]);
-            mx = std::max(mx, std::fabs(d));
+            if (static_cast<double>(u[j]) - static_cast<double>(v[j]) + eps != 0.0)
+                count += 1.0;
         }
-        return mx;
+        return count;
     }
-    double s2 = 0;
+    if (std::isinf(p)) {
+        double best = p > 0 ? 0.0 : std::numeric_limits<double>::infinity();
+        for (int64_t j = 0; j < D; ++j) {
+            const double d =
+                static_cast<double>(u[j]) - static_cast<double>(v[j]) + eps;
+            best = p > 0 ? std::max(best, std::fabs(d))
+                         : std::min(best, std::fabs(d));
+        }
+        return best;
+    }
+    double s = 0;
     for (int64_t j = 0; j < D; ++j) {
-        const double d = static_cast<double>(u[j]) - static_cast<double>(v[j]);
-        s2 += p == 2.0 ? d * d : std::pow(std::fabs(d), p);
+        const double d =
+            static_cast<double>(u[j]) - static_cast<double>(v[j]) + eps;
+        s += p == 2.0 ? d * d : std::pow(std::fabs(d), p);
     }
-    return p == 2.0 ? std::sqrt(s2) : std::pow(s2, 1.0 / p);
+    return p == 2.0 ? std::sqrt(s) : std::pow(s, 1.0 / p);
 }
 
 Tensor triplet_margin_loss_cpu(const Tensor& anchor, const Tensor& positive,
-                               const Tensor& negative, const Scalar& margin, double p) {
-    const double mg = margin.toDouble();
-    if (fused_float(anchor, positive) && fused_float(anchor, negative) &&
-        anchor.dim() > 0 && anchor.size(-1) > 0) {
-        const int64_t width = anchor.size(-1);
-        const int64_t rows = anchor.numel() / width;
-        const double total = triplet_sum_stub(
-            DeviceType::CPU, anchor.data_ptr(), positive.data_ptr(),
-            negative.data_ptr(), rows,
-            width, mg, p, static_cast<int>(anchor.dtype()));
-        return scalar_from(total / static_cast<double>(rows), anchor.dtype(),
-                           anchor.device());
+                               const Tensor& negative, double margin, double p,
+                               double eps, bool swap, int64_t reduction) {
+    if (reduction != 0 && reduction != 1 && reduction != 2) {
+        TP_THROW(ValueError, "Invalid reduction mode");
     }
-    const int64_t D = anchor.dim() > 0 ? anchor.size(-1) : 0;
-    const int64_t rows = D > 0 ? anchor.numel() / D : 0;
-    Tensor a = anchor.contiguous().to(DType::Float64);
-    Tensor pp2 = positive.contiguous().to(DType::Float64);
-    Tensor nn2 = negative.contiguous().to(DType::Float64);
-    const double* ap = a.data_ptr<double>();
-    const double* ppos = pp2.data_ptr<double>();
-    const double* pneg = nn2.data_ptr<double>();
+    const int64_t a_dim = anchor.dim();
+    const int64_t p_dim = positive.dim();
+    const int64_t n_dim = negative.dim();
+    if (a_dim != p_dim || p_dim != n_dim) {
+        TP_THROW(RuntimeError,
+                 "The anchor, positive, and negative tensors are expected to "
+                 "have the same number of dimensions, but got: anchor ", a_dim,
+                 "D, positive ", p_dim, "D, and negative ", n_dim, "D inputs");
+    }
+    // A row is the last axis of the joined operands; the leading axes index
+    // positions, and the unreduced answer keeps them.
+    std::vector<int64_t> shape = broadcast_shapes(
+        broadcast_shapes(shape_of(anchor), shape_of(positive)),
+        shape_of(negative));
+    const int64_t width = shape.empty() ? 0 : shape.back();
+    int64_t rows = shape.empty() ? 0 : 1;
+    for (size_t k = 0; k + 1 < shape.size(); ++k) rows *= shape[k];
+    std::vector<int64_t> out_shape(shape);
+    if (!out_shape.empty()) out_shape.pop_back();
+    // The distances blend in floating literals, so a whole-number operand is
+    // answered at single precision.  Only an unreduced call needs the
+    // per-position answers materialized; the folded forms keep the running sum.
+    const DType out_dtype =
+        anchor.dtype() == DType::Float64 ? DType::Float64 : DType::Float32;
+    Tensor out;
+    void* rows_out = nullptr;
+    if (reduction == 0) {
+        out = rows > 0 ? Tensor::empty(out_shape, out_dtype, anchor.device())
+                       : Tensor::zeros(out_shape, out_dtype, anchor.device());
+        if (rows > 0) rows_out = out.data_ptr();
+    }
+
     double total = 0;
-    for (int64_t i = 0; i < rows; ++i)
-        total += std::max(0.0, row_distance(ap + i * D, ppos + i * D, D, p) -
-                               row_distance(ap + i * D, pneg + i * D, D, p) + mg);
-    return scalar_from(rows ? total / rows : 0.0, anchor.dtype(), anchor.device());
+    if (rows > 0 && fused_float(anchor, positive) &&
+        fused_float(anchor, negative)) {
+        total = triplet_rows_stub(
+            DeviceType::CPU, anchor.data_ptr(), positive.data_ptr(),
+            negative.data_ptr(), rows_out, rows, width, margin, p, eps, swap,
+            static_cast<int>(anchor.dtype()));
+    } else if (rows > 0) {
+        Tensor a = anchor.expand(shape).contiguous().to(DType::Float64);
+        Tensor pos = positive.expand(shape).contiguous().to(DType::Float64);
+        Tensor neg = negative.expand(shape).contiguous().to(DType::Float64);
+        const double* ap = a.data_ptr<double>();
+        const double* apos = pos.data_ptr<double>();
+        const double* aneg = neg.data_ptr<double>();
+        std::vector<double> row_values(static_cast<size_t>(rows));
+        for (int64_t i = 0; i < rows; ++i) {
+            const double* a_row = ap + i * width;
+            double dn = row_distance(a_row, aneg + i * width, width, p, eps);
+            if (swap) {
+                dn = std::min(dn, row_distance(apos + i * width, aneg + i * width,
+                                               width, p, eps));
+            }
+            const double value = std::max(
+                0.0, row_distance(a_row, apos + i * width, width, p, eps) - dn +
+                         margin);
+            row_values[static_cast<size_t>(i)] = value;
+            total += value;
+        }
+        if (reduction == 0) {
+            Tensor rows_t = Tensor::tensor(row_values, DType::Float64,
+                                           anchor.device())
+                                .reshape(out_shape)
+                                .to(out_dtype);
+            out.copy_(rows_t);
+        }
+    }
+
+    if (reduction == 0) return out;
+    if (reduction == 1) {
+        return scalar_from(rows > 0 ? total / static_cast<double>(rows)
+                                    : std::numeric_limits<double>::quiet_NaN(),
+                           anchor.dtype(), anchor.device());
+    }
+    return scalar_from(total, anchor.dtype(), anchor.device());
 }
 
 Tensor poisson_nll_loss_cpu(const Tensor& input, const Tensor& target, bool log_input,

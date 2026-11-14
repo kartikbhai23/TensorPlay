@@ -6924,14 +6924,12 @@ def multilabel_soft_margin_loss(input, target):
             return _captured
     return _C.multilabel_soft_margin_loss(input, target)
 
-def triplet_margin_loss(anchor, positive, negative, margin=1.0, p=2.0):
+def triplet_margin_loss(anchor, positive, negative, margin=1.0, p=2.0, eps=1e-06, swap=False, reduction=1):
     if _capturing():
-        _captured = _capture_call(triplet_margin_loss, (anchor, positive, negative, margin, p), {})
+        _captured = _capture_call(triplet_margin_loss, (anchor, positive, negative, margin, p, eps, swap, reduction), {})
         if _captured is not None:
             return _captured
-    if not isinstance(margin, (tensorplay.Scalar, tensorplay.Tensor)):
-        margin = tensorplay.Scalar(margin)
-    return _C.triplet_margin_loss(anchor, positive, negative, margin, p)
+    return _C.triplet_margin_loss(anchor, positive, negative, margin, p, eps, swap, reduction)
 
 def lstm(input, hx, params, has_biases=True, num_layers=1, dropout_p=0.0, training=False, bidirectional=False, batch_first=False):
     if _capturing():

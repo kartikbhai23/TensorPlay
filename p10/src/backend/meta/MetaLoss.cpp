@@ -524,14 +524,32 @@ Tensor cosine_embedding_loss_scalar_kernel(const Tensor& x1, const Tensor& x2,
     return empty_meta({}, scalar_loss_dtype(x1.dtype()), x1.device());
 }
 
-Tensor triplet_margin_loss_scalar_kernel(const Tensor& anchor,
-                                         const Tensor& positive,
-                                         const Tensor& negative,
-                                         const Scalar& /*margin*/,
-                                         double /*p*/) {
+// The distances run along the last axis of the three joined operands, so the
+// unreduced answer is that broadcast geometry without its last axis.  The
+// dimension count of the three operands must agree: their rows are compared
+// position by position.
+Tensor triplet_margin_loss_kernel(const Tensor& anchor, const Tensor& positive,
+                                  const Tensor& negative, double /*margin*/,
+                                  double /*p*/, double /*eps*/, bool /*swap*/,
+                                  int64_t reduction) {
+    check_reduction_mode(reduction, "triplet_margin_loss");
     check_all_meta(anchor, positive);
     check_all_meta(anchor, negative);
-    return empty_meta({}, scalar_loss_dtype(anchor.dtype()), anchor.device());
+    const int64_t a_dim = anchor.dim();
+    const int64_t p_dim = positive.dim();
+    const int64_t n_dim = negative.dim();
+    if (a_dim != p_dim || p_dim != n_dim) {
+        TP_THROW(RuntimeError,
+                 "The anchor, positive, and negative tensors are expected to "
+                 "have the same number of dimensions, but got: anchor ", a_dim,
+                 "D, positive ", p_dim, "D, and negative ", n_dim, "D inputs");
+    }
+    std::vector<int64_t> row_shape = broadcast_shapes(
+        broadcast_shapes(shape_of(anchor), shape_of(positive)),
+        shape_of(negative));
+    if (!row_shape.empty()) row_shape.pop_back();
+    return reduce_loss_meta(row_shape, scalar_loss_dtype(anchor.dtype()),
+                            anchor.device(), reduction);
 }
 
 } // anonymous namespace
@@ -567,7 +585,7 @@ TENSORPLAY_LIBRARY_IMPL(Meta, MetaLoss) {
     m.impl("binary_cross_entropy_with_logits",
            binary_cross_entropy_with_logits_scalar_kernel);
     m.impl("cosine_embedding_loss", cosine_embedding_loss_scalar_kernel);
-    m.impl("triplet_margin_loss", triplet_margin_loss_scalar_kernel);
+    m.impl("triplet_margin_loss", triplet_margin_loss_kernel);
 }
 
 } // namespace meta

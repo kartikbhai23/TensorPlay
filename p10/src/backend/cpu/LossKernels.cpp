@@ -24,7 +24,7 @@ DEFINE_DISPATCH(bce_into_stub);
 DEFINE_DISPATCH(huber_sum_stub);
 DEFINE_DISPATCH(huber_into_stub);
 DEFINE_DISPATCH(multilabel_sum_stub);
-DEFINE_DISPATCH(triplet_sum_stub);
+DEFINE_DISPATCH(triplet_rows_stub);
 
 template <typename scalar_t>
 std::tuple<Tensor, Tensor> nll_loss_impl(const Tensor& input_arg, const Tensor& target_arg,

@@ -4903,7 +4903,7 @@
     CPU: multilabel_soft_margin_loss_cpu
     CUDA: multilabel_soft_margin_loss_cuda
 
-- func: triplet_margin_loss(Tensor anchor, Tensor positive, Tensor negative, Scalar margin=1.0, float p=2.0) -> Tensor
+- func: triplet_margin_loss(Tensor anchor, Tensor positive, Tensor negative, float margin=1.0, float p=2.0, float eps=1e-06, bool swap=False, int reduction=1) -> Tensor
   variants: function
   dispatch:
     CPU: triplet_margin_loss_cpu
