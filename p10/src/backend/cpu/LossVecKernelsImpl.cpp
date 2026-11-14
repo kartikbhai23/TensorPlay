@@ -1,0 +1,435 @@
+// Tier-compiled forward folds for the mean-reduced losses: binary cross
+// entropy, huber, multilabel soft margin and triplet margin.  Each CPU
+// capability tier compiles its own copy of this file (see TP_CPU_KERNEL_SRCS
+// in p10/CMakeLists.txt) and registers the slots declared in
+// cpu/LossVecKernels.h; DispatchStub picks the widest copy at run time.
+//
+// The folds read the operand buffers as they are, so no widened copy of an
+// input is materialized, and the per-lane arithmetic stays in the operand
+// width (float for float inputs) while the range answers are folded in double.
+
+#include "cpu/LossVecKernels.h"
+#include "cpu/vec/vec.h"
+
+#include "DType.h"
+#include "Exception.h"
+
+#include "LossReduce.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstdint>
+
+namespace tensorplay {
+namespace cpu {
+
+namespace {
+
+// Work per unit of the elementwise walks and of the row-wise walk.
+constexpr int64_t kElementwiseUnit = 1;
+
+template <typename T>
+double huber_sum_typed(const T* input, const T* target, int64_t n,
+                       double delta) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const T d = static_cast<T>(delta);
+    const Vec dv(d);
+    const Vec half(static_cast<T>(0.5));
+    return parallel_ranges(n, kElementwiseUnit,
+                           [&](int64_t begin, int64_t end) -> double {
+        Vec acc(static_cast<T>(0));
+        int64_t i = begin;
+        for (; i + W <= end; i += W) {
+            const Vec z = Vec::loadu(input + i) - Vec::loadu(target + i);
+            const Vec az = z.abs();
+            const Vec quad = z * z * half;
+            const Vec linear = dv * (az - dv * half);
+            acc = acc + Vec::blendv(linear, quad, az <= dv);
+        }
+        double total = static_cast<double>(acc.reduce_add());
+        for (; i < end; ++i) {
+            const T z = input[i] - target[i];
+            const T az = z < static_cast<T>(0) ? -z : z;
+            total += static_cast<double>(az <= d
+                                             ? z * z * static_cast<T>(0.5)
+                                             : d * (az - d * static_cast<T>(0.5)));
+        }
+        return total;
+    });
+}
+
+
+template <typename T>
+void huber_into_typed(const T* input, const T* target, T* out, int64_t n,
+                      double delta) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const T d = static_cast<T>(delta);
+    const Vec dv(d);
+    const Vec half(static_cast<T>(0.5));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec z =
+                                Vec::loadu(input + i) - Vec::loadu(target + i);
+                            const Vec az = z.abs();
+                            const Vec quad = z * z * half;
+                            const Vec linear = dv * (az - dv * half);
+                            Vec::blendv(linear, quad, az <= dv).store(out + i);
+                        }
+                        for (; i < end; ++i) {
+                            const T z = input[i] - target[i];
+                            const T az = z < static_cast<T>(0) ? -z : z;
+                            out[i] = az <= d
+                                         ? z * z * static_cast<T>(0.5)
+                                         : d * (az - d * static_cast<T>(0.5));
+                        }
+                        return 0.0;
+                    });
+}
+
+// log x and log(1 - x), both floored at -100, in the operand width.
+template <typename T>
+double bce_sum_typed(const T* input, const T* target, int64_t n,
+                     int* bad_input, int* bad_target) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    const Vec one(static_cast<T>(1));
+    const Vec floor_value(static_cast<T>(-100));
+    std::atomic<int> in_bad{0};
+    std::atomic<int> tg_bad{0};
+    const double total =
+        parallel_ranges(n, kElementwiseUnit,
+                        [&](int64_t begin, int64_t end) -> double {
+                            Vec acc(static_cast<T>(0));
+                            bool chunk_in_bad = false;
+                            bool chunk_tg_bad = false;
+                            int64_t i = begin;
+                            for (; i + W <= end; i += W) {
+                                const Vec iv = Vec::loadu(input + i);
+                                const Vec tv = Vec::loadu(target + i);
+                                const Vec in_ok = Vec::blendv(
+                                    zero, one, (iv >= zero) & (iv <= one));
+                                const Vec tg_ok = Vec::blendv(
+                                    zero, one, (tv >= zero) & (tv <= one));
+                                if (in_ok.reduce_min() == static_cast<T>(0)) chunk_in_bad = true;
+                                if (tg_ok.reduce_min() == static_cast<T>(0)) chunk_tg_bad = true;
+                                const Vec log_x =
+                                    vec::maximum(iv.log(), floor_value);
+                                const Vec log_1mx =
+                                    vec::maximum((one - iv).log(), floor_value);
+                                acc = acc + (tv - one) * log_1mx - tv * log_x;
+                            }
+                            double local = static_cast<double>(acc.reduce_add());
+                            for (; i < end; ++i) {
+                                const T iv = input[i];
+                                const T tv = target[i];
+                                if (!(iv >= static_cast<T>(0) &&
+                                      iv <= static_cast<T>(1)))
+                                    chunk_in_bad = true;
+                                if (!(tv >= static_cast<T>(0) &&
+                                      tv <= static_cast<T>(1)))
+                                    chunk_tg_bad = true;
+                                const T log_x = std::max(
+                                    static_cast<T>(std::log(iv)),
+                                    static_cast<T>(-100));
+                                const T log_1mx = std::max(
+                                    static_cast<T>(std::log1p(-iv)),
+                                    static_cast<T>(-100));
+                                local += static_cast<double>(
+                                    (tv - static_cast<T>(1)) * log_1mx -
+                                    tv * log_x);
+                            }
+                            if (chunk_in_bad)
+                                in_bad.store(1, std::memory_order_relaxed);
+                            if (chunk_tg_bad)
+                                tg_bad.store(1, std::memory_order_relaxed);
+                            return local;
+                        });
+    *bad_input = in_bad.load(std::memory_order_relaxed);
+    *bad_target = tg_bad.load(std::memory_order_relaxed);
+    return total;
+}
+
+
+template <typename T>
+void bce_into_typed(const T* input, const T* target, T* out, int64_t n,
+                    int* bad_input, int* bad_target) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    const Vec one(static_cast<T>(1));
+    const Vec floor_value(static_cast<T>(-100));
+    std::atomic<int> in_bad{0};
+    std::atomic<int> tg_bad{0};
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        bool chunk_in_bad = false;
+                        bool chunk_tg_bad = false;
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec iv = Vec::loadu(input + i);
+                            const Vec tv = Vec::loadu(target + i);
+                            const Vec in_ok =
+                                Vec::blendv(zero, one, (iv >= zero) & (iv <= one));
+                            const Vec tg_ok =
+                                Vec::blendv(zero, one, (tv >= zero) & (tv <= one));
+                            if (in_ok.reduce_min() == static_cast<T>(0))
+                                chunk_in_bad = true;
+                            if (tg_ok.reduce_min() == static_cast<T>(0))
+                                chunk_tg_bad = true;
+                            const Vec log_x = vec::maximum(iv.log(), floor_value);
+                            const Vec log_1mx =
+                                vec::maximum((one - iv).log(), floor_value);
+                            ((tv - one) * log_1mx - tv * log_x).store(out + i);
+                        }
+                        for (; i < end; ++i) {
+                            const T iv = input[i];
+                            const T tv = target[i];
+                            if (!(iv >= static_cast<T>(0) && iv <= static_cast<T>(1)))
+                                chunk_in_bad = true;
+                            if (!(tv >= static_cast<T>(0) && tv <= static_cast<T>(1)))
+                                chunk_tg_bad = true;
+                            const T log_x = std::max(static_cast<T>(std::log(iv)),
+                                                     static_cast<T>(-100));
+                            const T log_1mx = std::max(
+                                static_cast<T>(std::log1p(-iv)),
+                                static_cast<T>(-100));
+                            out[i] = (tv - static_cast<T>(1)) * log_1mx - tv * log_x;
+                        }
+                        if (chunk_in_bad)
+                            in_bad.store(1, std::memory_order_relaxed);
+                        if (chunk_tg_bad)
+                            tg_bad.store(1, std::memory_order_relaxed);
+                        return 0.0;
+                    });
+    *bad_input = in_bad.load(std::memory_order_relaxed);
+    *bad_target = tg_bad.load(std::memory_order_relaxed);
+}
+
+// t log sigmoid(x) + (1 - t) log sigmoid(-x)
+//   = -(t max(-x, 0) + (1 - t) max(x, 0) + log1p(exp(-|x|))).
+template <typename T>
+double multilabel_sum_typed(const T* input, const T* target, int64_t n) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    const Vec one(static_cast<T>(1));
+    return parallel_ranges(n, kElementwiseUnit,
+                           [&](int64_t begin, int64_t end) -> double {
+        Vec acc(static_cast<T>(0));
+        int64_t i = begin;
+        for (; i + W <= end; i += W) {
+            const Vec xv = Vec::loadu(input + i);
+            const Vec tv = Vec::loadu(target + i);
+            const Vec tail = (-xv.abs()).exp().log1p();
+            const Vec positive = vec::maximum(xv, zero);
+            const Vec negative = vec::maximum(-xv, zero);
+            acc = acc - (tv * negative + (one - tv) * positive + tail);
+        }
+        double total = static_cast<double>(acc.reduce_add());
+        for (; i < end; ++i) {
+            const double xv = static_cast<double>(input[i]);
+            const double tv = static_cast<double>(target[i]);
+            const double tail = std::log1p(std::exp(-std::fabs(xv)));
+            total += -(tv * std::max(-xv, 0.0) +
+                       (1.0 - tv) * std::max(xv, 0.0) + tail);
+        }
+        return total;
+    });
+}
+
+template <typename T>
+double row_norm(const T* u, const T* v, int64_t width, double p) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    int64_t i = 0;
+    if (std::isinf(p)) {
+        Vec best(static_cast<T>(0));
+        for (; i + W <= width; i += W) {
+            const Vec d = (Vec::loadu(u + i) - Vec::loadu(v + i)).abs();
+            best = vec::maximum(best, d);
+        }
+        double answer = static_cast<double>(best.reduce_max());
+        for (; i < width; ++i) {
+            const double d = static_cast<double>(u[i]) - static_cast<double>(v[i]);
+            answer = std::max(answer, std::fabs(d));
+        }
+        return answer;
+    }
+    if (p == 2.0) {
+        Vec acc(static_cast<T>(0));
+        for (; i + W <= width; i += W) {
+            const Vec d = Vec::loadu(u + i) - Vec::loadu(v + i);
+            acc = acc + d * d;
+        }
+        double answer = static_cast<double>(acc.reduce_add());
+        for (; i < width; ++i) {
+            const double d = static_cast<double>(u[i]) - static_cast<double>(v[i]);
+            answer += d * d;
+        }
+        return std::sqrt(answer);
+    }
+    if (p == 1.0) {
+        Vec acc(static_cast<T>(0));
+        for (; i + W <= width; i += W) {
+            acc = acc + (Vec::loadu(u + i) - Vec::loadu(v + i)).abs();
+        }
+        double answer = static_cast<double>(acc.reduce_add());
+        for (; i < width; ++i)
+            answer += std::fabs(static_cast<double>(u[i]) -
+                                static_cast<double>(v[i]));
+        return answer;
+    }
+    double answer = 0.0;
+    for (; i < width; ++i) {
+        answer += std::pow(std::fabs(static_cast<double>(u[i]) -
+                                     static_cast<double>(v[i])), p);
+    }
+    return std::pow(answer, 1.0 / p);
+}
+
+template <typename T>
+double triplet_sum_typed(const T* anchor, const T* positive, const T* negative,
+                         int64_t rows, int64_t width, double margin, double p) {
+    return parallel_ranges(rows, width,
+                           [&](int64_t begin, int64_t end) -> double {
+        double total = 0.0;
+        for (int64_t r = begin; r < end; ++r) {
+            const T* a = anchor + r * width;
+            const double dp = row_norm(a, positive + r * width, width, p);
+            const double dn = row_norm(a, negative + r * width, width, p);
+            total += std::max(0.0, dp - dn + margin);
+        }
+        return total;
+    });
+}
+
+
+void bce_into_impl(const void* input, const void* target, void* out, int64_t n,
+                   int* bad_input, int* bad_target, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            bce_into_typed(static_cast<const double*>(input),
+                           static_cast<const double*>(target),
+                           static_cast<double*>(out), n, bad_input, bad_target);
+            break;
+        case DType::Float32:
+            bce_into_typed(static_cast<const float*>(input),
+                           static_cast<const float*>(target),
+                           static_cast<float*>(out), n, bad_input, bad_target);
+            break;
+        default:
+            TP_THROW(TypeError, "binary_cross_entropy: unsupported dtype");
+    }
+}
+
+void huber_into_impl(const void* input, const void* target, void* out, int64_t n,
+                     double delta, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            huber_into_typed(static_cast<const double*>(input),
+                             static_cast<const double*>(target),
+                             static_cast<double*>(out), n, delta);
+            break;
+        case DType::Float32:
+            huber_into_typed(static_cast<const float*>(input),
+                             static_cast<const float*>(target),
+                             static_cast<float*>(out), n, delta);
+            break;
+        default:
+            TP_THROW(TypeError, "huber_loss: unsupported dtype");
+    }
+}
+
+double bce_sum_impl(const void* input, const void* target, int64_t n,
+                    int* bad_input, int* bad_target, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return bce_sum_typed(static_cast<const double*>(input),
+                                 static_cast<const double*>(target), n,
+                                 bad_input, bad_target);
+        case DType::Float32:
+            return bce_sum_typed(static_cast<const float*>(input),
+                                 static_cast<const float*>(target), n,
+                                 bad_input, bad_target);
+        default:
+            TP_THROW(TypeError, "binary_cross_entropy: unsupported dtype");
+    }
+}
+
+double huber_sum_impl(const void* input, const void* target, int64_t n,
+                      double delta, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return huber_sum_typed(static_cast<const double*>(input),
+                                   static_cast<const double*>(target), n, delta);
+        case DType::Float32:
+            return huber_sum_typed(static_cast<const float*>(input),
+                                   static_cast<const float*>(target), n, delta);
+        default:
+            TP_THROW(TypeError, "huber_loss: unsupported dtype");
+    }
+}
+
+double multilabel_sum_impl(const void* input, const void* target, int64_t n,
+                           int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return multilabel_sum_typed(static_cast<const double*>(input),
+                                        static_cast<const double*>(target), n);
+        case DType::Float32:
+            return multilabel_sum_typed(static_cast<const float*>(input),
+                                        static_cast<const float*>(target), n);
+        default:
+            TP_THROW(TypeError, "multilabel_soft_margin_loss: unsupported dtype");
+    }
+}
+
+double triplet_sum_impl(const void* anchor, const void* positive,
+                        const void* negative, int64_t rows, int64_t width,
+                        double margin, double p, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return triplet_sum_typed(static_cast<const double*>(anchor),
+                                     static_cast<const double*>(positive),
+                                     static_cast<const double*>(negative), rows,
+                                     width, margin, p);
+        case DType::Float32:
+            return triplet_sum_typed(static_cast<const float*>(anchor),
+                                     static_cast<const float*>(positive),
+                                     static_cast<const float*>(negative), rows,
+                                     width, margin, p);
+        default:
+            TP_THROW(TypeError, "triplet_margin_loss: unsupported dtype");
+    }
+}
+
+} // namespace
+
+// One slot per tier TU (the specializations live outside the capability
+// namespace, so cross-tier duplicates collide at link time): DEFAULT/AVX2
+// copies register their own slot; the AVX512 copy uses ALSO_ instead of
+// REGISTER_DISPATCH, which would otherwise null its slot (opt-in design).
+#ifndef CPU_CAPABILITY_AVX512
+REGISTER_DISPATCH(bce_sum_stub, &bce_sum_impl);
+REGISTER_DISPATCH(bce_into_stub, &bce_into_impl);
+REGISTER_DISPATCH(huber_into_stub, &huber_into_impl);
+REGISTER_DISPATCH(huber_sum_stub, &huber_sum_impl);
+REGISTER_DISPATCH(multilabel_sum_stub, &multilabel_sum_impl);
+REGISTER_DISPATCH(triplet_sum_stub, &triplet_sum_impl);
+#else
+ALSO_REGISTER_AVX512_DISPATCH(bce_sum_stub, &bce_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(bce_into_stub, &bce_into_impl);
+ALSO_REGISTER_AVX512_DISPATCH(huber_into_stub, &huber_into_impl);
+ALSO_REGISTER_AVX512_DISPATCH(huber_sum_stub, &huber_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(multilabel_sum_stub, &multilabel_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(triplet_sum_stub, &triplet_sum_impl);
+#endif
+
+} // namespace cpu
+} // namespace tensorplay

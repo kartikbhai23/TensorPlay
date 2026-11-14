@@ -3,9 +3,9 @@
 #include "Dispatcher.h"
 #include "Exception.h"
 #include "LossReduce.h"
+#include "cpu/LossVecKernels.h"
 #include "Scalar.h"
 #include <algorithm>
-#include <atomic>
 #include <tuple>
 #include <optional>
 #include <cmath>
@@ -17,6 +17,14 @@ namespace tensorplay {
 namespace cpu {
 
 namespace ops = tensorplay::tpx::ops;
+
+// The tier-compiled folds live in LossVecKernelsImpl.cpp.
+DEFINE_DISPATCH(bce_sum_stub);
+DEFINE_DISPATCH(bce_into_stub);
+DEFINE_DISPATCH(huber_sum_stub);
+DEFINE_DISPATCH(huber_into_stub);
+DEFINE_DISPATCH(multilabel_sum_stub);
+DEFINE_DISPATCH(triplet_sum_stub);
 
 template <typename scalar_t>
 std::tuple<Tensor, Tensor> nll_loss_impl(const Tensor& input_arg, const Tensor& target_arg,
@@ -390,52 +398,29 @@ Tensor smooth_l1_loss_backward_cpu(const Tensor& grad_output, const Tensor& inpu
     return scale_grad(slope * grad_output, reduction, input.numel());
 }
 
-// z = |x - t|; z < delta ? 0.5 z^2 : delta (z - 0.5 delta).  Same-dtype
-// contiguous operands answer in one pass over the elements, folding the mean
-// in the width of the answer.
-template <typename scalar_t>
-Tensor huber_fused(const Tensor& input, const Tensor& target, int64_t reduction,
-                   double delta) {
-    const int64_t n = input.numel();
-    const scalar_t* ip = input.data_ptr<scalar_t>();
-    const scalar_t* tp = target.data_ptr<scalar_t>();
-    const scalar_t d = static_cast<scalar_t>(delta);
-    auto value = [&](int64_t i) -> scalar_t {
-        const scalar_t z = ip[i] - tp[i];
-        const scalar_t az = std::fabs(z);
-        return az <= d ? z * z * static_cast<scalar_t>(0.5)
-                       : d * (az - d * static_cast<scalar_t>(0.5));
-    };
-    DType dt = input.dtype();
-    const Device& dev = input.device();
-    if (reduction == 0) {
-        Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt, dev);
-        scalar_t* op = out.data_ptr<scalar_t>();
-        parallel::parallel_for(0, n, parallel::GRAIN_SIZE,
-                               [&](int64_t begin, int64_t end) {
-                                   for (int64_t i = begin; i < end; ++i) op[i] = value(i);
-                               });
-        return out;
-    }
-    const double total = parallel_sum(n, 1, [&](int64_t i) {
-        return static_cast<double>(value(i));
-    });
-    if (reduction == 1) {
-        return Tensor::full({}, Scalar(total / static_cast<double>(n)), dt, dev);
-    }
-    return Tensor::full({}, Scalar(total), dt, dev);
-}
-
 Tensor huber_loss_cpu(const Tensor& input, const Tensor& target,
                       int64_t reduction, double delta) {
     if (delta <= 0)
         TP_THROW(ValueError, "huber_loss does not support non-positive values for delta.");
     if (reduction != 0 && reduction != 1 && reduction != 2)
         TP_THROW(ValueError, "Invalid reduction mode");
-    if (fused_float(input, target)) {
-        if (input.dtype() == DType::Float32)
-            return huber_fused<float>(input, target, reduction, delta);
-        return huber_fused<double>(input, target, reduction, delta);
+    if (fused_float(input, target) && (reduction == 0 || reduction == 1 ||
+                                       reduction == 2)) {
+        const int64_t n = input.numel();
+        const DType dt = input.dtype();
+        const Device& dev = input.device();
+        const int dtype = static_cast<int>(dt);
+        if (reduction == 0) {
+            Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt, dev);
+            huber_into_stub(DeviceType::CPU, input.data_ptr(), target.data_ptr(),
+                            out.data_ptr(), n, delta, dtype);
+            return out;
+        }
+        const double total = huber_sum_stub(DeviceType::CPU, input.data_ptr(),
+                                            target.data_ptr(), n, delta, dtype);
+        if (reduction == 1)
+            return Tensor::full({}, Scalar(total / static_cast<double>(n)), dt, dev);
+        return Tensor::full({}, Scalar(total), dt, dev);
     }
     Tensor diff = input - target;
     Tensor absd = diff.abs();
@@ -491,72 +476,38 @@ void bce_check_01(const Tensor& t, const char* what) {
                  " should be between 0 and 1");
 }
 
-// -w (t log x + (1 - t) log (1 - x)) with both logarithms floored at -100.
-// The joined form answers same-dtype contiguous operands in one pass; the
-// bounds are tested on the way and reported once the walk is over, so the
-// whole surface is visited before the error is raised.
-template <typename scalar_t>
-Tensor bce_fused(const Tensor& input, const Tensor& target, int64_t reduction) {
-    const int64_t n = input.numel();
-    const scalar_t* ip = input.data_ptr<scalar_t>();
-    const scalar_t* tp = target.data_ptr<scalar_t>();
-    std::atomic<bool> bad_input{false};
-    std::atomic<bool> bad_target{false};
-    auto value = [&](int64_t i) -> scalar_t {
-        const scalar_t iv = ip[i];
-        const scalar_t tv = tp[i];
-        const scalar_t zero = static_cast<scalar_t>(0);
-        const scalar_t one = static_cast<scalar_t>(1);
-        if (!(iv >= zero && iv <= one)) {
-            bad_input.store(true, std::memory_order_relaxed);
-            return zero;
-        }
-        if (!(tv >= zero && tv <= one)) {
-            bad_target.store(true, std::memory_order_relaxed);
-            return zero;
-        }
-        const scalar_t floor_value = static_cast<scalar_t>(-100);
-        const scalar_t log_x = std::max(static_cast<scalar_t>(std::log(iv)), floor_value);
-        const scalar_t log_1mx =
-            std::max(static_cast<scalar_t>(std::log1p(-iv)), floor_value);
-        return (tv - one) * log_1mx - tv * log_x;
-    };
-    DType dt = input.dtype();
-    const Device& dev = input.device();
-    Tensor out;
-    scalar_t* op = nullptr;
-    if (reduction == 0) {
-        out = Tensor(static_cast<std::vector<int64_t>>(input.sizes()), dt, dev);
-        op = out.data_ptr<scalar_t>();
-        parallel::parallel_for(0, n, parallel::GRAIN_SIZE,
-                               [&](int64_t begin, int64_t end) {
-                                   for (int64_t i = begin; i < end; ++i) op[i] = value(i);
-                               });
-    } else {
-        const double total = parallel_sum(n, 1, [&](int64_t i) {
-            return static_cast<double>(value(i));
-        });
-        if (reduction == 1) {
-            out = Tensor::full({}, Scalar(total / static_cast<double>(n)), dt, dev);
-        } else {
-            out = Tensor::full({}, Scalar(total), dt, dev);
-        }
-    }
-    if (bad_input.load(std::memory_order_relaxed))
-        TP_THROW(RuntimeError, "all elements of input should be between 0 and 1");
-    if (bad_target.load(std::memory_order_relaxed))
-        TP_THROW(RuntimeError, "all elements of target should be between 0 and 1");
-    return out;
-}
-
 Tensor binary_cross_entropy_cpu(const Tensor& input, const Tensor& target,
                                 const std::optional<Tensor>& weight, int64_t reduction) {
     const bool has_weight = weight.has_value() && weight->defined();
     if (!has_weight && fused_float(input, target) &&
         (reduction == 0 || reduction == 1 || reduction == 2)) {
-        if (input.dtype() == DType::Float32)
-            return bce_fused<float>(input, target, reduction);
-        return bce_fused<double>(input, target, reduction);
+        int bad_input = 0;
+        int bad_target = 0;
+        const int64_t n = input.numel();
+        const DType dt = input.dtype();
+        const Device& dev = input.device();
+        const int dtype = static_cast<int>(dt);
+        Tensor out;
+        double total = 0.0;
+        if (reduction == 0) {
+            out = Tensor(static_cast<std::vector<int64_t>>(input.sizes()), dt, dev);
+            bce_into_stub(DeviceType::CPU, input.data_ptr(), target.data_ptr(),
+                          out.data_ptr(), n, &bad_input, &bad_target, dtype);
+        } else {
+            total = bce_sum_stub(DeviceType::CPU, input.data_ptr(),
+                                 target.data_ptr(), n, &bad_input, &bad_target,
+                                 dtype);
+        }
+        if (bad_input)
+            TP_THROW(RuntimeError,
+                     "all elements of input should be between 0 and 1");
+        if (bad_target)
+            TP_THROW(RuntimeError,
+                     "all elements of target should be between 0 and 1");
+        if (reduction == 0) return out;
+        if (reduction == 1)
+            return Tensor::full({}, Scalar(total / static_cast<double>(n)), dt, dev);
+        return Tensor::full({}, Scalar(total), dt, dev);
     }
     bce_check_01(input, "input");
     bce_check_01(target, "target");

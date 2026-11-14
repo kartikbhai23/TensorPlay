@@ -13,6 +13,7 @@
 #include "Utils.h"
 #include "Exception.h"
 #include "LossReduce.h"
+#include "cpu/LossVecKernels.h"
 
 #include <vector>
 #include <cmath>
@@ -193,33 +194,19 @@ inline double row_distance(const scalar_t* u, const scalar_t* v, int64_t D,
     return p == 2.0 ? std::sqrt(s2) : std::pow(s2, 1.0 / p);
 }
 
-template <typename scalar_t>
-Tensor triplet_margin_loss_fused(const Tensor& anchor, const Tensor& positive,
-                                 const Tensor& negative, double margin, double p) {
-    const int64_t count = anchor.numel();
-    const int64_t D = anchor.size(-1);
-    const int64_t rows = count / D;
-    if (rows == 0) return scalar_from(0.0, anchor.dtype(), anchor.device());
-    const scalar_t* ap = anchor.data_ptr<scalar_t>();
-    const scalar_t* pp = positive.data_ptr<scalar_t>();
-    const scalar_t* np = negative.data_ptr<scalar_t>();
-    const double total = parallel_sum(rows, D, [&](int64_t i) {
-        const double dp = row_distance(ap + i * D, pp + i * D, D, p);
-        const double dn = row_distance(ap + i * D, np + i * D, D, p);
-        return std::max(0.0, dp - dn + margin);
-    });
-    return scalar_from(total / static_cast<double>(rows), anchor.dtype(),
-                       anchor.device());
-}
-
 Tensor triplet_margin_loss_cpu(const Tensor& anchor, const Tensor& positive,
                                const Tensor& negative, const Scalar& margin, double p) {
     const double mg = margin.toDouble();
     if (fused_float(anchor, positive) && fused_float(anchor, negative) &&
         anchor.dim() > 0 && anchor.size(-1) > 0) {
-        if (anchor.dtype() == DType::Float32)
-            return triplet_margin_loss_fused<float>(anchor, positive, negative, mg, p);
-        return triplet_margin_loss_fused<double>(anchor, positive, negative, mg, p);
+        const int64_t width = anchor.size(-1);
+        const int64_t rows = anchor.numel() / width;
+        const double total = triplet_sum_stub(
+            DeviceType::CPU, anchor.data_ptr(), positive.data_ptr(),
+            negative.data_ptr(), rows,
+            width, mg, p, static_cast<int>(anchor.dtype()));
+        return scalar_from(total / static_cast<double>(rows), anchor.dtype(),
+                           anchor.device());
     }
     const int64_t D = anchor.dim() > 0 ? anchor.size(-1) : 0;
     const int64_t rows = D > 0 ? anchor.numel() / D : 0;
@@ -254,41 +241,16 @@ Tensor poisson_nll_loss_cpu(const Tensor& input, const Tensor& target, bool log_
     return scalar_from(n ? total / n : 0.0, input.dtype(), input.device());
 }
 
-template <typename scalar_t>
-Tensor multilabel_soft_margin_fused(const Tensor& input, const Tensor& target) {
-    const int64_t count = input.numel();
-    const int64_t C = input.size(-1);
-    const int64_t rows = C > 0 ? count / C : 0;
-    if (rows == 0) return scalar_from(0.0, input.dtype(), input.device());
-    const scalar_t* xp = input.data_ptr<scalar_t>();
-    const scalar_t* tp = target.data_ptr<scalar_t>();
-    const scalar_t zero = static_cast<scalar_t>(0);
-    const scalar_t one = static_cast<scalar_t>(1);
-    // log sigmoid(y) = -(max(-y, 0) + log1p(exp(-|y|))), kept in the operand
-    // width so the walk over classes stays a plain float loop.
-    auto log_sigmoid = [zero](scalar_t y) -> scalar_t {
-        return -(std::max(-y, zero) +
-                 static_cast<scalar_t>(std::log1p(std::exp(-std::fabs(y)))));
-    };
-    // Per element: t log sigmoid(x) + (1 - t) log sigmoid(-x).  The row value
-    // is the class sum divided by the class count, and the answer is the mean
-    // of the row values.
-    const double total = parallel_sum(count, 1, [&](int64_t i) {
-        const scalar_t xv = xp[i];
-        const scalar_t tv = tp[i];
-        return static_cast<double>(tv * log_sigmoid(xv) +
-                                   (one - tv) * log_sigmoid(-xv));
-    });
-    const double answer = -total / static_cast<double>(C) /
-                          static_cast<double>(rows);
-    return scalar_from(answer, input.dtype(), input.device());
-}
-
 Tensor multilabel_soft_margin_loss_cpu(const Tensor& input, const Tensor& target) {
     if (fused_float(input, target) && input.dim() > 0 && input.size(-1) > 0) {
-        if (input.dtype() == DType::Float32)
-            return multilabel_soft_margin_fused<float>(input, target);
-        return multilabel_soft_margin_fused<double>(input, target);
+        const int64_t C = input.size(-1);
+        const int64_t rows = input.numel() / C;
+        const double total = multilabel_sum_stub(
+            DeviceType::CPU, input.data_ptr(), target.data_ptr(), input.numel(),
+            static_cast<int>(input.dtype()));
+        return scalar_from(-total / static_cast<double>(C) /
+                               static_cast<double>(rows),
+                           input.dtype(), input.device());
     }
     auto pr = bcast2(input, target);
     Tensor x = pr.first, t = pr.second;
