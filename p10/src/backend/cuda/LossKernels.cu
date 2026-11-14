@@ -101,58 +101,6 @@ __host__ __device__ inline float dspf(float y) {
 // Public entry points
 // ===========================================================================
 
-Tensor l1_loss_cuda(const Tensor& input, const Tensor& target) {
-    const DType acc = loss_carry_dtype(input.dtype());
-    auto pr = pair_carry_dev(input, target, acc);
-    Tensor elems = Tensor::empty(shape_of(pr.first), acc, input.device());
-    int64_t n = elems.numel();
-    if (n) {
-        TensorIterator iter = TensorIteratorConfig()
-            .check_all_same_dtype(true)
-            .add_output(elems)
-            .add_const_input(pr.first)
-            .add_const_input(pr.second)
-            .build();
-        if (acc == DType::Float64) {
-            gpu_kernel(iter, [] __host__ __device__(double a, double b) -> double {
-                return ::fabs(a - b);
-            });
-        } else {
-            gpu_kernel(iter, [] __host__ __device__(float a, float b) -> float {
-                return ::fabs(a - b);
-            });
-        }
-        CUDA_CHECK(cudaGetLastError());
-    }
-    return mean_from_elems(elems, n, input.dtype(), input.device());
-}
-
-Tensor kl_div_cuda(const Tensor& input, const Tensor& target) {
-    const DType acc = loss_carry_dtype(input.dtype());
-    auto pr = pair_carry_dev(input, target, acc);
-    Tensor elems = Tensor::empty(shape_of(pr.first), acc, input.device());
-    int64_t n = elems.numel();
-    if (n) {
-        TensorIterator iter = TensorIteratorConfig()
-            .check_all_same_dtype(true)
-            .add_output(elems)
-            .add_const_input(pr.first)
-            .add_const_input(pr.second)
-            .build();
-        if (acc == DType::Float64) {
-            gpu_kernel(iter, [] __host__ __device__(double x, double t) -> double {
-                return t > 0 ? t * (::log(t) - x) : 0.0;
-            });
-        } else {
-            gpu_kernel(iter, [] __host__ __device__(float x, float t) -> float {
-                return t > 0.0f ? t * (::log(t) - x) : 0.0f;
-            });
-        }
-        CUDA_CHECK(cudaGetLastError());
-    }
-    return mean_from_elems(elems, n, input.dtype(), input.device());
-}
-
 Tensor binary_cross_entropy_with_logits_cuda(const Tensor& self, const Tensor& target,
                                              const std::optional<Tensor>& weight_opt,
                                              const std::optional<Tensor>& pos_weight_opt) {
@@ -195,146 +143,6 @@ Tensor binary_cross_entropy_with_logits_cuda(const Tensor& self, const Tensor& t
         CUDA_CHECK(cudaGetLastError());
     }
     return mean_from_elems(elems, n, self.dtype(), self.device());
-}
-
-Tensor hinge_embedding_loss_cuda(const Tensor& input, const Tensor& target, const Scalar& margin) {
-    const DType acc = loss_carry_dtype(input.dtype());
-    auto pr = pair_carry_dev(input, target, acc);
-    Tensor elems = Tensor::empty(shape_of(pr.first), acc, input.device());
-    int64_t n = elems.numel();
-    if (n) {
-        const double margin_value = margin.toDouble();
-        TensorIterator iter = TensorIteratorConfig()
-            .check_all_same_dtype(true)
-            .add_output(elems)
-            .add_const_input(pr.first)
-            .add_const_input(pr.second)
-            .build();
-        if (acc == DType::Float64) {
-            gpu_kernel(iter, [margin_value] __host__ __device__(double x, double t) -> double {
-                // where(t != 1, relu(margin - x), 0) + where(t != -1, x, 0)
-                return ((t != 1.0) ? ::fmax(0.0, margin_value - x) : 0.0)
-                     + ((t != -1.0) ? x : 0.0);
-            });
-        } else {
-            const float margin_f = static_cast<float>(margin_value);
-            gpu_kernel(iter, [margin_f] __host__ __device__(float x, float t) -> float {
-                return ((t != 1.0f) ? ::fmaxf(0.0f, margin_f - x) : 0.0f)
-                     + ((t != -1.0f) ? x : 0.0f);
-            });
-        }
-        CUDA_CHECK(cudaGetLastError());
-    }
-    return mean_from_elems(elems, n, input.dtype(), input.device());
-}
-
-Tensor margin_ranking_loss_cuda(const Tensor& input1, const Tensor& input2,
-                                const Tensor& target, const Scalar& margin) {
-    const DType acc = loss_carry_dtype(input1.dtype());
-    auto pr = pair_carry_dev(input1, input2, acc);
-    Tensor tg = expand_carry_dev(target, shape_of(pr.first), acc);
-    Tensor elems = Tensor::empty(shape_of(pr.first), acc, input1.device());
-    int64_t n = elems.numel();
-    if (n) {
-        const double margin_value = margin.toDouble();
-        TensorIterator iter = TensorIteratorConfig()
-            .check_all_same_dtype(true)
-            .add_output(elems)
-            .add_const_input(pr.first)
-            .add_const_input(pr.second)
-            .add_const_input(tg)
-            .build();
-        if (acc == DType::Float64) {
-            gpu_kernel(iter, [margin_value] __host__ __device__(
-                double a, double b, double target_value) -> double {
-                return ::fmax(0.0, margin_value - target_value * (a - b));
-            });
-        } else {
-            const float margin_f = static_cast<float>(margin_value);
-            gpu_kernel(iter, [margin_f] __host__ __device__(
-                float a, float b, float target_value) -> float {
-                return ::fmaxf(0.0f, margin_f - target_value * (a - b));
-            });
-        }
-        CUDA_CHECK(cudaGetLastError());
-    }
-    return mean_from_elems(elems, n, input1.dtype(), input1.device());
-}
-
-Tensor soft_margin_loss_cuda(const Tensor& input, const Tensor& target) {
-    const DType acc = loss_carry_dtype(input.dtype());
-    auto pr = pair_carry_dev(input, target, acc);
-    Tensor elems = Tensor::empty(shape_of(pr.first), acc, input.device());
-    int64_t n = elems.numel();
-    if (n) {
-        TensorIterator iter = TensorIteratorConfig()
-            .check_all_same_dtype(true)
-            .add_output(elems)
-            .add_const_input(pr.first)
-            .add_const_input(pr.second)
-            .build();
-        if (acc == DType::Float64) {
-            gpu_kernel(iter, [] __host__ __device__(double x, double t) -> double {
-                return dsp(-t * x);
-            });
-        } else {
-            gpu_kernel(iter, [] __host__ __device__(float x, float t) -> float {
-                return dspf(-t * x);
-            });
-        }
-        CUDA_CHECK(cudaGetLastError());
-    }
-    return mean_from_elems(elems, n, input.dtype(), input.device());
-}
-
-Tensor poisson_nll_loss_cuda(const Tensor& input, const Tensor& target, bool log_input,
-                             bool full, double eps) {
-    const DType acc = loss_carry_dtype(input.dtype());
-    auto pr = pair_carry_dev(input, target, acc);
-    Tensor elems = Tensor::empty(shape_of(pr.first), acc, input.device());
-    int64_t n = elems.numel();
-    if (n) {
-        TensorIterator iter = TensorIteratorConfig()
-            .check_all_same_dtype(true)
-            .add_output(elems)
-            .add_const_input(pr.first)
-            .add_const_input(pr.second)
-            .build();
-        if (acc == DType::Float64) {
-            gpu_kernel(iter, [log_input, full, eps] __host__ __device__(double x, double z) -> double {
-                double l2 = log_input ? (::exp(x) - z * x)
-                                      : (x - z * ::log(::exp(x) + eps));
-                if (full && z > 0) l2 += z * ::log(z) - ::lgamma(z + 1.0);
-                return l2;
-            });
-        } else {
-            const float feps = static_cast<float>(eps);
-            gpu_kernel(iter, [log_input, full, feps] __host__ __device__(float x, float z) -> float {
-                float l2 = log_input ? (::exp(x) - z * x)
-                                     : (x - z * ::log(::exp(x) + feps));
-                if (full && z > 0) l2 += z * ::log(z) - ::lgamma(z + 1.0);
-                return l2;
-            });
-        }
-        CUDA_CHECK(cudaGetLastError());
-    }
-    return mean_from_elems(elems, n, input.dtype(), input.device());
-}
-
-Tensor cosine_embedding_loss_cuda(const Tensor& x1, const Tensor& x2, const Tensor& target,
-                                  const Scalar& margin) {
-    const std::vector<int64_t> reduce_dims{1};
-    Tensor prod_sum = (x1 * x2).sum(reduce_dims);
-    Tensor mag_square1 = (x1 * x1).sum(reduce_dims) + Scalar(1e-12);
-    Tensor mag_square2 = (x2 * x2).sum(reduce_dims) + Scalar(1e-12);
-    Tensor cosine = prod_sum / (mag_square1 * mag_square2).sqrt();
-    Tensor zeros = Tensor::zeros_like(cosine);
-    Tensor negative = Tensor::where(
-        (cosine - margin).lt(Scalar(0)), Scalar(0), cosine - margin);
-    Tensor loss = Tensor::where(
-        target.eq(Scalar(1)), Scalar(1) - cosine,
-        Tensor::where(target.eq(Scalar(-1)), negative, zeros));
-    return mean_from_elems(loss, loss.numel(), x1.dtype(), x1.device());
 }
 
 Tensor triplet_margin_loss_cuda(const Tensor& anchor, const Tensor& positive,
@@ -613,15 +421,8 @@ Tensor tp_poisson_nll_loss_backward_cuda(const Tensor& grad_output,
 }
 
 TENSORPLAY_LIBRARY_IMPL(CUDA, LossKernels) {
-    m.impl("l1_loss", l1_loss_cuda);
-    m.impl("kl_div", kl_div_cuda);
     m.impl("binary_cross_entropy_with_logits", binary_cross_entropy_with_logits_cuda);
-    m.impl("cosine_embedding_loss", cosine_embedding_loss_cuda);
-    m.impl("hinge_embedding_loss", hinge_embedding_loss_cuda);
-    m.impl("margin_ranking_loss", margin_ranking_loss_cuda);
-    m.impl("soft_margin_loss", soft_margin_loss_cuda);
     m.impl("triplet_margin_loss", triplet_margin_loss_cuda);
-    m.impl("poisson_nll_loss", poisson_nll_loss_cuda);
     m.impl("multilabel_soft_margin_loss", multilabel_soft_margin_loss_cuda);
     m.impl("tp_l1_loss", tp_l1_loss_cuda);
     m.impl("tp_l1_loss_backward", tp_l1_loss_backward_cuda);
@@ -637,6 +438,15 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, LossKernels) {
     m.impl("tp_cosine_embedding_loss_backward", tp_cosine_embedding_loss_backward_cuda);
     m.impl("tp_poisson_nll_loss", tp_poisson_nll_loss_cuda);
     m.impl("tp_poisson_nll_loss_backward", tp_poisson_nll_loss_backward_cuda);
+
+    // The plain names answer the same walk with the same reduction argument.
+    m.impl("l1_loss", tp_l1_loss_cuda);
+    m.impl("kl_div", tp_kl_div_cuda);
+    m.impl("margin_ranking_loss", tp_margin_ranking_loss_cuda);
+    m.impl("hinge_embedding_loss", tp_hinge_embedding_loss_cuda);
+    m.impl("soft_margin_loss", tp_soft_margin_loss_cuda);
+    m.impl("cosine_embedding_loss", tp_cosine_embedding_loss_cuda);
+    m.impl("poisson_nll_loss", tp_poisson_nll_loss_cuda);
 }
 
 } // namespace cuda

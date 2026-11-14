@@ -4775,11 +4775,11 @@
     CPU: pairwise_distance_cpu
     CUDA: pairwise_distance_cuda
 
-- func: l1_loss(Tensor input, Tensor target) -> Tensor
+- func: l1_loss(Tensor input, Tensor target, int reduction=1) -> Tensor
   variants: function
   dispatch:
-    CPU: l1_loss_cpu
-    CUDA: l1_loss_cuda
+    CPU: l1_loss_kernel
+    CUDA: tp_l1_loss_cuda
 
 - func: smooth_l1_loss(Tensor self, Tensor target, int reduction=1, float beta=1.0) -> Tensor
   device_check: NoCheck
@@ -4806,11 +4806,11 @@
     CPU: huber_loss_backward_cpu
     CUDA: huber_loss_backward_cuda
 
-- func: kl_div(Tensor input, Tensor target) -> Tensor
+- func: kl_div(Tensor input, Tensor target, int reduction=1, bool log_target=False) -> Tensor
   variants: function
   dispatch:
-    CPU: kl_div_cpu
-    CUDA: kl_div_cuda
+    CPU: kl_div_kernel
+    CUDA: tp_kl_div_cuda
 
 - func: binary_cross_entropy(Tensor self, Tensor target, Tensor? weight=None, int reduction=1) -> Tensor
   device_check: NoCheck
@@ -4832,35 +4832,35 @@
     CPU: binary_cross_entropy_with_logits_cpu
     CUDA: binary_cross_entropy_with_logits_cuda
 
-- func: poisson_nll_loss(Tensor input, Tensor target, bool log_input=True, bool full=False, float eps=1e-08) -> Tensor
+- func: poisson_nll_loss(Tensor input, Tensor target, bool log_input=True, bool full=False, float eps=1e-08, int reduction=1) -> Tensor
   variants: function
   dispatch:
-    CPU: poisson_nll_loss_cpu
-    CUDA: poisson_nll_loss_cuda
+    CPU: poisson_nll_loss_kernel
+    CUDA: tp_poisson_nll_loss_cuda
 
-- func: soft_margin_loss(Tensor input, Tensor target) -> Tensor
+- func: soft_margin_loss(Tensor input, Tensor target, int reduction=1) -> Tensor
   variants: function
   dispatch:
-    CPU: soft_margin_loss_cpu
-    CUDA: soft_margin_loss_cuda
+    CPU: soft_margin_loss_kernel
+    CUDA: tp_soft_margin_loss_cuda
 
-- func: cosine_embedding_loss(Tensor x1, Tensor x2, Tensor target, Scalar margin=0) -> Tensor
+- func: cosine_embedding_loss(Tensor input1, Tensor input2, Tensor target, float margin=0.0, int reduction=1) -> Tensor
   variants: function
   dispatch:
-    CPU: cosine_embedding_loss_cpu
-    CUDA: cosine_embedding_loss_cuda
+    CPU: cosine_embedding_loss_kernel
+    CUDA: tp_cosine_embedding_loss_cuda
 
-- func: margin_ranking_loss(Tensor input1, Tensor input2, Tensor target, Scalar margin=0) -> Tensor
+- func: margin_ranking_loss(Tensor input1, Tensor input2, Tensor target, float margin=0.0, int reduction=1) -> Tensor
   variants: function
   dispatch:
-    CPU: margin_ranking_loss_cpu
-    CUDA: margin_ranking_loss_cuda
+    CPU: margin_ranking_loss_kernel
+    CUDA: tp_margin_ranking_loss_cuda
 
-- func: hinge_embedding_loss(Tensor input, Tensor target, Scalar margin=1.0) -> Tensor
+- func: hinge_embedding_loss(Tensor input, Tensor target, float margin=1.0, int reduction=1) -> Tensor
   variants: function
   dispatch:
-    CPU: hinge_embedding_loss_cpu
-    CUDA: hinge_embedding_loss_cuda
+    CPU: hinge_embedding_loss_kernel
+    CUDA: tp_hinge_embedding_loss_cuda
 
 # or 2-D (N, C) input with class-index target; per-row hinge
 # sum_{d != y} max(0, margin - x_y + x_d)^p * w[y] / C. reduction: 0=none

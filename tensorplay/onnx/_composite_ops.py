@@ -2126,10 +2126,29 @@ def _handle_pad(ctx: OpContext) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _apply_reduction(ctx: OpContext, value: str, reduction: str) -> str:
-    if reduction == "none":
+_REDUCTION_NAMES = {0: "none", 1: "mean", 2: "sum", "none": "none", "mean": "mean", "sum": "sum"}
+
+
+def _reduction_key(value: Any) -> str:
+    """Canonical reduction name for a recorded graph attribute.
+
+    A call site may spell the reduction out or pass its whole-number code, and
+    an enum member carries either form, so both are folded to one name before
+    the emission below picks the axes to collapse.  Unrecognized values fall
+    back to the default of every loss here.
+    """
+
+    candidate = getattr(value, "value", value)
+    if isinstance(candidate, str):
+        candidate = candidate.lower()
+    return _REDUCTION_NAMES.get(candidate, "mean")
+
+
+def _apply_reduction(ctx: OpContext, value: str, reduction: Any) -> str:
+    key = _reduction_key(reduction)
+    if key == "none":
         return value
-    if reduction == "sum":
+    if key == "sum":
         return _reduce_sum(ctx, value, None, False)
     return _reduce(ctx, "ReduceMean", value, None, False, axes_input_since=18)
 
@@ -2138,13 +2157,13 @@ def _apply_reduction(ctx: OpContext, value: str, reduction: str) -> str:
 def _handle_mse_loss(ctx: OpContext) -> str:
     difference = ctx.op("Sub", [ctx.x, ctx.get("target")])
     squares = ctx.op("Mul", [difference, difference])
-    return _apply_reduction(ctx, squares, str(ctx.get("reduction", "mean") or "mean"))
+    return _apply_reduction(ctx, squares, ctx.get("reduction", "mean"))
 
 
 @register("l1_loss", "input target size_average reduce reduction weight")
 def _handle_l1_loss(ctx: OpContext) -> str:
     difference = ctx.op("Abs", [ctx.op("Sub", [ctx.x, ctx.get("target")])])
-    return _apply_reduction(ctx, difference, str(ctx.get("reduction", "mean") or "mean"))
+    return _apply_reduction(ctx, difference, ctx.get("reduction", "mean"))
 
 
 @register(

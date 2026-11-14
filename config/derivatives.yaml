@@ -1632,6 +1632,12 @@
   input: tp_l1_loss_backward(grad, input, target, reduction)
   target: -tp_l1_loss_backward(grad, input, target, reduction)
 
+# The plain loss names take a reduction too and share the backward nodes of
+# their folded twins.
+- name: l1_loss(Tensor input, Tensor target, int reduction=1) -> Tensor
+  input: tp_l1_loss_backward(grad, input, target, reduction)
+  target: -tp_l1_loss_backward(grad, input, target, reduction)
+
 - name: smooth_l1_loss(Tensor self, Tensor target, int reduction=1, float beta=1.0) -> Tensor
   self: smooth_l1_loss_backward(grad, self, target, reduction, beta)
   target: smooth_l1_loss_backward(grad, target, self, reduction, beta)
@@ -1667,6 +1673,32 @@
   target: zeros_like(target)
 
 - name: tp_poisson_nll_loss(Tensor input, Tensor target, bool log_input=true, bool full=false, float eps=1e-08, int64_t reduction=1) -> Tensor
+  input: tp_poisson_nll_loss_backward(grad, input, target, log_input, full, eps, reduction)
+  target: poisson_nll_loss_target_backward(grad, input, target, log_input, full, eps, reduction)
+
+- name: kl_div(Tensor input, Tensor target, int reduction=1, bool log_target=false) -> Tensor
+  input: tp_kl_div_backward(grad, input, target, reduction, log_target)
+  target: kl_div_target_backward(grad, input, target, reduction, log_target)
+
+- name: soft_margin_loss(Tensor input, Tensor target, int reduction=1) -> Tensor
+  input: tp_soft_margin_loss_backward(grad, input, target, reduction)
+  target: soft_margin_loss_target_backward(grad, input, target, reduction)
+
+- name: hinge_embedding_loss(Tensor input, Tensor target, float margin=1.0, int reduction=1) -> Tensor
+  input: tp_hinge_embedding_loss_backward(grad, input, target, margin, reduction)
+  target: zeros_like(target)
+
+- name: margin_ranking_loss(Tensor input1, Tensor input2, Tensor target, float margin=0.0, int reduction=1) -> Tensor
+  input1: std::get<0>(tp_margin_ranking_loss_backward(grad, input1, input2, target, margin, reduction))
+  input2: std::get<1>(tp_margin_ranking_loss_backward(grad, input1, input2, target, margin, reduction))
+  target: margin_ranking_loss_target_backward(grad, input1, input2, target, margin, reduction)
+
+- name: cosine_embedding_loss(Tensor input1, Tensor input2, Tensor target, float margin=0.0, int reduction=1) -> Tensor
+  input1: std::get<0>(tp_cosine_embedding_loss_backward(grad, input1, input2, target, margin, reduction))
+  input2: std::get<1>(tp_cosine_embedding_loss_backward(grad, input1, input2, target, margin, reduction))
+  target: zeros_like(target)
+
+- name: poisson_nll_loss(Tensor input, Tensor target, bool log_input=true, bool full=false, float eps=1e-08, int reduction=1) -> Tensor
   input: tp_poisson_nll_loss_backward(grad, input, target, log_input, full, eps, reduction)
   target: poisson_nll_loss_target_backward(grad, input, target, log_input, full, eps, reduction)
 

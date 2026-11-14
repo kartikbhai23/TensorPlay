@@ -6700,12 +6700,12 @@ def pairwise_distance(x1, x2, p=2.0, eps=1e-06, keepdim=False):
             return _captured
     return _C.pairwise_distance(x1, x2, p, eps, keepdim)
 
-def l1_loss(input, target):
+def l1_loss(input, target, reduction=1):
     if _capturing():
-        _captured = _capture_call(l1_loss, (input, target), {})
+        _captured = _capture_call(l1_loss, (input, target, reduction), {})
         if _captured is not None:
             return _captured
-    return _C.l1_loss(input, target)
+    return _C.l1_loss(input, target, reduction)
 
 def smooth_l1_loss(input, target, reduction=1, beta=1.0, *, out=None):
     if out is not None:
@@ -6759,12 +6759,12 @@ def huber_loss_backward(grad_output, input, target, reduction, delta, *, out=Non
             return _captured
     return _C.huber_loss_backward(grad_output=grad_output, self=input, target=target, reduction=reduction, delta=delta)
 
-def kl_div(input, target):
+def kl_div(input, target, reduction=1, log_target=False):
     if _capturing():
-        _captured = _capture_call(kl_div, (input, target), {})
+        _captured = _capture_call(kl_div, (input, target, reduction, log_target), {})
         if _captured is not None:
             return _captured
-    return _C.kl_div(input, target)
+    return _C.kl_div(input, target, reduction, log_target)
 
 def binary_cross_entropy(input, target, weight=None, reduction=1, *, out=None):
     if out is not None:
@@ -6805,52 +6805,46 @@ def binary_cross_entropy_with_logits(input, target, weight=None, pos_weight=None
             return _captured
     return _C.binary_cross_entropy_with_logits(self=input, target=target, weight=weight, pos_weight=pos_weight)
 
-def poisson_nll_loss(input, target, log_input=True, full=False, eps=1e-08):
+def poisson_nll_loss(input, target, log_input=True, full=False, eps=1e-08, reduction=1):
     if _capturing():
-        _captured = _capture_call(poisson_nll_loss, (input, target, log_input, full, eps), {})
+        _captured = _capture_call(poisson_nll_loss, (input, target, log_input, full, eps, reduction), {})
         if _captured is not None:
             return _captured
-    return _C.poisson_nll_loss(input, target, log_input, full, eps)
+    return _C.poisson_nll_loss(input, target, log_input, full, eps, reduction)
 
-def soft_margin_loss(input, target, *, out=None):
+def soft_margin_loss(input, target, reduction=1, *, out=None):
     if out is not None:
         if _capturing():
-            _captured = _capture_call(soft_margin_loss, (input, target), {'out': out})
+            _captured = _capture_call(soft_margin_loss, (input, target, reduction), {'out': out})
             if _captured is not None:
                 return _captured
-        return _C.soft_margin_loss(input=input, target=target, out=out)
+        return _C.soft_margin_loss(input=input, target=target, reduction=reduction, out=out)
     if _capturing():
-        _captured = _capture_call(soft_margin_loss, (input, target), {})
+        _captured = _capture_call(soft_margin_loss, (input, target, reduction), {})
         if _captured is not None:
             return _captured
-    return _C.soft_margin_loss(input=input, target=target)
+    return _C.soft_margin_loss(input=input, target=target, reduction=reduction)
 
-def cosine_embedding_loss(x1, x2, target, margin=0):
+def cosine_embedding_loss(input1, input2, target, margin=0.0, reduction=1):
     if _capturing():
-        _captured = _capture_call(cosine_embedding_loss, (x1, x2, target, margin), {})
+        _captured = _capture_call(cosine_embedding_loss, (input1, input2, target, margin, reduction), {})
         if _captured is not None:
             return _captured
-    if not isinstance(margin, (tensorplay.Scalar, tensorplay.Tensor)):
-        margin = tensorplay.Scalar(margin)
-    return _C.cosine_embedding_loss(x1, x2, target, margin)
+    return _C.cosine_embedding_loss(input1, input2, target, margin, reduction)
 
-def margin_ranking_loss(input1, input2, target, margin=0):
+def margin_ranking_loss(input1, input2, target, margin=0.0, reduction=1):
     if _capturing():
-        _captured = _capture_call(margin_ranking_loss, (input1, input2, target, margin), {})
+        _captured = _capture_call(margin_ranking_loss, (input1, input2, target, margin, reduction), {})
         if _captured is not None:
             return _captured
-    if not isinstance(margin, (tensorplay.Scalar, tensorplay.Tensor)):
-        margin = tensorplay.Scalar(margin)
-    return _C.margin_ranking_loss(input1, input2, target, margin)
+    return _C.margin_ranking_loss(input1, input2, target, margin, reduction)
 
-def hinge_embedding_loss(input, target, margin=1.0):
+def hinge_embedding_loss(input, target, margin=1.0, reduction=1):
     if _capturing():
-        _captured = _capture_call(hinge_embedding_loss, (input, target, margin), {})
+        _captured = _capture_call(hinge_embedding_loss, (input, target, margin, reduction), {})
         if _captured is not None:
             return _captured
-    if not isinstance(margin, (tensorplay.Scalar, tensorplay.Tensor)):
-        margin = tensorplay.Scalar(margin)
-    return _C.hinge_embedding_loss(input, target, margin)
+    return _C.hinge_embedding_loss(input, target, margin, reduction)
 
 def multi_margin_loss(input, target, p=1, margin=1, weight=None, reduction=1, *, out=None):
     if out is not None:

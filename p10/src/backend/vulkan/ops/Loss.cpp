@@ -790,14 +790,6 @@ Tensor l1_loss_backward_kernel(
   return tpx::ops::to(gradient, self.dtype());
 }
 
-// The two-argument form answers the average of the deviations, which is what a
-// plane matched with another plane is asked for when no mode is named.
-Tensor l1_loss_mean_kernel(
-    const Tensor& self,
-    const Tensor& target) {
-  return l1_loss_kernel(self, target, 1);
-}
-
 // A deviation read for a walk that switches its own shape at a width: inside
 // the width the loss is half a square, scaled by the width where the square has
 // to meet the line it switches to, and outside it the loss is the deviation with
@@ -1040,7 +1032,7 @@ TENSORPLAY_LIBRARY_IMPL(Vulkan, LossKernels) {
   m.impl(
       "tp_l1_loss_backward",
       &tensorplay::vulkan::ops::l1_loss_backward_kernel);
-  m.impl("l1_loss", &tensorplay::vulkan::ops::l1_loss_mean_kernel);
+  m.impl("l1_loss", &tensorplay::vulkan::ops::l1_loss_kernel);
   m.impl(
       "smooth_l1_loss",
       &tensorplay::vulkan::ops::smooth_l1_loss_kernel);
@@ -1055,6 +1047,7 @@ TENSORPLAY_LIBRARY_IMPL(Vulkan, LossKernels) {
   m.impl(
       "tp_kl_div_backward",
       &tensorplay::vulkan::ops::kl_div_backward_kernel);
+  m.impl("kl_div", &tensorplay::vulkan::ops::kl_div_kernel);
 }
 
 #endif /* USE_VULKAN */

@@ -987,6 +987,16 @@ TENSORPLAY_LIBRARY_IMPL(CPU, LossKernels) {
     m.impl("tp_cosine_embedding_loss_backward", cosine_embedding_loss_backward_kernel);
     m.impl("tp_poisson_nll_loss", poisson_nll_loss_kernel);
     m.impl("tp_poisson_nll_loss_backward", poisson_nll_loss_backward_kernel);
+
+    // The plain names answer the same walk with the same reduction argument:
+    // the two spellings differ only in that the folded twins were added later.
+    m.impl("l1_loss", l1_loss_kernel);
+    m.impl("kl_div", kl_div_kernel);
+    m.impl("margin_ranking_loss", margin_ranking_loss_kernel);
+    m.impl("hinge_embedding_loss", hinge_embedding_loss_kernel);
+    m.impl("soft_margin_loss", soft_margin_loss_kernel);
+    m.impl("cosine_embedding_loss", cosine_embedding_loss_kernel);
+    m.impl("poisson_nll_loss", poisson_nll_loss_kernel);
 }
 
 } // namespace cpu

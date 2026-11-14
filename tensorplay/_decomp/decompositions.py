@@ -2102,8 +2102,8 @@ def mse_loss_backward(grad_output, self, target, reduction=1):
 
 
 @register_decomposition(ops.l1_loss.default)
-def l1_loss(input, target):
-    return tp.abs(input - target).mean()
+def l1_loss(input, target, reduction=1):
+    return _reduce(tp.abs(input - target), reduction)
 
 
 @register_decomposition(ops.smooth_l1_loss.default)
@@ -2176,8 +2176,8 @@ def binary_cross_entropy_with_logits(self, target, weight=None, pos_weight=None)
 
 
 @register_decomposition(ops.soft_margin_loss.default)
-def soft_margin_loss(input, target):
-    return tp.log1p(tp.exp(-input * target)).mean()
+def soft_margin_loss(input, target, reduction=1):
+    return _reduce(tp.log1p(tp.exp(-input * target)), reduction)
 
 
 @register_decomposition(ops.soft_margin_loss_backward.default)
@@ -5442,16 +5442,16 @@ def prelu(self, weight):
 
 
 @register_decomposition(ops.margin_ranking_loss.default)
-def margin_ranking_loss(input1, input2, target, margin=0):
-    return ops.clamp.default(margin - target * (input1 - input2), 0).mean()
+def margin_ranking_loss(input1, input2, target, margin=0.0, reduction=1):
+    return _reduce(ops.clamp.default(margin - target * (input1 - input2), 0), reduction)
 
 
 @register_decomposition(ops.hinge_embedding_loss.default)
-def hinge_embedding_loss(input, target, margin=1.0):
+def hinge_embedding_loss(input, target, margin=1.0, reduction=1):
     zeros = ops.zeros_like.default(input)
     margin_part = ops.where.self(target != 1, ops.clamp_min.default(margin - input, 0), zeros)
     self_part = ops.where.self(target != -1, input, zeros)
-    return (margin_part + self_part).mean()
+    return _reduce(margin_part + self_part, reduction)
 
 
 @register_decomposition(ops.nll_loss.default)
