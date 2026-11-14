@@ -538,6 +538,31 @@ class Proxy:
                 return None
         return None
 
+    #: Metadata a length the data decides would settle for one input only.
+    _EXTENT_METADATA = frozenset({"shape", "stride", "numel", "nelement"})
+
+    def _refuse_data_decided_extent(self, name: str) -> None:
+        """Fail rather than fix a length the data decides.
+
+        A masked selection, the positions that are not zero, the distinct
+        values: how many there are is a fact about the values the region is
+        given, not about the shapes it was captured with.  The sample answered
+        while the region was traced, so an answer taken from it would hold for
+        that one input and be reused for every other -- a wrong result nothing
+        reports.  Refusing the read leaves the region to run as written.
+        """
+
+        if self.node.name not in getattr(self.tracer, "dynamic_extent_nodes", ()):
+            return
+        raise GraphCaptureError(
+            f"cannot read {name!r} while capturing: how many values this result "
+            "holds depends on the data, so its length is only known once the "
+            "region runs. Reading it here would bake one outcome into the "
+            "region and reuse it for every input. Compute what is wanted "
+            "inside the region, or leave this value out of the captured "
+            "program."
+        )
+
     def _property(self, name: str) -> Any:
         """Resolve tensor metadata: concretely whenever it can be settled.
 
@@ -560,6 +585,8 @@ class Proxy:
             symbolic = self._symbolic_shape()
             if symbolic is not None:
                 return symbolic
+        if name in self._EXTENT_METADATA:
+            self._refuse_data_decided_extent(name)
         if sample is not None:
             return getattr(sample, name)
         # A tracer that runs the program on an example knows the metadata of
@@ -640,6 +667,7 @@ class Proxy:
             for size in symbolic:
                 count = count * size
             return count
+        self._refuse_data_decided_extent("numel")
         sample = self._sample()
         if sample is not None:
             return sample.numel()
@@ -730,6 +758,7 @@ class Proxy:
         symbolic = self._symbolic_shape()
         if symbolic:
             return operator.index(symbolic[0])
+        self._refuse_data_decided_extent("len")
         if sample is not None:
             if hasattr(sample, "__len__"):
                 try:

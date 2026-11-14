@@ -309,7 +309,8 @@ def _lower_stax_region(
             _tb.print_exc(limit=30, file=sys.stderr)
         if strict:
             raise RuntimeError(
-                "strict_native Stax lowering failed: captured graph has no built form"
+                "strict_native Stax lowering failed: captured graph has no built "
+                f"form ({exc})"
             ) from exc
         warnings.warn(
             "Stax lowering failed; falling back to the graph executor: "
@@ -328,7 +329,8 @@ def _lower_stax_region(
             _tb.print_exc(limit=30, file=sys.stderr)
         if strict:
             raise RuntimeError(
-                "strict_native Stax lowering failed: captured graph has no built form"
+                "strict_native Stax lowering failed: captured graph has no built "
+                f"form ({exc})"
             ) from exc
         warnings.warn(
             "Stax lowering failed; falling back to the graph executor: "

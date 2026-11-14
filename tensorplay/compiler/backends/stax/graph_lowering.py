@@ -1662,6 +1662,9 @@ class GraphLowering(Interpreter):
             # Keep that metadata valid until symbolic inference covers it.
             for symbol in tuple(self.shape_env.backed_var_to_val):
                 self.shape_env.guarding_hint_or_throw(symbol)
+        from .op_lowerings import refuse_sized_from_sample
+
+        refuse_sized_from_sample(node)
         args = list(realized_args)
         call_method = node.op == "call_method"
         if call_method:

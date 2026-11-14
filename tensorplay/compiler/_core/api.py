@@ -1249,7 +1249,8 @@ def _compile_region(
                     graph_module = pass_result.graph_module
             except GraphCaptureError as exc:
                 raise GraphCaptureError(
-                    "TensorPlay could not capture the requested compiler region"
+                    "TensorPlay could not capture the requested compiler region: "
+                    f"{exc}"
                 ) from exc
             store_region(region_key, graph_module)
             tracer._node_samples.clear()

@@ -273,6 +273,87 @@ def test_symbolic_tracer_still_rejects_data_dependent_control_flow():
         tracer.trace(fn, sample_inputs={"x": tp.tensor([1.0])})
 
 
+def test_data_decided_length_cannot_be_read_while_capturing():
+    """A selected length belongs to the data, so a read of it must refuse.
+
+    ``x[x > 0]`` holds as many values as the mask is true for, which the traced
+    example only answers for itself.  Branching on that count would bake one
+    outcome into the region and reuse it for every later input.
+    """
+
+    from tensorplay.graph import GraphCaptureError
+
+    def fn(x):
+        selected = x[x > 0]
+        return x + 1 if selected.numel() > 0 else x - 1
+
+    compiled = tp.compile(fn)
+    with pytest.raises(GraphCaptureError, match="depends on the data"):
+        compiled(tp.ones(4))
+
+    def by_length(x):
+        return x + 1 if len(x[x > 0]) > 0 else x - 1
+
+    with pytest.raises(GraphCaptureError, match="depends on the data"):
+        tp.compile(by_length)(tp.ones(4))
+
+    def by_shape(x):
+        return x + 1 if x[x > 0].shape[0] > 0 else x - 1
+
+    with pytest.raises(GraphCaptureError, match="depends on the data"):
+        tp.compile(by_shape)(tp.ones(4))
+
+
+def test_operations_sized_from_a_selected_length_do_not_trust_the_example():
+    """A later kernel is not written against the length the example had.
+
+    The region is either refused (strict) or run as written (falling back),
+    and both answers follow the data rather than the traced sample.
+    """
+
+    def fn(x):
+        return tp.masked_select(x, x > 0).unsqueeze(0) * 2
+
+    data = (
+        [1.0, -1.0, 1.0, -1.0],
+        [1.0, 1.0, 1.0, -1.0],
+        [-1.0, -1.0, -1.0, -1.0],
+    )
+    compiled = tp.compile(fn)
+    with pytest.warns(UserWarning, match="depends on the data"):
+        compiled(tp.tensor(data[0]))
+    for values in data:
+        x = tp.tensor(values)
+        assert compiled(x).tolist() == fn(x).tolist()
+
+    with pytest.raises(RuntimeError, match="depends on the data"):
+        tp.compile(fn, strict_native=True)(tp.tensor(data[0]))
+
+
+def test_selected_values_returned_as_the_result_still_compile():
+    """Reading the values is not sizing a kernel from them."""
+
+    artifacts = []
+
+    def fn(x):
+        return x[x > 0]
+
+    def backend(gm, inputs, **kwargs):
+        from tensorplay.compiler.backends.stax.backend import stax
+
+        artifact = stax(gm, inputs, **kwargs)
+        artifacts.append(artifact)
+        return artifact
+
+    backend.lowers_operator_graphs = True
+    backend.supports_symbolic_shapes = True
+    compiled = tp.compile(fn, backend=backend, strict_native=True)
+    for values in ([1.0, -1.0, 1.0, -1.0], [1.0, 1.0, 1.0, -1.0], [-1.0] * 4):
+        x = tp.tensor(values)
+        assert compiled(x).tolist() == fn(x).tolist()
+    assert artifacts
+
+
 def test_fullgraph_specializes_metadata_control_flow():
     def fn(x):
         if len(x) > 0:

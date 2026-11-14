@@ -397,3 +397,61 @@ def _format_target(target: Any) -> str:
     if name:
         return str(name)
     return repr(target)
+
+
+#: Calls whose result holds as many values as the data decides rather than as
+#: the operand shapes decide: the positions that are not zero, the truths in a
+#: mask, the distinct values, the counts per bin, the repeats each element asks
+#: for.  Their length is only known once the region runs, so a length read
+#: while the region is still being captured fixes one outcome for every input.
+DATA_DEPENDENT_EXTENT_TARGETS = frozenset(
+    {
+        "masked_select",
+        "nonzero",
+        "bincount",
+        "unique",
+        "unique2",
+        "_unique2",
+        "unique_dim",
+        "unique_dim_consecutive",
+        "unique_consecutive",
+        "repeat_interleave",
+    }
+)
+
+
+def _index_items(value: Any) -> Iterable[Any]:
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _index_items(item)
+    else:
+        yield value
+
+
+def extent_follows_data(
+    target: Any, args: Any = (), dtype_of: Optional[Callable[[Any], Any]] = None
+) -> bool:
+    """Whether the length of this call's result is decided by the data it reads.
+
+    ``args`` are the call's arguments as they will be lowered, and ``dtype_of``
+    answers the type of one of them.  Positional indexing spells its length in
+    the index, but a mask of truths selects as many positions as it holds, so
+    that form is data-decided as well.
+    """
+
+    name = str(getattr(target, "__name__", target)).split(".")[0]
+    if name in DATA_DEPENDENT_EXTENT_TARGETS:
+        return True
+    if dtype_of is None or not args or len(args) < 2:
+        return False
+    from tensorplay import bool as boolean_dtype
+
+    def is_mask(item: Any) -> bool:
+        dtype = dtype_of(item)
+        return getattr(dtype, "dtype", dtype) == boolean_dtype
+
+    if name in ("index", "_unsafe_index"):
+        return any(is_mask(item) for item in _index_items(args[1]))
+    # Element selection by a mask is the same selection as an index call:
+    # ``value[mask]`` names the positions the mask holds.
+    return name == "getitem" and is_mask(args[1])

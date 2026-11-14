@@ -16,6 +16,7 @@ from ._utils import (
     _iter_nodes,
     _reading_enclosing_values,
     compiler_context,
+    extent_follows_data,
     gate_outcome,
 )
 from .graph import Graph
@@ -100,6 +101,12 @@ class Tracer:
         # values stay symbolic inside the graph and are excluded from the
         # cache-key tail; plain int()/float() consumption stays baked+keyed.
         self.symbolic_gate_nodes: set[str] = set()
+        # Nodes whose number of elements the data decides rather than the
+        # operand shapes: a masked selection, the positions that are not zero,
+        # the distinct values.  Their length is only known once the region
+        # runs, so reading it during capture would fix one outcome for every
+        # input -- the reads refuse instead.
+        self.dynamic_extent_nodes: set[str] = set()
         self.concrete_args: Dict[str, Any] = dict(concrete_args or {})
         # Example values bound to placeholders during capture.  Metadata reads
         # (shape/dtype/device/...) resolve against them so Python control flow
@@ -493,7 +500,20 @@ class Tracer:
             # operator that needs a real value to trace its body with -- the
             # start of a scan, say -- can then be given one.
             self._execute_node(proxy.node)
+        if extent_follows_data(target, proxy.node.args, self._node_dtype):
+            # What the sample says about the length of this result is a fact
+            # about the data that produced it, not about the region.
+            self.dynamic_extent_nodes.add(proxy.node.name)
         return proxy
+
+    def _node_dtype(self, value: Any) -> Any:
+        """The type of one call argument, read from the sample behind it."""
+
+        name = getattr(value, "name", None)
+        if name is None:
+            return None
+        sample = self._node_samples.get(name)
+        return getattr(sample, "dtype", None)
 
     def evaluate_call(
         self, function: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]

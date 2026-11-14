@@ -49,6 +49,7 @@ from tensorplay.primitives.common import (
 )
 from .dtype_propagation import promoted_dtype_of_values
 from tensorplay.graph import Node
+from tensorplay.graph._utils import extent_follows_data
 from tensorplay._higher_order_ops._hop_base import (
     is_fake_tensor,
     value_device as _value_device,
@@ -467,6 +468,36 @@ def fallback_node_due_to_unsupported_type(node) -> bool:
     return check(node, is_output=True)
 
 
+def _traced_value_dtype(value):
+    """The type of one traced argument, read off the value it stood for."""
+
+    meta = getattr(value, "meta", None) or {}
+    return getattr(meta.get("val"), "dtype", None)
+
+
+def refuse_sized_from_sample(node) -> None:
+    """Refuse to size a later operation from the traced example.
+
+    A call whose result length the data decides -- how many values a mask
+    selects, how many positions are not zero -- is handed to the framework,
+    which measures the answer as it runs.  A later operation here is written
+    against a length, and the only length known before the region runs is the
+    one the example happened to have.  Writing that one in would read and
+    write the wrong number of elements, silently.  Refusing keeps the region
+    on the path that runs it as written instead.
+    """
+
+    if node is None or not any(user.op != "output" for user in node.users):
+        return
+    if not extent_follows_data(node.target, node.args, _traced_value_dtype):
+        return
+    raise NotImplementedError(
+        f"cannot size a later operation from {target_name(node.target)!r}: how "
+        "many values it returns depends on the data, and the compiled form of "
+        "the region cannot know that before it runs"
+    )
+
+
 def fallback_handler(kernel, add_to_fallback_set: bool = True):
     """A way to compute an operation by handing the whole call to the framework.
 
@@ -487,6 +518,7 @@ def fallback_handler(kernel, add_to_fallback_set: bool = True):
         def wrap_tensors(x):
             return x.wrap_for_lowering() if isinstance(x, IRNode) else x
 
+        refuse_sized_from_sample(getattr(V.graph, "current_node", None))
         return tree_map(
             wrap_tensors, FallbackKernel.create(kernel, *args, **kwargs)
         )
