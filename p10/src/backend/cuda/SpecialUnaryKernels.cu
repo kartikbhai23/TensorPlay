@@ -95,6 +95,16 @@ struct I1eFn {
 struct ErfcxFn {
     template <typename T>
     __device__ T operator()(T x) const { return calc_erfcx(x); }
+    // Single precision answers through the device erfcx: the shared rational
+    // walks its coefficients in the wide type, which costs more than the
+    // element pass it feeds.
+    __device__ float operator()(float x) const {
+#ifdef __CUDA_ARCH__
+        return ::erfcxf(x);
+#else
+        return calc_erfcx(x);
+#endif
+    }
 };
 struct NdtrFn {
     template <typename T>
@@ -107,6 +117,20 @@ struct NdtriFn {
 struct LogNdtrFn {
     template <typename T>
     __device__ T operator()(T x) const { return calc_log_ndtr(x); }
+    // The same split as the wide form, with the single-precision device
+    // functions for both tails; the far left keeps its relative digits
+    // because erfcx is evaluated before the square is subtracted.
+    __device__ float operator()(float x) const {
+#ifdef __CUDA_ARCH__
+        const float t = x * 0.70710678118654752440f;
+        if (x < -1.0f) {
+            return ::logf(::erfcxf(-t) * 0.5f) - t * t;
+        }
+        return ::log1pf(-::erfcf(t) * 0.5f);
+#else
+        return calc_log_ndtr(x);
+#endif
+    }
 };
 struct EntrFn {
     template <typename T>
