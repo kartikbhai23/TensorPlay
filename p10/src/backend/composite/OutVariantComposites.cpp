@@ -521,8 +521,10 @@ Tensor& out_wrap_trunc_out(const Tensor& self, Tensor& out) {
 }
 
 Tensor& out_wrap_fix_out(const Tensor& self, Tensor& out) {
-    write_out(out, ops::fix(self));
-    return out;
+    // fix and trunc answer the same map, so the out form hands the caller's
+    // destination to trunc's out form instead of materializing one result and
+    // copying it into place.
+    return ops::trunc(self, out);
 }
 
 std::tuple<Tensor, Tensor> out_wrap_frexp_Tensor_out(const Tensor& self, Tensor& mantissa, Tensor& exponent) {

@@ -127,12 +127,16 @@ Tensor mvlgamma_native(const Tensor& self, int64_t p) {
 }
 
 Tensor conj_physical_native(const Tensor& self) {
-    // Real dtypes are self-conjugate; skip the clone round trip.
-    if (!isComplexType(self.dtype())) return self;
+    // Real dtypes are self-conjugate: conj already answers a view over the
+    // operand's geometry, so no clone round trip is needed.
+    if (!isComplexType(self.dtype())) return ops::conj(self);
     return ops::clone(ops::conj(self), kContiguous);
 }
 
 Tensor& conj_physical__native(Tensor& self) {
+    // A real operand is its own conjugate, so the in-place form has nothing
+    // to write back.
+    if (!isComplexType(self.dtype())) return self;
     ops::copy_(self, ops::conj(self));
     return self;
 }

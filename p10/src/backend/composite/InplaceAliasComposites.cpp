@@ -177,8 +177,10 @@ Tensor& inplace_t_(Tensor& self) {
 }
 
 Tensor& inplace_fix_(Tensor& self) {
-    ops::copy_(self, ops::fix(self));
-    return self;
+    // Rounding toward zero is exactly the truncation map, and its in-place
+    // form already walks the operand once; a functional trunc plus a copy
+    // would make the same pass twice.
+    return ops::trunc_(self);
 }
 
 Tensor& inplace_unsqueeze_(Tensor& self, int64_t dim) {
