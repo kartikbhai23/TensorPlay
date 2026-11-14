@@ -5,6 +5,8 @@ from typing import Any
 
 import tensorplay as tp
 
+from tensorplay.graph.interpreter import Interpreter
+from tensorplay.graph.node import Node
 from tensorplay.utils._dispatch import _disable_current_modes
 from tensorplay.utils import _pytree as pytree
 from .freezing_utils import maybe_set_is_frozen_param
@@ -83,7 +85,7 @@ def is_const_source(
     return node.op == "get_attr" or node.name in (lifted_constant_names or ())
 
 
-class ConstantFolder(Any):
+class ConstantFolder(Interpreter):
     def __init__(
         self,
         gm: Any,
@@ -186,7 +188,7 @@ class ConstantFolder(Any):
                 last_non_output_use[node].append(inp)
 
             # In-place is fine since we don't mutate
-            pytree.tree_map_only_(Any, add_use, (node.args, node.kwargs))
+            pytree.tree_map_only_(Node, add_use, (node.args, node.kwargs))
 
             # if this node is only used in output, we want to gc it right away
             if len(node.users) == 1 and output_node in node.users:
@@ -203,7 +205,7 @@ class ConstantFolder(Any):
                 self.env[arg] = self.unknown_value
 
             # In-place is fine since we don't mutate
-            pytree.tree_map_only_(Any, set_env, node.args)
+            pytree.tree_map_only_(Node, set_env, node.args)
             return super().run_node(node)
 
         args, kwargs = self.fetch_args_kwargs_from_env(node)

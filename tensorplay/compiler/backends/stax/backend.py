@@ -198,7 +198,7 @@ def _partition_with_joint_passes(
     both are still the same graph, so it runs here, just before the cut that
     decides which forward values the backward is handed.
     """
-    from .._core.aot_autograd import min_cut_rematerialization_partition
+    from ..._core.aot_autograd import min_cut_rematerialization_partition
     from .graph_passes.joint_graph import joint_graph_passes
 
     input_device = None
