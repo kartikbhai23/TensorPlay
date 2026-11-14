@@ -3187,8 +3187,8 @@ def is_cudagraph_unsafe_op(node: Any) -> bool:
     refused for the same reason and with the same words as the region that
     contains it.
     """
-    from .cudagraphs import _data_dependent_node
-    from .cudagraphs import _UNSAFE_OPS, _target_name
+    from ..cudagraphs import _data_dependent_node
+    from ..cudagraphs import _UNSAFE_OPS, _target_name
 
     from . import ir
 

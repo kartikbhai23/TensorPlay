@@ -957,15 +957,9 @@ def _reorder_communication_preserving_peak_memory_internal(
 
     num_processed_collectives: int = 0
     curr: BaseSchedulerNode | None = _head
-    debug_iterative_memory_recompute = (
-        config_comms.reorder_iterative_debug_memory_recompute
-    )
-    iterative_recompute_error = False
 
     while curr is not None and _next[curr] is not None:
         _next_curr = _next[curr]
-        if iterative_recompute_error:
-            break
 
         if not contains_async_collective(curr):
             curr = _next_curr
@@ -1201,27 +1195,6 @@ def _reorder_communication_preserving_peak_memory_internal(
                 snodes_allocfree,
             )
 
-            if debug_iterative_memory_recompute:
-                # Compare iteratively recomputed memory data
-                # with full run of estimate_peak_memory
-
-                from .comms_debug import _debug_iterative_memory_recompute
-
-                iterative_recompute_error = _debug_iterative_memory_recompute(
-                    candidate,
-                    gns,
-                    _group_names(gns),
-                    _group_nodes_from_linked_list(_head, None, _next),
-                    name_to_freeable_input_buf,
-                    graph_outputs,
-                    peak_memory,
-                    _curr_memory,
-                    snodes_allocfree,
-                    "reorder_communication_preserving_peak_memory",
-                    group_n_to_bufs_after_swap_dealloc_by_candidate,
-                )
-                if iterative_recompute_error:
-                    break
             candidate = _prev[group_head]
         curr = _next_curr
 
@@ -1845,18 +1818,12 @@ def _sink_waits_iterative_internal(
     curr: BaseSchedulerNode | None = snodes[-1]
 
     processed_waits = OrderedSet()  # type: ignore[var-annotated]
-    debug_iterative_memory_recompute = (
-        config_comms.reorder_iterative_debug_memory_recompute
-    )
     debug_num_sink_waits_to_reorder: int | None = (
         config_comms.sink_waits_iterative_debug_limit_to_sink
     )
 
-    iterative_recompute_error = False
     while curr is not None and _prev[curr] is not None:
         _prev_curr = _prev[curr]
-        if iterative_recompute_error:
-            break
         if (
             debug_num_sink_waits_to_reorder is not None
             and len(processed_waits) >= debug_num_sink_waits_to_reorder
@@ -2102,25 +2069,6 @@ def _sink_waits_iterative_internal(
                 _curr_memory,
                 snodes_allocfree,
             )
-
-            if debug_iterative_memory_recompute:
-                from .comms_debug import _debug_iterative_memory_recompute
-
-                iterative_recompute_error = _debug_iterative_memory_recompute(
-                    candidate,
-                    gns,
-                    _group_names(gns),
-                    _group_nodes_from_linked_list(_head, None, _next),
-                    name_to_freeable_input_buf,
-                    graph_outputs,
-                    peak_memory,
-                    _curr_memory,
-                    snodes_allocfree,
-                    "sink_waits_iterative",
-                    group_n_to_bufs_after_swap_dealloc_instead_of_candidate,
-                )
-                if iterative_recompute_error:
-                    break
 
             candidate = _next[group_tail]
         curr = _prev_curr

@@ -495,8 +495,11 @@ def is_fsdp_all_gather(
 ) -> bool:
     """Check if an all_gather derives from exactly one placeholder (parameter).
 
-    When all_node_ancestors is provided, uses it for O(|ancestors|) lookup.
-    Otherwise delegates to the BFS implementation in fsdp.py.
+    A parameter is gathered on its own when it is being sharded across ranks,
+    which is what makes the node worth bucketing apart from the rest; a gather
+    that reads several parameters, or none, is something else.  When the
+    ancestor sets are already built the answer is a lookup, and otherwise the
+    inputs are walked here.
     """
     if not is_all_gather_into_tensor(node):
         return False
@@ -505,9 +508,20 @@ def is_fsdp_all_gather(
             a for a in all_node_ancestors.iter_ancestors(node) if a.op == "placeholder"
         )
         return next(phs, None) is not None and next(phs, None) is None
-    from .fsdp import is_fsdp_all_gather as _is_fsdp_all_gather
 
-    return _is_fsdp_all_gather(node)
+    seen: set[Node] = set()
+    placeholders: set[Node] = set()
+    stack = list(node.all_input_nodes)
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        if cur.op == "placeholder":
+            placeholders.add(cur)
+            continue
+        stack.extend(cur.all_input_nodes)
+    return len(placeholders) == 1
 
 
 def is_fsdp_reduce_scatter(node: Node) -> bool:

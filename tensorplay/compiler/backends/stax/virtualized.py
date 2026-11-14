@@ -93,7 +93,6 @@ if TYPE_CHECKING:
     from .scheduler import SchedulerNode
     from tensorplay._subclasses import FakeTensorMode
 
-    from .distributed_autotune import _DistributedAutotuneState
     from .utils import IndentedBuffer
 
     class KernelLike(Protocol):
@@ -239,9 +238,6 @@ _aot_compilation: Virtualized[bool] = Virtualized("aot_compilation", NullHandler
 _current_node: Virtualized[Node] = Virtualized("current_node", NullHandler)
 _local_buffer_context: Virtualized[LocalBufferContext] = Virtualized(
     "local_buffer_context", NullHandler
-)
-_distributed_autotune_state: Virtualized[_DistributedAutotuneState] = Virtualized(
-    "distributed_autotune_state", NullHandler
 )
 
 
@@ -470,14 +466,6 @@ class _V:
     set_choices_handler: Callable[[TpChoices], AbstractContextManager[None]] = (
         _choices._set_handler
     )
-    # Broad param: the state is reset by installing a NullHandler (see
-    # distributed_autotune.graph_context); the getter narrows on the read path.
-    set_distributed_autotune_state: Callable[[Any], AbstractContextManager[None]] = (
-        _distributed_autotune_state._set_handler
-    )
-    get_distributed_autotune_state: Callable[[], _DistributedAutotuneState] = (
-        _distributed_autotune_state._get_handler
-    )
     set_active_user_lowering_ops: Callable[
         [OrderedSet[Any]], AbstractContextManager[None]
     ] = _active_user_lowering_ops._set_handler
@@ -546,10 +534,6 @@ class _V:
     @property
     def choices(self) -> TpChoices:
         return _choices._get_handler()
-
-    @property
-    def distributed_autotune_state(self) -> _DistributedAutotuneState:
-        return _distributed_autotune_state._get_handler()
 
     @property
     def active_user_lowering_ops(self) -> OrderedSet[Any]:

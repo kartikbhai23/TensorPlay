@@ -351,16 +351,13 @@ def debug_triton_code(node: BaseSchedulerNode) -> list[str]:
         from ..codegen.cuda_combined_scheduling import (
             CUDACombinedScheduling,
         )
-        from ..codegen.xpu_combined_scheduling import (
-            XPUCombinedScheduling,
-        )
 
         device = node.get_device()
         if device is None:
             raise AssertionError("device must not be None")
         backend = node.scheduler.get_backend(device)
         if not isinstance(
-            backend, (SIMDScheduling, CUDACombinedScheduling, XPUCombinedScheduling)
+            backend, (SIMDScheduling, CUDACombinedScheduling)
         ):
             raise AssertionError(
                 f"Scheduling backend should be SIMD or CUDACombined when generating debug Triton strings, got: {type(backend)}"
@@ -8987,9 +8984,10 @@ class TritonScheduling(SIMDScheduling):
         )
         kernel_type = self.kernel_type
         if is_split_scan:
-            from .triton_split_scan import TritonSplitScanKernel
-
-            kernel_type = TritonSplitScanKernel
+            raise NotImplementedError(
+                "a scan that was split into several walks has no kernel printer "
+                "in this backend, so it cannot be printed"
+            )
 
         if is_scan:
             # A scan is carried inside the kernel, so a reduction that has to

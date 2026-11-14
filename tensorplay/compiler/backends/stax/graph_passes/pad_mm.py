@@ -510,7 +510,7 @@ def should_pad(
     # Small-K/N mm is lowered to a fused pointwise kernel in tuned_mm.
     # Leave those shapes unpadded and let the pointwise lowering handle them.
     if op is tp_ops.mm:
-        from ..kernel.mm_common import _use_small_mm_pointwise
+        from ..templates.mm_common import _use_small_mm_pointwise
 
         m, k, n = mat1.shape[0], mat1.shape[1], mat2.shape[1]
         if _use_small_mm_pointwise(

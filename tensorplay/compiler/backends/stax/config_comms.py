@@ -25,9 +25,6 @@ runtime_estimations_use_nccl_lib_estimations: bool = False
 #: moved past.
 runtime_estimations_align_across_all_distributed_ranks: bool = False
 
-#: Left in for narrowing a reorder to a few nodes while working on it.
-reorder_iterative_debug_memory_recompute: bool = False
-
 #: How many nodes a reorder is limited to while working on it.
 reorder_iterative_debug_limit_to_reorder: int | None = (
     None

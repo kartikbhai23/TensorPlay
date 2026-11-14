@@ -755,18 +755,14 @@ def joint_graph_passes(
     if config.pattern_matcher:
         count += early_patterns.apply(graph.graph)
 
-    # Make sure AutoChunker happens before pad_mm so we don't need
-    # to handle padding when searching for chunking patterns.
+    # Chunking has to happen before pad_mm so the chunking search does not have
+    # to see padding.  This backend does not cut the graph into chunks, so the
+    # request is refused rather than quietly ignored.
     if config.auto_chunker.enable:
-        from .auto_chunker import CantChunk, chunk
-
-        try:
-            graph = chunk(graph)
-        except CantChunk:
-            auto_chunker_log = tp.getArtifactLogger(
-                __name__, "auto_chunker"
-            )
-            auto_chunker_log.debug("AutoChunker fail.", exc_info=True)
+        raise NotImplementedError(
+            "automatic chunking is not available in this backend: the graph is "
+            "compiled as one piece, so leave TP_AUTO_CHUNKER unset"
+        )
 
     if config.pattern_matcher:
         for i, patterns in enumerate(pass_patterns):

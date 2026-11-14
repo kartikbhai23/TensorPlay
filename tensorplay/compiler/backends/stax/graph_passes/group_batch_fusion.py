@@ -1637,7 +1637,7 @@ def apply_group_batch_fusion(graph: GraphModule, rule: GroupBatchFusionBase):
                 )
                 log_to_scuba = True
     if log_to_scuba:
-        from tensorplay.graph.lazy_graph_module import _LazyGraphModule
+        from tensorplay.graph._lazy_graph_module import _LazyGraphModule
 
         # Force graph to re-compile otherwise the output python code may be broken
         gm = graph._owning_module

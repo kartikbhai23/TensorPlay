@@ -432,6 +432,20 @@ class _FxNodeHash:
     kwarg_hashes: tuple[int, ...]
 
 
+def _get_subgraph_names(gm: GraphModule) -> list[str]:
+    """Attribute names under which ``gm`` holds a graph it calls into.
+
+    A loop body or a branch body is kept on the graph that contains it, under
+    a name that says so, so the names are read off what the instance holds
+    rather than from a table kept somewhere else.
+    """
+    return [
+        name
+        for name, value in gm.__dict__.items()
+        if name.startswith("subgraph_") and isinstance(value, GraphModule)
+    ]
+
+
 class FakeTensorUpdater:
     """
     The main idea here is that it's difficult to maintain accurate fake
@@ -461,9 +475,6 @@ class FakeTensorUpdater:
         self.processed_hashes = OrderedSet[_FxNodeHash]()
         self.tracked_node_ids: OrderedSet[int] = OrderedSet()
         self.gm = gm
-
-        # Import here to avoid circular import issues.
-        from .compile_fx import _get_subgraph_names
 
         self.subgraph_updaters: dict[GraphModule, FakeTensorUpdater] = {
             (subgraph := getattr(self.gm, subgraph_name)): FakeTensorUpdater(subgraph)

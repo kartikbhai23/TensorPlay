@@ -515,7 +515,7 @@ class SubgraphTemplate(KernelTemplate):
                 decomp_kwargs: dict[str, Any] = decomp_kwargs,
             ) -> Any:
                 from ..op_lowerings import select_decomp_table
-                from ....graph.experimental.proxy_tensor import make_graph as make_fx
+                from .....graph.experimental.proxy_tensor import make_graph as make_fx
 
                 decomposition_table = select_decomp_table()
                 shape_env = V.fake_mode.shape_env

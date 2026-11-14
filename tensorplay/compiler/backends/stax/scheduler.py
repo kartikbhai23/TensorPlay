@@ -4760,10 +4760,11 @@ class Scheduler:
         self._mempool_nodes: bool = False
 
         if config.distributed_max_autotune_gemm:
-            from . import distributed_autotune
-
-            distributed_autotune.schedule(self)
-            self.compute_ancestors()
+            raise NotImplementedError(
+                "benchmarking candidates across devices is not available in this "
+                "backend: a candidate is chosen on the devices this process can "
+                "see, so leave TP_DISTRIBUTED_MAX_AUTOTUNE_GEMM unset"
+            )
 
         # Stream assignments must be populated BEFORE fusion
         # to prevent fusing nodes across stream boundaries
@@ -6242,12 +6243,9 @@ class Scheduler:
                             ms_fused_choice
                         )
 
-            from tensorplay.compiler.backends.stax.codegen.nv_universal_gemm import NVUniversalGemmCaller
-
             bench_epilogue = config.benchmark_epilogue_fusion
             num_fusible_callers = sum(
-                isinstance(c, (TritonTemplateCallerBase, NVUniversalGemmCaller))
-                for c in multi_node.choices
+                isinstance(c, TritonTemplateCallerBase) for c in multi_node.choices
             )
             # Track if the choice timings can be retrieved async after compilation
             get_choice_timings_async = (
@@ -6365,19 +6363,8 @@ class Scheduler:
                 is_triton = isinstance(
                     choice, ir.TritonTemplateCallerBase
                 )
-                is_nvgemm = isinstance(choice, NVUniversalGemmCaller)
 
-                if not is_triton and not is_nvgemm:
-                    continue
-
-                # pyrefly: ignore [missing-attribute]
-                if is_nvgemm and not choice.supports_epilogue_fusion:
-                    continue
-
-                # NVGEMM doesn't support prologue fusion. Skip NVGEMM choices in
-                # the prologue direction (epilogue_fusion is False when node1 is
-                # the pointwise prologue, node2 is the template).
-                if is_nvgemm and not epilogue_fusion:
+                if not is_triton:
                     continue
 
                 # For prologue fusion we check if the underlying template of the choice
@@ -6414,12 +6401,6 @@ class Scheduler:
                                         ),
                                     ),
                                 )
-                            )
-                    elif is_nvgemm:
-                        # pyrefly: ignore [missing-attribute]
-                        with multi_node.swap_as_nvgemm_caller(choice):
-                            future_choices.append(
-                                (choice, *self.compile_kernel(node_list_fused))
                             )
                 except CantSplit:
                     continue
@@ -6480,15 +6461,8 @@ class Scheduler:
                         continue
 
                     if bench_epilogue:
-                        is_nvgemm_choice = isinstance(choice, NVUniversalGemmCaller)
-                        swap_ctx = (
-                            # pyrefly: ignore [missing-attribute]
-                            multi_node.swap_as_nvgemm_caller(choice)
-                            if is_nvgemm_choice
-                            # pyrefly: ignore [missing-attribute, bad-argument-type]
-                            else multi_node.swap_as_triton_caller(choice)
-                        )
-                        with swap_ctx:
+                        # pyrefly: ignore [missing-attribute, bad-argument-type]
+                        with multi_node.swap_as_triton_caller(choice):
                             ms_fused, path = self.benchmark_codegened_module(
                                 mod_fused,
                                 # pyrefly: ignore [bad-argument-type]
@@ -6504,13 +6478,7 @@ class Scheduler:
                             or ms2 + ms1 > choice_timings[choice] + ms2_fused
                         )
 
-                        is_nvgemm_choice = isinstance(choice, NVUniversalGemmCaller)
-                        if is_nvgemm_choice and fusible_choice:
-                            # NVGEMM register allocations are fixed by cutlass.operators;
-                            # Triton's n_regs/n_spills heuristic doesn't apply.
-                            ms_fused_choice = choice
-                            break
-                        elif res and fusible_choice:
+                        if res and fusible_choice:
                             choice.precompile()
                             # pyrefly: ignore [missing-attribute]
                             if not (res.launchers and choice.n_regs):
@@ -6542,11 +6510,7 @@ class Scheduler:
                 if (
                     not bench_epilogue or min_ms_fused < (ms1 + ms2)
                 ) and ms_fused_choice is not None:
-                    is_nvgemm = isinstance(ms_fused_choice, NVUniversalGemmCaller)
-                    if is_nvgemm:
-                        # pyrefly: ignore [missing-attribute]
-                        multi_node.finalize_as_nvgemm_caller(ms_fused_choice)
-                    elif config.multi_kernel_hints:
+                    if config.multi_kernel_hints:
                         hint_override_best_fusion_choice[None] = ms_fused_choice
                         # pyrefly: ignore [missing-attribute]
                         multi_node.finalize_as_triton_callers(
@@ -10924,11 +10888,10 @@ class Scheduler:
                 backend_ = self.get_backend(device)
                 from .codegen.cuda_combined_scheduling import CUDACombinedScheduling
                 from .codegen.simd import SIMDScheduling
-                from .codegen.xpu.xpu_combined_scheduling import XPUCombinedScheduling
 
                 if isinstance(
                     backend_,
-                    (SIMDScheduling, CUDACombinedScheduling, XPUCombinedScheduling),
+                    (SIMDScheduling, CUDACombinedScheduling),
                 ):
                     backend = backend_
                 else:
