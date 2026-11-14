@@ -590,6 +590,18 @@ Tensor threshold_cuda(const Tensor& self, const Scalar& threshold, const Scalar&
                             HFn61{t, val},
                             "threshold");
 }
+
+// Destination form: an already matching buffer takes the map in one pass.
+// A quantized operand keeps the quantized route, which owns its own output.
+Tensor& threshold_out_cuda(const Tensor& self, const Scalar& threshold,
+                           const Scalar& value, Tensor& out) {
+    if (isQuantizedType(self.dtype())) {
+        return write_out(out, quantized::activation(self, 6, threshold.toDouble(),
+                                                    value.toDouble()));
+    }
+    double t = threshold.toDouble(), val = value.toDouble();
+    return dtype_unary_out(self, out, HFn61{t, val}, "threshold");
+}
 Tensor prelu_forward_common(const Tensor& self, const Tensor& weight) {
     Tensor output = Tensor::empty(shape_of(self), self.dtype(), self.device());
     if (output.numel() == 0) return output;
@@ -728,6 +740,7 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, ActivationKernels) {
     m.impl("sigmoid_backward", sigmoid_backward_cuda);
     m.impl("tanh_backward", tanh_backward_cuda);
     m.impl("threshold", threshold_cuda);
+    m.impl("threshold.out", threshold_out_cuda);
     m.impl("prelu", prelu_cuda);
     m.impl("_prelu_kernel", _prelu_kernel_cuda);
     m.impl("_prelu_kernel_backward", _prelu_kernel_backward_cuda);
