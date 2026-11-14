@@ -7,6 +7,7 @@
 #include "TypePromotion.h"
 #include "tensorplay/ops/TPXOpsGenerated.h"
 
+#include <cmath>
 #include <tuple>
 #include <utility>
 
@@ -48,13 +49,15 @@ Tensor isin_tensor_tensor_native(const Tensor& elements,
     const Tensor elements_flat = ops::reshape(elements_p, {-1});
     const Tensor test_flat = ops::reshape(test_p, {-1});
 
-    // Route on the size of the elements-by-test comparison matrix.  Below
-    // the byte budget a single broadcast comparison answers membership in
-    // two passes over a bool matrix; past it the sort-based join keeps the
-    // working set at O(elements + test) no matter how wide the matrix
-    // would grow.
-    const int64_t matrix_elems = elements.numel() * test_flat.numel();
-    if (matrix_elems <= static_cast<int64_t>(1) << 28) {
+    // Route on how the two sides compare in size: a short test side costs less
+    // to compare against every element than to join both sides through their
+    // sorted distinct values, while a long one would make the comparison
+    // matrix grow with elements times test.  The crossover grows as a small
+    // power of the element count, so a test side below it is compared
+    // directly; both routes answer the same membership question.
+    const double compare_cutoff =
+        10.0 * std::pow(static_cast<double>(elements.numel()), 0.145);
+    if (static_cast<double>(test_flat.numel()) < compare_cutoff) {
         Tensor found = ops::any(ops::eq(ops::unsqueeze(elements_flat, -1),
                                         test_flat),
                                 -1, false);
