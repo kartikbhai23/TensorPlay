@@ -404,19 +404,33 @@ template <typename scalar_t>
 __global__ void binomial_fill_impl(int64_t numel, PhiloxCudaState philox_args,
                                    const scalar_t* count, const scalar_t* prob,
                                    scalar_t* out) {
-    uint64_t seed;
-    uint64_t offset;
-    philox_unpack(philox_args, &seed, &offset);
     const int64_t idx =
         static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx >= numel) return;
-    curandStatePhilox4_32_10_t state;
-    curand_init(seed, idx, offset, &state);
     using acc_t = std::conditional_t<std::is_same<scalar_t, double>::value,
                                      double, float>;
-    out[idx] = static_cast<scalar_t>(sample_binomial_one<acc_t>(
-        &state, static_cast<acc_t>(count[idx]),
-        static_cast<acc_t>(prob[idx])));
+    const acc_t c = static_cast<acc_t>(count[idx]);
+    const acc_t p = static_cast<acc_t>(prob[idx]);
+    // The settled probabilities have a closed form, so answering them costs no
+    // random state at all; only the sampling paths below must seed one.
+    if (c <= 0.0 || p <= 0.0) {
+        out[idx] = static_cast<scalar_t>(0);
+        return;
+    }
+    if (p >= 1.0) {
+        out[idx] = static_cast<scalar_t>(c);
+        return;
+    }
+    if (!(p > 0.0)) {
+        out[idx] = static_cast<scalar_t>(NAN);
+        return;
+    }
+    uint64_t seed;
+    uint64_t offset;
+    philox_unpack(philox_args, &seed, &offset);
+    curandStatePhilox4_32_10_t state;
+    curand_init(seed, idx, offset, &state);
+    out[idx] = static_cast<scalar_t>(sample_binomial_one<acc_t>(&state, c, p));
 }
 
 // Dirichlet reparameterized gradient through the beta decomposition:
@@ -737,13 +751,17 @@ Tensor binomial_kernel_cuda(const Tensor& count, const Tensor& prob,
         static_cast<std::vector<int64_t>>(prob.shape()));
     Tensor out(shape, count.dtype(), count.device());
     if (out.numel() == 0) return out;
-    // Align both operands onto the broadcast shape.
+    // Align both operands onto the broadcast shape.  An operand that already
+    // spans the full shape in memory is read in place instead of being copied.
     auto expand_to = [](const Tensor& t, const std::vector<int64_t>& target) {
-        Tensor e = t;
+        if (t.is_contiguous() &&
+            static_cast<std::vector<int64_t>>(t.sizes()) == target) {
+            return t;
+        }
         std::vector<int64_t> padded(static_cast<size_t>(
                                         target.size() - t.dim()), 1);
         for (const auto s : t.shape()) padded.push_back(s);
-        return e.reshape(padded)
+        return t.reshape(padded)
             .expand(static_cast<std::vector<int64_t>>(target))
             .contiguous();
     };
