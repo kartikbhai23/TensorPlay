@@ -371,7 +371,13 @@ struct HFn33 : GenFnBase<HFn33> {
 
 struct HFn34 : GenFnBase<HFn34> {
     __host__ __device__ auto run(double v) const {
-        if (v <= 0 && v == ::floor(v)) return ::nan("");
+        // At the pole the one-sided limit keeps its sign: +0 answers -inf and
+        // -0 answers +inf, while any other non-positive integer has no finite
+        // value.
+        if (v == 0.0) {
+            return ::copysign(std::numeric_limits<double>::infinity(), -v);
+        }
+        if (v < 0.0 && v == ::floor(v)) return ::nan("");
         double r = 0;
         while (v < 6.0) { r -= 1.0 / v; v += 1.0; }
         double inv = 1.0 / v, inv2 = inv * inv;
@@ -379,6 +385,21 @@ struct HFn34 : GenFnBase<HFn34> {
              - inv2 * (1.0/12.0 - inv2 * (1.0/120.0 - inv2 * (1.0/252.0 - inv2 * (1.0/240.0 - inv2 / 132.0))));
         return r;
     
+    }
+    // The recurrence and the asymptotic series in single precision: the result
+    // lands in a float, so widening every element only pays the narrower
+    // instruction rate for nothing.
+    __host__ __device__ float runf(float v) const {
+        if (v == 0.0f) {
+            return ::copysignf(std::numeric_limits<float>::infinity(), -v);
+        }
+        if (v < 0.0f && v == ::floorf(v)) return ::nanf("");
+        float r = 0.0f;
+        while (v < 6.0f) { r -= 1.0f / v; v += 1.0f; }
+        float inv = 1.0f / v, inv2 = inv * inv;
+        r += ::logf(v) - 0.5f * inv
+             - inv2 * (1.0f/12.0f - inv2 * (1.0f/120.0f - inv2 * (1.0f/252.0f - inv2 * (1.0f/240.0f - inv2 / 132.0f))));
+        return r;
     }
 };
 

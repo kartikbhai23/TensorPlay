@@ -186,7 +186,43 @@ Tensor& logit_out_cuda(const Tensor& self, std::optional<double> eps, Tensor& ou
     return float_math_out(self, out, HFn33{e}, "logit");
 }
 
+// The wide digamma reflects negative arguments through
+// psi(v) = psi(1 - v) - pi / tan(pi * frac(v)) and shifts positives to ten,
+// where the asymptotic series in 1/v^2 carries the remaining digits.  A
+// single-precision result cannot resolve that tail, so float inputs keep the
+// cheaper recurrence in HFn34.
+struct DigammaWideFn : GenFnBase<DigammaWideFn> {
+    __host__ __device__ double run(double v) const {
+        if (v == 0.0) {
+            return ::copysign(std::numeric_limits<double>::infinity(), -v);
+        }
+        if (v < 0.0) {
+            if (v == ::trunc(v)) return ::nan("");
+            double whole = 0.0;
+            const double frac = ::modf(v, &whole);
+            constexpr double kPi = 3.14159265358979323846;
+            return run(1.0 - v) - kPi / ::tan(kPi * frac);
+        }
+        double r = 0.0;
+        while (v < 10.0) { r -= 1.0 / v; v += 1.0; }
+        if (v == 10.0) return r + 2.25175258906672110764;
+        const double z = 1.0 / (v * v);
+        const double kA[7] = {
+            8.33333333333333333333e-2, -2.10927960927960927961e-2,
+            7.57575757575757575758e-3, -4.16666666666666666667e-3,
+            3.96825396825396825397e-3, -8.33333333333333333333e-3,
+            8.33333333333333333333e-2};
+        double y = kA[0];
+        for (int i = 1; i < 7; ++i) y = y * z + kA[i];
+        y *= z;
+        return r + ::log(v) - 0.5 / v - y;
+    }
+};
+
 Tensor digamma_cuda(const Tensor& self) {
+    if (self.dtype() == DType::Float64) {
+        return float_math_cuda(self, DigammaWideFn{}, "digamma");
+    }
     return float_math_cuda(self, HFn34{}, "digamma");
 }
 

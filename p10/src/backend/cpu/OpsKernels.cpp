@@ -427,13 +427,38 @@ struct I0Scalar {
 };
 struct DigammaScalar {
     double operator()(double v) const {
-        if (v <= 0 && v == std::floor(v)) return std::numeric_limits<double>::quiet_NaN();
-        double r = 0;
-        while (v < 6.0) { r -= 1.0 / v; v += 1.0; }
-        double inv = 1.0 / v, inv2 = inv * inv;
-        r += std::log(v) - 0.5 * inv
-             - inv2 * (1.0/12.0 - inv2 * (1.0/120.0 - inv2 * (1.0/252.0 - inv2 * (1.0/240.0 - inv2 / 132.0))));
-        return r;
+        // At the pole the one-sided limit keeps its sign: +0 answers -inf and
+        // -0 answers +inf, while any other non-positive integer has no finite
+        // value.  Negative arguments reflect through the tangent identity
+        // psi(v) = psi(1 - v) - pi / tan(pi * frac(v)); taking the fractional
+        // part first keeps the tangent's argument small.  Positive arguments
+        // shift to ten, where the asymptotic series in 1/v^2 carries the
+        // remaining digits.
+        if (v == 0.0) {
+            return std::copysign(std::numeric_limits<double>::infinity(), -v);
+        }
+        if (v < 0.0) {
+            if (v == std::trunc(v)) {
+                return std::numeric_limits<double>::quiet_NaN();
+            }
+            double whole = 0.0;
+            const double frac = std::modf(v, &whole);
+            constexpr double kPi = 3.14159265358979323846;
+            return (*this)(1.0 - v) - kPi / std::tan(kPi * frac);
+        }
+        double r = 0.0;
+        while (v < 10.0) { r -= 1.0 / v; v += 1.0; }
+        if (v == 10.0) return r + 2.25175258906672110764;
+        const double z = 1.0 / (v * v);
+        static const double kA[7] = {
+            8.33333333333333333333e-2, -2.10927960927960927961e-2,
+            7.57575757575757575758e-3, -4.16666666666666666667e-3,
+            3.96825396825396825397e-3, -8.33333333333333333333e-3,
+            8.33333333333333333333e-2};
+        double y = kA[0];
+        for (int i = 1; i < 7; ++i) y = y * z + kA[i];
+        y *= z;
+        return r + std::log(v) - 0.5 / v - y;
     }
 };
 struct LogitScalar {
