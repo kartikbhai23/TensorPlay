@@ -5,8 +5,9 @@
 // finalizes either a per-row output (reduction=none) or a per-row partial
 // that a follow-up atomic reduction collapses to the scalar mean/sum
 // (self-contained reduction -- does not go through the dispatched sum op).
-// Arithmetic runs in double on device (same convention as
-// ExtraLossKernels.cpp) and results are cast back to the input dtype.
+// The forward evaluates in the operand width (single for float, double for
+// double) and casts the result back to the input dtype; the backward keeps
+// its double accumulation.
 // CUDA_KERNEL_ASSERT.
 #include "Tensor.h"
 #include "Dispatcher.h"
@@ -107,25 +108,25 @@ void multilabel_shape_check(int64_t& nframe, int64_t& dim, const Tensor& input,
 // device kernels (one block per batch row)
 // ---------------------------------------------------------------------------
 
-template <int P>
-__global__ void multi_margin_fwd_kernel(double* __restrict__ output, const double* __restrict__ input,
+template <int P, typename T>
+__global__ void multi_margin_fwd_kernel(T* __restrict__ output, const T* __restrict__ input,
                                         const int64_t* __restrict__ target,
-                                        const double* __restrict__ weight,
-                                        int nframe, int dim, bool sizeAverage, double margin) {
-    __shared__ double buffer[kMarginThreads];
+                                        const T* __restrict__ weight,
+                                        int nframe, int dim, bool sizeAverage, T margin) {
+    __shared__ T buffer[kMarginThreads];
     const int k = blockIdx.x;
-    const double* input_k = input + static_cast<size_t>(k) * dim;
-    double* output_k = output + k;
+    const T* input_k = input + static_cast<size_t>(k) * dim;
+    T* output_k = output + k;
     const int target_k = static_cast<int>(target[k]);
     assert(target_k >= 0 && target_k < dim);
-    const double input_target_k = input_k[target_k];
+    const T input_target_k = input_k[target_k];
 
-    buffer[threadIdx.x] = 0;
+    buffer[threadIdx.x] = T(0);
     for (int i = threadIdx.x; i < dim; i += blockDim.x) {
         if (i == target_k) continue;
-        const double z = margin - input_target_k + input_k[i];
-        if (z > 0) {
-            double h = (P == 1) ? z : z * z;
+        const T z = margin - input_target_k + input_k[i];
+        if (z > T(0)) {
+            T h = (P == 1) ? z : z * z;
             if (weight != nullptr) h *= weight[target_k];
             buffer[threadIdx.x] += h;
         }
@@ -133,10 +134,10 @@ __global__ void multi_margin_fwd_kernel(double* __restrict__ output, const doubl
     __syncthreads();
 
     if (threadIdx.x == 0) {
-        double sum = 0;
+        T sum = T(0);
         for (int i = 0; i < blockDim.x; ++i) sum += buffer[i];
         const int denom = sizeAverage ? nframe * dim : dim;
-        *output_k = sum / denom;
+        *output_k = sum / static_cast<T>(denom);
     }
 }
 
@@ -273,25 +274,38 @@ __global__ void multilabel_bwd_kernel(double* __restrict__ gradInput, const doub
     for (int d = threadIdx.x; d < dim; d += blockDim.x) gradInput_k[d] *= *gradOutput_k;
 }
 
-__global__ void rows_sum_kernel(int64_t n, const double* in, double* total) {
-    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    int64_t stride = static_cast<int64_t>(blockDim.x) * gridDim.x;
-    for (; i < n; i += stride) atomicAdd(total, in[i]);
+// Collapse the per-row buffer on the device.  The scalar stays in device
+// memory, so a training step never waits on a host round trip.
+template <typename T>
+__global__ void rows_total_kernel(int64_t n, const T* __restrict__ in,
+                                  T* __restrict__ total) {
+    __shared__ T buffer[kMarginThreads];
+    T local = T(0);
+    const int64_t stride = static_cast<int64_t>(blockDim.x) * gridDim.x;
+    for (int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         i < n; i += stride) {
+        local += in[i];
+    }
+    buffer[threadIdx.x] = local;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        T sum = T(0);
+        for (int i = 0; i < blockDim.x; ++i) sum += buffer[i];
+        atomicAdd(total, sum);
+    }
 }
 
-// Reduce the per-row double buffer to a host scalar and wrap it as a 0-D
-// tensor of the requested dtype (self-contained -- no dispatched sum op).
-Tensor scalar_from_rows(const Tensor& rows_f64, int64_t n, DType dt, const Device& dev) {
-    Tensor total = Tensor::zeros({1}, DType::Float64, dev);
+template <typename T>
+Tensor rows_total(const Tensor& rows, DType dt, const Device& dev) {
+    Tensor total = Tensor::zeros({1}, dt, dev);
+    const int64_t n = rows.numel();
     if (n > 0) {
         auto stream = getCurrentCUDAStream().stream();
-        rows_sum_kernel<<<margin_grid(n), kMarginThreads, 0, stream>>>(
-            n, rows_f64.data_ptr<double>(), total.data_ptr<double>());
+        rows_total_kernel<T><<<margin_grid(n), kMarginThreads, 0, stream>>>(
+            n, rows.data_ptr<T>(), total.data_ptr<T>());
         CUDA_CHECK(cudaGetLastError());
     }
-    double h = 0;
-    CUDA_CHECK(cudaMemcpy(&h, total.data_ptr<double>(), sizeof(double), cudaMemcpyDeviceToHost));
-    return Tensor::full({}, Scalar(h), dt == DType::Float64 ? DType::Float64 : DType::Float32, dev);
+    return total.reshape({});
 }
 
 } // namespace
@@ -309,72 +323,82 @@ Tensor multi_margin_loss_cuda(const Tensor& input, const Tensor& target, const S
 
     const DType dt = input.dtype();
     const Device dev = input.device();
+    // The hinge sums and the row reduction run in the operand's own width:
+    // a float matrix stays single precision instead of being widened and
+    // narrowed around the pass.
+    const DType compute = dt == DType::Float64 ? DType::Float64 : DType::Float32;
     const bool per_row = reduction == kReductionNone && target.dim() > 0;
     if (input.numel() == 0) {
         if (per_row) return Tensor::empty({nframe}, dt, dev);
-        return Tensor::full({}, Scalar(0.0), dt == DType::Float64 ? DType::Float64 : DType::Float32, dev);
+        return Tensor::full({}, Scalar(0.0), compute, dev);
     }
 
-    const Tensor input_f64 = input.contiguous().to(DType::Float64);
+    const Tensor input_c = input.contiguous().to(compute);
     const Tensor target_i64 = as_long_contiguous(target);
-    Tensor weight_f64;
-    if (weight.has_value() && weight->defined()) weight_f64 = weight->contiguous().to(DType::Float64);
-    const double* weight_ptr = weight_f64.defined() ? weight_f64.data_ptr<double>() : nullptr;
-    const double mg = margin.toDouble();
+    Tensor weight_c;
+    if (weight.has_value() && weight->defined()) {
+        weight_c = weight->contiguous().to(compute);
+    }
+    const double mgd = margin.toDouble();
     auto stream = getCurrentCUDAStream().stream();
-
     const bool sizeAverage = reduction == kReductionMean;
-    if (input.dim() <= 1) {
-        Tensor tmp = Tensor::empty({1}, DType::Float64, dev);
-        dim3 blocks(1);
-        dim3 threads(kMarginThreads);
-        const int dim1 = input.dim() == 0 ? 1 : static_cast<int>(input.size(0));
-        if (pint == 1)
-            multi_margin_fwd_kernel<1><<<blocks, threads, 0, stream>>>(
-                tmp.data_ptr<double>(), input_f64.data_ptr<double>(),
-                target_i64.data_ptr<int64_t>(), weight_ptr, 1, dim1, sizeAverage, mg);
-        else
-            multi_margin_fwd_kernel<2><<<blocks, threads, 0, stream>>>(
-                tmp.data_ptr<double>(), input_f64.data_ptr<double>(),
-                target_i64.data_ptr<int64_t>(), weight_ptr, 1, dim1, sizeAverage, mg);
-        CUDA_CHECK(cudaGetLastError());
-        if (per_row) return tmp.to(dt).reshape({nframe});
-        return scalar_from_rows(tmp, 1, dt, dev);
-    }
 
-    if (per_row) {
-        Tensor output = Tensor::empty({nframe}, DType::Float64, dev);
+    auto run = [&](auto tag) -> Tensor {
+        using T = decltype(tag);
+        const T mg = static_cast<T>(mgd);
+        const T* weight_ptr = weight_c.defined() ? weight_c.data_ptr<T>() : nullptr;
+        if (input.dim() <= 1) {
+            Tensor tmp = Tensor::empty({1}, compute, dev);
+            const int dim1 = input.dim() == 0 ? 1 : static_cast<int>(input.size(0));
+            if (pint == 1)
+                multi_margin_fwd_kernel<1, T><<<1, kMarginThreads, 0, stream>>>(
+                    tmp.data_ptr<T>(), input_c.data_ptr<T>(),
+                    target_i64.data_ptr<int64_t>(), weight_ptr, 1, dim1,
+                    sizeAverage, mg);
+            else
+                multi_margin_fwd_kernel<2, T><<<1, kMarginThreads, 0, stream>>>(
+                    tmp.data_ptr<T>(), input_c.data_ptr<T>(),
+                    target_i64.data_ptr<int64_t>(), weight_ptr, 1, dim1,
+                    sizeAverage, mg);
+            CUDA_CHECK(cudaGetLastError());
+            if (per_row) return tmp.to(dt).reshape({nframe});
+            return rows_total<T>(tmp, compute, dev).to(dt);
+        }
+
+        if (per_row) {
+            Tensor output = Tensor::empty({nframe}, compute, dev);
+            dim3 blocks(static_cast<unsigned>(nframe));
+            if (pint == 1)
+                multi_margin_fwd_kernel<1, T><<<blocks, kMarginThreads, 0, stream>>>(
+                    output.data_ptr<T>(), input_c.data_ptr<T>(),
+                    target_i64.data_ptr<int64_t>(), weight_ptr,
+                    static_cast<int>(nframe), static_cast<int>(dim), false, mg);
+            else
+                multi_margin_fwd_kernel<2, T><<<blocks, kMarginThreads, 0, stream>>>(
+                    output.data_ptr<T>(), input_c.data_ptr<T>(),
+                    target_i64.data_ptr<int64_t>(), weight_ptr,
+                    static_cast<int>(nframe), static_cast<int>(dim), false, mg);
+            CUDA_CHECK(cudaGetLastError());
+            return output.to(dt);
+        }
+
+        Tensor rows = Tensor::empty({nframe}, compute, dev);
         dim3 blocks(static_cast<unsigned>(nframe));
-        dim3 threads(kMarginThreads);
         if (pint == 1)
-            multi_margin_fwd_kernel<1><<<blocks, threads, 0, stream>>>(
-                output.data_ptr<double>(), input_f64.data_ptr<double>(),
+            multi_margin_fwd_kernel<1, T><<<blocks, kMarginThreads, 0, stream>>>(
+                rows.data_ptr<T>(), input_c.data_ptr<T>(),
                 target_i64.data_ptr<int64_t>(), weight_ptr,
-                static_cast<int>(nframe), static_cast<int>(dim), false, mg);
+                static_cast<int>(nframe), static_cast<int>(dim), sizeAverage, mg);
         else
-            multi_margin_fwd_kernel<2><<<blocks, threads, 0, stream>>>(
-                output.data_ptr<double>(), input_f64.data_ptr<double>(),
+            multi_margin_fwd_kernel<2, T><<<blocks, kMarginThreads, 0, stream>>>(
+                rows.data_ptr<T>(), input_c.data_ptr<T>(),
                 target_i64.data_ptr<int64_t>(), weight_ptr,
-                static_cast<int>(nframe), static_cast<int>(dim), false, mg);
+                static_cast<int>(nframe), static_cast<int>(dim), sizeAverage, mg);
         CUDA_CHECK(cudaGetLastError());
-        return output.to(dt);
-    }
+        return rows_total<T>(rows, compute, dev).to(dt);
+    };
 
-    Tensor tmp = Tensor::empty({nframe}, DType::Float64, dev);
-    dim3 blocks(static_cast<unsigned>(nframe));
-    dim3 threads(kMarginThreads);
-    if (pint == 1)
-        multi_margin_fwd_kernel<1><<<blocks, threads, 0, stream>>>(
-            tmp.data_ptr<double>(), input_f64.data_ptr<double>(),
-            target_i64.data_ptr<int64_t>(), weight_ptr,
-            static_cast<int>(nframe), static_cast<int>(dim), sizeAverage, mg);
-    else
-        multi_margin_fwd_kernel<2><<<blocks, threads, 0, stream>>>(
-            tmp.data_ptr<double>(), input_f64.data_ptr<double>(),
-            target_i64.data_ptr<int64_t>(), weight_ptr,
-            static_cast<int>(nframe), static_cast<int>(dim), sizeAverage, mg);
-    CUDA_CHECK(cudaGetLastError());
-    return scalar_from_rows(tmp, nframe, dt, dev);
+    return compute == DType::Float64 ? run(double{}) : run(float{});
 }
 
 Tensor multi_margin_loss_cuda_backward(const Tensor& grad_output, const Tensor& input,
@@ -471,7 +495,10 @@ std::tuple<Tensor, Tensor> multilabel_margin_loss_forward_cuda(const Tensor& inp
             target_i64.data_ptr<int64_t>(), is_target.data_ptr<double>(),
             1, static_cast<int>(dim), sizeAverage);
         CUDA_CHECK(cudaGetLastError());
-        return std::make_tuple(scalar_from_rows(tmp, 1, dt, dev), is_target.to(dt));
+        const DType loss_dt = dt == DType::Float64 ? DType::Float64 : DType::Float32;
+        return std::make_tuple(
+            rows_total<double>(tmp, DType::Float64, dev).to(loss_dt),
+            is_target.to(dt));
     }
 
     if (scalar_out) {
@@ -483,7 +510,10 @@ std::tuple<Tensor, Tensor> multilabel_margin_loss_forward_cuda(const Tensor& inp
             target_i64.data_ptr<int64_t>(), is_target.data_ptr<double>(),
             static_cast<int>(nframe), static_cast<int>(dim), sizeAverage);
         CUDA_CHECK(cudaGetLastError());
-        return std::make_tuple(scalar_from_rows(tmp, nframe, dt, dev), is_target.to(dt));
+        const DType loss_dt = dt == DType::Float64 ? DType::Float64 : DType::Float32;
+        return std::make_tuple(
+            rows_total<double>(tmp, DType::Float64, dev).to(loss_dt),
+            is_target.to(dt));
     }
 
     Tensor output = Tensor::empty({nframe}, DType::Float64, dev);
