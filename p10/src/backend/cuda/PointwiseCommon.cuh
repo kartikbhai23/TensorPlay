@@ -374,8 +374,14 @@ ldexp_element(T x, T exponent) {
 template <typename T>
 static inline __host__ __device__ std::enable_if_t<!std::is_integral_v<T>, T>
 ldexp_element(T x, T exponent) {
-    return static_cast<T>(static_cast<double>(x) *
-                          ::exp2(static_cast<double>(exponent)));
+    // The scale factor is formed in the operand's own width: widening it only
+    // slows the exponent evaluation down to the double rate.
+    if constexpr (std::is_same_v<T, double>) {
+        return x * ::exp2(exponent);
+    } else {
+        return static_cast<T>(static_cast<float>(x) *
+                              ::exp2f(static_cast<float>(exponent)));
+    }
 }
 
 static DType result_type_with_scalar_cuda(const Tensor& t, const Scalar& s) {
