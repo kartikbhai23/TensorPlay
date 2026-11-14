@@ -287,12 +287,23 @@ __global__ void huber_grad_kernel_t(int64_t n, const T* x, const T* t,
 // binary_cross_entropy elementwise kernels
 // ---------------------------------------------------------------------------
 
+// The forward folds the 0/1 domain probe into the element pass: each operand
+// has its own counter, so a valid call pays no extra read pass and a rejected
+// one still names every offending side.  A lane that is not a number answers
+// neither comparison and is counted as out of range.
 template <typename T>
 __global__ void bce_elem_kernel_t(int64_t n, const T* x, const T* t,
-                                  const T* w, bool has_w, T* o) {
+                                  const T* w, bool has_w, T* o,
+                                  int64_t* bad) {
     int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     int64_t st = static_cast<int64_t>(blockDim.x) * gridDim.x;
     for (; i < n; i += st) {
+        if (!(x[i] >= T(0) && x[i] <= T(1))) {
+            atomicAdd(reinterpret_cast<unsigned long long*>(bad), 1ull);
+        }
+        if (!(t[i] >= T(0) && t[i] <= T(1))) {
+            atomicAdd(reinterpret_cast<unsigned long long*>(bad + 1), 1ull);
+        }
         // (t-1) log(1-x) - t log(x), floored at -100 like the elementwise cap
         const T lx = ::fmax(::log(x[i]), T(-100.0));
         const T l1x = ::fmax(::log(T(1.0) - x[i]), T(-100.0));
@@ -315,25 +326,6 @@ __global__ void bce_grad_kernel_t(int64_t n, const T* x, const T* t,
     }
 }
 
-// Range gate for the forward: one fused pass over both operands counts the
-// lanes that answer neither bound comparison (a missing measurement falls in
-// that class alongside the two out-of-range sides).  The counters land on the
-// host so the caller can raise a proper exception naming the offending side.
-template <typename T>
-__global__ void bce_check_01_kernel(int64_t n, const T* a, const T* b,
-                                    int64_t* bad) {
-    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    int64_t st = static_cast<int64_t>(blockDim.x) * gridDim.x;
-    for (; i < n; i += st) {
-        const T x = a[i];
-        const T y = b[i];
-        const int ax = (x >= T(0) && x <= T(1)) ? 0 : 1;
-        const int by = (y >= T(0) && y <= T(1)) ? 0 : 1;
-        if (ax | by) {
-            atomicAdd(reinterpret_cast<unsigned long long*>(bad + ax), 1ull);
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // nll forward / backward (row form and 2-D spatial form)
@@ -893,43 +885,6 @@ Tensor huber_loss_backward_cuda(const Tensor& grad_output,
 // binary_cross_entropy family
 // ===========================================================================
 
-namespace {
-
-// Validates the 0/1 domain of both operands in one fused pass.  Counting the
-// lanes strictly below or above the bounds lets a lane that is not a number
-// through, since it answers neither comparison, so the probe for a missing
-// measurement is summed alongside the two bounds.  The kernel works on the
-// converted operands, whose value classes match the originals.
-void bce_check_01_pair_cuda(const Tensor& x, const Tensor& t, DType acc) {
-    const int64_t n = x.numel();
-    if (n == 0) return;
-    Tensor bad = Tensor::zeros({2}, DType::Int64, x.device());
-    const auto stream = getCurrentCUDAStream().stream();
-    if (acc == DType::Float64) {
-        bce_check_01_kernel<double><<<loss_grid(n), kThreads, 0, stream>>>(
-            n, x.data_ptr<double>(), t.data_ptr<double>(),
-            bad.data_ptr<int64_t>());
-    } else {
-        bce_check_01_kernel<float><<<loss_grid(n), kThreads, 0, stream>>>(
-            n, x.data_ptr<float>(), t.data_ptr<float>(),
-            bad.data_ptr<int64_t>());
-    }
-    CUDA_CHECK(cudaGetLastError());
-    int64_t counts[2] = {0, 0};
-    CUDA_CHECK(cudaMemcpy(counts, bad.data_ptr<int64_t>(), sizeof(counts),
-                          cudaMemcpyDeviceToHost));
-    if (counts[0] > 0) {
-        TP_THROW(RuntimeError,
-                 "all elements of input should be between 0 and 1");
-    }
-    if (counts[1] > 0) {
-        TP_THROW(RuntimeError,
-                 "all elements of target should be between 0 and 1");
-    }
-}
-
-}  // namespace
-
 Tensor binary_cross_entropy_cuda(const Tensor& input, const Tensor& target,
                                  const std::optional<Tensor>& weight_opt,
                                  int64_t reduction) {
@@ -939,7 +894,6 @@ Tensor binary_cross_entropy_cuda(const Tensor& input, const Tensor& target,
     }
     const DType acc = loss_accumulate_dtype(input.dtype());
     auto pr = pair_dev(input, target, acc);
-    bce_check_01_pair_cuda(pr.first, pr.second, acc);
     const bool has_w = weight_opt.has_value() && weight_opt->defined();
     Tensor w;
     if (has_w) {
@@ -948,19 +902,34 @@ Tensor binary_cross_entropy_cuda(const Tensor& input, const Tensor& target,
     Tensor elems = Tensor::empty(shape_of(pr.first), acc, input.device());
     const int64_t n = elems.numel();
     if (n) {
+        // One counter pair rides along with the element pass: it is initialized
+        // on the stream, read back once the pass retires, and decides whether a
+        // clean exception naming the offending side replaces the answer.
+        Tensor bad = Tensor::zeros({2}, DType::Int64, input.device());
         const auto stream = getCurrentCUDAStream().stream();
         if (acc == DType::Float64) {
             bce_elem_kernel_t<double><<<loss_grid(n), kThreads, 0, stream>>>(
                 n, pr.first.data_ptr<double>(), pr.second.data_ptr<double>(),
                 has_w ? w.data_ptr<double>() : nullptr, has_w,
-                elems.data_ptr<double>());
+                elems.data_ptr<double>(), bad.data_ptr<int64_t>());
         } else {
             bce_elem_kernel_t<float><<<loss_grid(n), kThreads, 0, stream>>>(
                 n, pr.first.data_ptr<float>(), pr.second.data_ptr<float>(),
                 has_w ? w.data_ptr<float>() : nullptr, has_w,
-                elems.data_ptr<float>());
+                elems.data_ptr<float>(), bad.data_ptr<int64_t>());
         }
         CUDA_CHECK(cudaGetLastError());
+        int64_t counts[2] = {0, 0};
+        CUDA_CHECK(cudaMemcpy(counts, bad.data_ptr<int64_t>(), sizeof(counts),
+                              cudaMemcpyDeviceToHost));
+        if (counts[0] > 0) {
+            TP_THROW(RuntimeError,
+                     "all elements of input should be between 0 and 1");
+        }
+        if (counts[1] > 0) {
+            TP_THROW(RuntimeError,
+                     "all elements of target should be between 0 and 1");
+        }
     }
     if (reduction == 0) return elems.to(input.dtype());
     return reduce_loss_elems(elems, reduction, n, input.dtype());
