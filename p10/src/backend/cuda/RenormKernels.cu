@@ -8,7 +8,7 @@ namespace cuda {
 namespace {
 
 
-Tensor renorm_cuda(const Tensor& self, const Scalar& p, int64_t dim, const Scalar& maxnorm) {
+Tensor renorm_composite_cuda(const Tensor& self, const Scalar& p, int64_t dim, const Scalar& maxnorm) {
     if (p.isComplex()) {
         TP_THROW(TypeError, "renorm: p must be real-valued");
     }
@@ -120,7 +120,18 @@ Tensor& renorm_out_cuda(const Tensor& self, const Scalar& p, int64_t dim,
         }
         return out;
     }
-    return write_out(out, renorm_cuda(self, p, dim, maxnorm));
+    return write_out(out, renorm_composite_cuda(self, p, dim, maxnorm));
+}
+
+Tensor renorm_cuda(const Tensor& self, const Scalar& p, int64_t dim,
+                   const Scalar& maxnorm) {
+    // The functional form hands a fresh destination to the out kernel, which
+    // folds the cap factor into one elementwise pass and keeps the composite
+    // route for layouts it cannot walk.
+    Tensor out = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
+                               self.dtype(), self.device());
+    renorm_out_cuda(self, p, dim, maxnorm, out);
+    return out;
 }
 
 } // namespace
