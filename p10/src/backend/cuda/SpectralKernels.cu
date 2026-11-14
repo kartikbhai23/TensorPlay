@@ -17,6 +17,7 @@
 
 #include <vector>
 #include <cmath>
+#include <cstdint>
 #include <algorithm>
 #include <string>
 #include "Atomic.cuh"
@@ -401,9 +402,19 @@ Tensor core_r2c_impl(const Tensor& x, int64_t n_eff, fft_norm_mode mode) {
     const int64_t n_out = infer_onesided(n_eff);
 
     auto stream = getCurrentCUDAStream().stream();
-    Tensor packed({li.lines, n_eff}, real_dtype_of(x.dtype()), x.device());
+    // The transform reads its input and writes a separate spectrum buffer, so
+    // an already packed operand needs no staging copy: the transform can read
+    // it where it lives.  Only a short line (needing pad or crop), a strided
+    // walk, or a pointer without the wide alignment the library asks for is
+    // gathered first.
+    const bool direct =
+        li.len == n_eff && x.is_contiguous() &&
+        reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0;
+    Tensor packed = direct ? Tensor()
+                           : Tensor({li.lines, n_eff}, real_dtype_of(x.dtype()), x.device());
     Tensor spec({li.lines, n_out}, complex_dtype_of(x.dtype()), x.device());
-    {
+    void* input_ptr = direct ? x.data_ptr() : packed.data_ptr();
+    if (!direct) {
         const R* src = static_cast<const R*>(x.data_ptr());
         R* dst = static_cast<R*>(packed.data_ptr());
         if constexpr (IsDouble) {
@@ -420,11 +431,11 @@ Tensor core_r2c_impl(const Tensor& x, int64_t n_eff, fft_norm_mode mode) {
         cufftHandle plan = acquire_plan(IsDouble ? CUFFT_D2Z : CUFFT_R2C, n_eff, li.lines);
         if (IsDouble) {
             CUFFT_CHECK(cufftExecD2Z(plan,
-                reinterpret_cast<cufftDoubleReal*>(packed.data_ptr()),
+                reinterpret_cast<cufftDoubleReal*>(input_ptr),
                 reinterpret_cast<cufftDoubleComplex*>(spec.data_ptr())));
         } else {
             CUFFT_CHECK(cufftExecR2C(plan,
-                reinterpret_cast<cufftReal*>(packed.data_ptr()),
+                reinterpret_cast<cufftReal*>(input_ptr),
                 reinterpret_cast<cufftComplex*>(spec.data_ptr())));
         }
     }
