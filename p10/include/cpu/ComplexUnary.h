@@ -71,7 +71,10 @@ Tensor complex_unary_op_kernel(const Tensor& self, Func func) {
     Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
                                   self.dtype(), self.device());
     const int64_t n = self.numel();
-    Tensor self_contig = self.is_contiguous() ? self : self.clone();
+    // The element loop reads the values linearly, so a strided input has to be
+    // packed into logical order first; a plain clone keeps the source strides
+    // and would hand the loop a differently ordered buffer.
+    Tensor self_contig = self.is_contiguous() ? self : self.contiguous();
 
     switch (self.dtype()) {
         case DType::ComplexFloat: {
