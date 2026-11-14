@@ -16,6 +16,7 @@ from ..pattern_matcher import (
     Match,
     MULTIPLE,
     PatternMatcherPass,
+    init_once_fakemode,
     register_graph_pattern,
     register_lowering_pattern as _register_lowering_pattern,
 )
@@ -376,3 +377,64 @@ def decompose_auto_functionalized(graph: Graph) -> bool:
             graph.erase_node(user)
         graph.erase_node(node)
     return changed
+
+
+@init_once_fakemode
+def lazy_init(input_device: tp.device | None = None):
+    """Register every table the post-grad rewrites draw from.
+
+    Each of these is registered by the module that owns it: the attention
+    patterns, the padding decisions for matrix products, and the small
+    rewrites that replace a sequence by a cheaper one.  Registration is done
+    once, before any graph is walked.
+    """
+
+    from .fuse_attention import _sfdp_init
+    from .misc_patterns import _misc_patterns_init
+    from .pad_mm import _pad_mm_init
+
+    _pad_mm_init(input_device)
+    _sfdp_init(input_device)
+    _misc_patterns_init(input_device)
+
+
+def post_grad_passes(gm, is_inference: bool, input_device=None) -> None:
+    """Rewrite a graph whose operations are settled and functional.
+
+    Run once on the forward graph and once on the backward graph.  Every step
+    preserves what the program computes; only the way it is written changes,
+    so the caller is handed the same results through fewer and cheaper
+    operations.
+    """
+
+    from ..custom_graph_pass import get_custom_graph_passes
+    from .group_batch_fusion import group_batch_fusion_passes
+    from .replace_random import replace_random_passes
+
+    lazy_init(input_device)
+    graph = gm.graph
+
+    for custom_pass in get_custom_graph_passes(config.post_grad_custom_pre_pass):
+        custom_pass(graph)
+    gm.recompile()
+
+    if config.pattern_matcher:
+        # Producers of the same kind next to each other are grouped so that
+        # the batch they form is one call rather than several.
+        group_batch_fusion_passes(graph, pre_grad=False)
+        # Operations whose result is their input, or which cancel out, cost a
+        # kernel each until they are gone.
+        remove_noop_ops(graph)
+        gm.recompile()
+        for patterns in pass_patterns:
+            patterns.apply(graph)
+            gm.recompile()
+
+    if not config.fallback_random:
+        # A random draw is written as the framework's own generator call, so
+        # every draw of one region consumes one stream in order.
+        replace_random_passes(gm)
+
+    for custom_pass in get_custom_graph_passes(config.post_grad_custom_post_pass):
+        custom_pass(graph)
+    gm.recompile()

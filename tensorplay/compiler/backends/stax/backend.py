@@ -15,6 +15,7 @@ import warnings
 from typing import Any
 
 from ....graph import GraphModule
+from . import config
 # Option patch each compile ``mode`` selects, keyed by the backend option
 # namespace.  ``default`` leaves every knob at its built-in value;
 # ``reduce-overhead`` replays the artifact through CUDA graphs;
@@ -121,18 +122,41 @@ def stax(
     coordinate_descent_tuning = resolved.get(
         "stax.coordinate_descent_tuning", False
     )
+    if not use_triton:
+        # Every kernel this backend writes for a device that carries Triton is
+        # a Triton program; there is no second form to fall back on, so the
+        # request cannot be honoured and is refused rather than accepted.
+        raise RuntimeError(
+            "stax.triton=False is not supported: this backend writes kernels "
+            "for this device as Triton programs and has no other form for them"
+        )
     cudagraphs_requested = resolved.get("stax.cudagraphs", False)
-    compiled = _lower_stax_region(
-        graph_module,
-        example_inputs,
-        use_fusion=use_fusion,
-        use_cuda_codegen=use_cuda_codegen,
-        use_triton=use_triton,
-        max_autotune=max_autotune,
-        coordinate_descent_tuning=coordinate_descent_tuning,
-        dynamic=dynamic,
-        strict_native=strict_native,
-    )
+    # A setting the caller asked for is a setting something reads: the search
+    # tiers and the graph rewrites read these while the region is lowered, so
+    # they are set for exactly that long and the rest of the run keeps what it
+    # had.  Leaving them unset here would accept the option and ignore it.
+    settings: dict[str, Any] = {}
+    if max_autotune:
+        settings["max_autotune"] = True
+    if coordinate_descent_tuning:
+        settings["coordinate_descent_tuning"] = True
+    if not use_fusion:
+        # Rewrites that fuse a sequence of operations, and the grouping of two
+        # bodies into one kernel, are both off when fusion is not wanted.
+        settings["pattern_matcher"] = False
+        settings["max_fusion_size"] = 1
+    with config.patch(settings):
+        compiled = _lower_stax_region(
+            graph_module,
+            example_inputs,
+            use_fusion=use_fusion,
+            use_cuda_codegen=use_cuda_codegen,
+            use_triton=use_triton,
+            max_autotune=max_autotune,
+            coordinate_descent_tuning=coordinate_descent_tuning,
+            dynamic=dynamic,
+            strict_native=strict_native,
+        )
     if not cudagraphs_requested or isinstance(compiled, GraphModule):
         return compiled
     from ..cudagraphs import cudagraph_wrap
@@ -243,6 +267,19 @@ def _lower_stax_region(
 
         decompose_auto_functionalized(graph_module.graph)
         graph_module.recompile()
+
+    # The operations are settled and functional by now, so the rewrites that
+    # make a region cheaper -- recognising a fused attention, gathering the
+    # producers of one kind into one call -- can be applied to it.
+    input_device = None
+    for value in example_inputs:
+        device = getattr(value, "device", None)
+        if device is not None:
+            input_device = device
+            break
+    from .graph_passes.post_grad import post_grad_passes
+
+    post_grad_passes(graph_module, not training, input_device)
 
     from tensorplay.graph.experimental.symbolic_shapes import ShapeEnv
 
