@@ -46,21 +46,28 @@ inline void check_index_copy_geometry(const Tensor& self, int64_t dim,
                  ": self, index and source must live on one device, self is on ",
                  self.device().toString());
     }
-    if (self.dim() != 0 && source.dim() != 0) {
-        bool same = true;
-        for (int64_t i = 0; same && i < self.dim(); ++i) {
-            if (i != dim && self.size(i) != source.size(i)) same = false;
-        }
-        if (!same) {
-            TP_THROW(RuntimeError, op,
-                     ": source slice shape must match the destination slice shape "
-                     "away from dim ", dim);
-        }
-        if (index.numel() != source.size(dim)) {
-            TP_THROW(RuntimeError, op, ": number of indices (", index.numel(),
-                     ") must equal source.size(", dim, ") (",
-                     source.size(dim), ")");
-        }
+    // Slice extents away from `dim` must agree exactly.  A scalar source has no
+    // slice at all, so it only fits a destination whose slice is a single
+    // element; expanding it over a wider slice is not defined.
+    std::vector<int64_t> self_slice;
+    for (int64_t i = 0; i < self.dim(); ++i) {
+        if (i != dim) self_slice.push_back(self.size(i));
+    }
+    std::vector<int64_t> source_slice;
+    for (int64_t i = 0; i < source.dim(); ++i) {
+        if (i != dim) source_slice.push_back(source.size(i));
+    }
+    if (self_slice != source_slice) {
+        TP_THROW(RuntimeError, op,
+                 ": source slice shape must match the destination slice shape "
+                 "away from dim ", dim, "; the destination has ",
+                 self_slice.size(), " such extent(s) and the source ",
+                 source_slice.size());
+    }
+    if (source.dim() != 0 && index.numel() != source.size(dim)) {
+        TP_THROW(RuntimeError, op, ": number of indices (", index.numel(),
+                 ") must equal source.size(", dim, ") (",
+                 source.size(dim), ")");
     }
 }
 
