@@ -764,27 +764,23 @@ void radix_sort_impl(const Tensor& self_c, Tensor& values, Tensor& indices,
 #undef TP_RADIX_CASE
 }
 
-// Maps every position of the sorted order back to its run: the run of a
-// position is the last one whose start is at or before it.  Locating it by
-// search costs a few dependent loads, which is cheaper than materialising a
-// per-position group id for the whole input just to read it back here.
+// Maps every position of the sorted order back to its run.  The run table
+// marks where each group starts, so a flag per start, one prefix sum and a
+// scatter turn the whole mapping into linear passes; locating each position
+// by search instead costs a dependent load chain whose length grows with the
+// number of groups.
+__global__ void unique_mark_runs_kernel(int64_t num_runs,
+                                        const int64_t* __restrict__ run_starts,
+                                        int32_t* __restrict__ flags) {
+    const int64_t g = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (g < num_runs) flags[run_starts[g]] = 1;
+}
+
 __global__ void unique_inverse_kernel(int64_t n, const int64_t* __restrict__ order,
-                                      const int64_t* __restrict__ run_starts,
-                                      int64_t num_runs,
+                                      const int32_t* __restrict__ group,
                                       int64_t* __restrict__ inverse) {
     const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    int64_t low = 0;
-    int64_t high = num_runs - 1;
-    while (low < high) {
-        const int64_t mid = (low + high + 1) >> 1;
-        if (run_starts[mid] <= i) {
-            low = mid;
-        } else {
-            high = mid - 1;
-        }
-    }
-    inverse[order[i]] = low;
+    if (i < n) inverse[order[i]] = static_cast<int64_t>(group[i]) - 1;
 }
 
 template <typename T>
@@ -1071,9 +1067,28 @@ std::tuple<Tensor, Tensor, Tensor> unique_cuda(const Tensor& self, bool sorted,
     const int threads = 256;
     const int blocks = static_cast<int>((n + threads - 1) / threads);
     if (return_inverse) {
+        // One flag per run start, an inclusive sum in place, then the scatter
+        // through the sort permutation: three linear passes over the input
+        // replace the per-position search over the run table.
+        Tensor group = Tensor::zeros({n}, DType::Int32, self.device());
+        const int run_blocks =
+            static_cast<int>((num_groups + threads - 1) / threads);
+        unique_mark_runs_kernel<<<run_blocks, threads, 0, stream>>>(
+            num_groups, run_starts.data_ptr<int64_t>(),
+            group.data_ptr<int32_t>());
+        size_t scan_bytes = 0;
+        CUDA_CHECK(cub::DeviceScan::InclusiveSum(
+            nullptr, scan_bytes, group.data_ptr<int32_t>(),
+            group.data_ptr<int32_t>(), static_cast<int>(n), stream));
+        Tensor scan_tmp = Tensor::empty(
+            {static_cast<int64_t>(std::max<size_t>(scan_bytes, 1))},
+            DType::UInt8, self.device());
+        CUDA_CHECK(cub::DeviceScan::InclusiveSum(
+            scan_tmp.data_ptr(), scan_bytes, group.data_ptr<int32_t>(),
+            group.data_ptr<int32_t>(), static_cast<int>(n), stream));
         unique_inverse_kernel<<<blocks, threads, 0, stream>>>(
-            n, order.data_ptr<int64_t>(), run_starts.data_ptr<int64_t>(),
-            num_groups, inverse.data_ptr<int64_t>());
+            n, order.data_ptr<int64_t>(), group.data_ptr<int32_t>(),
+            inverse.data_ptr<int64_t>());
     }
     if (return_counts) {
         // A run's length is the gap to the next start; the last run ends at the
