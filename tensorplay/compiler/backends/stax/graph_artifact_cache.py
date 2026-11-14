@@ -28,7 +28,7 @@ from .utils import ValueWithLineMap
 #: the key below cannot see.  A key that misses such a change would hand back
 #: an artifact built by the old rules, so the version is the escape hatch:
 #: raise it, and every stored entry becomes unreadable at once.
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 #: How deep a nested argument is rendered before the walk stops.  Captured
 #: arguments are shallow: nodes, scalars, and short sequences of both.
@@ -82,6 +82,52 @@ def _tensor_spec(tensor: object) -> list:
     ]
 
 
+def _scalar_digest(value: object) -> dict:
+    """A stand-in for one scalar argument that keeps its type and its bits.
+
+    ``True``, ``1`` and ``1.0`` print differently in the wrapper, and two
+    floats that differ in the last bit print a different literal, so the type
+    is named and floats are rendered by their exact hexadecimal form.
+    """
+
+    if isinstance(value, float):
+        text = float.hex(value)
+    elif isinstance(value, complex):
+        text = f"{float.hex(value.real)}+{float.hex(value.imag)}j"
+    else:
+        text = repr(value)
+    return {"kind": "scalar", "type": type(value).__name__, "text": text}
+
+
+def _input_digest(value: object, depth: int = 0) -> object:
+    """A stable, JSON-able stand-in for one example input.
+
+    Every input takes part in the key, not only the tensors: a scalar is
+    printed into the wrapper as a literal, so two regions that differ only in
+    the scalar they were traced with produce different artifacts.  Tensors
+    stand in by their spec -- shape, dtype, stride, device -- which is what the
+    printed code is specialized to, and the containers around them are walked
+    so that a tuple of tensors and a list of the same tensors stay apart.
+    """
+
+    if depth >= _MAX_ARG_DEPTH:
+        return {"kind": "opaque", "type": type(value).__name__, "text": repr(value)}
+    if hasattr(value, "shape") and hasattr(value, "stride"):
+        return {"kind": "tensor", "spec": _tensor_spec(value)}
+    if isinstance(value, (list, tuple)):
+        return {"kind": "seq", "items": [_input_digest(v, depth + 1) for v in value]}
+    if isinstance(value, dict):
+        return {
+            "kind": "map",
+            "items": sorted(
+                (repr(k), _input_digest(v, depth + 1)) for k, v in value.items()
+            ),
+        }
+    if isinstance(value, (bool, int, float, complex, str, bytes)) or value is None:
+        return _scalar_digest(value)
+    return {"kind": "opaque", "type": type(value).__name__, "text": repr(value)}
+
+
 def _config_digest() -> dict:
     """Every plain knob of this module's configuration, as one mapping.
 
@@ -113,20 +159,19 @@ def graph_key(graph: object) -> str:
     """The name under which this region's finished wrapper is stored.
 
     Everything the printed wrapper depends on goes in: the captured program
-    node by node, the spec of every input the region is specialized to, a
-    description of every constant that carries its content hash, the knobs the
-    scheduler and code generators read, the toolchain that will build the
-    result, and the version above.  Two regions that agree here agree on every
-    line the printer would have written.
+    node by node, every example input the region is specialized to -- tensors
+    by their spec and scalars by their exact value -- a description of every
+    constant that carries its content hash, the knobs the scheduler and code
+    generators read, the toolchain that will build the result, and the version
+    above.  Two regions that agree here agree on every line the printer would
+    have written.
     """
 
     from .codecache import CacheBase
     from .cpp_builder import get_compiler_version_info, get_cpp_compiler
 
     inputs = [
-        _tensor_spec(tensor)
-        for tensor in getattr(graph, "example_inputs", ())
-        if hasattr(tensor, "shape")
+        _input_digest(value) for value in getattr(graph, "example_inputs", ())
     ]
     components = {
         "schema": SCHEMA_VERSION,
