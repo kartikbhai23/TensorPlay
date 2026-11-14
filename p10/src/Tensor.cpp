@@ -1136,6 +1136,12 @@ Tensor Tensor::view(const std::vector<int64_t>& shape) const {
 // dtypes keep shape/strides; otherwise only the last dimension may change
 Tensor Tensor::view_dtype(DType dtype) const {
     if (!impl_) TP_THROW(RuntimeError, "Tensor not defined");
+    // A reinterpretation divides every extent by the element sizes; a dtype
+    // without one (Undefined) would divide by zero, so it is rejected here.
+    if (dtype == DType::Undefined) {
+        TP_THROW(TypeError,
+                 "view(): the target dtype must be a real dtype, got Undefined");
+    }
     const DType self_dtype = impl_->dtype();
     if (dtype == self_dtype) {
         // aliasing the storage (metadata changes on it must not leak back to
