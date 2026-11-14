@@ -149,45 +149,16 @@ __global__ void sr_mean_divide_kernel(int64_t n, T* data,
     }
 }
 
-template <bool AllowNegative>
-__global__ void sr_validate_indices_kernel(int64_t n, const int64_t* indices,
-                                            int64_t size, int32_t* invalid,
-                                            int64_t* bad_value) {
-    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    int64_t stride = static_cast<int64_t>(blockDim.x) * gridDim.x;
-    for (; i < n; i += stride) {
-        const int64_t value = indices[i];
-        const bool out = AllowNegative
-            ? (value < -size || value >= size)
-            : (value < 0 || value >= size);
-        if (out && atomicCAS(invalid, 0, 1) == 0) {
-            *bad_value = value;
-        }
+// Every index has to name a slot of the reduced dimension.  The check rides
+// along in the pass that reads the index anyway; a separate validation walk
+// would read the table twice and hand a flag back to the host, which costs a
+// stream-wide wait on every call.  The device assertion stays active in
+// release builds.
+__device__ __forceinline__ void sr_check_index(int64_t idx, int64_t size) {
+    if (!(idx >= 0 && idx < size)) {
+        __assert_fail("0 <= index && index < size", __FILE__, __LINE__,
+                      __func__);
     }
-}
-
-template <bool AllowNegative>
-std::optional<int64_t> sr_validate_indices_cuda(const Tensor& indices,
-                                                int64_t size) {
-    const int64_t n = indices.numel();
-    if (n == 0) return std::nullopt;
-    Tensor invalid = Tensor::zeros({1}, DType::Int32, indices.device());
-    Tensor bad_value = Tensor::zeros({1}, DType::Int64, indices.device());
-    auto stream = getCurrentCUDAStream().stream();
-    sr_validate_indices_kernel<AllowNegative>
-        <<<static_cast<uint32_t>((n + kThreads - 1) / kThreads), kThreads,
-           0, stream>>>(n, indices.data_ptr<int64_t>(), size,
-                        invalid.data_ptr<int32_t>(),
-                        bad_value.data_ptr<int64_t>());
-    CUDA_CHECK(cudaGetLastError());
-    int32_t invalid_host = 0;
-    CUDA_CHECK(cudaMemcpy(&invalid_host, invalid.data_ptr<int32_t>(),
-                          sizeof(invalid_host), cudaMemcpyDeviceToHost));
-    if (invalid_host == 0) return std::nullopt;
-    int64_t bad_host = 0;
-    CUDA_CHECK(cudaMemcpy(&bad_host, bad_value.data_ptr<int64_t>(),
-                          sizeof(bad_host), cudaMemcpyDeviceToHost));
-    return bad_host;
 }
 
 template <typename T>
@@ -203,7 +174,7 @@ __global__ void sr_exclude_init_kernel(int64_t total_idx, int64_t idx_dim_size,
     rem -= oo * idx_dim_size * idx_inner;
     int64_t j = rem % idx_inner;
     int64_t idx = ip[flat];
-    if (idx < 0) idx += self_dim_size;
+    sr_check_index(idx, self_dim_size);
     d[(oo * self_dim_size + idx) * self_inner + j] = init_v;
 }
 
@@ -222,7 +193,7 @@ __global__ void sr_accum_kernel(int64_t total_idx, int64_t idx_dim_size,
     rem -= oo * idx_dim_size * idx_inner;
     int64_t j = rem % idx_inner;
     int64_t idx = ip[flat];
-    if (idx < 0) idx += self_dim_size;
+    sr_check_index(idx, self_dim_size);
     const int64_t dst = (oo * self_dim_size + idx) * self_inner + j;
     const T v = vp[flat];
     sr_atomic_reduce(&d[dst], v, op);
@@ -244,6 +215,7 @@ __global__ void sr_exclude_init_rows_kernel(int64_t total, int64_t K,
         int64_t rem = w - oo * K * self_inner;
         int64_t j = rem / self_inner;
         int64_t t = rem - j * self_inner;
+        sr_check_index(ip[j], self_dim_size);
         d[(oo * self_dim_size + ip[j]) * self_inner + t] = init_v;
     }
 }
@@ -263,6 +235,7 @@ __global__ void sr_accum_rows_kernel(int64_t total, int64_t K,
         int64_t rem = w - oo * K * self_inner;
         int64_t j = rem / self_inner;
         int64_t t = rem - j * self_inner;
+        sr_check_index(ip[j], self_dim_size);
         const int64_t dst = (oo * self_dim_size + ip[j]) * self_inner + t;
         const T v = vp[w];
         sr_atomic_reduce(&d[dst], v, op);
@@ -364,12 +337,6 @@ Tensor sr_forward_cuda_impl(const Tensor& self, int64_t dim,
     const int64_t idx_dim_size = idx_c.size(dim);
     const int64_t total_idx = idx_c.numel();
     const int64_t self_dim_size = self.size(dim);
-
-    if (auto bad_index = sr_validate_indices_cuda<false>(idx_c, self_dim_size)) {
-        TP_THROW(IndexError, "index ", *bad_index,
-                 " is out of bounds for dimension ", dim,
-                 " with size ", self_dim_size);
-    }
 
     Tensor result = ::tensorplay::detail::contiguous_clone(self);
     Tensor count;
@@ -506,11 +473,6 @@ Tensor ir_forward_cuda_impl(const Tensor& self, int64_t dim,
                  "),");
     }
     const int64_t self_dim_size = self.size(dim);
-    if (auto bad_index = sr_validate_indices_cuda<false>(idx_c, self_dim_size)) {
-        TP_THROW(IndexError, "index ", *bad_index,
-                 " is out of bounds for dimension ", dim,
-                 " with size ", self_dim_size);
-    }
     const int64_t* ip = idx_c.data_ptr<int64_t>();
     const SrReduceCuda op = parse_sr_reduce_cuda(reduce);
     int64_t outer = 1;

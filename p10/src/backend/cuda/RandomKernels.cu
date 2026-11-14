@@ -839,6 +839,17 @@ Tensor& random_to_kernel_cuda(Tensor& self, int64_t to,
     return random_from_kernel_cuda(self, 0, to, std::move(generator));
 }
 
+// A probability outside [0, 1] has no meaning; the check shares the element
+// pass that reads the probability anyway, so the common path pays no extra
+// walk and no host hand-off.  The device assertion stays active in release
+// builds.
+__device__ __forceinline__ void bernoulli_check_probability(double p) {
+    if (!(0.0 <= p && p <= 1.0)) {
+        __assert_fail("0 <= probability && probability <= 1", __FILE__,
+                      __LINE__, __func__);
+    }
+}
+
 template <typename output_t, typename probability_t>
 __global__ void bernoulli_tensor_fill_impl(
         int64_t numel, PhiloxCudaState philox_args,
@@ -861,22 +872,22 @@ __global__ void bernoulli_tensor_fill_impl(
         const int64_t i3 = linear_index + thread_count * 3;
         if (i0 < numel) {
             const double p = static_cast<double>(probability[i0]);
-            assert(0.0 <= p && p <= 1.0);
+            bernoulli_check_probability(p);
             output[i0] = static_cast<output_t>(random.x <= p);
         }
         if (i1 < numel) {
             const double p = static_cast<double>(probability[i1]);
-            assert(0.0 <= p && p <= 1.0);
+            bernoulli_check_probability(p);
             output[i1] = static_cast<output_t>(random.y <= p);
         }
         if (i2 < numel) {
             const double p = static_cast<double>(probability[i2]);
-            assert(0.0 <= p && p <= 1.0);
+            bernoulli_check_probability(p);
             output[i2] = static_cast<output_t>(random.z <= p);
         }
         if (i3 < numel) {
             const double p = static_cast<double>(probability[i3]);
-            assert(0.0 <= p && p <= 1.0);
+            bernoulli_check_probability(p);
             output[i3] = static_cast<output_t>(random.w <= p);
         }
     }
@@ -987,12 +998,9 @@ Tensor& bernoulli_tensor_inplace_kernel_cuda(
     }
 
     Tensor probability = prepare_bernoulli_probabilities(self, probabilities);
-    const Tensor valid_probabilities = Tensor::logical_and(
-        probability.ge(Scalar(0)), probability.le(Scalar(1)));
-    if (!valid_probabilities.all().item<bool>()) {
-        TP_THROW(ValueError,
-                 "bernoulli_ expects probability values in [0, 1]");
-    }
+    // The probability domain is checked by the element pass: its per-element
+    // compare is already there, while a separate validate-and-read pass would
+    // walk the tensor three more times and sync the host for one flag.
     if (self.dtype() == DType::Float64) {
         launch_bernoulli_tensor_for_output<double>(
             probability, self, std::move(generator));
