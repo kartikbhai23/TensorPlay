@@ -532,11 +532,15 @@ Tensor nanquantile_scalar_native(const Tensor& self, double q,
 // materialized explicitly by expanding the reflector block into a (q x q)
 // column-major buffer whose remaining columns are zero and reducing with
 // orgqr, then applied through the registered batched matmul.
+// The packed reflectors are stored row-major with `src_cols` columns while only
+// the first `cols` of them are wanted; the destination is a dense column-major
+// plane.
 template <typename T>
-static void row_to_col_major(const T* src, int64_t rows, int64_t cols, T* dst) {
+static void row_to_col_major(const T* src, int64_t rows, int64_t cols, T* dst,
+                             int64_t src_cols) {
     for (int64_t r = 0; r < rows; ++r)
         for (int64_t c = 0; c < cols; ++c)
-            dst[c * rows + r] = src[r * cols + c];
+            dst[c * rows + r] = src[r * src_cols + c];
 }
 
 template <typename T>
@@ -564,6 +568,14 @@ Tensor ormqr_composite(const Tensor& self, const Tensor& input2, const Tensor& i
                        bool left, bool transpose) {
     using namespace cpu;
     require_lapack("ormqr");
+    // The reflectors are applied by host LAPACK, which can only address host
+    // buffers; a device backend without its own solver refuses here instead of
+    // handing device pointers to the host routines.
+    if (!self.device().is_cpu()) {
+        TP_THROW(NotImplementedError,
+                 "ormqr(): this backend has no reflector application yet, "
+                 "and the host implementation cannot read device buffers");
+    }
     if (self.dim() < 2) {
         TP_THROW(RuntimeError, "ormqr(): input must have at least 2 dimensions");
     }
@@ -571,15 +583,36 @@ Tensor ormqr_composite(const Tensor& self, const Tensor& input2, const Tensor& i
         TP_THROW(RuntimeError, "ormqr(): self, tau and other must share the same dtype");
     }
     const int64_t m = self.size(-2);
-    const int64_t k = self.size(-1);
-    if (input2.size(-1) != k) {
-        TP_THROW(RuntimeError, "ormqr(): tau must have shape (..., k) matching the ",
-                 k, " reflectors of self, but got ", input2.size(-1));
-    }
+    const int64_t cols = self.size(-1);
     const int64_t q = left ? input3.size(-2) : input3.size(-1);
     if (q != m) {
         TP_THROW(RuntimeError, "ormqr(): reflector matrix and other disagree on the "
                  "matched dimension: got ", m, " vs ", q);
+    }
+    // The packed buffer always carries min(rows, cols) reflectors, however many
+    // columns the factorization kept.
+    const int64_t k = input2.size(-1);
+    if (k != std::min(m, cols)) {
+        TP_THROW(RuntimeError, "ormqr(): tau must hold one scale per reflector, "
+                 "expected ", std::min(m, cols), " but got ", k);
+    }
+    if (self.dim() - input2.dim() != 1) {
+        TP_THROW(RuntimeError, "ormqr(): tau must have exactly one dimension less "
+                 "than the reflector matrix, got ", input2.dim(), " and ", self.dim());
+    }
+    if (self.dim() != input3.dim()) {
+        TP_THROW(RuntimeError, "ormqr(): reflector matrix and other must have the "
+                 "same rank, got ", self.dim(), " and ", input3.dim());
+    }
+    if (self.dim() > 2) {
+        bool batch_ok = true;
+        for (int64_t i = 0; i + 2 < self.dim(); ++i) {
+            if (input2.size(i) != self.size(i) || input3.size(i) != self.size(i)) batch_ok = false;
+        }
+        if (!batch_ok) {
+            TP_THROW(RuntimeError, "ormqr(): tau and other must carry the same "
+                     "batch extents as the reflector matrix");
+        }
     }
     if (k == 0 || q == 0) {
         return input3.clone();
@@ -591,20 +624,27 @@ Tensor ormqr_composite(const Tensor& self, const Tensor& input2, const Tensor& i
     const Tensor self_c = self.contiguous();
     const Tensor tau_c = input2.contiguous();
     const Tensor other_c = input3.contiguous();
-    const int64_t self_plane = m * k;
+    const int64_t self_plane = m * cols;
     const int64_t tau_plane = k;
     const int64_t crows = input3.size(-2);
     const int64_t ccols = input3.size(-1);
     const int64_t other_plane = crows * ccols;
     const int64_t batch = self.numel() / self_plane;
     const DType dt = self.dtype();
+    // Q keeps the batch prefix of the reflectors, so a plain 2-D input yields
+    // a plain 2-D orthogonal factor rather than a singleton batch.
+    std::vector<int64_t> qshape;
+    qshape.reserve(static_cast<size_t>(self.dim()));
+    for (int64_t i = 0; i + 2 < self.dim(); ++i) qshape.push_back(self.size(i));
+    qshape.push_back(q);
+    qshape.push_back(q);
 
-    Tensor q_full = Tensor::empty(std::vector<int64_t>{batch, q, q}, dt, self.device());
+    Tensor q_t = Tensor::empty(qshape, dt, self.device());
     auto run_one_dtype = [&](auto tag) {
         using T = std::remove_pointer_t<decltype(tag)>;
         const T* sbase = self_c.data_ptr<T>();
         const T* tbase = tau_c.data_ptr<T>();
-        T* qbase = q_full.data_ptr<T>();
+        T* qbase = q_t.data_ptr<T>();
         for (int64_t i = 0; i < batch; ++i) {
             const T* refl = sbase + i * self_plane;
             const T* tau = tbase + i * tau_plane;
@@ -614,7 +654,7 @@ Tensor ormqr_composite(const Tensor& self, const Tensor& input2, const Tensor& i
                 // buffer (extra columns zero) and reduce with orgqr, then
                 // convert the resulting Q back to row-major.
                 std::vector<T> a(static_cast<size_t>(q * q), T(0));
-                row_to_col_major<T>(refl, q, k, a.data());
+                row_to_col_major<T>(refl, q, k, a.data(), cols);
                 int64_t lwork = -1;
                 std::vector<T> work(1);
                 if constexpr (std::is_same_v<T, float>) {
@@ -635,8 +675,6 @@ Tensor ormqr_composite(const Tensor& self, const Tensor& input2, const Tensor& i
     if (dt == DType::Float32) run_one_dtype(static_cast<float*>(nullptr));
     else run_one_dtype(static_cast<double*>(nullptr));
 
-    const std::vector<int64_t> qshape{batch, q, q};
-    Tensor q_t = q_full.view(qshape);
     Tensor qt = ops::transpose(q_t, -2, -1);
     if (left) {
         return transpose ? ops::matmul(qt, other_c) : ops::matmul(q_t, other_c);
@@ -651,6 +689,13 @@ Tensor ormqr_composite(const Tensor& self, const Tensor& input2, const Tensor& i
 std::tuple<Tensor, Tensor> geqrf_composite(const Tensor& self) {
     using namespace cpu;
     require_lapack("geqrf");
+    // Host LAPACK works on host buffers only; a device backend without its own
+    // solver refuses here instead of handing device pointers to the routines.
+    if (!self.device().is_cpu()) {
+        TP_THROW(NotImplementedError,
+                 "geqrf(): this backend has no factorization yet, "
+                 "and the host implementation cannot read device buffers");
+    }
     if (self.dim() < 2) {
         TP_THROW(RuntimeError, "geqrf(): input must have at least 2 dimensions");
     }

@@ -871,11 +871,13 @@ void apply_orgqr(Tensor& Q_cm, const Tensor& tau) {
     }
 }
 
-// C <- op(Q) C, with Q held implicitly by the geqrf output (QR_cm, tau).
-// Applies from the left over every batch of the column-major C buffer.
+// C <- op(Q) C from the left, or C <- C op(Q) from the right, with Q held
+// implicitly by the geqrf output (QR_cm, tau).  Every batch plane of the
+// column-major C buffer takes the same reflectors.
 template <typename scalar_t>
 void apply_ormqr(const Tensor& QR_cm, const Tensor& tau, Tensor& C_cm,
-                 bool transpose) {
+                 bool transpose,
+                 cublasSideMode_t side = CUBLAS_SIDE_LEFT) {
     using Tr = CusolverTraits<scalar_t>;
     auto* a = QR_cm.data_ptr<scalar_t>();
     auto* tau_ptr = tau.data_ptr<scalar_t>();
@@ -890,7 +892,6 @@ void apply_ormqr(const Tensor& QR_cm, const Tensor& tau, Tensor& C_cm,
     const int lda = std::max(1, static_cast<int>(QR_cm.size(-2)));
     const int ldc = std::max(1, m);
     const auto handle = CUDAContext::getCusolverDnHandle();
-    const cublasSideMode_t side = CUBLAS_SIDE_LEFT;
     const cublasOperation_t trans = transpose ? CUBLAS_OP_T : CUBLAS_OP_N;
     int lwork = 0;
     CUSOLVER_CHECK(Tr::ormqr_bufferSize(handle, side, trans, m, n, k, a, lda,
@@ -1003,6 +1004,114 @@ std::tuple<Tensor, Tensor> linalg_qr_out_kernel_cuda(const Tensor& A,
     write_linalg_output("linalg.qr", std::get<0>(result), Q);
     write_linalg_output("linalg.qr", std::get<1>(result), R);
     return {Q, R};
+}
+
+// ------------------------------------------------------- geqrf / ormqr -----
+// The packed Householder form of one factorization is shared by both ops: the
+// reflectors live below the diagonal of the buffer geqrf writes, the scales
+// in tau.  Both run on column-major planes through the device solver, and the
+// result is handed back in the plain (row-major) layout the copy contract
+// implies.
+
+std::tuple<Tensor, Tensor> geqrf_cuda(const Tensor& self) {
+    if (self.dim() < 2) {
+        TP_THROW(RuntimeError, "geqrf(): input must have at least 2 dimensions");
+    }
+    if (self.dtype() != DType::Float32 && self.dtype() != DType::Float64) {
+        TP_THROW(RuntimeError,
+                 "geqrf(): only float32 and float64 matrices are supported on "
+                 "the CUDA backend");
+    }
+    const int64_t m = self.size(-2);
+    const int64_t n = self.size(-1);
+    const int64_t k = std::min(m, n);
+    Tensor tau = Tensor::zeros(cat_batch(batch_shape_of(self), {k}),
+                               self.dtype(), self.device());
+    Tensor QR = clone_batched_column_major(self);
+    if (k == 0) return {QR.contiguous(), tau};
+    run_real(self.dtype(), [&](auto tag) {
+        using T = std::remove_pointer_t<decltype(tag)>;
+        apply_geqrf<T>(QR, tau);
+    });
+    return {QR.contiguous(), tau};
+}
+
+Tensor ormqr_cuda(const Tensor& self, const Tensor& tau, const Tensor& other,
+                  bool left, bool transpose) {
+    if (self.dim() < 2) {
+        TP_THROW(RuntimeError, "ormqr(): input must have at least 2 dimensions");
+    }
+    if (self.dtype() != tau.dtype() || self.dtype() != other.dtype()) {
+        TP_THROW(RuntimeError,
+                 "ormqr(): self, tau and other must share the same dtype");
+    }
+    if (self.dtype() != DType::Float32 && self.dtype() != DType::Float64) {
+        TP_THROW(RuntimeError,
+                 "ormqr(): only float32 and float64 reflectors are supported "
+                 "on the CUDA backend");
+    }
+    const int64_t m = self.size(-2);
+    const int64_t cols = self.size(-1);
+    const int64_t q = left ? other.size(-2) : other.size(-1);
+    if (q != m) {
+        TP_THROW(RuntimeError,
+                 "ormqr(): reflector matrix and other disagree on the matched "
+                 "dimension: got ", m, " vs ", q);
+    }
+    // The packed buffer always carries min(rows, cols) reflectors, however many
+    // columns the factorization kept.
+    const int64_t k = tau.size(-1);
+    if (k != std::min(m, cols)) {
+        TP_THROW(RuntimeError,
+                 "ormqr(): tau must hold one scale per reflector, expected ",
+                 std::min(m, cols), " but got ", k);
+    }
+    if (self.dim() - tau.dim() != 1) {
+        TP_THROW(RuntimeError,
+                 "ormqr(): tau must have exactly one dimension less than the "
+                 "reflector matrix, got ", tau.dim(), " and ", self.dim());
+    }
+    if (self.dim() != other.dim()) {
+        TP_THROW(RuntimeError,
+                 "ormqr(): reflector matrix and other must have the same rank, "
+                 "got ", self.dim(), " and ", other.dim());
+    }
+    const auto batch = batch_shape_of(self);
+    if (self.dim() > 2) {
+        const Size t_shape = tau.shape();
+        const std::vector<int64_t> tau_batch(t_shape.begin(), t_shape.end() - 1);
+        const auto other_batch = batch_shape_of(other);
+        if (tau_batch != batch) {
+            TP_THROW(RuntimeError,
+                     "ormqr(): tau must carry the same batch extents as the "
+                     "reflector matrix");
+        }
+        if (other_batch != batch) {
+            TP_THROW(RuntimeError,
+                     "ormqr(): other must carry the same batch extents as the "
+                     "reflector matrix");
+        }
+    }
+    if (k == 0 || q == 0) return other.clone();
+    Tensor tau_c = tau.contiguous();
+    const Tensor QR = clone_batched_column_major(self);
+    if (left) {
+        Tensor C = clone_batched_column_major(other);
+        run_real(self.dtype(), [&](auto tag) {
+            using T = std::remove_pointer_t<decltype(tag)>;
+            apply_ormqr<T>(QR, tau_c, C, transpose);
+        });
+        return C.contiguous();
+    }
+    // From the right the reflectors act on the columns of `other`, which is
+    // exactly the side the solver applies them to when told so; no transposed
+    // staging copy is needed.
+    Tensor C = clone_batched_column_major(other);
+    run_real(self.dtype(), [&](auto tag) {
+        using T = std::remove_pointer_t<decltype(tag)>;
+        apply_ormqr<T>(QR, tau_c, C, transpose, CUBLAS_SIDE_RIGHT);
+    });
+    return C.contiguous();
 }
 
 std::tuple<Tensor, Tensor> linalg_polar_kernel_cuda(const Tensor& A) {
@@ -1542,6 +1651,8 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, LinalgKernels) {
     m.impl("linalg_lstsq", linalg_lstsq_kernel_cuda);
     m.impl("linalg_qr", linalg_qr_kernel_cuda);
     m.impl("linalg_qr.out", linalg_qr_out_kernel_cuda);
+    m.impl("geqrf", geqrf_cuda);
+    m.impl("ormqr", ormqr_cuda);
     m.impl("linalg_householder_product", linalg_householder_product_kernel_cuda);
     m.impl("linalg_householder_product.out", linalg_householder_product_out_kernel_cuda);
     m.impl("linalg_diagonal", linalg_diagonal_kernel_cuda);
