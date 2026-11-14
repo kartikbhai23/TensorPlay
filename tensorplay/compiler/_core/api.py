@@ -1394,10 +1394,15 @@ class _RecordedTensorMetadata:
     )
 
     def __init__(self, value: Any) -> None:
+        from tensorplay._higher_order_ops._hop_base import value_device
+
         shape = getattr(value, "shape", ())
         self.shape = tuple(shape() if callable(shape) else shape)
         self.dtype = getattr(value, "dtype", None)
-        self.device = getattr(value, "device", None)
+        # A description made while propagation runs on stand-ins has to name
+        # where the value would live rather than where the stand-in sits: what
+        # reads it later places kernels by that device.
+        self.device = value_device(value)
         self.requires_grad = bool(getattr(value, "requires_grad", False))
         stride = getattr(value, "stride", ())
         self._stride = tuple(stride() if callable(stride) else stride)
