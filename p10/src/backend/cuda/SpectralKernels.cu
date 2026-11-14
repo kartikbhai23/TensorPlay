@@ -857,37 +857,43 @@ Tensor blackman_window_cuda(int64_t window_length, bool periodic, std::optional<
 
 namespace {
 
+// One thread per output sample: the padded row is written by the whole grid,
+// so the signal copy runs at the rate of its own memory traffic.
 template <typename T>
 __global__ void pad_time_axis_kernel(int64_t batch, int64_t len, int64_t pad,
                                      bool reflect,
                                      const T* __restrict__ src, T* __restrict__ dst) {
-    const int64_t b = blockIdx.x;
+    const int64_t b = blockIdx.y;
     if (b >= batch) return;
     const int64_t out_len = len + 2 * pad;
+    const int64_t p = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (p >= out_len) return;
     const T* in_row = src + b * len;
     T* out_row = dst + b * out_len;
     const int64_t period = (2 * len - 2) > 1 ? (2 * len - 2) : 1;
-    for (int64_t i = threadIdx.x; i < pad; i += blockDim.x) {
-        if (reflect) {
-            int64_t idx = (i + 1) % period;
-            if (idx >= len) idx = 2 * len - 2 - idx;
-            out_row[pad - 1 - i] = in_row[idx];
-        } else {
-            out_row[pad - 1 - i] = T(0);
+    int64_t idx;
+    if (p < pad) {
+        if (!reflect) {
+            out_row[p] = T(0);
+            return;
         }
-    }
-    for (int64_t i = threadIdx.x; i < len; i += blockDim.x) out_row[pad + i] = in_row[i];
-    for (int64_t i = threadIdx.x; i < pad; i += blockDim.x) {
-        if (reflect) {
-            int64_t idx = len - 2 - i;
-            idx = (-idx) % period;
-            if (idx < 0) idx += period;
-            if (idx >= len) idx = 2 * len - 2 - idx;
-            out_row[pad + len + i] = in_row[idx];
-        } else {
-            out_row[pad + len + i] = T(0);
+        const int64_t i = pad - 1 - p;
+        idx = (i + 1) % period;
+        if (idx >= len) idx = 2 * len - 2 - idx;
+    } else if (p < pad + len) {
+        idx = p - pad;
+    } else {
+        if (!reflect) {
+            out_row[p] = T(0);
+            return;
         }
+        const int64_t i = p - pad - len;
+        idx = len - 2 - i;
+        idx = (-idx) % period;
+        if (idx < 0) idx += period;
+        if (idx >= len) idx = 2 * len - 2 - idx;
     }
+    out_row[p] = in_row[idx];
 }
 
 // {stride0, hop*stride1, stride1}) then mul(window_).
@@ -921,7 +927,7 @@ __global__ void transpose_spec_kernel(int64_t batch, int64_t n_freq, int64_t n_f
 template <bool IsDouble>
 Tensor stft_cuda_impl(const Tensor& work, int64_t n_fft, int64_t hop, int64_t win,
                       const std::optional<Tensor>& window, bool normalized, bool onesided,
-                      bool was_1d) {
+                      bool was_1d, bool return_complex) {
     using R = typename CudaTypes<IsDouble>::R;
     using C = typename CudaTypes<IsDouble>::C;
     const std::vector<int64_t> wsizes = sizes_of(work);  // (batch, plen)
@@ -979,25 +985,23 @@ Tensor stft_cuda_impl(const Tensor& work, int64_t n_fft, int64_t hop, int64_t wi
                                   /*forward=*/true);
     TP_CHECK(spec.size(-1) == n_freq, "stft: unexpected spectrum width");
 
-    // transpose into output layout (batch, freq, frames)
-    Tensor out_c({batch, n_freq, n_frames}, complex_dtype_of(work.dtype()), work.device());
-    {
-        auto stream = getCurrentCUDAStream().stream();
-        const int64_t total = batch * n_freq * n_frames;
-        if constexpr (IsDouble) {
-            transpose_spec_kernel<double, cufftDoubleComplex><<<(total + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
-                batch, n_freq, n_frames,
-                reinterpret_cast<const cufftDoubleComplex*>(spec.data_ptr()),
-                reinterpret_cast<cufftDoubleComplex*>(out_c.data_ptr()));
-        } else {
-            transpose_spec_kernel<float, cufftComplex><<<(total + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
-                batch, n_freq, n_frames,
-                reinterpret_cast<const cufftComplex*>(spec.data_ptr()),
-                reinterpret_cast<cufftComplex*>(out_c.data_ptr()));
+    // The transform wrote frequencies along the last axis of a frame-major
+    // buffer; the caller reads them along the first axis of each frame.  That
+    // is a transposition of the same values, so it is expressed as a view
+    // instead of a strided copy over the whole spectrum.
+    if (return_complex) {
+        if (was_1d) {
+            return spec.reshape({n_frames, n_freq}).transpose(-2, -1);
         }
-        CUDA_CHECK(cudaGetLastError());
+        return spec.reshape({batch, n_frames, n_freq}).transpose(-2, -1);
     }
-    return was_1d ? out_c.reshape({n_freq, n_frames}) : out_c;
+    // The real form pairs each transform's two components along a trailing
+    // axis; the same storage read as real values already holds them in order.
+    Tensor pairs = spec.view_dtype(real_dtype_of(work.dtype()));
+    if (was_1d) {
+        return pairs.reshape({n_frames, n_freq, 2}).permute({1, 0, 2});
+    }
+    return pairs.reshape({batch, n_frames, n_freq, 2}).permute({1, 2, 0, 3});
 }
 
 Tensor stft_cuda(const Tensor& self, int64_t n_fft, std::optional<int64_t> hop_length,
@@ -1018,13 +1022,16 @@ Tensor stft_cuda(const Tensor& self, int64_t n_fft, std::optional<int64_t> hop_l
         const int64_t pad = n_fft / 2;
         Tensor padded(std::vector<int64_t>{x.size(0), x.size(1) + 2 * pad}, x.dtype(), x.device());
         auto stream = getCurrentCUDAStream().stream();
+        const int64_t out_len = x.size(1) + 2 * pad;
+        const dim3 grid((out_len + kThreads - 1) / kThreads,
+                        static_cast<unsigned>(x.size(0)));
         if (x.dtype() == DType::Float64) {
-            pad_time_axis_kernel<double><<<x.size(0), kThreads, 0, stream>>>(
+            pad_time_axis_kernel<double><<<grid, kThreads, 0, stream>>>(
                 x.size(0), x.size(1), pad, pad_mode == "reflect",
                 static_cast<const double*>(x.data_ptr()),
                 static_cast<double*>(padded.data_ptr()));
         } else {
-            pad_time_axis_kernel<float><<<x.size(0), kThreads, 0, stream>>>(
+            pad_time_axis_kernel<float><<<grid, kThreads, 0, stream>>>(
                 x.size(0), x.size(1), pad, pad_mode == "reflect",
                 static_cast<const float*>(x.data_ptr()),
                 static_cast<float*>(padded.data_ptr()));
@@ -1036,8 +1043,10 @@ Tensor stft_cuda(const Tensor& self, int64_t n_fft, std::optional<int64_t> hop_l
              "stft: expected 0 < n_fft <= signal length after padding");
 
     return self.dtype() == DType::Float64
-        ? stft_cuda_impl<true>(x, n_fft, hop, win, window, normalized, onesided, was_1d)
-        : stft_cuda_impl<false>(x, n_fft, hop, win, window, normalized, onesided, was_1d);
+        ? stft_cuda_impl<true>(x, n_fft, hop, win, window, normalized, onesided, was_1d,
+                               return_complex)
+        : stft_cuda_impl<false>(x, n_fft, hop, win, window, normalized, onesided, was_1d,
+                                return_complex);
 }
 
 // t covering p of frame[t][p - t*hop] * win[p - t*hop]; envelope likewise
@@ -1130,15 +1139,19 @@ Tensor istft_cuda_impl(const Tensor& input, int64_t n_fft, int64_t hop, int64_t 
     Tensor cols({batch * frames, bins}, input.dtype(), input.device());
     {
         auto stream = getCurrentCUDAStream().stream();
+        // A spectrum handed back as a view of the transform buffer reaches
+        // this point transposed; the packed copy owns the operands the
+        // gather reads, so it lives for the rest of the scope.
+        const Tensor input_c = input.contiguous();
         if constexpr (IsDouble) {
             gather_cols_kernel<cufftDoubleComplex><<<(batch * frames * bins + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
                 batch, fft_size, frames, bins,
-                reinterpret_cast<const cufftDoubleComplex*>(input.contiguous().data_ptr()),
+                reinterpret_cast<const cufftDoubleComplex*>(input_c.data_ptr()),
                 reinterpret_cast<cufftDoubleComplex*>(cols.data_ptr()));
         } else {
             gather_cols_kernel<cufftComplex><<<(batch * frames * bins + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
                 batch, fft_size, frames, bins,
-                reinterpret_cast<const cufftComplex*>(input.contiguous().data_ptr()),
+                reinterpret_cast<const cufftComplex*>(input_c.data_ptr()),
                 reinterpret_cast<cufftComplex*>(cols.data_ptr()));
         }
         CUDA_CHECK(cudaGetLastError());

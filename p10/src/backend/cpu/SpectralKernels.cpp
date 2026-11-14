@@ -620,31 +620,27 @@ Tensor stft_impl(const Tensor& work, int64_t n_fft, int64_t hop, int64_t win,
     }
 
     // output layout (batch, freq, frames); squeeze batch when input was 1D
+    // The frequency axis is the last axis of the transform output and the
+    // first axis of each frame for the caller, so the complex form is the
+    // transform buffer transposed as a view.
+    if (return_complex) {
+        if (was_1d) return spec.reshape({n_frames, n_freq}).transpose(-2, -1);
+        return spec.reshape({batch, n_frames, n_freq}).transpose(-2, -1);
+    }
     std::vector<int64_t> out_sizes = was_1d ? std::vector<int64_t>{n_freq, n_frames}
                                             : std::vector<int64_t>{batch, n_freq, n_frames};
-    Tensor out;
     const C* sp = static_cast<const C*>(spec.data_ptr());
-    if (return_complex) {
-        out = Tensor(out_sizes, complex_of_real(work.dtype()));
-        C* op = static_cast<C*>(out.data_ptr());
-        for (int64_t b = 0; b < batch; ++b)
-            for (int64_t t = 0; t < n_frames; ++t)
-                for (int64_t k = 0; k < n_freq; ++k)
-                    op[(size_t(b) * n_freq + k) * n_frames + t] =
-                        sp[(size_t(b) * n_frames + t) * n_freq + k];
-    } else {
-        out_sizes.push_back(2);
-        out = Tensor(out_sizes, work.dtype());
-        T* op = static_cast<T*>(out.data_ptr());
-        for (int64_t b = 0; b < batch; ++b)
-            for (int64_t t = 0; t < n_frames; ++t)
-                for (int64_t k = 0; k < n_freq; ++k) {
-                    const size_t base = ((size_t(b) * n_freq + k) * n_frames + t) * 2;
-                    const C& v = sp[(size_t(b) * n_frames + t) * n_freq + k];
-                    op[base] = v.real();
-                    op[base + 1] = v.imag();
-                }
-    }
+    out_sizes.push_back(2);
+    Tensor out(out_sizes, work.dtype());
+    T* op = static_cast<T*>(out.data_ptr());
+    for (int64_t b = 0; b < batch; ++b)
+        for (int64_t t = 0; t < n_frames; ++t)
+            for (int64_t k = 0; k < n_freq; ++k) {
+                const size_t base = ((size_t(b) * n_freq + k) * n_frames + t) * 2;
+                const C& v = sp[(size_t(b) * n_frames + t) * n_freq + k];
+                op[base] = v.real();
+                op[base + 1] = v.imag();
+            }
     return out;
 }
 
@@ -742,7 +738,11 @@ Tensor istft_impl(const Tensor& input, int64_t n_fft, int64_t hop, int64_t win,
     const int64_t bins = n_fft / 2 + 1;
     Tensor cols({batch * frames, bins}, input.dtype());
     {
-        const C* src = static_cast<const C*>(input.contiguous().data_ptr());
+        // A spectrum handed back as a view of the transform buffer reaches
+        // this point transposed, so the packed copy must outlive the pointer
+        // taken from it.
+        const Tensor input_c = input.contiguous();
+        const C* src = static_cast<const C*>(input_c.data_ptr());
         C* dst = static_cast<C*>(cols.data_ptr());
         for (int64_t b = 0; b < batch; ++b)
             for (int64_t t = 0; t < frames; ++t)
@@ -827,7 +827,11 @@ Tensor stft_backward_impl(const Tensor& grad_output, const Tensor& self, int64_t
     // gather grad columns into (batch*frames, n_freq)
     Tensor cols({batch * frames, n_freq}, complex_of_real(self.dtype()));
     {
-        const C* gsrc = static_cast<const C*>(grad_output.contiguous().data_ptr());
+        // The packed copy has to outlive the pointer taken from it: the
+        // caller's gradient often arrives transposed, so this buffer is the
+        // only owner of the values the loop reads.
+        const Tensor grad_c = grad_output.contiguous();
+        const C* gsrc = static_cast<const C*>(grad_c.data_ptr());
         C* dst = static_cast<C*>(cols.data_ptr());
         for (int64_t b = 0; b < batch; ++b)
             for (int64_t k = 0; k < n_freq; ++k)
