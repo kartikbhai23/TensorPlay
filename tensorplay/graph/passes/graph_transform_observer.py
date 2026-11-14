@@ -21,8 +21,6 @@ class GraphTransformObserver:
         self.subsystem = subsystem
         self.log_url = log_url
         self.active = True
-        self.input_dot_graph: str | None = None
-        self.output_dot_graph: str | None = None
         self.created_nodes: set[str] = set()
         self.erased_nodes: set[str] = set()
 
@@ -32,7 +30,6 @@ class GraphTransformObserver:
 
     def __enter__(self) -> "GraphTransformObserver":
         GraphTransformObserver._pass_count += 1
-        self.input_dot_graph = self.gm.graph.to_dot()
         self._before = {node.name for node in self.gm.graph.nodes}
         return self
 
@@ -41,7 +38,6 @@ class GraphTransformObserver:
             after = {node.name for node in self.gm.graph.nodes}
             self.created_nodes = after - self._before
             self.erased_nodes = self._before - after
-            self.output_dot_graph = self.gm.graph.to_dot()
 
     def apply_gm_pass(self, pass_fn: Callable[[GraphModule], _T]) -> _T:
         with self:

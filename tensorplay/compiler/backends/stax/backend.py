@@ -188,6 +188,37 @@ def _trace_decompositions():
 stax.trace_decompositions = _trace_decompositions
 
 
+def _partition_with_joint_passes(
+    joint_module, joint_inputs, *, num_fwd_outputs, memory_budget=None
+):
+    """Cut the joint graph after the rewrites that need both directions.
+
+    A rewrite that reads the forward and the backward together -- gathering the
+    producers of one kind, writing a random draw once -- can only run while
+    both are still the same graph, so it runs here, just before the cut that
+    decides which forward values the backward is handed.
+    """
+    from .._core.aot_autograd import min_cut_rematerialization_partition
+    from .graph_passes.joint_graph import joint_graph_passes
+
+    input_device = None
+    for value in joint_inputs:
+        device = getattr(value, "device", None)
+        if device is not None:
+            input_device = device
+            break
+    joint_module = joint_graph_passes(joint_module, input_device)
+    return min_cut_rematerialization_partition(
+        joint_module,
+        joint_inputs,
+        num_fwd_outputs=num_fwd_outputs,
+        memory_budget=memory_budget,
+    )
+
+
+stax.partition_fn = _partition_with_joint_passes
+
+
 def _publish_codegen(compiled, tag: str, *, backward: bool) -> None:
     """Report on the artifact itself which route produced it.
 

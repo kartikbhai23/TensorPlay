@@ -16,7 +16,6 @@ from ..pattern_matcher import (
     Match,
     MULTIPLE,
     PatternMatcherPass,
-    init_once_fakemode,
     register_graph_pattern,
     register_lowering_pattern as _register_lowering_pattern,
 )
@@ -379,25 +378,6 @@ def decompose_auto_functionalized(graph: Graph) -> bool:
     return changed
 
 
-@init_once_fakemode
-def lazy_init(input_device: tp.device | None = None):
-    """Register every table the post-grad rewrites draw from.
-
-    Each of these is registered by the module that owns it: the attention
-    patterns, the padding decisions for matrix products, and the small
-    rewrites that replace a sequence by a cheaper one.  Registration is done
-    once, before any graph is walked.
-    """
-
-    from .fuse_attention import _sfdp_init
-    from .misc_patterns import _misc_patterns_init
-    from .pad_mm import _pad_mm_init
-
-    _pad_mm_init(input_device)
-    _sfdp_init(input_device)
-    _misc_patterns_init(input_device)
-
-
 def post_grad_passes(gm, is_inference: bool, input_device=None) -> None:
     """Rewrite a graph whose operations are settled and functional.
 
@@ -409,8 +389,11 @@ def post_grad_passes(gm, is_inference: bool, input_device=None) -> None:
 
     from ..custom_graph_pass import get_custom_graph_passes
     from .group_batch_fusion import group_batch_fusion_passes
+    from .joint_graph import lazy_init
     from .replace_random import replace_random_passes
 
+    # Registration is shared with the joint-graph rewrites: one table per
+    # family, filled once however either side reaches it first.
     lazy_init(input_device)
     graph = gm.graph
 

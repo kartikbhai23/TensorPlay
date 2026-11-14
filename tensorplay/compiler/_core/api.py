@@ -1099,8 +1099,12 @@ def _adapt_backend_to_region(
         bw_compiler=forward_compiler,
         # Keep the cheapest cut of forward values and let the backward
         # compute the rest again inside its own loops, rather than have the
-        # forward write every value the backward reads.
-        partition_fn=min_cut_rematerialization_partition,
+        # forward write every value the backward reads.  A backend that has
+        # rewrites for the whole joint graph brings its own cut, which runs
+        # them before the split.
+        partition_fn=getattr(
+            compiler_fn, "partition_fn", min_cut_rematerialization_partition
+        ),
         decompositions={
             **(backend_decompositions() if backend_decompositions is not None else {}),
             **get_decompositions(_NORM_DECOMPOSITION_OPS),

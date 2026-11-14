@@ -642,9 +642,12 @@ def canonicalize_quant_mapping(gm: GraphModule):
     tp.ops.higher_order.invoke_quant(repeated_subgraph0, arg0_1, arg1_1, scheme = 'nf4');
     """
     graph = gm.graph
-    invoke_quant_invocations = graph.find_nodes(
-        op="call_function", target=tp.ops.higher_order.invoke_quant_packed
-    )
+    packed = getattr(tp.ops.higher_order, "invoke_quant_packed", None)
+    if packed is None or not hasattr(tp._higher_order_ops, "InvokeQuant"):
+        # The packed form of a quantized call is not part of this build, so
+        # there is nothing written in that form to canonicalise.
+        return
+    invoke_quant_invocations = graph.find_nodes(op="call_function", target=packed)
     for invoke_quant in invoke_quant_invocations:
         kwargs = dict(invoke_quant.kwargs)
 
