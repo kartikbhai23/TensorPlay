@@ -1807,7 +1807,8 @@ def adaptive_avg_pool1d(input: Tensor, output_size) -> Tensor:
     r"""adaptive_avg_pool1d(input, output_size) -> Tensor"""
     unbatched = input.dim() == 2
     x = input.unsqueeze(0) if unbatched else input
-    out = adaptive_avg_pool2d(x.unsqueeze(3), (output_size, 1)).squeeze(3)
+    size = _single(output_size)[0]
+    out = adaptive_avg_pool2d(x.unsqueeze(3), (size, 1)).squeeze(3)
     return out.squeeze(0) if unbatched else out
 
 
@@ -1815,7 +1816,8 @@ def adaptive_max_pool1d(input: Tensor, output_size):
     r"""adaptive_max_pool1d(input, output_size) -> Tensor"""
     unbatched = input.dim() == 2
     x = input.unsqueeze(0) if unbatched else input
-    out = adaptive_max_pool2d(x.unsqueeze(3), (output_size, 1)).squeeze(3)
+    size = _single(output_size)[0]
+    out = adaptive_max_pool2d(x.unsqueeze(3), (size, 1)).squeeze(3)
     return out.squeeze(0) if unbatched else out
 
 
@@ -4559,7 +4561,8 @@ def adaptive_max_pool1d_with_indices(input: Tensor, output_size, return_indices:
     """
     unbatched = input.dim() == 2
     x = input.unsqueeze(0) if unbatched else input
-    values, indices = adaptive_max_pool2d_with_indices(x.unsqueeze(3), (output_size, 1))
+    size = _single(output_size)[0]
+    values, indices = adaptive_max_pool2d_with_indices(x.unsqueeze(3), (size, 1))
     values = values.squeeze(3)
     indices = indices.squeeze(3)
     if unbatched:
