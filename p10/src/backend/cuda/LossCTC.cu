@@ -575,8 +575,10 @@ Tensor ctc_loss_intlist_cuda(const Tensor& log_probs, const Tensor& targets,
                              const std::vector<int64_t>& target_lengths,
                              int64_t blank, int64_t reduction,
                              bool zero_infinity) {
-  Tensor il = Tensor::tensor(input_lengths, DType::Int64, log_probs.device());
-  Tensor tl = Tensor::tensor(target_lengths, DType::Int64, log_probs.device());
+  Tensor il = Tensor::tensor(input_lengths, DType::Int64,
+                             Device(DeviceType::CPU)).to(log_probs.device());
+  Tensor tl = Tensor::tensor(target_lengths, DType::Int64,
+                             Device(DeviceType::CPU)).to(log_probs.device());
   return tensorplay::composite::ctc_loss_compose(log_probs, targets, il, tl,
                                                  blank, reduction,
                                                  zero_infinity);
