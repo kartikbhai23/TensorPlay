@@ -2241,7 +2241,7 @@ def triplet_margin_with_distance_loss(
 
     # Calculate loss
     if distance_function is None:
-        distance_function = tensorplay.pairwise_distance
+        distance_function = pairwise_distance
 
     dist_pos = distance_function(anchor, positive)
     dist_neg = distance_function(anchor, negative)
