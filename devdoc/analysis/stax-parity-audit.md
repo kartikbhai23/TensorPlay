@@ -28,6 +28,7 @@
 | P1 | 前端无字节码帧求值/图中断/恢复，Python 副作用只发生一次 | 架构差异，已复现 | 未修（架构选择） |
 | P1 | `dynamic_shapes` 只接受 bool，无自动 dynamic、无 `Dim`、`mark_static` 为空操作 | 能力缺失，已核实 | 已修复（§3.2、§13） |
 | P0 | 捕获时读到的非张量全局/闭包/模块属性改变后仍复用旧程序，结果陈旧 | 正确性 bug，已复现 | 已修复（§3.3、§13） |
+| P1 | AOT 的 `memory_budget` 与 `keep_inference_input_mutations` 接收后丢弃 | 静默失效，已核实 | 已修复（§3.4、§13） |
 | P1 | 无 AOTInductor 部署包、无 cudagraph trees、无 oneDNN/MKLDNN/quantized/freezing/CPU GEMM 模板 | 子系统缺失，静态确认 | 未修 |
 | P1 | 设备只注册 cpu/cuda；MPS/XPU/MTIA/ROCm 无代码生成 | 设备覆盖缺口，静态确认 | 未修 |
 | P1 | 整图 cache、分布式 overlap、bucketing 未接线 | 运行时能力缺口，静态确认 | 未修 |
@@ -37,7 +38,7 @@
 `pytest test/stax` 实测（修复前）：**1568 passed, 2 failed, 1 skipped**（1571 项，约 2 分 4 秒）。
 其中一个失败是确定性的 P0 正确性 bug；另一个是容差/顺序相关的偶发（单独运行通过）。
 
-`pytest test/stax -q` 实测（本轮修复后）：**1624 passed, 1 skipped**（1 分 03 秒），
+`pytest test/stax -q` 实测（本轮修复后）：**1630 passed, 1 skipped**（1 分 00 秒），
 `pytest test/fx test/test_public_surface.py`：**247 passed**，
 `pytest test/higher_order_ops test/export`：**128 passed**。
 原先那两个失败都已不再是失败：确定性那个随 §2.1 修好；偶发那个是 bf16 容差写死 `2e-4` 造成的，
@@ -255,12 +256,18 @@ for _ in range(3):
 
 - 真实存在：联合图、`partition_default` / max-flow min-cut（`_core/aot.py:928`）、函数化、Philox 种子的 trace 期固定。
 - stax 的默认路径会走 AOT（`_core/api.py:1060-1105`），推理与训练都适用。
+- 已修复：`memory_budget` 现在真正约束前向留给反向的激活量。取值按比例校验在 `[0, 1]`：
+  `0` 一个不留、把反向读到的前向链克隆进反向图，`1` 保留“运行最省”的那个割，
+  中间值在“反向至少要的”与“运行最省”两个候选割里选能装进预算的较大者，都装不进时
+  从最小的割里按字节从大到小丢弃（丢弃的值由反向从生产者重算）。越界或非数值直接报错。
+- 已修复：`keep_inference_input_mutations` 真正选择输入更新的发生位置。`False` 编译出
+  无变异的图，运行后把最终值拷回对应参数；`True` 把写留在图里。两者对调用者结果一致。
+  更新被移出图的图模块会记录被写的参数位置，图捕获的跳过判定把它算作“输入被修改”，
+  不会把仍会写参数的区域当成纯函数重放。
 - 缺失/受限：
-  - `memory_budget` 接受但忽略（`_core/aot.py:943-949`），无存储预算下的重算规划；
   - 无 compiled autograd、无 AOT autograd cache；
   - 二阶反向导数显式报错；
-  - 不感知用户 `utils.checkpoint` 区域；
-  - `keep_inference_input_mutations` 接受后丢弃。
+  - 不感知用户 `utils.checkpoint` 区域。
 
 ---
 
@@ -661,6 +668,8 @@ pytest test/stax -q -p no:randomly
 | `9566deaf` `fix(compiler)` | 捕获守卫补声明上下界与“每个引用同一符号的轴尺寸相等”；派生维样例尺寸必须可由关系产生并与根维的样例尺寸一致；`mark_static` 轴在样例校验前从声明策略中移除 |
 | `393b01a5` `test(compiler)` | 补派生维不可达尺寸（首调与已捕获后）、根维/派生维样例不一致、声明上界在后续调用生效；导出侧补前两项 |
 | `269cc3eb` `fix(compiler)` | 非张量全局/闭包/模块属性进入特化键：不可变标量与元组按精确内容、可变容器与可调用对象按身份；枚举范围扩到子模块与模块运行代码可达的方法；代码自身写回的名字不计 |
+| `0f45c09b` `fix(compiler)` | `memory_budget` 真正约束留给反向的激活量（0 全重算、1 最省割、中间取可装入的候选割并按字节丢弃）；`keep_inference_input_mutations` 真正选择更新在图内还是运行后拷回；移出更新的图模块记录被写参数位置 |
+| `8f15f15c` `test(compiler)` | 预算按字节生效与越界拒绝的用例；两种输入更新位置的结果与图形态；无更新时两种取值不变 |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
