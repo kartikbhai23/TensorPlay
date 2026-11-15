@@ -75,7 +75,7 @@ sink_waits_iterative_unsafe_collectives_reorder: bool = True
 #: Whether a collective may be moved along with the group of nodes around it
 #: rather than on its own.
 reorder_iterative_group_with_collectives: bool = False
-sink_iterative_unsafe_swap_with_collectives: bool = False
+sink_waits_iterative_swap_with_collectives: bool = False
 
 #: Whether to say what a reorder decided and why.
 reorder_sink_verbose_logging: bool = False

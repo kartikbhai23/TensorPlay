@@ -12,6 +12,7 @@ import pytest
 
 from tensorplay.compiler.backends.stax import config
 from tensorplay.compiler.backends.stax import comm_analysis
+from tensorplay.compiler.backends.stax import config_comms
 from tensorplay.compiler.backends.stax.graph_passes import bucketing
 from tensorplay.compiler.backends.stax.runtime.caching import context
 
@@ -106,3 +107,27 @@ def test_isolation_key_respects_a_selection(selection):
     }
     key = context._isolation_key(schema)
     assert len(key) == 32
+
+def test_every_overlap_setting_the_backend_reads_exists():
+    """A read of a setting the overlap pass needs must not be an AttributeError.
+
+    The pass reads its settings as attributes of a module with no local
+    shadowing, so each name it mentions has to be bound there.
+    """
+
+    import pathlib
+    import re
+
+    root = pathlib.Path(config_comms.__file__).parent
+    missing = set()
+    for path in root.rglob("*.py"):
+        text = path.read_text()
+        for name in re.findall(r"config_comms\.([A-Za-z_]\w*)", text):
+            if not hasattr(config_comms, name):
+                missing.add(name)
+    assert missing == set()
+
+
+def test_sink_waits_swap_setting_starts_off():
+    # Moving a wait past another collective is not done unless asked for.
+    assert config_comms.sink_waits_iterative_swap_with_collectives is False
