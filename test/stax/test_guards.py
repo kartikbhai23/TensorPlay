@@ -83,6 +83,39 @@ def test_recompile_reasons_recorded_under_dynamic(probe_calls):
     assert len(probe_calls) == 2
 
 
+def test_region_name_labels_diagnostics_and_is_kept_on_the_callable(
+    probe_calls, recwarn, monkeypatch
+):
+    """A supplied name identifies the region wherever it is reported.
+
+    The name is debug metadata rather than part of the computation, so it
+    labels the callable and its recompilation warnings without ever keying a
+    specialization.
+    """
+
+    monkeypatch.setenv("TP_LOG_RECOMPILES", "1")
+
+    def fn(x):
+        return x * 2 + 1
+
+    compiled = tp.compile(fn, backend="l6_probe", name="attention block", dynamic=True)
+    assert compiled._tensorplay_region_name == "attention block"
+    compiled(tp.tensor([1.0, 2.0]))
+    n_warnings = len(recwarn)
+    compiled(tp.tensor([[1.0]]))
+    assert len(recwarn) > n_warnings
+    message = str(recwarn.pop(UserWarning).message)
+    assert "attention block" in message
+    # The name is not part of the specialization key: the region it names
+    # still recompiles for the reason it would without the name.
+    assert "recompiling" in message
+
+
+def test_region_name_must_be_a_string():
+    with pytest.raises(TypeError, match="name must be a string"):
+        tp.compile(lambda x: x + 1, name=7)
+
+
 def test_recompile_warning_via_env(probe_calls, recwarn, monkeypatch):
     monkeypatch.setenv("TP_LOG_RECOMPILES", "1")
 

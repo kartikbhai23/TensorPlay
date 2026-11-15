@@ -354,6 +354,19 @@ def _call_fingerprint(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple:
     return tuple(items)
 
 
+def _region_label(model: Any, name: str | None) -> str:
+    """How diagnostics name the region being compiled.
+
+    A caller-supplied name is the region's identifier; without one the
+    program's own name stands in for it.
+    """
+
+    program = getattr(model, "__name__", None)
+    if name is None:
+        return repr(program if program is not None else model)
+    return f"{name!r} ({program})" if program is not None else repr(name)
+
+
 def _backend_kwargs(
     *,
     mode: str | None,
@@ -421,6 +434,10 @@ def compile(
 
     A tensor marked with :func:`mark_static` keeps the example's extent even
     when the policy would make it symbolic.
+
+    ``name`` identifies the region in recompilation diagnostics and is kept on
+    the returned callable as ``_tensorplay_region_name``; it does not change
+    what the region computes, so it is never part of a cache key.
     """
 
     normalized_dynamic_shapes = dynamic_shapes
@@ -489,6 +506,8 @@ def compile(
         return model
     if recompile_limit is not None and recompile_limit < 1:
         raise ValueError("recompile_limit must be positive")
+    if name is not None and not isinstance(name, str):
+        raise TypeError(f"name must be a string or None, got {type(name)!r}")
 
     if dynamic_shapes is not None and not isinstance(dynamic_shapes, bool):
         from .shape_policy import normalize_dynamic_shapes, parameter_names
@@ -713,7 +732,8 @@ def compile(
                 if variant_count >= specialization_limit:
                     if fullgraph or compiler_config.fail_on_recompile_limit_hit:
                         raise RuntimeError(
-                            "TensorPlay compile specialization limit reached"
+                            "TensorPlay compile specialization limit reached in "
+                            f"{_region_label(model, name)}"
                         )
                     store_compiled = False
                 # Explain the miss against every stored specialization before
@@ -728,7 +748,7 @@ def compile(
 
                         warnings.warn(
                             "recompiling "
-                            f"{getattr(model, '__name__', model)!r}: "
+                            f"{_region_label(model, name)}: "
                             + format_recompile_reasons(reasons),
                             stacklevel=2,
                         )
@@ -775,7 +795,8 @@ def compile(
                     )
                 if compile_attempts >= accumulated_limit:
                     raise RuntimeError(
-                        "TensorPlay accumulated recompilation limit reached"
+                        "TensorPlay accumulated recompilation limit reached in "
+                        f"{_region_label(model, name)}"
                     )
                 compile_attempts += 1
                 compiled_fn, captured_gm = _compile_region(
@@ -853,6 +874,7 @@ def compile(
         True if dynamic_generalized else dynamic
     )
     optimized._tensorplay_dynamic_shapes = normalized_dynamic_shapes  # type: ignore[attr-defined]
+    optimized._tensorplay_region_name = name  # type: ignore[attr-defined]
     optimized._tensorplay_recompile_limit = specialization_limit  # type: ignore[attr-defined]
     _compiled_wrappers.add(optimized)
     if dispatcher is not None:
