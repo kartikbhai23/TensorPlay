@@ -17,6 +17,8 @@ from tensorplay import (
     shifted_chebyshev_polynomial_v,
     shifted_chebyshev_polynomial_w,
 )
+from functools import wraps
+from numbers import Number
 
 __all__ = [
     "chebyshev_polynomial_t",
@@ -32,3 +34,21 @@ __all__ = [
     "shifted_chebyshev_polynomial_v",
     "shifted_chebyshev_polynomial_w",
 ]
+
+
+def _accept_scalar_operands(op):
+    @wraps(op)
+    def polynomial(x, n):
+        import tensorplay as tp
+
+        if isinstance(x, tp.Tensor) and isinstance(n, Number):
+            n = tp.tensor(n, device=x.device)
+        elif isinstance(n, tp.Tensor) and isinstance(x, Number):
+            x = tp.tensor(x, device=n.device)
+        return op(x, n)
+
+    return polynomial
+
+
+for _name in __all__:
+    globals()[_name] = _accept_scalar_operands(globals()[_name])
