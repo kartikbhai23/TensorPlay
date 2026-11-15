@@ -36,6 +36,7 @@
 | P2 | `tp.compile(isolate_recompiles=...)` 一路传递并存在调用对象上，从无读者；两种取值结果相同 | 静默失效，已核实 | 已拒绝（§5、§13） |
 | P1 | `write_are_deterministic_algorithms_enabled` 的读者存在、写者缺失，要求确定性算术时归约仍可能选到自由排序的配置 | 正确性相关，已核实 | 已修复（§8.5、§13） |
 | P2 | `use_launch_metadata_schema` 设置了也没用，启动器仍按对象上可读的字段探测 | 静默失效，已核实 | 已修复（§8.5、§13） |
+| P2 | `export` / `unused` / `overload_method` 文档暗示影响捕获，实际只是写标记；`substitute_in_graph` 的两个参数一个只存不读、一个只是提示 | 声明与实际不符，已核实 | 已澄清（§8.4、§13） |
 | P0 | 捕获时读到的非张量全局/闭包/模块属性改变后仍复用旧程序，结果陈旧 | 正确性 bug，已复现 | 已修复（§3.3、§13） |
 | P1 | AOT 的 `memory_budget` 与 `keep_inference_input_mutations` 接收后丢弃 | 静默失效，已核实 | 已修复（§3.4、§13） |
 | P1 | 无 AOTInductor 部署包、无 cudagraph trees、无 oneDNN/MKLDNN/quantized/freezing/CPU GEMM 模板 | 子系统缺失，静态确认 | 未修 |
@@ -574,6 +575,8 @@ pytest test/stax -q
 | 计算/通信 overlap + bucketing | `config.py:1710`；`config_comms.py` | 配置存在，IR/调度未接线 |
 | `NOT_COVERED` 算子“到达即抛” | `operator_coverage.py:15` | 实际走 eager extern fallback；`index_add`/`index_copy`/`scatter_add` 等 6 个已有 lowering 的名字已从表里删除，声明的可覆盖集不再与实表矛盾（§13） |
 | stax 后端 173,141 行 | 白皮书 `08c:9` | 当前 181,912 行 |
+| `compiler.export` / `unused` / `overload_method` 的文档暗示影响捕获 | `compiler/__init__.py` | 三者只写一个标记，没有读者；`export`/`unused`/`overload` 本是脚本化（scripting）侧的注解，本仓库没有那条路，捕获照常追踪被标注的函数。文档已改写，并指出“不进图”应使用 `disallow_in_graph` |
+| `substitute_in_graph(can_constant_fold_through=...)` 像是折叠开关 | `compiler/__init__.py` | 本仓库捕获本来就在追踪期求值“全常量实参”的调用，不会为它建节点；两个取值给出同一张图，参数按提示处理而不是模式开关。`skip_signature_check` 只在注册时生效，因此不再存进记录 |
 | 符号捕获不支持无存储伪张量与数据相关输出尺寸 | `docs/source/stax.md:55` | 属实，且应明确到静态捕获路径 |
 
 ---
@@ -792,6 +795,7 @@ pytest test/stax -q -p no:randomly
 | `413894de` `fix(compiler)` | `name` 从“传给后端即被丢弃”变为真正的调试元数据：调用对象上保留、用于重编译警告与两条上限错误的区域名、校验为字符串、不进入任何键 |
 | `7f69aa3c` `fix(compiler)` | 确定性算术开关写进启动记录（归约配置过滤读的就是这个键）；`use_launch_metadata_schema` 让 `num_warps`/`shared_mem` 取自二进制自述表，缺表或缺字段时回退探测；新增 `test/stax/test_stax_launch_metadata.py`（5 项） |
 | `c94f9159` `fix(compiler)` | 区域名不转发给后端（前端自己写在调用对象与诊断里），`check_backend_kwargs` 不再把 `name` 当区域关键字；Stax 入口删掉被丢弃的 `name` 参数与 `_lower_stax_region` 上四个不读的参数；相关用例改为断言新契约 |
+| `1e4ad231` `docs(compiler)` | 改写 `export` / `unused` / `overload_method` 的文档为“脚本化侧标记、不改变捕获”；`substitute_in_graph` 的两个标记不再存进记录，折叠提示写明“捕获本就如此”；新增 `test/stax/test_stax_annotations.py`（6 项） |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
