@@ -6696,6 +6696,205 @@ inline T product_row(const T* x, int64_t n) {
     return value;
 }
 
+// A middle-axis product whose inner run fits the register budget, over the real
+// widths: every band of the run is carried across the reduced rows, so a row
+// costs one multiply per band instead of one per element.  A band that runs
+// past the run reads what follows it in the buffer and writes only its own
+// lanes back; the tensor's own last row reads through a padded copy.
+template <typename T, int64_t NB>
+inline void product_narrow_real(const T* in, T* out, int64_t outer,
+                                int64_t red, int64_t inner) {
+    using Vec = Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const int64_t keep = inner - (NB - 1) * W;
+    auto load = [](const T* p, int64_t lanes, bool pad) {
+        if (!pad) return Vec::loadu(p);
+        alignas(64) T copy[W];
+        std::memcpy(copy, p, static_cast<size_t>(lanes) * sizeof(T));
+        for (int64_t k = lanes; k < W; ++k) copy[k] = T(1);
+        return Vec::loadu(copy);
+    };
+    for (int64_t o = 0; o < outer; ++o) {
+        const T* base = in + o * red * inner;
+        T* dst = out + o * inner;
+        const bool last_block = o == outer - 1;
+        Vec acc[NB];
+        for (int64_t b = 0; b < NB; ++b) {
+            const bool pad = last_block && red == 1 && b == NB - 1 && keep < W;
+            acc[b] = load(base + b * W, keep, pad);
+        }
+        for (int64_t r = 1; r < red; ++r) {
+            const T* row = base + r * inner;
+            const bool last_row = last_block && r == red - 1;
+            for (int64_t b = 0; b < NB; ++b) {
+                const bool pad = last_row && b == NB - 1 && keep < W;
+                acc[b] = acc[b] * load(row + b * W, keep, pad);
+            }
+        }
+        for (int64_t b = 0; b < NB; ++b) {
+            const int64_t lanes = b == NB - 1 ? keep : W;
+            if (lanes >= W) {
+                acc[b].store(dst + b * W);
+            } else {
+                alignas(64) T held[W];
+                acc[b].store(held);
+                std::memcpy(dst + b * W, held,
+                            static_cast<size_t>(lanes) * sizeof(T));
+            }
+        }
+    }
+}
+
+#if defined(__x86_64__)
+// The same walk over a packed width: a band of eight columns is widened into
+// single precision for the whole run, so the packed value is formed once when
+// the band is written back.
+template <bool BFloat, int64_t NB>
+__attribute__((target("avx2,fma,f16c"), noinline))
+void product_narrow_packed_hw(const uint16_t* in, uint16_t* out, int64_t outer,
+                              int64_t red, int64_t inner) {
+    constexpr int64_t W = 8;
+    const int64_t keep = inner - (NB - 1) * W;
+    for (int64_t o = 0; o < outer; ++o) {
+        const uint16_t* base = in + o * red * inner;
+        uint16_t* dst = out + o * inner;
+        const bool last_block = o == outer - 1;
+        __m256 acc[NB];
+        if (last_block && red == 1 && keep < W) {
+            for (int64_t b = 0; b < NB - 1; ++b) {
+                acc[b] = widen_row8<BFloat>(base + b * W);
+            }
+            alignas(16) uint16_t copy[W];
+            std::memcpy(copy, base + (NB - 1) * W,
+                        static_cast<size_t>(keep) * sizeof(uint16_t));
+            for (int64_t k = keep; k < W; ++k) {
+                copy[k] = BFloat ? 0x3F80u : 0x3C00u;
+            }
+            acc[NB - 1] = widen_row8<BFloat>(copy);
+        } else {
+            for (int64_t b = 0; b < NB; ++b) {
+                acc[b] = widen_row8<BFloat>(base + b * W);
+            }
+        }
+        for (int64_t r = 1; r < red; ++r) {
+            const uint16_t* row = base + r * inner;
+            const bool last_row = last_block && r == red - 1;
+            for (int64_t b = 0; b < NB - 1; ++b) {
+                acc[b] = _mm256_mul_ps(acc[b], widen_row8<BFloat>(row + b * W));
+            }
+            if (last_row && keep < W) {
+                alignas(16) uint16_t copy[W];
+                std::memcpy(copy, row + (NB - 1) * W,
+                            static_cast<size_t>(keep) * sizeof(uint16_t));
+                for (int64_t k = keep; k < W; ++k) {
+                    copy[k] = BFloat ? 0x3F80u : 0x3C00u;
+                }
+                acc[NB - 1] =
+                    _mm256_mul_ps(acc[NB - 1], widen_row8<BFloat>(copy));
+            } else {
+                acc[NB - 1] = _mm256_mul_ps(
+                    acc[NB - 1], widen_row8<BFloat>(row + (NB - 1) * W));
+            }
+        }
+        for (int64_t b = 0; b < NB - 1; ++b) {
+            store_band_hw<BFloat>(dst, b * W, acc[b]);
+        }
+        const int64_t lanes = keep < W ? keep : W;
+        alignas(32) float held[W];
+        _mm256_store_ps(held, acc[NB - 1]);
+        for (int64_t k = 0; k < lanes; ++k) {
+            dst[(NB - 1) * W + k] = BFloat
+                ? tensorplay::cpu::vecreduced::narrow_bf16_one(held[k])
+                : tensorplay::cpu::vecreduced::narrow_one_hw(held[k]);
+        }
+    }
+}
+
+template <bool BFloat>
+inline void product_narrow_packed(const uint16_t* in, uint16_t* out,
+                                  int64_t outer, int64_t red, int64_t inner,
+                                  int64_t bands) {
+    switch (bands) {
+        case 1:
+            product_narrow_packed_hw<BFloat, 1>(in, out, outer, red, inner);
+            return;
+        case 2:
+            product_narrow_packed_hw<BFloat, 2>(in, out, outer, red, inner);
+            return;
+        case 3:
+            product_narrow_packed_hw<BFloat, 3>(in, out, outer, red, inner);
+            return;
+        case 4:
+            product_narrow_packed_hw<BFloat, 4>(in, out, outer, red, inner);
+            return;
+        default:
+            return;
+    }
+}
+#endif
+
+// Dispatch the narrow-inner product over the widths it serves.  A wider run is
+// a stream and the walks that read it whole answer it better.
+inline bool product_narrow_dim(const Tensor& input, Tensor& out, int64_t outer,
+                               int64_t red, int64_t inner) {
+    if (!input.is_contiguous() || out.numel() != outer * inner ||
+        input.dim() == 0 || outer <= 0 || red < 1 || inner < 2) {
+        return false;
+    }
+    const DType dt = input.dtype();
+    if (dt == DType::Float32) {
+        if (inner > 32) return false;
+        const int64_t bands = (inner + 7) / 8;
+        const float* in = input.data_ptr<float>();
+        float* op = out.data_ptr<float>();
+        switch (bands) {
+            case 1: product_narrow_real<float, 1>(in, op, outer, red, inner); return true;
+            case 2: product_narrow_real<float, 2>(in, op, outer, red, inner); return true;
+            case 3: product_narrow_real<float, 3>(in, op, outer, red, inner); return true;
+            case 4: product_narrow_real<float, 4>(in, op, outer, red, inner); return true;
+            default: return false;
+        }
+    }
+    if (dt == DType::Float64) {
+        if (inner > 16) return false;
+        const int64_t bands = (inner + 3) / 4;
+        const double* in = input.data_ptr<double>();
+        double* op = out.data_ptr<double>();
+        switch (bands) {
+            case 1: product_narrow_real<double, 1>(in, op, outer, red, inner); return true;
+            case 2: product_narrow_real<double, 2>(in, op, outer, red, inner); return true;
+            case 3: product_narrow_real<double, 3>(in, op, outer, red, inner); return true;
+            case 4: product_narrow_real<double, 4>(in, op, outer, red, inner); return true;
+            default: return false;
+        }
+    }
+#if defined(__x86_64__)
+    if (dt != DType::Float16 && dt != DType::BFloat16) return false;
+    if (inner > 32) return false;
+    if (dt == DType::Float16 &&
+        !tensorplay::cpu::vecreduced::f16c_available()) {
+        return false;
+    }
+    const int64_t bands = (inner + 7) / 8;
+    if (dt == DType::Float16) {
+        const uint16_t* in = reinterpret_cast<const uint16_t*>(
+            input.data_ptr<tensorplay::Half>());
+        uint16_t* op = reinterpret_cast<uint16_t*>(
+            out.data_ptr<tensorplay::Half>());
+        product_narrow_packed<false>(in, op, outer, red, inner, bands);
+    } else {
+        const uint16_t* in = reinterpret_cast<const uint16_t*>(
+            input.data_ptr<tensorplay::BFloat16>());
+        uint16_t* op = reinterpret_cast<uint16_t*>(
+            out.data_ptr<tensorplay::BFloat16>());
+        product_narrow_packed<true>(in, op, outer, red, inner, bands);
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
 Tensor prod_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims, bool keepdim, DType dtype) {
     DType out_dtype = dtype;
     if (out_dtype == DType::Undefined) {
@@ -6753,6 +6952,13 @@ Tensor prod_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims
         }
         if (input.dtype() == out_dtype &&
             try_product_dim_real_avx512(input, out, outer, d_size, inner)) {
+            return out;
+        }
+        // An inner run that is narrower than a stream still holds several
+        // bands: carrying them across the reduced rows answers a row in one
+        // multiply per band, which the walks above leave to their tails.
+        if (input.dtype() == out_dtype &&
+            product_narrow_dim(input, out, outer, d_size, inner)) {
             return out;
         }
 #endif
