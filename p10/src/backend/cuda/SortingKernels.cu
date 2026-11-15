@@ -733,21 +733,47 @@ void sort_keys_radix_impl(const Tensor& self_c, Tensor& values,
     sort_radix_pack_kernel<T><<<blocks, kThreads, 0, stream>>>(
         n, d_size, inner, static_cast<const T*>(self_c.data_ptr()),
         keys_a.data_ptr<Key>(), static_cast<int64_t*>(nullptr), 0);
-    cub::DoubleBuffer<Key> key_buf(keys_a.data_ptr<Key>(), keys_b.data_ptr<Key>());
     const int n_items = static_cast<int>(n);
     const int bits = SortRadixTraits<T>::bit_count;
     size_t tmp_bytes = 0;
-    CUDA_CHECK(cub::DeviceRadixSort::SortKeys(
-        nullptr, tmp_bytes, key_buf, n_items, 0, bits, stream));
-    Tensor tmp = Tensor::empty(
-        {static_cast<int64_t>(std::max<size_t>(tmp_bytes, 1))}, DType::UInt8,
-        device);
-    CUDA_CHECK(cub::DeviceRadixSort::SortKeys(
-        tmp.data_ptr(), tmp_bytes, key_buf, n_items, 0, bits, stream));
+    const Key* sorted_keys = keys_a.data_ptr<Key>();
+    if (slices == 1) {
+        cub::DoubleBuffer<Key> key_buf(keys_a.data_ptr<Key>(),
+                                       keys_b.data_ptr<Key>());
+        CUDA_CHECK(cub::DeviceRadixSort::SortKeys(
+            nullptr, tmp_bytes, key_buf, n_items, 0, bits, stream));
+        Tensor tmp = Tensor::empty(
+            {static_cast<int64_t>(std::max<size_t>(tmp_bytes, 1))}, DType::UInt8,
+            device);
+        CUDA_CHECK(cub::DeviceRadixSort::SortKeys(
+            tmp.data_ptr(), tmp_bytes, key_buf, n_items, 0, bits, stream));
+        sorted_keys = key_buf.Current();
+    } else {
+        // Each run has to stay inside its own bounds, so the sort needs the
+        // segment table rather than one global pass over the whole buffer.
+        Tensor offsets = Tensor::empty({slices + 1}, DType::Int32, device);
+        const int off_blocks =
+            static_cast<int>((slices + 1 + kThreads - 1) / kThreads);
+        sort_radix_fill_offsets_kernel<<<off_blocks, kThreads, 0, stream>>>(
+            static_cast<int>(slices) + 1, d_size, offsets.data_ptr<int32_t>());
+        const int n_segments = static_cast<int>(slices);
+        const int* begin_offsets = offsets.data_ptr<int32_t>();
+        CUDA_CHECK(cub::DeviceSegmentedRadixSort::SortKeys(
+            nullptr, tmp_bytes, keys_a.data_ptr<Key>(), keys_b.data_ptr<Key>(),
+            n_items, n_segments, begin_offsets, begin_offsets + 1, 0, bits,
+            stream));
+        Tensor tmp = Tensor::empty(
+            {static_cast<int64_t>(std::max<size_t>(tmp_bytes, 1))}, DType::UInt8,
+            device);
+        CUDA_CHECK(cub::DeviceSegmentedRadixSort::SortKeys(
+            tmp.data_ptr(), tmp_bytes, keys_a.data_ptr<Key>(),
+            keys_b.data_ptr<Key>(), n_items, n_segments, begin_offsets,
+            begin_offsets + 1, 0, bits, stream));
+        sorted_keys = keys_b.data_ptr<Key>();
+    }
     sort_radix_unpack_kernel<T><<<blocks, kThreads, 0, stream>>>(
-        n, d_size, inner, key_buf.Current(), static_cast<const int64_t*>(nullptr),
+        n, d_size, inner, sorted_keys, static_cast<const int64_t*>(nullptr),
         static_cast<T*>(values.data_ptr()), static_cast<int64_t*>(nullptr), 0);
-    (void)slices;
 }
 
 void radix_sort_impl(const Tensor& self_c, Tensor& values, Tensor& indices,
