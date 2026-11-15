@@ -450,7 +450,8 @@ cpp_wrapper=use_cuda_codegen,
 `cudagraphs` 收到 `mode`、`options` 时只记一条 warning 就按原样编译；直接构造的 AOT autograd
 后端同样。调用者无法从产物看出请求没有生效。现在改为共享的 `check_backend_kwargs`：
 
-- 区域名、是否符号化形状、是否要求原生产物这三项只是描述区域，任何后端都可以收到；
+- 是否符号化形状与是否要求原生产物这两项只是描述区域，任何后端都可以收到；区域名不再交给后端，
+  因为它标识的是“这次编译调用”，由前端自己兑现（见下）；
 - 后端没有 `mode` / `options` 含义的，收到就 `RuntimeError`；
 - 选项已经绑定进 AOT autograd 后端内部编译器时，再传一次不算多余（它们已经生效）；
 - `cudagraphs` 后端此前把 `dynamic` 丢掉，于是可能把会变化的形状录进 CUDA graph；现在按
@@ -461,7 +462,9 @@ cpp_wrapper=use_cuda_codegen,
 - `name=` 被一路传到后端，后端逐个丢弃，区域标识无人读取。现在按“调试元数据”兑现：
   返回的调用对象上保留 `_tensorplay_region_name`，重编译警告与两条重编译上限错误都用它
   给区域起名（未提供时仍用程序自身的名字），并校验必须是字符串。名字**不**进入任何
-  特化键或捕获键，起名不会多编译一次、也不会复用别的区域的产物。
+  特化键或捕获键，起名不会多编译一次、也不会复用别的区域的产物。名字也不再转发给后端：
+  前端既然已经自己兑现了它，再交给后端只是给它一个丢弃的对象，而“收到却不兑现”正是
+  `check_backend_kwargs` 要拒绝的；直接给后端传 `name=` 现在会明确报错。
 - `isolate_recompiles=` 一路传到 `_core/api.py` 并存在调用对象上，但没有任何读者，两种取值
   编译结果相同。本仓库的特化缓存本就属于各自的调用对象：同一个程序的两个 `compile` 调用
   之间不共享条目，嵌套区域也不会占用外层的条目，条目也不会发布到别处——即“隔离”是本前端
@@ -788,6 +791,7 @@ pytest test/stax -q -p no:randomly
 | `0c49b8aa` `fix(compiler)` | 移除 `isolate_recompiles`：它被传递、被存下、无人读取；本前端本就按区域独立保存特化，跨调用共享条目不存在，两种取值都明确拒绝 |
 | `413894de` `fix(compiler)` | `name` 从“传给后端即被丢弃”变为真正的调试元数据：调用对象上保留、用于重编译警告与两条上限错误的区域名、校验为字符串、不进入任何键 |
 | `7f69aa3c` `fix(compiler)` | 确定性算术开关写进启动记录（归约配置过滤读的就是这个键）；`use_launch_metadata_schema` 让 `num_warps`/`shared_mem` 取自二进制自述表，缺表或缺字段时回退探测；新增 `test/stax/test_stax_launch_metadata.py`（5 项） |
+| `c94f9159` `fix(compiler)` | 区域名不转发给后端（前端自己写在调用对象与诊断里），`check_backend_kwargs` 不再把 `name` 当区域关键字；Stax 入口删掉被丢弃的 `name` 参数与 `_lower_stax_region` 上四个不读的参数；相关用例改为断言新契约 |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
