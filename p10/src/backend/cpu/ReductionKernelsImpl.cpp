@@ -2456,6 +2456,14 @@ static bool try_product_kernel_vec(TensorIteratorBase& iter) {
         case DType::Float64:
             product_kernel_vec<double>(iter);
             return true;
+        case DType::Float16:
+            // The reduced widths multiply through single precision and keep
+            // the product in their own width, one vector at a time.
+            product_kernel_vec<tensorplay::Half>(iter);
+            return true;
+        case DType::BFloat16:
+            product_kernel_vec<tensorplay::BFloat16>(iter);
+            return true;
         default:
             return false;
     }

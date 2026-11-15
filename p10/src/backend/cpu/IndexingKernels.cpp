@@ -11,6 +11,7 @@
 #include "Parallel.h"
 #include "Bucketization.h"
 #include "cpu/ComplexUnary.h"
+#include "cpu/VecReducedMath.h"
 #include "cpu/vec/vec.h"
 #include "../IndexCopyShared.h"
 
@@ -416,6 +417,237 @@ Tensor complex_logcumsumexp_cpu(const Tensor& src, int64_t dim) {
     return result;
 }
 
+// A row of a reduced-width scan, sixteen lanes at a time: the block is
+// widened, folded into a prefix by the log-step shifts, shifted by the
+// running total, narrowed and stored.  The running total stays in single
+// precision, which is the accumulator the scalar walk keeps.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+namespace {
+
+inline bool scan_avx2_available() {
+    static const bool ok = __builtin_cpu_supports("avx2") != 0;
+    return ok;
+}
+
+// The prefix of eight lanes: a shift by one lane, then two, then four, each
+// folded in.  The shifts stay inside each 128-bit half for the first two
+// steps, and the sum of the leading half moves into the trailing one for the
+// last.
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256 scan8_add(__m256 v) {
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    lo = _mm_add_ps(lo, _mm_castsi128_ps(_mm_slli_si128(_mm_castps_si128(lo), 4)));
+    hi = _mm_add_ps(hi, _mm_castsi128_ps(_mm_slli_si128(_mm_castps_si128(hi), 4)));
+    lo = _mm_add_ps(lo, _mm_castsi128_ps(_mm_slli_si128(_mm_castps_si128(lo), 8)));
+    hi = _mm_add_ps(hi, _mm_castsi128_ps(_mm_slli_si128(_mm_castps_si128(hi), 8)));
+    hi = _mm_add_ps(hi, _mm_shuffle_ps(lo, lo, 0xFF));
+    return _mm256_set_m128(hi, lo);
+}
+
+__attribute__((target("avx2,fma"), always_inline))
+inline __m128 prefix4_mul(__m128 x) {
+    // The shifted lanes carry the identity of the product where the shift
+    // leaves nothing behind, so the leading lane is not multiplied away.
+    __m128 shifted = _mm_castsi128_ps(_mm_slli_si128(_mm_castps_si128(x), 4));
+    shifted = _mm_blend_ps(shifted, _mm_set1_ps(1.0f), 0x1);
+    x = _mm_mul_ps(x, shifted);
+    shifted = _mm_castsi128_ps(_mm_slli_si128(_mm_castps_si128(x), 8));
+    shifted = _mm_blend_ps(shifted, _mm_set1_ps(1.0f), 0x3);
+    return _mm_mul_ps(x, shifted);
+}
+
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256 scan8_mul(__m256 v) {
+    __m128 lo = prefix4_mul(_mm256_castps256_ps128(v));
+    __m128 hi = prefix4_mul(_mm256_extractf128_ps(v, 1));
+    hi = _mm_mul_ps(hi, _mm_shuffle_ps(lo, lo, 0xFF));
+    return _mm256_set_m128(hi, lo);
+}
+
+template <bool Product>
+__attribute__((target("avx2,fma,f16c"), noinline))
+void cum_half_row(uint16_t* d, const uint16_t* s, int64_t n) {
+    float carry = Product ? 1.0f : 0.0f;
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        __m256 v = tensorplay::cpu::vecreduced::widen8(s + i);
+        if constexpr (Product) {
+            v = _mm256_mul_ps(_mm256_set1_ps(carry), scan8_mul(v));
+        } else {
+            v = _mm256_add_ps(_mm256_set1_ps(carry), scan8_add(v));
+        }
+        tensorplay::cpu::vecreduced::lay_f16_8<false>(d + i, v);
+        carry = _mm256_cvtss_f32(
+            _mm256_permutevar8x32_ps(v, _mm256_set1_epi32(7)));
+    }
+    for (; i < n; ++i) {
+        const float x = tensorplay::cpu::vecreduced::widen_one(s[i]);
+        carry = Product ? carry * x : carry + x;
+        d[i] = tensorplay::cpu::vecreduced::narrow_one(carry);
+    }
+}
+
+template <bool Product>
+__attribute__((target("avx2,fma"), noinline))
+void cum_bf16_row(uint16_t* d, const uint16_t* s, int64_t n) {
+    float carry = Product ? 1.0f : 0.0f;
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        __m256 v = tensorplay::cpu::vecreduced::widen_bf16_8(s + i);
+        if constexpr (Product) {
+            v = _mm256_mul_ps(_mm256_set1_ps(carry), scan8_mul(v));
+        } else {
+            v = _mm256_add_ps(_mm256_set1_ps(carry), scan8_add(v));
+        }
+        tensorplay::cpu::vecreduced::store_bf16_8(d + i, v);
+        carry = _mm256_cvtss_f32(
+            _mm256_permutevar8x32_ps(v, _mm256_set1_epi32(7)));
+    }
+    for (; i < n; ++i) {
+        const float x = tensorplay::cpu::vecreduced::widen_bf16_one(s[i]);
+        carry = Product ? carry * x : carry + x;
+        d[i] = tensorplay::cpu::vecreduced::narrow_bf16_one(carry);
+    }
+}
+
+// Eight independent columns of the scanned axis, held in one vector: each
+// step along the axis reads eight elements and folds each into its own
+// running total, so a strided scan does a vector of columns per step.
+template <bool Product>
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256 column_step(__m256 acc, __m256 v) {
+    if constexpr (Product) return _mm256_mul_ps(acc, v);
+    return _mm256_add_ps(acc, v);
+}
+
+template <bool Product>
+__attribute__((target("avx2,fma,f16c"), noinline))
+void cum_half_cols(uint16_t* d, const uint16_t* s, int64_t d_size, int64_t inner,
+                   int64_t cols) {
+    if (cols == 8) {
+        __m256 acc = _mm256_set1_ps(Product ? 1.0f : 0.0f);
+        for (int64_t j = 0; j < d_size; ++j) {
+            const uint16_t* sp = s + j * inner;
+            acc = column_step<Product>(acc, tensorplay::cpu::vecreduced::widen8(sp));
+            tensorplay::cpu::vecreduced::lay_f16_8<false>(d + j * inner, acc);
+        }
+        return;
+    }
+    float acc[8];
+    for (int64_t c = 0; c < cols; ++c) acc[c] = Product ? 1.0f : 0.0f;
+    for (int64_t j = 0; j < d_size; ++j) {
+        for (int64_t c = 0; c < cols; ++c) {
+            const float x = tensorplay::cpu::vecreduced::widen_one(s[j * inner + c]);
+            acc[c] = Product ? acc[c] * x : acc[c] + x;
+            d[j * inner + c] = tensorplay::cpu::vecreduced::narrow_one(acc[c]);
+        }
+    }
+}
+
+template <bool Product>
+__attribute__((target("avx2,fma"), noinline))
+void cum_bf16_cols(uint16_t* d, const uint16_t* s, int64_t d_size, int64_t inner,
+                   int64_t cols) {
+    if (cols == 8) {
+        __m256 acc = _mm256_set1_ps(Product ? 1.0f : 0.0f);
+        for (int64_t j = 0; j < d_size; ++j) {
+            const uint16_t* sp = s + j * inner;
+            acc = column_step<Product>(
+                acc, tensorplay::cpu::vecreduced::widen_bf16_8(sp));
+            tensorplay::cpu::vecreduced::store_bf16_8(d + j * inner, acc);
+        }
+        return;
+    }
+    float acc[8];
+    for (int64_t c = 0; c < cols; ++c) acc[c] = Product ? 1.0f : 0.0f;
+    for (int64_t j = 0; j < d_size; ++j) {
+        for (int64_t c = 0; c < cols; ++c) {
+            const float x = tensorplay::cpu::vecreduced::widen_bf16_one(s[j * inner + c]);
+            acc[c] = Product ? acc[c] * x : acc[c] + x;
+            d[j * inner + c] =
+                tensorplay::cpu::vecreduced::narrow_bf16_one(acc[c]);
+        }
+    }
+}
+
+// Whether the packed rows of a scan are the units to walk: one element per
+// row along the scanned axis, and a row long enough to fill a step.
+inline bool scan_rows_take(int64_t inner, int64_t d_size) {
+    return inner == 1 && d_size >= 8 && scan_avx2_available();
+}
+
+// A scan along an axis that leaves eight or more packed columns per row
+// folds a block of eight columns per step.
+inline bool scan_columns_take(int64_t inner, int64_t d_size) {
+    return inner >= 8 && d_size >= 1 && scan_avx2_available();
+}
+
+template <bool Product>
+inline bool scan_half_rows(const Tensor& src, Tensor& result, DType out_dtype,
+                           int64_t outer, int64_t d_size) {
+    const int64_t slice_grain =
+        std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(d_size, 1));
+    if (out_dtype == DType::Float16) {
+        if (!tensorplay::cpu::vecreduced::f16c_available()) return false;
+        const uint16_t* sp = reinterpret_cast<const uint16_t*>(
+            src.data_ptr<tensorplay::Half>());
+        uint16_t* dp = reinterpret_cast<uint16_t*>(
+            result.data_ptr<tensorplay::Half>());
+        parallel_for(0, outer, slice_grain, [&](int64_t b, int64_t e) {
+            for (int64_t o = b; o < e; ++o)
+                cum_half_row<Product>(dp + o * d_size, sp + o * d_size, d_size);
+        });
+        return true;
+    }
+    if (out_dtype == DType::BFloat16) {
+        const uint16_t* sp = reinterpret_cast<const uint16_t*>(
+            src.data_ptr<tensorplay::BFloat16>());
+        uint16_t* dp = reinterpret_cast<uint16_t*>(
+            result.data_ptr<tensorplay::BFloat16>());
+        parallel_for(0, outer, slice_grain, [&](int64_t b, int64_t e) {
+            for (int64_t o = b; o < e; ++o)
+                cum_bf16_row<Product>(dp + o * d_size, sp + o * d_size, d_size);
+        });
+        return true;
+    }
+    return false;
+}
+
+template <bool Product>
+inline bool scan_half_columns(const Tensor& src, Tensor& result, DType out_dtype,
+                              int64_t outer, int64_t d_size, int64_t inner) {
+    const int64_t col_blocks = (inner + 7) / 8;
+    const int64_t block_grain =
+        std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(d_size, 1));
+    const bool half_width = out_dtype == DType::Float16;
+    if (half_width && !tensorplay::cpu::vecreduced::f16c_available()) return false;
+    if (!half_width && out_dtype != DType::BFloat16) return false;
+    uint16_t* dp = half_width
+        ? reinterpret_cast<uint16_t*>(result.data_ptr<tensorplay::Half>())
+        : reinterpret_cast<uint16_t*>(result.data_ptr<tensorplay::BFloat16>());
+    const uint16_t* sp = half_width
+        ? reinterpret_cast<const uint16_t*>(src.data_ptr<tensorplay::Half>())
+        : reinterpret_cast<const uint16_t*>(src.data_ptr<tensorplay::BFloat16>());
+    parallel_for(0, outer * col_blocks, block_grain, [&](int64_t b, int64_t e) {
+        for (int64_t flat = b; flat < e; ++flat) {
+            const int64_t o = flat / col_blocks;
+            const int64_t c0 = (flat - o * col_blocks) * 8;
+            const int64_t cols = std::min<int64_t>(8, inner - c0);
+            const int64_t base = o * d_size * inner + c0;
+            if (half_width) {
+                cum_half_cols<Product>(dp + base, sp + base, d_size, inner, cols);
+            } else {
+                cum_bf16_cols<Product>(dp + base, sp + base, d_size, inner, cols);
+            }
+        }
+    });
+    return true;
+}
+
+}  // namespace
+#endif
+
 Tensor cumsum_cpu(const Tensor& self, int64_t dim, std::optional<DType> dtype) {
     int64_t nd = self.dim();
     dim = wrap_scan_dim(dim, nd);
@@ -443,6 +675,17 @@ Tensor cumsum_cpu(const Tensor& self, int64_t dim, std::optional<DType> dtype) {
     if (d_size == 0 || src.numel() == 0) return result;
     int64_t outer = 1, inner = 1;
     outer_inner(static_cast<std::vector<int64_t>>(src.shape()), dim, outer, inner);
+
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    if (scan_rows_take(inner, d_size) &&
+        scan_half_rows<false>(src, result, out_dtype, outer, d_size)) {
+        return result;
+    }
+    if (scan_columns_take(inner, d_size) &&
+        scan_half_columns<false>(src, result, out_dtype, outer, d_size, inner)) {
+        return result;
+    }
+#endif
 
 #define TP_CUMSUM_FLOAT(ctype, acc_t, name) \
     case DType::name: \
@@ -579,6 +822,16 @@ Tensor cumprod_cpu(const Tensor& self, int64_t dim, std::optional<DType> dtype) 
     if (d_size == 0 || src.numel() == 0) return result;
     int64_t outer = 1, inner = 1;
     outer_inner(static_cast<std::vector<int64_t>>(src.shape()), dim, outer, inner);
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    if (scan_rows_take(inner, d_size) &&
+        scan_half_rows<true>(src, result, out_dtype, outer, d_size)) {
+        return result;
+    }
+    if (scan_columns_take(inner, d_size) &&
+        scan_half_columns<true>(src, result, out_dtype, outer, d_size, inner)) {
+        return result;
+    }
+#endif
 #define TP_CUMPROD_FLOAT(ctype, acc_t, name) \
     case DType::name: \
         cum_base<ctype, acc_t>(result.data_ptr<ctype>(), src.data_ptr<ctype>(), d_size, outer, inner, \
