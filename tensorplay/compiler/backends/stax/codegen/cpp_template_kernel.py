@@ -691,6 +691,33 @@ class CppTemplateKernel(CppKernel):
                     raise AssertionError("src and dst layouts must match")
                 return ""
 
+    def store_output(
+        self,
+        dst: Any,
+        src: Any,
+        orig_src: Any = None,
+        epilogue_nodes: list[Any] | None = None,
+        offsets: Any = None,
+        reindexers: list[Any] | None = None,
+        multi_output_buffers: Any = None,
+    ):
+        """Write one result from one body, optionally through folded work.
+
+        The single-result form of :meth:`store_outputs`: a template that
+        produces one value names that value rather than a one-element sequence
+        for every part of it.
+        """
+
+        return self.store_outputs(
+            (dst,),
+            (src,),
+            None if orig_src is None else (orig_src,),
+            epilogue_nodes,
+            offsets,
+            reindexers,
+            multi_output_buffers,
+        )
+
     def check_bounds(self, expr: Any, size: Any, lower: Any, upper: Any) -> None:
         """Nothing: this kernel's body decides its own bounds.
 

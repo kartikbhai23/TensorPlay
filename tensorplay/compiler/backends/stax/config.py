@@ -293,6 +293,21 @@ class _CppConfig:
     #: kernels use every available core by default.
     threads = -1
 
+    #: How the blocks of a matrix product are divided among the threads, as
+    #: "m,n,k" factors, or none to decide from the shape.  A count chosen here
+    #: is used as given, so a shape that divides badly is still split that way.
+    gemm_thread_factors: str | None = None
+
+    #: The most parts one thread's contracted axis may be split into.  A product
+    #: too small to occupy every thread is split along its contracted axis as
+    #: well, and each part is a partial result that has to be added up; this
+    #: caps how many of those there are.  Zero means no cap.
+    gemm_max_k_slices = int(os.environ.get("TP_CPP_GEMM_MAX_K_SLICES", "1"))
+
+    #: How much of each operand one pass over memory takes, as "m,n,k" blocks, or
+    #: none to size the blocks from the caches the host reports.
+    gemm_cache_blocking: str | None = None
+
     #: Whether a kernel is named after what it computes rather than after the
     #: loop nest it came from.  A report that says what was computed is easier to
     #: read; a cached kernel is easier to find when it is named after where it

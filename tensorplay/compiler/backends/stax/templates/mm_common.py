@@ -63,6 +63,7 @@ __all__ = [
     "persistent_grouped_mm_grid",
     "persistent_mm_grid",
     "scale_mm_epilogue",
+    "use_cpp_gemm_template",
     "use_tp_gemm_kernels",
     "use_decompose_k_choice",
     "use_native_matmul",
@@ -270,20 +271,32 @@ def mm_args(
         k2 = k2 * 2
     k = k1 if k1 == k2 else min(k1, k2)
     if layout is None:
-        from ..loops import contiguous_strides
-        from ..ir import Layout
+        from ..ir import FixedLayout
         from ..loops import V
 
         device = mat1.get_device() if hasattr(mat1, "get_device") else None
         dtype = out_dtype or (
             mat1.get_dtype() if hasattr(mat1, "get_dtype") else None
         )
-        size = (m, n)
-        layout = Layout(device, dtype, size, contiguous_strides(size))
+        # A product stores every element of its result, so there is nothing
+        # left for a later operation to decide about the result's layout: it
+        # is settled here, and settled in the order the elements lie in, which
+        # is the order the kernel writes them in.
+        layout = FixedLayout(device, dtype, (m, n))
         if V.graph is not None:
             V.graph.sizevars.check_equals_and_simplify(k1, k2)
     elif out_dtype is not None:
         raise AssertionError("out_dtype is ignored if layout is specified.")
+    if others:
+        # A value the product also reads -- a bias -- is brought to the shape
+        # of the result here, because what a kernel is written against is the
+        # shape of the result rather than the shape the value was given in.
+        from ..op_lowerings import lower_expand
+        from ..op_lowerings import realize_inputs as realize_for_a_caller
+
+        others = [
+            realize_for_a_caller(lower_expand(value, layout.size)) for value in others
+        ]
     return [m, n, k, layout, mat1, mat2, *others]
 
 
@@ -530,11 +543,111 @@ def use_tp_gemm_kernels() -> bool:
     omitted it would be comparing a template against nothing and calling the
     winner the best.  Asked for, it is a candidate like any other -- one that can
     win.
+
+    Two settings say whether it may be one, and both have to agree, because
+    they answer different questions: the list of ways a product may be
+    computed says the framework's kernel may be used at all, and the list of
+    backends a measured product may be chosen from has to name it among them.
+    A product list that names only a template therefore measures only that
+    template, which is what a list that says which backends may be chosen from
+    is for.
     """
 
     if not (config.max_autotune or config.max_autotune_gemm):
         return True
-    return "EAGER" in config.max_autotune_backends
+    return "EAGER" in config.max_autotune_backends and _use_autotune_backend(
+        "FRAMEWORK"
+    )
+
+
+def use_cpp_gemm_template(
+    layout: Layout,
+    mat1: Any,
+    mat2: Any,
+    mat2_transposed: bool = False,
+) -> bool:
+    """Whether the prepared product is offered for this call.
+
+    Asked of the operands and of the settings together, because offering a
+    kernel that cannot be written for them would put a candidate in a
+    measurement that only costs a build.  What is required is a host device, a
+    measurement in which the prepared product takes part, a result and operands
+    of the same floating type, a contraction and a column count known while the
+    kernel is written, and both operands laid out along the axis the kernel
+    reads contiguously.  No weight is rearranged ahead of time, so the second
+    operand is read where it lies.
+    """
+
+    if not (config.max_autotune or config.max_autotune_gemm):
+        return False
+    if layout.device.type != "cpu":
+        return False
+    if not _use_autotune_backend("CPP"):
+        return False
+
+    from ..codegen.cpp_micro_gemm import create_micro_gemm
+    from ..codegen.cpp_utils import get_gemm_template_output_and_compute_dtype
+    from .. import ir
+    from ..utils import has_free_symbols, parallel_num_threads
+
+    m, n, k, layout, mat1, mat2 = mm_args(
+        mat1, mat2, layout=layout, mat2_transposed=mat2_transposed
+    )
+
+    # The split of the work is decided while the kernel is written, so the
+    # extents it is decided from have to be numbers by then.
+    if has_free_symbols((n, k)):
+        return False
+
+    # The second operand has to be a value the kernel can be pointed at.  A
+    # view of one is read through the memory the view names, so the view is
+    # unwrapped and the memory it belongs to is what is asked about.
+    def memory_of(value: Any) -> Any:
+        if isinstance(value, ir.BaseView):
+            return value.unwrap_view()
+        data = getattr(value, "data", None)
+        if isinstance(data, ir.BaseView):
+            return data.unwrap_view()
+        return data if data is not None else value
+
+    storage = memory_of(mat2)
+
+    supported = (tp.float32, tp.bfloat16, tp.float16)
+    if mat1.get_dtype() != mat2.get_dtype() or mat1.get_dtype() not in supported:
+        return False
+    # A narrow product may produce a float result, and nothing else may:
+    # a result of another type would be written by a kernel computing in a
+    # type it does not compute in.
+    if layout.dtype not in supported or (
+        layout.dtype != mat1.get_dtype()
+        and not (layout.dtype == tp.float32 and mat1.get_dtype() != tp.float32)
+    ):
+        return False
+
+    output_dtype, _ = get_gemm_template_output_and_compute_dtype(mat1.get_dtype())
+    micro_gemm = create_micro_gemm(
+        "micro_gemm",
+        m,
+        n,
+        k,
+        input_dtype=mat1.get_dtype(),
+        input2_dtype=mat2.get_dtype(),
+        output_dtype=output_dtype,
+        num_threads=parallel_num_threads(),
+        use_ref=False,
+    )
+    if micro_gemm is None:
+        return False
+
+    def is_last_dim_stride_1(x: Any) -> bool:
+        x.freeze_layout()
+        return x.get_stride()[-1] == 1
+
+    return (
+        is_last_dim_stride_1(mat1)
+        and is_last_dim_stride_1(mat2)
+        and isinstance(storage, ir.StorageBox)
+    )
 
 
 def _use_autotune_backend(backend: str) -> bool:

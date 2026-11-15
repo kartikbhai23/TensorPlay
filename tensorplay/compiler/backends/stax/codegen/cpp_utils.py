@@ -66,6 +66,12 @@ DTYPE_TO_CPP = {
     tp.float8_e8m0fnu: "tensorplay::Float8_e8m0fnu",
 }
 
+def element_size(dtype: Any) -> int:
+    """How many bytes one element of this type takes."""
+
+    return int(dtype.itemsize)
+
+
 #: The width an index is written as.  A kernel is handed its sizes as 64-bit
 #: values, so an index computed at 32 bits would be wrong for a tensor larger
 #: than it can address.
@@ -762,3 +768,166 @@ def template_fusion_with_epilogues_supported(
         if n.node is not None
     ]
     return _template_fusion_supported(template_outputs, epilogue_nodes)
+
+
+def get_gemm_template_output_and_compute_dtype(input_dtype: Any):
+    """The type a prepared product produces, and the type it computes in.
+
+    A whole-number product accumulates into a wider whole number, so the result
+    is not the input type; every other product computes and produces in float,
+    with narrower inputs widened on the way in.
+    """
+
+    if is_integer_dtype(input_dtype):
+        return (tp.int32, tp.int32)
+    return (tp.float32, tp.float32)
+
+
+def create_epilogue_with_attr(input_buffer: Any, attr: str, **kwargs: Any):
+    """The work a bias or an activation applies to a kernel's result.
+
+    Written as a body over the result's own indices, so it can be folded into
+    the kernel that produces the result rather than run as a second pass over
+    memory.  Only the attributes listed here are supported; anything else is
+    refused rather than folded into something that computes a different
+    function.
+
+    Every arithmetic step is asked of the handler rather than written as a
+    Python operator, because a body is run under several different handlers --
+    one that writes the operation down, one that propagates positions, one that
+    emits code -- and only the calls every handler answers reach all of them.
+    """
+
+    input_loader = input_buffer.make_loader()
+    dtype = input_buffer.get_dtype()
+
+    def as_float32(value: Any) -> Any:
+        return value if dtype == tp.float32 else ops.to_dtype(value, tp.float32)
+
+    def as_result(value: Any) -> Any:
+        return value if dtype == tp.float32 else ops.to_dtype(value, dtype)
+
+    if attr == "relu":
+
+        def inner_fn(index):
+            return ops.maximum(input_loader(index), ops.constant(0, dtype))
+
+    elif attr == "gelu":
+        algorithm = kwargs.get("algorithm")
+        if algorithm not in ("none", "tanh"):
+            raise AssertionError(
+                f"expected algorithm in ('none', 'tanh'), got {algorithm}"
+            )
+        half = ops.constant(0.5, tp.float32)
+        one = ops.constant(1.0, tp.float32)
+        if algorithm == "none":
+            const = ops.constant(0.7071067811865476, tp.float32)
+
+            def inner_fn(index):
+                input = as_float32(input_loader(index))
+                inner = ops.add(ops.erf(ops.mul(input, const)), one)
+                return as_result(ops.mul(ops.mul(input, half), inner))
+
+        else:
+            const1 = ops.constant(0.7978845608028654, tp.float32)
+            const2 = ops.constant(0.044715, tp.float32)
+
+            def inner_fn(index):
+                input = as_float32(input_loader(index))
+                cubic = ops.mul(ops.mul(input, input), input)
+                inner = ops.add(
+                    one, ops.tanh(ops.mul(const1, ops.add(input, ops.mul(const2, cubic))))
+                )
+                return as_result(ops.mul(ops.mul(half, input), inner))
+
+    elif attr == "swish":
+
+        def inner_fn(index):
+            input = input_loader(index)
+            return ops.mul(input, ops.sigmoid(input))
+
+    elif attr == "sigmoid":
+
+        def inner_fn(index):
+            return ops.sigmoid(input_loader(index))
+
+    elif attr == "tanh":
+
+        def inner_fn(index):
+            return ops.tanh(input_loader(index))
+
+    elif attr in ("hardswish", "hardsigmoid"):
+        zero = ops.constant(0, tp.float32)
+        six = ops.constant(6, tp.float32)
+        three = ops.constant(3, tp.float32)
+        one_over_six = ops.constant(0.16666666666666666, tp.float32)
+
+        def inner_fn(index):
+            input = as_float32(input_loader(index))
+            clipped = ops.minimum(ops.maximum(ops.add(input, three), zero), six)
+            result = ops.mul(clipped, one_over_six)
+            if attr == "hardswish":
+                result = ops.mul(input, result)
+            return as_result(result)
+
+    elif attr == "leaky_relu":
+        scalars = kwargs.get("scalars")
+        if scalars is None or len(scalars) != 1:
+            raise AssertionError(f"expected 1 scalar, got {scalars}")
+        negative_slope = ops.constant(scalars[0], tp.float32)
+
+        def inner_fn(index):
+            input = as_float32(input_loader(index))
+            zero = ops.constant(0, tp.float32)
+            negative = ops.mul(input, negative_slope)
+            return as_result(ops.where(ops.gt(input, zero), input, negative))
+
+    elif attr == "hardtanh":
+        scalars = kwargs.get("scalars")
+        if scalars is None or len(scalars) != 2:
+            raise AssertionError(f"expected 2 scalars, got {scalars}")
+        low = ops.constant(scalars[0], tp.float32)
+        high = ops.constant(scalars[1], tp.float32)
+
+        def inner_fn(index):
+            input = as_float32(input_loader(index))
+            return as_result(ops.minimum(ops.maximum(input, low), high))
+
+    elif attr in ("add", "sub", "mul"):
+        other = kwargs.get("other")
+        if other is None:
+            raise AssertionError("expected 'other' in kwargs")
+        dims_diff = len(input_buffer.get_size()) - len(other.get_size())
+        other_loader = other.make_loader()
+        operation = getattr(ops, attr)
+
+        def inner_fn(index):
+            if dims_diff != 0:
+                return operation(input_loader(index), other_loader(index[dims_diff:]))
+            return operation(input_loader(index), other_loader(index))
+
+    elif attr == "bias_add":
+        other = kwargs.get("other")
+        beta = kwargs.get("beta")
+        bias_dtype = kwargs.get("dtype")
+        if other is None or beta is None or bias_dtype is None:
+            raise AssertionError(
+                "bias_add needs 'other', 'beta' and 'dtype' in kwargs"
+            )
+        bias_loader = other.make_loader()
+
+        def inner_fn(index):
+            bias = bias_loader(index)
+            input = input_loader(index)
+            if beta != 1:
+                bias = ops.mul(ops.constant(beta, tp.float32), bias)
+            return ops.add(bias, input)
+
+    else:
+        raise ValueError(f"Unsupported epilogue attribute: {attr}")
+    return ir.Pointwise(
+        device=input_buffer.get_device(),
+        dtype=dtype,
+        inner_fn=inner_fn,
+        ranges=input_buffer.get_size(),
+    )

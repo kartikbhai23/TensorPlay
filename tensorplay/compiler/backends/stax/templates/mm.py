@@ -35,6 +35,7 @@ from .mm_common import (
     mm_args,
     mm_grid,
     persistent_mm_grid,
+    use_cpp_gemm_template,
     use_tp_gemm_kernels,
     use_decompose_k_choice,
     use_native_matmul,
@@ -782,6 +783,11 @@ def tuned_mm(mat1, mat2, out_dtype=None, *, layout=None):
     )
 
     choices: list = []
+    if out_dtype is None and use_cpp_gemm_template(layout, mat1, mat2):
+        from ..codegen.cpp_gemm_template import CppGemmTemplate
+
+        CppGemmTemplate.add_choices(choices, layout, kernel_inputs.nodes())
+
     aten_handler = framework_mm
     aten_extra_kwargs: dict = {}
     if out_dtype is not None:
@@ -839,11 +845,11 @@ def tuned_mm(mat1, mat2, out_dtype=None, *, layout=None):
     return node
 
 
-# The `.default` spelling of ``mm`` resolves to the framework fallback rather
-# than the tuned template, so the dtype normalization above never runs for it.
-# Register the same normalization under that key: an autograd-recorded product
-# may pair a saved tensor in its original dtype with a tangent in the autocast
-# dtype, and the framework ``mm`` rejects the mixed call.
+# An ordinary product call is recorded with its default overload named, which is
+# a different key from the bare one -- and the bare key is where the table maps
+# a call that names no overload.  Both spellings of the same call have to reach
+# the same lowering, or the tuning above is reachable only through the spelling
+# a program never writes.
 _fallback_mm_default = fallback_handler(framework.mm.default, add_to_fallback_set=False)
 
 
@@ -854,7 +860,13 @@ def lower_mm_default(mat1, mat2):
         dtype2 = mat2.get_dtype()
         if dtype1 != dtype2:
             mat1 = to_dtype(mat1, dtype2)
-    return _fallback_mm_default(mat1, mat2)
+    result = tuned_mm(mat1, mat2)
+    if result is None:
+        # The call is one no candidate covers -- a product of nothing, or one
+        # the framework's own kernel is better at -- and the framework computes
+        # it rather than this compiler pretending to have answered it.
+        return _fallback_mm_default(mat1, mat2)
+    return result
 
 
 _fallback_matmul_default = fallback_handler(framework.matmul.default, add_to_fallback_set=False)
@@ -1112,6 +1124,18 @@ def tuned_addmm(inp, mat1, mat2, *, alpha=1, beta=1, layout=None):
         )
         return node
 
+    if use_cpp_gemm_template(layout, mat1, mat2):
+        from ..codegen.cpp_gemm_template import CppGemmTemplate
+
+        CppGemmTemplate.add_choices(
+            choices,
+            layout,
+            kernel_inputs.nodes(),
+            alpha=alpha,
+            beta=beta,
+            has_bias=True,
+        )
+
     templates_to_use: list = []
     if use_tp_gemm_kernels():
         aten_templates: list = [framework_addmm]
@@ -1146,6 +1170,25 @@ def tuned_addmm(inp, mat1, mat2, *, alpha=1, beta=1, layout=None):
         name, choices, kernel_inputs.nodes(), layout
     )
     return node
+
+
+# A product with a bias is recorded with its default overload named too, and
+# that is the spelling a program produces -- so the tuned lowering above has to
+# answer for it.  Asked this way, a call no candidate covers is handed to the
+# framework rather than answered with nothing.
+_fallback_addmm_default = fallback_handler(
+    framework.addmm.default, add_to_fallback_set=False
+)
+
+
+@register("addmm.default")
+def lower_addmm_default(inp, mat1, mat2, *, alpha=1, beta=1):
+    result = tuned_addmm(inp, mat1, mat2, alpha=alpha, beta=beta)
+    if result is None:
+        return _fallback_addmm_default(
+            inp, mat1, mat2, alpha=alpha, beta=beta
+        )
+    return result
 
 
 @register_lowering(framework._sparse_semi_structured_mm, type_promotion_kind=None)

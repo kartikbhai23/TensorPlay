@@ -13,24 +13,18 @@ result is float; a kernel that wants it narrower narrows it itself.
 
 from __future__ import annotations
 
-from enum import Enum
+import functools
+import math
+import operator
 from typing import Any
 
 import tensorplay as tp
 
-from ..cpu_vec_isa import pick_vec_isa
-from ..utils import IndentedBuffer
+from ..cpu_vec_isa import pick_vec_isa, VecAVX2, VecAVX512
+from ..utils import IndentedBuffer, has_free_symbols, parallel_num_threads
 from .common import KernelTemplate
 from .cpp_template_kernel import CppTemplateKernel
-from .cpp_utils import DTYPE_TO_CPP, GemmBlocking, value_to_cpp
-
-
-class LayoutType(Enum):
-    """How the second operand is laid out in memory."""
-
-    NORMAL = 0
-    VNNI2 = 1
-    VNNI4 = 2
+from .cpp_utils import DTYPE_TO_CPP, element_size, GemmBlocking, value_to_cpp
 
 
 def get_restrict_keyword() -> str:
@@ -82,7 +76,6 @@ inline void {{kernel_name}}(
         self.compute_dtype = compute_dtype
         self.register_blocking = register_blocking
         self.alpha = alpha
-        self.pack_vnni_B_locally = False
 
     def get_common_options(self) -> dict[str, Any]:
         return {
@@ -98,9 +91,7 @@ inline void {{kernel_name}}(
             "compute_t": DTYPE_TO_CPP[self.compute_dtype],
             "alpha": self.alpha,
             "kernel_extra_args_declare": self.get_kernel_extra_args_declare(),
-            "vnni_size": 2,
             "restrict_keyword": get_restrict_keyword(),
-            "pack_vnni_B_locally": self.pack_vnni_B_locally,
             "template": self,
         }
 
@@ -158,17 +149,11 @@ inline void {{kernel_name}}(
         res.writeline(");")
         return res.getvalue()
 
-    def use_local_vnni_blocking(self, should_block_weight: bool) -> None:
-        self.pack_vnni_B_locally = should_block_weight
-
     def codegen_init(self, kernel: CppTemplateKernel) -> str:
         return ""
 
     def codegen_finalize(self, kernel: CppTemplateKernel) -> str:
         return ""
-
-    def get_b_layout(self) -> LayoutType:
-        return LayoutType.NORMAL
 
 
 class CppMicroGemmFP32Vec(CppMicroGemm):
@@ -654,3 +639,285 @@ inline void {{kernel_name}}_transpose_b_kernel(
             result += render(self.TEMPLATE_KERNEL).render(options)
         result += render(self.TEMPLATE_ENTRY).render(options)
         return result
+
+
+class CppMicroGemmConfig:
+    """One product a vector instruction set can compute for one set of types.
+
+    The types are the ones the product reads and produces, and the instruction
+    set is the widest one the configuration was written for.  A configuration
+    that needs a condition to apply -- a very small row count, say -- carries
+    the check that decides it.
+    """
+
+    def __init__(
+        self,
+        input_dtype: Any,
+        input2_dtype: Any,
+        output_dtype: Any,
+        compute_dtype: Any,
+        vec_isa_cls: type,
+        register_blocking: GemmBlocking,
+        extra_check: Any = None,
+    ) -> None:
+        self.input_dtype = input_dtype
+        self.input2_dtype = input2_dtype
+        self.output_dtype = output_dtype
+        self.compute_dtype = compute_dtype
+        self.vec_isa_cls = vec_isa_cls
+        self.register_blocking = register_blocking
+        self.extra_check = extra_check
+
+
+#: The configurations that describe what each product class can do.
+micro_gemm_configs: dict[type[CppMicroGemm], list[CppMicroGemmConfig]] = {}
+
+
+def register_micro_gemm(*configs: CppMicroGemmConfig):
+    """Declare the configurations one product class implements.
+
+    A product class is registered once, with every type and blocking it covers;
+    registering it again would make the choice depend on the order the
+    registration ran in.
+    """
+
+    def inner(cls: type[CppMicroGemm]):
+        if cls in micro_gemm_configs:
+            raise AssertionError(f"Duplicate micro_gemm registration for {cls}")
+        if not configs:
+            raise AssertionError(f"No micro_gemm configs provided for {cls}")
+        micro_gemm_configs[cls] = list(configs)
+        return cls
+
+    return inner
+
+
+def generate_gemm_config(
+    vec_isa_cls: type,
+    register_blockings: list[tuple[int, int, int]],
+    input_dtype: Any = tp.float32,
+    input2_dtype: Any = None,
+    output_dtype: Any = None,
+    compute_dtype: Any = None,
+    extra_check: Any = None,
+) -> list[CppMicroGemmConfig]:
+    """The configurations one instruction set offers for one set of types.
+
+    A type that is not named is the input type, and a computation type that is
+    not named is the output type, so a plain product of one type is described
+    by its blockings alone.
+    """
+
+    if output_dtype is None:
+        output_dtype = input_dtype
+    if compute_dtype is None:
+        compute_dtype = output_dtype
+    if input2_dtype is None:
+        input2_dtype = input_dtype
+    return [
+        CppMicroGemmConfig(
+            input_dtype,
+            input2_dtype,
+            output_dtype,
+            compute_dtype,
+            vec_isa_cls,
+            GemmBlocking(*blocking),
+            extra_check,
+        )
+        for blocking in register_blockings
+    ]
+
+
+class CppMicroGemmRef(CppMicroGemm):
+    """The product written as three plain loops.
+
+    Correct for every shape and type, and slower than a vectorized product by
+    whatever the vector width is worth.  It is the answer when no written
+    product covers a case, so that a shape outside the tuned set still gets a
+    kernel of its own rather than no kernel.
+    """
+
+    TEMPLATE_ENTRY = r"""
+{{declare_kernel}} {
+    for (int64_t m = 0; m < M; ++m) {
+        for (int64_t n = 0; n < N; ++n) {
+            {{compute_t}} result = accum ? C[m * ldc + n] : 0;
+            for (int64_t k = 0; k < K; ++k) {
+                result += ({{compute_t}})A[m * lda + k] * ({{compute_t}})B[k * ldb + n] * {{alpha}};
+            }
+            C[m * ldc + n] = result;
+        }
+    }
+}
+"""
+
+    def __init__(
+        self,
+        name: str,
+        input_dtype: Any,
+        input2_dtype: Any,
+        output_dtype: Any,
+        compute_dtype: Any,
+        alpha: Any,
+    ) -> None:
+        super().__init__(
+            name,
+            input_dtype,
+            input2_dtype,
+            output_dtype,
+            compute_dtype,
+            GemmBlocking(1, 1, 1),
+            alpha,
+        )
+
+    def codegen_define(self, kernel: CppTemplateKernel) -> str:
+        options = {
+            "declare_kernel": self.get_kernel_declaration(),
+            **self.get_common_options(),
+        }
+        return KernelTemplate._template_from_string(self.TEMPLATE_ENTRY).render(options)
+
+
+register_micro_gemm(
+    *generate_gemm_config(
+        VecAVX512,
+        [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
+        input_dtype=tp.float32,
+    ),
+    *generate_gemm_config(
+        VecAVX512,
+        [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
+        input_dtype=tp.bfloat16,
+        output_dtype=tp.float32,
+    ),
+    *generate_gemm_config(
+        VecAVX512,
+        [(8, 48, 1), (8, 32, 1), (16, 16, 1)],
+        input_dtype=tp.float16,
+        output_dtype=tp.float32,
+    ),
+    *generate_gemm_config(
+        VecAVX2,
+        [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
+        input_dtype=tp.float32,
+    ),
+    *generate_gemm_config(
+        VecAVX2,
+        [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
+        input_dtype=tp.bfloat16,
+        output_dtype=tp.float32,
+    ),
+    *generate_gemm_config(
+        VecAVX2,
+        [(4, 24, 1), (4, 16, 1), (8, 8, 1)],
+        input_dtype=tp.float16,
+        output_dtype=tp.float32,
+    ),
+)(CppMicroGemmFP32Vec)
+
+
+def create_micro_gemm(
+    name: str,
+    m: Any,
+    n: Any,
+    k: Any,
+    input_dtype: Any,
+    input2_dtype: Any,
+    output_dtype: Any = None,
+    compute_dtype: Any = None,
+    alpha: Any = 1,
+    num_threads: int = -1,
+    use_ref: bool = True,
+) -> CppMicroGemm | None:
+    """The product written for this shape and these types, or a plain one.
+
+    Which product is best depends on the instruction set the host has, whether
+    the register blocks divide the shape, whether the blocks that fit are enough
+    to occupy every thread, and how much register the blocks take.  Those are
+    compared in that order, and the first name that applies wins; a shape no
+    written product covers is answered by a plain product rather than by no
+    product at all.
+
+    ``use_ref`` says whether a plain product may stand in.  A caller that is
+    choosing between written products wants to know there is none rather than to
+    be handed one whose cost says nothing about the rest.
+    """
+
+    from ..loops import V
+
+    if not (isinstance(n, int) or getattr(n, "is_number", False)):
+        raise AssertionError(n)
+    if not (isinstance(k, int) or getattr(k, "is_number", False)):
+        raise AssertionError(k)
+
+    dynamic_m = has_free_symbols((m,))
+    m = V.graph.sizevars.optimization_hint(m, fallback=1)
+    if not (isinstance(m, int) or getattr(m, "is_number", False)):
+        raise AssertionError(m)
+    if output_dtype is None:
+        output_dtype = input_dtype
+    if compute_dtype is None:
+        compute_dtype = output_dtype
+    if num_threads < 0:
+        num_threads = parallel_num_threads()
+    vec_isa = pick_vec_isa()
+
+    matched: list[tuple[tuple[int, int, int, int], type, CppMicroGemmConfig]] = []
+    for cls, configs in micro_gemm_configs.items():
+        for config in configs:
+            if not issubclass(vec_isa.__class__, config.vec_isa_cls):
+                continue
+            if not (
+                config.input_dtype == input_dtype
+                and config.compute_dtype == compute_dtype
+                and config.input2_dtype == input2_dtype
+                and config.output_dtype == output_dtype
+            ):
+                continue
+            if config.extra_check is not None and not config.extra_check(
+                config, m, n, k, alpha, num_threads, dynamic_m=dynamic_m
+            ):
+                continue
+            block_m, block_n, block_k = config.register_blocking
+            blocks_m = math.ceil(m / block_m)
+            blocks_n = math.ceil(n / block_n)
+            isa_score = 1 if config.vec_isa_cls is VecAVX512 else 0
+            dividable_score = (
+                int(m % block_m == 0)
+                + int(n % block_n == 0)
+                + int(k % block_k == 0)
+            )
+            mxn_blocks = blocks_m * blocks_n
+            occupancy_score = int(blocks_n >= num_threads) + int(
+                mxn_blocks >= num_threads
+            )
+            register_bytes = (
+                block_m * block_n * element_size(config.compute_dtype)
+                + (block_m * block_k + block_k * block_n)
+                * element_size(config.input_dtype)
+            )
+            # When the blocks cannot occupy every thread, smaller blocks win:
+            # there is no reuse to gain and less register to spill.
+            size_score = register_bytes if occupancy_score else -register_bytes
+            matched.append(
+                ((isa_score, dividable_score, occupancy_score, size_score), cls, config)
+            )
+
+    if not matched:
+        if not use_ref:
+            return None
+        return CppMicroGemmRef(
+            name, input_dtype, input2_dtype, output_dtype, compute_dtype, alpha
+        )
+    _, cls, config = max(matched, key=operator.itemgetter(0))
+    return cls(
+        name,
+        config.input_dtype,
+        config.input2_dtype,
+        config.output_dtype,
+        config.compute_dtype,
+        config.register_blocking,
+        alpha,
+    )
+
+

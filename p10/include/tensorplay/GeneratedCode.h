@@ -36,6 +36,7 @@
 #include "Exception.h"
 #include "Macros.h"
 #include "Profiler.h"
+#include "cpu/vec/functional.h"
 #include "cpu/vec/vec.h"
 
 namespace tensorplay {
