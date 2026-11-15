@@ -5015,6 +5015,70 @@ static bool try_argmax_lastdim_real(const void* xv, int64_t* indices,
     return false;
 }
 
+#if defined(__x86_64__)
+// An extremum over a flattened real tensor: each chunk folds through the wide
+// extremum walk, and the chunks meet in one pass that keeps the earliest
+// index on a tie and the first not-a-number anywhere.
+template <bool IsMax>
+static bool try_extremum_flattened_real(const Tensor& sc, int64_t* answer) {
+    const int64_t n = sc.numel();
+    if (n <= 0) return false;
+    const DType dt = sc.dtype();
+    if (dt != DType::Float32 && dt != DType::Float64) return false;
+    constexpr int64_t kChunks = 32;
+    const int64_t chunk = std::max<int64_t>(1, (n + kChunks - 1) / kChunks);
+    const int64_t count = (n + chunk - 1) / chunk;
+
+    const auto finish = [&](auto* vals, const int64_t* poss) {
+        using T = std::remove_cv_t<std::remove_pointer_t<decltype(vals)>>;
+        T best = IsMax ? get_lowest<T>() : get_highest<T>();
+        int64_t best_pos = 0;
+        for (int64_t c = 0; c < count; ++c) {
+            if (std::isnan(vals[c])) {
+                *answer = poss[c];
+                return;
+            }
+            if (IsMax ? vals[c] > best : vals[c] < best) {
+                best = vals[c];
+                best_pos = poss[c];
+            }
+        }
+        *answer = best_pos;
+    };
+
+    if (dt == DType::Float32) {
+        const float* data = sc.data_ptr<float>();
+        std::vector<float> vals(static_cast<size_t>(count), 0.f);
+        std::vector<int64_t> poss(static_cast<size_t>(count), 0);
+        parallel_for(0, count, 1, [&](int64_t b, int64_t e) {
+            for (int64_t c = b; c < e; ++c) {
+                const int64_t lo = c * chunk;
+                const int64_t hi = std::min(n, lo + chunk);
+                const auto found = vec::row_extremum<IsMax>(data + lo, hi - lo);
+                vals[static_cast<size_t>(c)] = found.first;
+                poss[static_cast<size_t>(c)] = lo + found.second;
+            }
+        });
+        finish(vals.data(), poss.data());
+        return true;
+    }
+    const double* data = sc.data_ptr<double>();
+    std::vector<double> vals(static_cast<size_t>(count), 0.0);
+    std::vector<int64_t> poss(static_cast<size_t>(count), 0);
+    parallel_for(0, count, 1, [&](int64_t b, int64_t e) {
+        for (int64_t c = b; c < e; ++c) {
+            const int64_t lo = c * chunk;
+            const int64_t hi = std::min(n, lo + chunk);
+            const auto found = vec::row_extremum<IsMax>(data + lo, hi - lo);
+            vals[static_cast<size_t>(c)] = found.first;
+            poss[static_cast<size_t>(c)] = lo + found.second;
+        }
+    });
+    finish(vals.data(), poss.data());
+    return true;
+}
+#endif
+
 Tensor argmax_kernel_impl(const Tensor& self, std::optional<int64_t> dim, bool keepdim) {
     if (!dim.has_value()) {
         // empty flatten has no well-defined index.
@@ -5026,6 +5090,13 @@ Tensor argmax_kernel_impl(const Tensor& self, std::optional<int64_t> dim, bool k
         // serial combine that keeps the earliest index on ties/NaN.
         Tensor self_contig = self.contiguous();
         int64_t max_idx = 0;
+#if defined(__x86_64__)
+        if (try_extremum_flattened_real<true>(self_contig, &max_idx)) {
+            Tensor out = Tensor::zeros({}, DType::Int64, self.device());
+            out.fill_(Scalar(max_idx));
+            return out;
+        }
+#endif
 
         #define OP_CASE(ctype, name) \
         case DType::name: { \
@@ -5195,6 +5266,13 @@ Tensor argmin_kernel_impl(const Tensor& self, std::optional<int64_t> dim, bool k
         // Flatten
         Tensor self_contig = self.contiguous();
         int64_t min_idx = 0;
+#if defined(__x86_64__)
+        if (try_extremum_flattened_real<false>(self_contig, &min_idx)) {
+            Tensor out = Tensor::zeros({}, DType::Int64, self.device());
+            out.fill_(Scalar(min_idx));
+            return out;
+        }
+#endif
         
         #define OP_CASE(ctype, name) \
         case DType::name: { \
