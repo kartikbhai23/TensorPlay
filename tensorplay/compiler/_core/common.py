@@ -11,13 +11,12 @@
 from __future__ import annotations
 
 import collections
-import logging
 from collections.abc import Callable, Iterable
 from typing import Any
 
 import tensorplay
 
-log = logging.getLogger(__name__)
+from .registry import check_backend_kwargs
 
 __all__ = [
     "AotAutograd",
@@ -58,8 +57,13 @@ class AotAutograd:
         self.kwargs = kwargs
 
     def __call__(self, gm: Any, example_inputs: list[Any], **kwargs: Any) -> Callable[..., Any]:
-        if kwargs and not getattr(self, "options_bound", False):
-            log.warning("aot_autograd-based backend ignoring extra kwargs %s", kwargs)
+        check_backend_kwargs(
+            "aot_autograd",
+            kwargs,
+            # The frontend's settings were bound into the compilers when this
+            # backend was built with them; handed in again they are not extra.
+            extra_allowed=("mode", "options") if getattr(self, "options_bound", False) else (),
+        )
 
         from .aot_autograd import aot_module_simplified
 

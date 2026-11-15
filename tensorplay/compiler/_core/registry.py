@@ -25,7 +25,7 @@ import functools
 import importlib.util
 import re
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any, Protocol
@@ -166,6 +166,35 @@ def unregister_backend(name: str) -> None:
         _compiler_fns.pop(name, None)
         _backend_tags.pop(name, None)
         _backend_capabilities.pop(name, None)
+
+
+#: Keywords that describe the region rather than ask a backend for anything:
+#: its name, whether its shapes are symbolic, and whether a native artifact is
+#: required.  Every backend may be handed these whatever it does with them.
+_REGION_KEYWORDS = frozenset({"name", "dynamic", "strict_native"})
+
+
+def check_backend_kwargs(
+    backend: str,
+    kwargs: Mapping[str, Any],
+    *,
+    extra_allowed: Sequence[str] = (),
+) -> None:
+    """Refuse a request the frontend offered that this backend cannot honour.
+
+    The frontend hands a backend the settings the caller asked for.  A backend
+    that accepts one and does nothing about it returns an artifact built to a
+    different request than the one made, which is worse than refusing: the
+    caller has no way to tell the difference afterwards.
+    """
+
+    allowed = set(_REGION_KEYWORDS) | set(extra_allowed)
+    extra = sorted(set(kwargs) - allowed)
+    if extra:
+        raise RuntimeError(
+            f"the {backend!r} backend cannot honour {extra!r}; "
+            "select a backend that supports it, or stop asking for it"
+        )
 
 
 def _load_builtins() -> None:

@@ -562,3 +562,42 @@ def test_generated_kernel_backends_declare_the_features_they_have():
         BackendFeature.INPLACE_BUFFERS,
         BackendFeature.REDUCE_TO_SINGLE_ELEMENT,
     }
+
+
+def test_a_backend_without_modes_refuses_a_mode():
+    """A mode asks for tuning this backend has no way to do.
+
+    Accepting it and compiling the same artifact anyway would report
+    performance the caller did not ask for as if it had been asked for.
+    """
+
+    compiled = tp.compile(lambda a: a * 2, backend="eager", mode="max-autotune")
+    with pytest.raises(RuntimeError, match="cannot honour"):
+        compiled(tp.ones(2))
+
+
+def test_a_backend_without_options_refuses_one():
+    compiled = tp.compile(
+        lambda a: a * 2, backend="eager", options={"stax.fusion": False}
+    )
+    with pytest.raises(RuntimeError, match="cannot honour"):
+        compiled(tp.ones(2))
+
+
+def test_cudagraphs_skips_dynamic_regions(caplog):
+    """Shapes that change between calls cannot be frozen into a capture."""
+
+    compiled = tp.compile(lambda a: a * 2, backend="cudagraphs", dynamic=True)
+    with caplog.at_level("WARNING", logger="tensorplay._stax.cudagraphs"):
+        assert compiled(tp.tensor([1.0, 2.0])).tolist() == [2.0, 4.0]
+    assert "dynamic shape specialization" in caplog.text
+
+
+def test_cudagraphs_strict_native_rejects_dynamic_regions():
+    from tensorplay._stax import CudaGraphError
+
+    compiled = tp.compile(
+        lambda a: a * 2, backend="cudagraphs", dynamic=True, strict_native=True
+    )
+    with pytest.raises(CudaGraphError, match="dynamic shape specialization"):
+        compiled(tp.tensor([1.0]))

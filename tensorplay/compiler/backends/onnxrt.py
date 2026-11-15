@@ -19,16 +19,13 @@ and the region lives on that device.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from typing import Any
 
 from ...graph import GraphModule
-from .._core.registry import BackendCapabilities, declares_capabilities
+from .._core.registry import BackendCapabilities, check_backend_kwargs, declares_capabilities
 
 __all__ = ["onnxrt"]
-
-log = logging.getLogger(__name__)
 
 
 def _providers_for(device_type: str) -> list[str]:
@@ -56,8 +53,7 @@ def onnxrt(
     example_inputs: list[Any],
     **kwargs: Any,
 ) -> Callable[..., Any]:
-    if kwargs:
-        log.warning("onnxrt backend ignoring extra kwargs %s", kwargs)
+    check_backend_kwargs("onnxrt", kwargs)
 
     try:
         import onnxruntime

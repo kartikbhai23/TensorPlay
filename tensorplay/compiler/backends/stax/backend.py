@@ -15,6 +15,7 @@ import warnings
 from typing import Any
 
 from ....graph import GraphModule
+from ..._core.registry import check_backend_kwargs
 from . import config
 # Option patch each compile ``mode`` selects, keyed by the backend option
 # namespace.  ``default`` leaves every knob at its built-in value;
@@ -98,7 +99,10 @@ def stax(
     compiler error, so a benchmark can never report the Python GraphModule
     executor as compiled performance.
     """
-    del name, kwargs
+    # ``name`` only labels the region.  Anything else handed in that this
+    # entry does not name itself is a request nothing would honour.
+    del name
+    check_backend_kwargs("stax", kwargs)
     if mode not in (None, *_MODE_OPTIONS):
         raise RuntimeError(f"unknown Stax optimization mode: {mode!r}")
     # A mode's option patch is applied first; explicit options overlay it

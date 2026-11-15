@@ -23,22 +23,19 @@ generating code.  All are registered with the ``debug`` tag, so
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from typing import Any
 
 from ...graph import GraphModule
+from .._core.registry import check_backend_kwargs
 from .._core.registry import register_debug_backend as register_backend
-
-log = logging.getLogger(__name__)
 
 
 @register_backend
 def eager(
     gm: GraphModule, example_inputs: list[Any], **kwargs: Any
 ) -> Callable[..., Any]:
-    if kwargs:
-        log.warning("eager backend ignoring extra kwargs %s", kwargs)
+    check_backend_kwargs("eager", kwargs)
     return gm.forward
 
 
@@ -46,8 +43,7 @@ def eager(
 def eager_noexcept(
     gm: GraphModule, example_inputs: list[Any], **kwargs: Any
 ) -> Callable[..., Any]:
-    if kwargs:
-        log.warning("eager_noexcept backend ignoring extra kwargs %s", kwargs)
+    check_backend_kwargs("eager_noexcept", kwargs)
 
     def inner(*args: Any, **call_kwargs: Any) -> Any:
         try:
@@ -64,8 +60,7 @@ def eager_noexcept(
 def eager_debug(
     gm: GraphModule, example_inputs: list[Any], **kwargs: Any
 ) -> Callable[..., Any]:
-    if kwargs:
-        log.warning("eager_debug backend ignoring extra kwargs %s", kwargs)
+    check_backend_kwargs("eager_debug", kwargs)
 
     from ...graph.interpreter import Interpreter
     from tensorplay._subclasses.schema_check_mode import SchemaCheckMode

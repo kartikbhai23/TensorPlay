@@ -27,6 +27,8 @@ import threading
 import weakref
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from .._core.registry import check_backend_kwargs
+
 
 class CudaGraphError(RuntimeError):
     """Raised for capture/replay contract violations."""
@@ -361,9 +363,6 @@ class CudaGraphManager:
 # is logged.
 
 log = logging.getLogger(__name__)
-
-# Frontend keywords every backend receives; they carry no cudagraphs option.
-_FRONTEND_KWARGS = frozenset({"name", "dynamic"})
 
 # Host-synchronizing or data-dependent-shape operations: a capture would
 # either fail or freeze one run's result/shape into every replay.
@@ -703,16 +702,24 @@ class CudagraphsBackend:
     @staticmethod
     def __call__(gm: Any, example_inputs: Sequence[Any], **kwargs: Any) -> Any:
         strict_native = bool(kwargs.pop("strict_native", False))
-        extra = {key: value for key, value in kwargs.items() if key not in _FRONTEND_KWARGS}
-        if extra:
-            log.warning("cudagraphs backend ignoring extra kwargs %s", extra)
-        return cudagraphs(gm, example_inputs, strict_native=strict_native)
+        dynamic = bool(kwargs.pop("dynamic", False))
+        # ``name`` is only a label; anything else the caller asked for has to
+        # be answered or refused, since this backend has no modes or options
+        # of its own.
+        check_backend_kwargs("cudagraphs", kwargs)
+        return cudagraphs(
+            gm, example_inputs, strict_native=strict_native, dynamic=dynamic
+        )
 
 
-def _cudagraphify(gm: Any, strict_native: bool) -> Any:
+def _cudagraphify(gm: Any, strict_native: bool, dynamic: bool = False) -> Any:
     """A replaying runner for ``gm``, or None when it cannot be captured."""
 
-    skip = check_for_skip(gm)
+    skip = (
+        format_default_skip_message("dynamic shape specialization")
+        if dynamic
+        else check_for_skip(gm)
+    )
     if skip is not None:
         if strict_native:
             raise CudaGraphError(f"strict_native=True: {skip}")
@@ -725,7 +732,13 @@ def _cudagraphify(gm: Any, strict_native: bool) -> Any:
     return runner
 
 
-def cudagraphs(gm: Any, example_inputs: Sequence[Any], *, strict_native: bool = False) -> Any:
+def cudagraphs(
+    gm: Any,
+    example_inputs: Sequence[Any],
+    *,
+    strict_native: bool = False,
+    dynamic: bool = False,
+) -> Any:
     """Capture the forward and the backward graph of ``gm`` separately.
 
     Ahead-of-time autograd splits the region into a forward and a backward
@@ -741,7 +754,7 @@ def cudagraphs(gm: Any, example_inputs: Sequence[Any], *, strict_native: bool = 
     do_cudagraphs = [True]
 
     def forward_cudagraphs(aot_model: Any, aot_inputs: list[Any], is_inference: bool = False) -> Any:
-        runner = _cudagraphify(aot_model, strict_native)
+        runner = _cudagraphify(aot_model, strict_native, dynamic)
         if runner is None:
             do_cudagraphs[0] = False
             return aot_model.forward
@@ -750,7 +763,7 @@ def cudagraphs(gm: Any, example_inputs: Sequence[Any], *, strict_native: bool = 
     def backward_cudagraphs(aot_model: Any, aot_inputs: list[Any]) -> Any:
         if not do_cudagraphs[0]:
             return aot_model.forward
-        runner = _cudagraphify(aot_model, strict_native)
+        runner = _cudagraphify(aot_model, strict_native, dynamic)
         return aot_model.forward if runner is None else runner
 
     aot_cudagraphs = aot_autograd(
