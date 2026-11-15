@@ -329,19 +329,29 @@ class MMKernelInputs(KernelInputs):
         return tuple(b if a == 1 else a for a, b in zip(leading, other))
 
     def mnk(self) -> tuple:
-        """The three extents a product reduces over, in the order the table wants."""
+        """The three extents a product reduces over, as whole numbers.
+
+        A caller that sizes a block or a grid against them needs numbers, so a
+        product whose extents are still symbolic cannot answer this.
+        """
+
+        m, n, k = self.mnk_symbolic()
+        return int(m), int(n), int(k)
+
+    def mnk_symbolic(self) -> tuple:
+        """The extents as written, for a shape that does not need them numbered.
+
+        A result's layout is described by the extents themselves, so it can be
+        described before they are numbers -- and a region captured with
+        symbolic extents never has numbers for them until it runs.
+        """
 
         first, second = self.mat1mat2()
-        m, k = int(first[-2]), int(first[-1])
-        k2, n = int(second[-2]), int(second[-1])
+        m, k = first[-2], first[-1]
+        k2, n = second[-2], second[-1]
         if k != k2:
             raise NotImplementedError(f"operands contracting {k} and {k2}")
         return m, n, k
-
-    def mnk_symbolic(self) -> tuple:
-        """The extents as written, for a grid sized before it is run."""
-
-        return self.mnk()
 
     def mnk_hinted(self) -> tuple:
         """The extents as whole numbers, for a heuristic sizing itself."""
@@ -389,7 +399,7 @@ class MMKernelInputs(KernelInputs):
         from .ir import FixedLayout, FlexibleLayout
         from .templates.ir import contiguous_stride
 
-        m, n, _k = self.mnk()
+        m, n, _k = self.mnk_symbolic()
         size = (*self.batch(), m, n)
         if flexible:
             # A layout that may still change is given the extents and left to
