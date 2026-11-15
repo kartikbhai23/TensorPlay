@@ -1062,7 +1062,7 @@ def tuned_scaled_mm(
 
 
 @register_lowering(framework.addmm, type_promotion_kind=None)
-def tuned_addmm(inp, mat1, mat2, *, alpha=1, beta=1, layout=None):
+def tuned_addmm(inp, mat1, mat2, beta=1, alpha=1, *, layout=None):
     """A product with a bias, measured against everything that can compute one.
 
     A bias of zero is the plain product with a subtraction nobody asked for, so a
@@ -1070,6 +1070,12 @@ def tuned_addmm(inp, mat1, mat2, *, alpha=1, beta=1, layout=None):
     product multiplied by zero is a constant, which no measurement can improve on.
     Both are decided before anything is measured, because a measurement of them
     would be a measurement of a call that was never going to be that shape.
+
+    The two scalars are positional as well as named, because a call written
+    through the function that declares them -- as most calls are -- records them
+    in the order that function takes them: the addend's multiplier first, then
+    the product's.  A lowering that only accepted them by name would refuse every
+    call written that way.
     """
 
     if beta == 0 and mat1.get_device().type == "cuda":
@@ -1182,8 +1188,8 @@ _fallback_addmm_default = fallback_handler(
 
 
 @register("addmm.default")
-def lower_addmm_default(inp, mat1, mat2, *, alpha=1, beta=1):
-    result = tuned_addmm(inp, mat1, mat2, alpha=alpha, beta=beta)
+def lower_addmm_default(inp, mat1, mat2, beta=1, alpha=1):
+    result = tuned_addmm(inp, mat1, mat2, beta=beta, alpha=alpha)
     if result is None:
         return _fallback_addmm_default(
             inp, mat1, mat2, alpha=alpha, beta=beta

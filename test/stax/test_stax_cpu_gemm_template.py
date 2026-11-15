@@ -114,6 +114,38 @@ def test_a_narrow_product_is_computed_in_float(dtype):
     assert _templated_kernels() == before + 1
 
 
+def test_the_positional_spelling_of_a_product_with_a_bias_is_lowered():
+    """A call written through the function that declares the scalars is lowered.
+
+    The function takes the addend's multiplier and then the product's, and
+    records them in that order -- so a lowering that only accepted them by name
+    would refuse every call written that way, which is what a program written
+    against the function produces.  The second call is the one that matters: a
+    call compiled once is captured again when a later call's shapes differ, and
+    that second capture is the one written this way.
+    """
+
+    import warnings
+
+    def addmm(bias, x, weight):
+        return tp.addmm(bias, x, weight)
+
+    x = tp.randn(64, 128)
+    weight = tp.randn(128, 96)
+    row_bias = tp.randn(96)
+    matrix_bias = tp.randn(64, 96)
+    with warnings.catch_warnings():
+        # A call that could not be lowered is answered by the graph executor
+        # with a warning, so a warning here is the failure this pins.
+        warnings.simplefilter("error", UserWarning)
+        with config.patch(MEASURED_AS_CPP):
+            compiled = tp.compile(addmm, backend="stax")
+            row = compiled(row_bias, x, weight)
+            matrix = compiled(matrix_bias, x, weight)
+    assert float((row - tp.addmm(row_bias, x, weight)).abs().max().item()) <= 1e-4
+    assert float((matrix - tp.addmm(matrix_bias, x, weight)).abs().max().item()) <= 1e-4
+
+
 def test_nothing_is_prepared_when_nothing_is_measured():
     """Without a measurement the library's own kernel answers, as before."""
 
