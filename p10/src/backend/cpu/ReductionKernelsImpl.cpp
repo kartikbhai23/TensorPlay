@@ -5205,7 +5205,10 @@ Tensor extrema_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& d
                                   self.dtype(), self.device());
     if (result.numel() == 0) return result;
     Tensor viewed = review_reduce_result(result, ndim, mask, keepdim);
-    TensorIterator iter = TensorIterator::reduce_op(viewed, self);
+// The walks below answer without the reduction iterator, so the iterator is
+// only built by the branches that need it.
+#define TP_EXTREMA_ITER() \
+    TensorIterator iter = TensorIterator::reduce_op(viewed, self)
 #define TP_EXTREMA_CASE(ctype, name) \
     case DType::name: \
         if constexpr (std::is_same_v<ctype, tensorplay::Half> || \
@@ -5231,14 +5234,17 @@ Tensor extrema_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& d
             } \
         } \
         if constexpr (std::is_integral_v<ctype> && sizeof(ctype) == 8) { \
+            TP_EXTREMA_ITER(); \
             binary_kernel_reduce(iter, ExtremaValuesOps<ctype>{maximum_value}, \
                                  extrema_identity<ctype>(maximum_value)); \
         } else if (maximum_value) { \
+            TP_EXTREMA_ITER(); \
             binary_kernel_reduce_vec(iter, \
                 [](ctype a, ctype b) -> ctype { return nan_max(a, b); }, \
                 [](Vectorized<ctype> a, Vectorized<ctype> b) { return maximum(a, b); }, \
                 static_cast<double>(extrema_identity<ctype>(true))); \
         } else { \
+            TP_EXTREMA_ITER(); \
             binary_kernel_reduce_vec(iter, \
                 [](ctype a, ctype b) -> ctype { return nan_min(a, b); }, \
                 [](Vectorized<ctype> a, Vectorized<ctype> b) { return minimum(a, b); }, \
@@ -5250,6 +5256,7 @@ Tensor extrema_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& d
         default: TP_THROW(TypeError, "extrema reduction: unsupported dtype");
     }
 #undef TP_EXTREMA_CASE
+#undef TP_EXTREMA_ITER
     return result;
 }
 
