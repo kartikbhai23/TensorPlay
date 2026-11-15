@@ -718,6 +718,62 @@ __m256 fold_rows_hw(const uint16_t* p, int64_t cols) {
     }
 }
 
+// A running product that has decayed into the range a float no longer holds
+// with full precision is multiplied far more slowly than a normal one, and a
+// column of small factors spends most of its walk there.  Each column of a band
+// is therefore scaled up by a power of two as soon as it falls below 2^-64 --
+// its value is unchanged, since the factor is exact -- and scaled back once
+// when its totals leave; a column that has grown past 2^60 is scaled back at
+// once so that the scaling can never overflow.  Columns are scaled one at a
+// time, so a band whose columns decay at different rates keeps every one of
+// them in the range where a multiply answers at full speed.
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+void keep_totals_in_range(__m256& a, __m256i& shiftv) {
+    // A column is scaled by its own magnitude: a negative column of ordinary
+    // size is not small, and a column that is already zero stays there.
+    const __m256 magnitude =
+        _mm256_andnot_ps(_mm256_set1_ps(-0.f), a);
+    const __m256 small = _mm256_and_ps(
+        _mm256_cmp_ps(magnitude, _mm256_set1_ps(0x1p-64f), _CMP_LT_OQ),
+        _mm256_cmp_ps(magnitude, _mm256_setzero_ps(), _CMP_GT_OQ));
+    const __m256i grown = _mm256_and_si256(
+        _mm256_castps_si256(
+            _mm256_cmp_ps(magnitude, _mm256_set1_ps(0x1p60f), _CMP_GT_OQ)),
+        _mm256_cmpgt_epi32(shiftv, _mm256_setzero_si256()));
+    if ((_mm256_movemask_ps(small) |
+         _mm256_movemask_ps(_mm256_castsi256_ps(grown))) == 0) {
+        return;
+    }
+    const __m256i sixty_four = _mm256_set1_epi32(64);
+    if (_mm256_movemask_ps(small) != 0) {
+        a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_set1_ps(0x1p64f)),
+                            small);
+        shiftv = _mm256_add_epi32(
+            shiftv, _mm256_and_si256(_mm256_castps_si256(small), sixty_four));
+    }
+    if (_mm256_movemask_ps(_mm256_castsi256_ps(grown)) != 0) {
+        a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_set1_ps(0x1p-64f)),
+                            _mm256_castsi256_ps(grown));
+        shiftv = _mm256_sub_epi32(
+            shiftv, _mm256_and_si256(grown, sixty_four));
+    }
+}
+
+// The scaling a band carries applied to its totals, one power of two at a time:
+// each step leaves a value no smaller than the answer that follows, so an
+// intermediate cannot flush to zero while the answer would not.
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+void rescale_totals(__m256& a, __m256i shiftv) {
+    __m256i live = _mm256_cmpgt_epi32(shiftv, _mm256_setzero_si256());
+    while (_mm256_movemask_ps(_mm256_castsi256_ps(live)) != 0) {
+        a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_set1_ps(0x1p-64f)),
+                             _mm256_castsi256_ps(live));
+        shiftv = _mm256_sub_epi32(
+            shiftv, _mm256_and_si256(live, _mm256_set1_epi32(64)));
+        live = _mm256_cmpgt_epi32(shiftv, _mm256_setzero_si256());
+    }
+}
+
 // The leading axis of a packed tensor, multiplied a whole row into per-worker
 // column totals.
 template <bool BFloat>
@@ -743,6 +799,9 @@ void multiply_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
         int64_t c = 0;
         for (; c + 32 <= cols; c += 32) {
             __m256 a[4];
+            __m256i shift[4] = {_mm256_setzero_si256(), _mm256_setzero_si256(),
+                                _mm256_setzero_si256(),
+                                _mm256_setzero_si256()};
             for (int64_t k = 0; k < 4; ++k) {
                 a[k] = _mm256_loadu_ps(acc + c + 8 * k);
             }
@@ -750,29 +809,37 @@ void multiply_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
             for (; r + kFold <= r1; r += kFold) {
                 for (int64_t k = 0; k < 4; ++k) {
                     const uint16_t* rp = x + r * cols + c + 8 * k;
-                    a[k] = _mm256_mul_ps(a[k], fold_rows_hw<BFloat, kFold>(rp, cols));
+                    a[k] = _mm256_mul_ps(a[k],
+                                         fold_rows_hw<BFloat, kFold>(rp, cols));
+                    keep_totals_in_range(a[k], shift[k]);
                 }
             }
             for (; r < r1; ++r) {
                 const uint16_t* rp = x + r * cols + c;
                 for (int64_t k = 0; k < 4; ++k) {
                     a[k] = _mm256_mul_ps(a[k], widen_row8<BFloat>(rp + 8 * k));
+                    keep_totals_in_range(a[k], shift[k]);
                 }
             }
             for (int64_t k = 0; k < 4; ++k) {
+                rescale_totals(a[k], shift[k]);
                 _mm256_storeu_ps(acc + c + 8 * k, a[k]);
             }
         }
         for (; c + 8 <= cols; c += 8) {
             __m256 a = _mm256_loadu_ps(acc + c);
+            __m256i shift = _mm256_setzero_si256();
             int64_t r = r0;
             for (; r + kFold <= r1; r += kFold) {
                 a = _mm256_mul_ps(
                     a, fold_rows_hw<BFloat, kFold>(x + r * cols + c, cols));
+                keep_totals_in_range(a, shift);
             }
             for (; r < r1; ++r) {
                 a = _mm256_mul_ps(a, widen_row8<BFloat>(x + r * cols + c));
+                keep_totals_in_range(a, shift);
             }
+            rescale_totals(a, shift);
             _mm256_storeu_ps(acc + c, a);
         }
         if (c < cols) {
@@ -787,10 +854,12 @@ void multiply_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
             std::memcpy(held, acc + c,
                         static_cast<size_t>(keep) * sizeof(float));
             __m256 a = _mm256_load_ps(held);
+            __m256i shift = _mm256_setzero_si256();
             int64_t r = r0;
             for (; r + kFold <= r1; r += kFold) {
                 a = _mm256_mul_ps(
                     a, fold_rows_hw<BFloat, kFold>(x + r * cols + c, cols));
+                keep_totals_in_range(a, shift);
             }
             for (; r < r1; ++r) {
                 const uint16_t* rp = x + r * cols + c;
@@ -807,7 +876,9 @@ void multiply_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
                     b = widen_row8<BFloat>(rp);
                 }
                 a = _mm256_mul_ps(a, b);
+                keep_totals_in_range(a, shift);
             }
+            rescale_totals(a, shift);
             _mm256_store_ps(held, a);
             std::memcpy(acc + c, held,
                         static_cast<size_t>(keep) * sizeof(float));
