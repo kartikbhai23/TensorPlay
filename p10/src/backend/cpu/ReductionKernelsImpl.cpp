@@ -5264,6 +5264,14 @@ inline int nan_lanes(const Vectorized<ctype>& value) {
 }
 #endif
 
+// A compare that reports a not-a-number from either operand.
+template <bool WantMax>
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+__m256 extremum_step8(const __m256& a, const __m256& b) {
+    const __m256 pick = WantMax ? _mm256_max_ps(a, b) : _mm256_min_ps(a, b);
+    return _mm256_or_ps(pick, _mm256_cmp_ps(a, b, _CMP_UNORD_Q));
+}
+
 // A run shorter than one step still reads a whole step per row: the lanes past
 // the run are replaced by the identity, so a row's compare cannot see the next
 // row's values.  Only the tensor's own last row needs a padded copy to read,
@@ -5411,6 +5419,132 @@ void fold_step_rows_hw(const uint16_t* in, int64_t run, int64_t begin,
     }
 }
 
+// One band of a row whose run does not fill it: the lanes past the run belong to
+// whatever follows in the buffer, so they are replaced by the identity before
+// the band is compared.  The tensor's own last row instead reads through a copy
+// whose remaining lanes repeat one of the row's own values.
+template <bool BFloat>
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+__m256 fold_kept_band_hw(const uint16_t* p, int64_t keep, const __m256& ident,
+                         const __m256& drop, bool pad) {
+    if (pad) {
+        alignas(16) uint16_t copy[8];
+        std::memcpy(copy, p, static_cast<size_t>(keep) * sizeof(uint16_t));
+        for (int64_t k = keep; k < 8; ++k) copy[k] = copy[0];
+        return widen_row8<BFloat>(copy);
+    }
+    return _mm256_blendv_ps(widen_row8<BFloat>(p), ident, drop);
+}
+
+// One packed row of a few dozen columns, widened a band at a time and compared
+// in single precision.  A run narrower than one band is that one kept band.
+template <bool BFloat, bool WantMax>
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+__m256 fold_row_bands_hw(const uint16_t* p, int64_t wide, int64_t rem,
+                         const __m256& ident, const __m256& drop, bool pad) {
+    if (wide == 0) {
+        return fold_kept_band_hw<BFloat>(p, rem, ident, drop, pad);
+    }
+    __m256 a = widen_row8<BFloat>(p);
+    for (int64_t c = 8; c < wide; c += 8) {
+        a = extremum_step8<WantMax>(a, widen_row8<BFloat>(p + c));
+    }
+    if (rem > 0) {
+        a = extremum_step8<WantMax>(
+            a, fold_kept_band_hw<BFloat>(p + wide, rem, ident, drop, pad));
+    }
+    return a;
+}
+
+template <bool WantMax>
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+float horizontal_extremum8(const __m256& v) {
+    __m256 folded = WantMax
+        ? _mm256_max_ps(v, _mm256_permute2f128_ps(v, v, 0x1))
+        : _mm256_min_ps(v, _mm256_permute2f128_ps(v, v, 0x1));
+    const __m256 swapped = _mm256_shuffle_ps(folded, folded, 0x4E);
+    folded = WantMax ? _mm256_max_ps(folded, swapped)
+                     : _mm256_min_ps(folded, swapped);
+    const __m256 flipped = _mm256_shuffle_ps(folded, folded, 0xB1);
+    folded = WantMax ? _mm256_max_ps(folded, flipped)
+                     : _mm256_min_ps(folded, flipped);
+    return _mm256_cvtss_f32(folded);
+}
+
+// Four packed rows of a few dozen columns at a time: each row's bands fold into
+// one single-precision lane, and the answer narrows once.  A row that holds a
+// not-a-number takes the exact walk, since a horizontal fold drops one from the
+// lane it sits in when a later lane wins the compare.
+template <bool BFloat, bool WantMax>
+__attribute__((target("avx2,fma,f16c"), noinline))
+void fold_short_rows_hw(const uint16_t* in, int64_t run, int64_t begin,
+                        int64_t end, uint16_t* out, int64_t last_row) {
+    using Packed = std::conditional_t<BFloat, tensorplay::BFloat16,
+                                      tensorplay::Half>;
+    const int64_t wide = run & ~static_cast<int64_t>(7);
+    const int64_t rem = run - wide;
+    // A band that a run leaves partly filled keeps its first `rem` lanes and
+    // drops the rest; the dropped lanes take the identity of the wanted
+    // direction so that they cannot win the compare.
+    const int64_t keep = rem > 0 ? rem : 8;
+    const __m256 ident = _mm256_set1_ps(
+        WantMax ? -std::numeric_limits<float>::infinity()
+                : std::numeric_limits<float>::infinity());
+    alignas(32) int32_t dropbits[8];
+    for (int64_t k = 0; k < 8; ++k) dropbits[k] = k < keep ? 0 : -1;
+    const __m256 drop = _mm256_castsi256_ps(
+        _mm256_load_si256(reinterpret_cast<const __m256i*>(dropbits)));
+    int64_t r = begin;
+    for (; r + 4 <= end; r += 4) {
+        const uint16_t* p0 = in + (r + 0) * run;
+        const uint16_t* p1 = in + (r + 1) * run;
+        const uint16_t* p2 = in + (r + 2) * run;
+        const uint16_t* p3 = in + (r + 3) * run;
+        __m256 a0 = fold_row_bands_hw<BFloat, WantMax>(p0, wide, rem, ident,
+                                                      drop, false);
+        __m256 a1 = fold_row_bands_hw<BFloat, WantMax>(p1, wide, rem, ident,
+                                                      drop, false);
+        __m256 a2 = fold_row_bands_hw<BFloat, WantMax>(p2, wide, rem, ident,
+                                                      drop, false);
+        __m256 a3 = fold_row_bands_hw<BFloat, WantMax>(p3, wide, rem, ident,
+                                                      drop, r + 3 == last_row);
+        const uint16_t* rows[4] = {p0, p1, p2, p3};
+        __m256 held[4] = {a0, a1, a2, a3};
+        for (int64_t k = 0; k < 4; ++k) {
+            if (_mm256_movemask_ps(
+                    _mm256_cmp_ps(held[k], held[k], _CMP_UNORD_Q)) != 0) {
+                reinterpret_cast<Packed*>(out)[r + k] = WantMax
+                    ? fold_run_extremum_short<Packed, true>(
+                          reinterpret_cast<const Packed*>(rows[k]), run)
+                    : fold_run_extremum_short<Packed, false>(
+                          reinterpret_cast<const Packed*>(rows[k]), run);
+            } else {
+                const float answer = horizontal_extremum8<WantMax>(held[k]);
+                out[r + k] = BFloat
+                    ? tensorplay::cpu::vecreduced::narrow_bf16_one(answer)
+                    : tensorplay::cpu::vecreduced::narrow_one_hw(answer);
+            }
+        }
+    }
+    for (; r < end; ++r) {
+        const uint16_t* p = in + r * run;
+        const __m256 a = fold_row_bands_hw<BFloat, WantMax>(
+            p, wide, rem, ident, drop, r == last_row);
+        if (_mm256_movemask_ps(_mm256_cmp_ps(a, a, _CMP_UNORD_Q)) != 0) {
+            reinterpret_cast<Packed*>(out)[r] = WantMax
+                ? fold_run_extremum_short<Packed, true>(
+                      reinterpret_cast<const Packed*>(p), run)
+                : fold_run_extremum_short<Packed, false>(
+                      reinterpret_cast<const Packed*>(p), run);
+        } else {
+            const float answer = horizontal_extremum8<WantMax>(a);
+            out[r] = BFloat
+                ? tensorplay::cpu::vecreduced::narrow_bf16_one(answer)
+                : tensorplay::cpu::vecreduced::narrow_one_hw(answer);
+        }
+    }
+}
+
 // A single trailing dimension of a dense tensor is one contiguous run per row,
 // so the rows can go straight to the pool and skip the reduction iterator with
 // its identity fill and its per-element stride machinery.  Answers agree with
@@ -5464,15 +5598,12 @@ bool fold_trailing_extrema(Tensor& result, const Tensor& self, int64_t ndim,
         }
         if (run > 512) return false;
         auto fold_bits = [&](int64_t begin, int64_t end) {
-            for (int64_t r = begin; r < end; ++r) {
-                int64_t holder = 0;
-                if (maximum_value) {
-                    reduced_row_extremum<true, kBFloat>(bits + r * run, run,
-                                                        obits + r, &holder);
-                } else {
-                    reduced_row_extremum<false, kBFloat>(bits + r * run, run,
-                                                         obits + r, &holder);
-                }
+            if (maximum_value) {
+                fold_short_rows_hw<kBFloat, true>(bits, run, begin, end, obits,
+                                                  rows - 1);
+            } else {
+                fold_short_rows_hw<kBFloat, false>(bits, run, begin, end, obits,
+                                                   rows - 1);
             }
         };
         if (self.numel() < GRAIN_SIZE || get_num_threads() == 1 ||
@@ -5557,14 +5688,6 @@ bool fold_whole_extrema(Tensor& result, const Tensor& self, int64_t ndim,
     }
     *out = best;
     return true;
-}
-
-// A compare that reports a not-a-number from either operand.
-template <bool WantMax>
-__attribute__((target("avx2,fma,f16c"), always_inline)) inline
-__m256 extremum_step8(const __m256& a, const __m256& b) {
-    const __m256 pick = WantMax ? _mm256_max_ps(a, b) : _mm256_min_ps(a, b);
-    return _mm256_or_ps(pick, _mm256_cmp_ps(a, b, _CMP_UNORD_Q));
 }
 
 // One band of eight widened columns written back in the packed width.
