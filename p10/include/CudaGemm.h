@@ -74,6 +74,15 @@ bool try_grouped_gemm_tensor_op(const Tensor& self, const Tensor& mat2,
 // Zero-fill used for empty-K GEMM outputs.
 Tensor& zero_matmul_output_cuda(Tensor& output);
 
+// In-place addmv: self = beta * self + alpha * (mat @ vec), computed in the
+// seed's own buffer so the beta term reads what is already there instead of
+// materializing a separate output and copying it back.  Returns false, with
+// `self` untouched, when the operands need promotion or the seed is not a
+// dense vector of the result type; the caller then falls back to the
+// out-of-place form.
+bool try_addmv_inplace(Tensor& self, const Tensor& mat, const Tensor& vec,
+                       double beta, double alpha);
+
 // Half-precision GEMV fast path for the memory-bound shapes: N == 1
 // (matrix @ vector) or a small activation batch (M <= 8) against a large
 // output axis.  `other_transposed` reports that `other` is a live (K, N)

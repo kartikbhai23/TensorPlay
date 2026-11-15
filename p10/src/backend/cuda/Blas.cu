@@ -131,6 +131,39 @@ Tensor addmv_cuda(const Tensor& self, const Tensor& mat, const Tensor& vec,
     return result;
 }
 
+bool try_addmv_inplace(Tensor& self, const Tensor& mat, const Tensor& vec,
+                       double beta, double alpha) {
+    if (!all_floating(self, mat, vec)) return false;
+    if (mat.dim() != 2 || vec.dim() != 1) return false;
+    const int64_t m = mat.size(0), k = mat.size(1);
+    if (vec.numel() != k) return false;
+    // The seed must already be the destination vector in the promoted type:
+    // anything else needs a reshape/convert, which the caller's copy fallback
+    // handles at the same cost.
+    const DType dt = promoteTypes(promoteTypes(mat.dtype(), vec.dtype()), self.dtype());
+    if (self.dtype() != dt || self.dim() != 1 || self.size(0) != m ||
+        !self.is_contiguous()) {
+        return false;
+    }
+    if (m == 0) return true;
+    if (k == 0) {
+        // Empty contraction: the product contributes nothing and only the
+        // seed's own weight survives.
+        if (beta == 0.0) {
+            self.zero_();
+        } else if (beta != 1.0) {
+            self.mul_(beta);
+        }
+        return true;
+    }
+    Tensor mc = mat.dtype() == dt ? mat.contiguous() : mat.to(dt).contiguous();
+    Tensor vc = vec.dtype() == dt ? vec.contiguous() : vec.to(dt).contiguous();
+    Tensor v2d = vc.reshape({k, 1});
+    Tensor y2d = self.reshape({m, 1});
+    gemm_impl(mc, v2d, y2d, alpha, beta, nullptr);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // addbmm: beta * self + alpha * sum_i batch1[i] @ batch2[i]
 // ---------------------------------------------------------------------------

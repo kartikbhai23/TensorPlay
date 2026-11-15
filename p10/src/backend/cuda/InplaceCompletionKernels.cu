@@ -12,6 +12,7 @@
 #include "Dispatcher.h"
 #include "GradMode.h"
 #include "Tensor.h"
+#include "CudaGemm.h"
 #include "tensorplay/ops/TPXOpsGenerated.h"
 
 namespace tensorplay {
@@ -52,6 +53,7 @@ Tensor& addmm_inplace_kernel(Tensor& self, const Tensor& mat1, const Tensor& mat
 
 Tensor& addmv_inplace_kernel(Tensor& self, const Tensor& mat, const Tensor& vec, const Scalar& beta, const Scalar& alpha) {
     NoGradGuard __tp_nograd;
+    if (try_addmv_inplace(self, mat, vec, beta.toDouble(), alpha.toDouble())) return self;
     self.copy_(Tensor::addmv(self, mat, vec, beta, alpha));
     return self;
 }
