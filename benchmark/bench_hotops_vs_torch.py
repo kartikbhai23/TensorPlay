@@ -2,7 +2,8 @@
 
 Covers the hot operators seen in training/inference workloads:
 elementwise unary/binary, reductions, matmul family, normalization,
-softmax family, pooling/conv, embedding, gather/scatter-ish indexing.
+softmax family, pooling/conv, embedding, gather/scatter-ish indexing,
+and the losses whose planes are folded in a single walk.
 
 Each cell reports the best-of-`reps` wall-clock milliseconds.  Both
 runtimes are pinned to the same thread count and get the same warmup.
@@ -145,6 +146,79 @@ def build_cases(dtype):
     add("permute_2013_copy[32x64x56x56]",
         lambda a: a.permute(0, 2, 3, 1).contiguous(), lambda a: a.permute(0, 2, 3, 1).contiguous(),
         _np(dtype, 32, 64, 56, 56))
+
+    # losses: the score and margin planes are walked in one pass, so these
+    # cells pin the fused kernels against the reference reduction.
+    n, classes = 1 << 15, 512
+    scores = _np(dtype, n, classes)
+    labels = np.random.RandomState(5).randint(0, classes, n).astype(np.int64)
+    add(f"nll_loss[{n}x{classes}]",
+        lambda a, t: tF.nll_loss(a, t), lambda a, t: pF.nll_loss(a, t),
+        scores, labels)
+    add(f"nll_loss_sum[{n}x{classes}]",
+        lambda a, t: tF.nll_loss(a, t, reduction="sum"),
+        lambda a, t: pF.nll_loss(a, t, reduction="sum"), scores, labels)
+    add(f"cross_entropy[{n}x{classes}]",
+        lambda a, t: tF.cross_entropy(a, t),
+        lambda a, t: pF.cross_entropy(a, t), scores, labels)
+    margin_scores = _np(dtype, n // 4, classes)
+    add(f"multi_margin[{n // 4}x{classes}]",
+        lambda a, t: tF.multi_margin_loss(a, t, p=1),
+        lambda a, t: pF.multi_margin_loss(a, t, p=1),
+        margin_scores, labels[: n // 4])
+    listed_labels = np.full((n // 8, classes), -1, dtype=np.int64)
+    listed_labels[:, :4] = np.argsort(
+        np.random.RandomState(7).rand(n // 8, classes), axis=1)[:, :4]
+    add(f"multilabel_margin[{n // 8}x{classes}]",
+        lambda a, t: tF.multilabel_margin_loss(a, t),
+        lambda a, t: pF.multilabel_margin_loss(a, t),
+        _np(dtype, n // 8, classes), listed_labels)
+    spatial_scores = _np(dtype, 8, 100, 28, 28)
+    spatial_labels = np.random.RandomState(6).randint(
+        0, 100, (8, 28, 28)).astype(np.int64)
+    add("nll_loss2d[8x100x28x28]",
+        lambda a, t: tF.nll_loss(a, t), lambda a, t: pF.nll_loss(a, t),
+        spatial_scores, spatial_labels)
+    plane = _np(dtype, 1 << 20)
+    other = _np(dtype, 1 << 20, seed=1)
+    unit = 0.5 * (1.0 + np.tanh(other))
+    add("mse_loss[1M]", lambda a, b: tF.mse_loss(a, b),
+        lambda a, b: pF.mse_loss(a, b), plane, other)
+    add("l1_loss[1M]", lambda a, b: tF.l1_loss(a, b),
+        lambda a, b: pF.l1_loss(a, b), plane, other)
+    add("smooth_l1_loss[1M]", lambda a, b: tF.smooth_l1_loss(a, b),
+        lambda a, b: pF.smooth_l1_loss(a, b), plane, other)
+    add("huber_loss[1M]", lambda a, b: tF.huber_loss(a, b),
+        lambda a, b: pF.huber_loss(a, b), plane, other)
+    positive = np.exp(other)
+    add("kl_div[1M]", lambda a, b: tF.kl_div(a, b, reduction="batchmean"),
+        lambda a, b: pF.kl_div(a, b, reduction="batchmean"), plane, positive)
+    add("bce[1M]", lambda a, b: tF.binary_cross_entropy(a, b),
+        lambda a, b: pF.binary_cross_entropy(a, b), unit, unit)
+    add("bce_with_logits[1M]",
+        lambda a, b: tF.binary_cross_entropy_with_logits(a, b),
+        lambda a, b: pF.binary_cross_entropy_with_logits(a, b), plane, other)
+    add("soft_margin_loss[1M]", lambda a, b: tF.soft_margin_loss(a, b),
+        lambda a, b: pF.soft_margin_loss(a, b), plane, other)
+    add("poisson_nll_loss[1M]", lambda a, b: tF.poisson_nll_loss(a, b),
+        lambda a, b: pF.poisson_nll_loss(a, b), plane, np.abs(other))
+    add("hinge_embedding_loss[1M]",
+        lambda a, b: tF.hinge_embedding_loss(a, b),
+        lambda a, b: pF.hinge_embedding_loss(a, b), plane, other)
+    add("margin_ranking_loss[1M]",
+        lambda a, b, c: tF.margin_ranking_loss(a, b, c),
+        lambda a, b, c: pF.margin_ranking_loss(a, b, c),
+        plane, other, np.ones_like(plane))
+    wide = _np(dtype, 1 << 13, 512)
+    wide_other = _np(dtype, 1 << 13, 512, seed=1)
+    cos_target = np.ones(wide.shape[0], dtype=dtype)
+    add("cosine_embedding_loss[8192x512]",
+        lambda a, b, c: tF.cosine_embedding_loss(a, b, c),
+        lambda a, b, c: pF.cosine_embedding_loss(a, b, c),
+        wide, wide_other, cos_target)
+    add("triplet_margin_loss[8192x512]",
+        lambda a, b: tF.triplet_margin_loss(a, b, b),
+        lambda a, b: pF.triplet_margin_loss(a, b, b), wide, wide_other)
 
     # misc
     x = _np(dtype, 1 << 20)
