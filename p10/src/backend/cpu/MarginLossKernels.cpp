@@ -19,6 +19,8 @@
 #include "Scalar.h"
 #include "Exception.h"
 #include "DTypeNames.h"
+#include "LossReduce.h"
+#include "cpu/LossVecKernels.h"
 #include "tensorplay/ops/TPXOpsGenerated.h"
 
 #include <vector>
@@ -33,6 +35,12 @@
 
 namespace tensorplay {
 namespace cpu {
+
+// The tier-compiled walks live in LossVecKernelsImpl.cpp.
+DEFINE_DISPATCH(multi_margin_rows_stub);
+DEFINE_DISPATCH(multi_margin_grad_stub);
+DEFINE_DISPATCH(multilabel_margin_rows_stub);
+DEFINE_DISPATCH(multilabel_margin_grad_stub);
 
 namespace {
 
@@ -49,6 +57,18 @@ Tensor as_long_contiguous(const Tensor& target) {
     Tensor t = target.contiguous();
     if (t.dtype() != DType::Int64) t = t.to(DType::Int64);
     return t;
+}
+
+// The incoming seed may be a different float width than the score plane; the
+// walk writes at the plane's width, so read the seed at that width too.
+Tensor same_width_seed(const Tensor& grad, const Tensor& input) {
+    const bool grad_float = grad.dtype() == DType::Float32 ||
+                            grad.dtype() == DType::Float64;
+    const bool input_float = input.dtype() == DType::Float32 ||
+                             input.dtype() == DType::Float64;
+    if (grad_float && input_float && grad.dtype() != input.dtype())
+        return grad.to(input.dtype());
+    return grad;
 }
 
 void multi_margin_shape_check(int64_t& nframe, int64_t& dim, const Tensor& input,
@@ -364,17 +384,95 @@ Tensor multi_margin_loss_cpu(const Tensor& input, const Tensor& target, const Sc
     const int64_t pint = p.to<int64_t>();
     if (pint != 1 && pint != 2)
         TP_THROW(RuntimeError, "multi_margin_loss: only p == 1 and p == 2 supported");
+
+    int64_t nframe = 0, dim = 0;
+    multi_margin_shape_check(nframe, dim, input, target, weight);
+    const bool per_row = reduction == kReductionNone && target.dim() > 0;
+    const DType dt = input.dtype();
+    const Device dev = input.device();
+    const bool has_w = weight.has_value() && weight->defined();
+    // The fused walk folds the row hinge sums in one pass over the contiguous
+    // Float32/Float64 matrix; the scalar impl keeps serving every other layout.
+    const bool fused =
+        (dt == DType::Float32 || dt == DType::Float64) &&
+        input.is_contiguous() && target.is_contiguous() &&
+        target.dtype() == DType::Int64 &&
+        (!has_w || (weight->dtype() == dt && weight->is_contiguous()));
+    if (fused) {
+        if (input.numel() == 0) {
+            if (per_row) return Tensor::empty({nframe}, dt, dev);
+            return Tensor::full({}, Scalar(0.0), dt, dev);
+        }
+        const int64_t* tgt = target.data_ptr<int64_t>();
+        for (int64_t i = 0; i < nframe; ++i) {
+            if (tgt[i] < 0 || tgt[i] >= dim)
+                TP_THROW(RuntimeError, "multi_margin_loss: target out of range");
+        }
+        const int dtype = static_cast<int>(dt);
+        const void* wptr = has_w ? weight->data_ptr() : nullptr;
+        const double mg = margin.toDouble();
+        if (per_row) {
+            Tensor output = Tensor::empty({nframe}, dt, dev);
+            multi_margin_rows_stub(DeviceType::CPU, input.data_ptr(),
+                                   target.data_ptr(), wptr,
+                                   output.data_ptr(), nframe, dim, pint, mg,
+                                   dtype);
+            return output;
+        }
+        const double total = multi_margin_rows_stub(
+            DeviceType::CPU, input.data_ptr(), target.data_ptr(), wptr,
+            nullptr, nframe, dim, pint, mg, dtype);
+        const double value =
+            reduction == kReductionMean ? total / static_cast<double>(nframe)
+                                        : total;
+        return Tensor::full({}, Scalar(value), dt, dev);
+    }
     DISPATCH_FLOAT(input.dtype(), multi_margin_loss_impl, input, target, pint,
                    margin.toDouble(), weight, reduction);
 }
 
-Tensor multi_margin_loss_cpu_backward(const Tensor& grad_output, const Tensor& input,
+Tensor multi_margin_loss_cpu_backward(const Tensor& grad_output_arg, const Tensor& input,
                                       const Tensor& target, const Scalar& p, const Scalar& margin,
                                       const std::optional<Tensor>& weight, int64_t reduction) {
     check_reduction(reduction, "multi_margin_loss_backward");
     const int64_t pint = p.to<int64_t>();
     if (pint != 1 && pint != 2)
         TP_THROW(RuntimeError, "multi_margin_loss_backward: only p == 1 and p == 2 supported");
+
+    int64_t nframe = 0, dim = 0;
+    multi_margin_shape_check(nframe, dim, input, target, weight);
+    const Tensor grad_output = same_width_seed(grad_output_arg, input);
+    const bool per_row = reduction == kReductionNone && target.dim() > 0;
+    const DType dt = input.dtype();
+    const Device dev = input.device();
+    const bool has_w = weight.has_value() && weight->defined();
+    const bool fused =
+        (dt == DType::Float32 || dt == DType::Float64) &&
+        input.is_contiguous() && target.is_contiguous() &&
+        target.dtype() == DType::Int64 &&
+        (!has_w || (weight->dtype() == dt && weight->is_contiguous())) &&
+        grad_output.is_contiguous() && grad_output.dtype() == dt &&
+        grad_output.numel() == (per_row ? nframe : 1);
+    if (fused) {
+        if (input.numel() == 0) return Tensor::empty(input.shape(), dt, dev);
+        const int64_t* tgt = target.data_ptr<int64_t>();
+        for (int64_t i = 0; i < nframe; ++i) {
+            if (tgt[i] < 0 || tgt[i] >= dim)
+                TP_THROW(RuntimeError, "multi_margin_loss_backward: target out of range");
+        }
+        const double scale =
+            reduction == kReductionMean
+                ? 1.0 / (static_cast<double>(nframe) * static_cast<double>(dim))
+                : 1.0 / static_cast<double>(dim);
+        Tensor grad_input = Tensor::empty(input.shape(), dt, dev);
+        multi_margin_grad_stub(DeviceType::CPU, grad_output.data_ptr(),
+                               input.data_ptr(), target.data_ptr(),
+                               has_w ? weight->data_ptr() : nullptr,
+                               grad_input.data_ptr(), nframe, dim, pint,
+                               margin.toDouble(), scale, per_row ? 1 : 0,
+                               static_cast<int>(dt));
+        return grad_input;
+    }
     DISPATCH_FLOAT(input.dtype(), multi_margin_loss_backward_impl, grad_output, input,
                    target, pint, margin.toDouble(), weight, reduction);
 }
@@ -383,6 +481,50 @@ std::tuple<Tensor, Tensor> multilabel_margin_loss_forward_cpu(const Tensor& inpu
                                                               const Tensor& target,
                                                               int64_t reduction) {
     check_reduction(reduction, "multilabel_margin_loss_forward");
+    int64_t nframe = 0, dim = 0;
+    multilabel_shape_check(nframe, dim, input, target);
+    const DType dt = input.dtype();
+    const Device dev = input.device();
+    const bool scalar_out = reduction != kReductionNone || target.dim() <= 1;
+    // The fused walk writes the is_target mask and folds the row sums in one
+    // pass over the contiguous Float32/Float64 matrix.
+    const bool fused =
+        (dt == DType::Float32 || dt == DType::Float64) &&
+        input.is_contiguous() && target.is_contiguous() &&
+        target.dtype() == DType::Int64;
+    if (fused) {
+        if (input.numel() == 0) {
+            Tensor output = scalar_out
+                                ? Tensor::full({}, Scalar(0.0), dt, dev)
+                                : Tensor::empty({nframe}, dt, dev);
+            return std::make_tuple(output,
+                                   Tensor::zeros(target.shape(), dt, dev));
+        }
+        const int64_t* tgt = target.data_ptr<int64_t>();
+        for (int64_t i = 0; i < target.numel(); ++i) {
+            if (tgt[i] < -1 || tgt[i] >= dim)
+                TP_THROW(RuntimeError,
+                         "multilabel_margin_loss_forward: target is out of range");
+        }
+        const int dtype = static_cast<int>(dt);
+        Tensor is_target = Tensor::zeros(target.shape(), dt, dev);
+        if (scalar_out) {
+            const double total = multilabel_margin_rows_stub(
+                DeviceType::CPU, input.data_ptr(), target.data_ptr(), nullptr,
+                is_target.data_ptr(), nframe, dim, dtype);
+            const double value =
+                reduction == kReductionMean && nframe > 0
+                    ? total / static_cast<double>(nframe)
+                    : total;
+            return std::make_tuple(Tensor::full({}, Scalar(value), dt, dev),
+                                   is_target);
+        }
+        Tensor output = Tensor::empty({nframe}, dt, dev);
+        multilabel_margin_rows_stub(DeviceType::CPU, input.data_ptr(),
+                                    target.data_ptr(), output.data_ptr(),
+                                    is_target.data_ptr(), nframe, dim, dtype);
+        return std::make_tuple(output, is_target);
+    }
     if (input.dtype() == DType::Float32)
         return multilabel_margin_loss_forward_impl<float>(input, target, reduction);
     if (input.dtype() == DType::Float64)
@@ -390,10 +532,61 @@ std::tuple<Tensor, Tensor> multilabel_margin_loss_forward_cpu(const Tensor& inpu
     TP_THROW(NotImplementedError, std::string("multilabel_margin_loss_forward: only supports Float32/Float64, got ") + scalarTypeName(input.dtype()));
 }
 
-Tensor multilabel_margin_loss_backward_cpu(const Tensor& grad_output, const Tensor& input,
+Tensor multilabel_margin_loss_backward_cpu(const Tensor& grad_output_arg, const Tensor& input,
                                            const Tensor& target, int64_t reduction,
                                            const Tensor& is_target) {
     check_reduction(reduction, "multilabel_margin_loss_backward");
+    int64_t nframe = 0, dim = 0;
+    multilabel_shape_check(nframe, dim, input, target);
+    if (is_target.shape() != target.shape())
+        TP_THROW(RuntimeError, "multilabel_margin_loss_backward: inconsistent is_target size");
+    const Tensor grad_output = same_width_seed(grad_output_arg, input);
+    const bool per_row = reduction == kReductionNone && target.dim() > 1;
+    const DType dt = input.dtype();
+    const Device dev = input.device();
+    const bool fused =
+        (dt == DType::Float32 || dt == DType::Float64) &&
+        input.is_contiguous() && target.is_contiguous() &&
+        target.dtype() == DType::Int64 &&
+        is_target.is_contiguous() && is_target.dtype() == dt &&
+        grad_output.is_contiguous() && grad_output.dtype() == dt &&
+        grad_output.numel() == (per_row ? nframe : 1);
+    if (fused) {
+        if (input.numel() == 0) return Tensor::zeros(input.shape(), dt, dev);
+        const int64_t* tgt = target.data_ptr<int64_t>();
+        for (int64_t i = 0; i < target.numel(); ++i) {
+            if (tgt[i] < -1 || tgt[i] >= dim)
+                TP_THROW(RuntimeError,
+                         "multilabel_margin_loss_backward: target is out of range");
+        }
+        const int64_t is_n = is_target.numel();
+        if (dt == DType::Float64) {
+            const double* is_data = is_target.data_ptr<double>();
+            for (int64_t i = 0; i < is_n; ++i) {
+                if (is_data[i] < 0.0 || is_data[i] > 1.0)
+                    TP_THROW(RuntimeError,
+                             "multilabel_margin_loss_backward: is_target is out of range");
+            }
+        } else {
+            const float* is_data = is_target.data_ptr<float>();
+            for (int64_t i = 0; i < is_n; ++i) {
+                if (is_data[i] < 0.0f || is_data[i] > 1.0f)
+                    TP_THROW(RuntimeError,
+                             "multilabel_margin_loss_backward: is_target is out of range");
+            }
+        }
+        const double scale =
+            reduction == kReductionMean
+                ? 1.0 / (static_cast<double>(nframe) * static_cast<double>(dim))
+                : 1.0 / static_cast<double>(dim);
+        Tensor grad_input = Tensor::zeros(input.shape(), dt, dev);
+        multilabel_margin_grad_stub(DeviceType::CPU, grad_output.data_ptr(),
+                                    input.data_ptr(), target.data_ptr(),
+                                    is_target.data_ptr(),
+                                    grad_input.data_ptr(), nframe, dim, scale,
+                                    per_row ? 1 : 0, static_cast<int>(dt));
+        return grad_input;
+    }
     DISPATCH_FLOAT(input.dtype(), multilabel_margin_loss_backward_impl, grad_output,
                    input, target, reduction, is_target);
 }

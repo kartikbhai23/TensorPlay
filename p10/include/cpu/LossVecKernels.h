@@ -209,6 +209,74 @@ using triplet_rows_fn = double (*)(const void* anchor, const void* positive,
                                    int64_t width, double margin, double p,
                                    double eps, bool swap, int dtype);
 
+// nll_loss: row r answers -x[r, t] w[t], where t is the row's target class and
+// rows whose target equals ignore_index contribute nothing.  The walk returns
+// the (loss sum, contributing weight) pair; when `out` is not null it also
+// stores every row answer there.  `weight` is null when the caller carries no
+// per-class weights.
+using nll_rows_fn = std::tuple<double, double> (*)(const void* input,
+                                                   const void* target,
+                                                   const void* weight,
+                                                   void* out, int64_t rows,
+                                                   int64_t cols,
+                                                   int64_t ignore_index,
+                                                   int has_weight, int dtype);
+
+// The reduced mean divides by the total contributing weight; this walk sums
+// just the weights (1.0 when no per-class weight is carried).
+using nll_weight_total_fn = double (*)(const void* target, const void* weight,
+                                       int64_t rows, int64_t ignore_index,
+                                       int has_weight, int dtype);
+
+// The backward scatters -w[t] times the incoming gradient into the target
+// column of every row: per-row when reduction is none, otherwise the single
+// value a reduced call leaves, divided by the total weight under mean.
+using nll_grad_fn = void (*)(const void* grad_output, const void* target,
+                             const void* weight, void* grad_input,
+                             int64_t rows, int64_t cols, int64_t ignore_index,
+                             int reduction, double total_weight, int dtype);
+
+// multi_margin_loss: row r answers
+// sum_{d != y} max(0, margin - x_y + x_d)^p * w[y] / C, with y the target
+// class.  The return value is the sum over rows; when `out` is not null the
+// walk also stores every row answer there.
+using multi_margin_rows_fn = double (*)(const void* input, const void* target,
+                                        const void* weight, void* out,
+                                        int64_t rows, int64_t cols, int p,
+                                        double margin, int dtype);
+
+// The backward writes every row: column d receives the hinge derivative
+// (p z^(p-1) / C, or 2 z / C when p is 2) times the row gradient and the
+// target-class weight, and the target column receives the negated sum over the
+// other columns.  `scale` already carries the reduction's divisor and `per_row`
+// tells whether the incoming gradient has one value per row.
+using multi_margin_grad_fn = void (*)(const void* grad_output, const void* input,
+                                      const void* target, const void* weight,
+                                      void* grad_input, int64_t rows,
+                                      int64_t cols, int p, double margin,
+                                      double scale, int per_row, int dtype);
+
+// multilabel_margin_loss: row r answers
+// sum_{y in targets} sum_{d not target} max(0, 1 - x_y + x_d) / C.  The walk
+// writes the is_target mask (1.0 at every listed class, 0 elsewhere), returns
+// the sum over rows, and stores the row answers when `out` is not null.
+using multilabel_margin_rows_fn = double (*)(const void* input,
+                                             const void* target, void* out,
+                                             void* is_target, int64_t rows,
+                                             int64_t cols, int dtype);
+
+// The backward accumulates +g into every non-target column and -g into the
+// target columns, for every (target, non-target) pair with positive margin.
+// `scale` carries the reduction's divisor and `per_row` tells whether the
+// incoming gradient has one value per row.
+using multilabel_margin_grad_fn = void (*)(const void* grad_output,
+                                           const void* input,
+                                           const void* target,
+                                           const void* is_target,
+                                           void* grad_input, int64_t rows,
+                                           int64_t cols, double scale,
+                                           int per_row, int dtype);
+
 DECLARE_DISPATCH(bce_sum_fn, bce_sum_stub)
 DECLARE_DISPATCH(bce_into_fn, bce_into_stub)
 DECLARE_DISPATCH(mse_sum_fn, mse_sum_stub)
@@ -242,6 +310,13 @@ DECLARE_DISPATCH(cosine_grad_fn, cosine_grad_stub)
 DECLARE_DISPATCH(bce_logits_rows_fn, bce_logits_rows_stub)
 DECLARE_DISPATCH(multilabel_rows_fn, multilabel_rows_stub)
 DECLARE_DISPATCH(triplet_rows_fn, triplet_rows_stub)
+DECLARE_DISPATCH(nll_rows_fn, nll_rows_stub)
+DECLARE_DISPATCH(nll_weight_total_fn, nll_weight_total_stub)
+DECLARE_DISPATCH(nll_grad_fn, nll_grad_stub)
+DECLARE_DISPATCH(multi_margin_rows_fn, multi_margin_rows_stub)
+DECLARE_DISPATCH(multi_margin_grad_fn, multi_margin_grad_stub)
+DECLARE_DISPATCH(multilabel_margin_rows_fn, multilabel_margin_rows_stub)
+DECLARE_DISPATCH(multilabel_margin_grad_fn, multilabel_margin_grad_stub)
 
 } // namespace cpu
 } // namespace tensorplay

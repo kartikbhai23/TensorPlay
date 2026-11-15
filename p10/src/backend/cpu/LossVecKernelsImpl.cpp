@@ -1296,6 +1296,339 @@ double triplet_rows_typed(const T* anchor, const T* positive, const T* negative,
     });
 }
 
+// One row of nll_loss reads only the gathered class score, so the rows are the
+// natural parallel unit; the loss sum and the contributing weight are folded
+// in two light walks over the same rows.
+template <typename T>
+double nll_weight_total_typed(const int64_t* target, const T* weight,
+                              int64_t rows, int64_t ignore_index,
+                              bool has_weight) {
+    return parallel_ranges(rows, 1, [&](int64_t begin, int64_t end) -> double {
+        double total = 0.0;
+        for (int64_t r = begin; r < end; ++r) {
+            if (target[r] != ignore_index) {
+                total += has_weight ? static_cast<double>(weight[target[r]])
+                                    : 1.0;
+            }
+        }
+        return total;
+    });
+}
+
+template <typename T>
+std::tuple<double, double> nll_rows_typed(const T* input,
+                                          const int64_t* target,
+                                          const T* weight, T* out,
+                                          int64_t rows, int64_t cols,
+                                          int64_t ignore_index,
+                                          bool has_weight) {
+    const double loss = parallel_ranges(
+        rows, 1, [&](int64_t begin, int64_t end) -> double {
+            double total = 0.0;
+            for (int64_t r = begin; r < end; ++r) {
+                const int64_t t = target[r];
+                double row_loss = 0.0;
+                if (t != ignore_index) {
+                    const double w =
+                        has_weight ? static_cast<double>(weight[t]) : 1.0;
+                    row_loss = -static_cast<double>(input[r * cols + t]) * w;
+                }
+                total += row_loss;
+                if (out) out[r] = static_cast<T>(row_loss);
+            }
+            return total;
+        });
+    const double weight_total =
+        nll_weight_total_typed(target, weight, rows, ignore_index, has_weight);
+    return std::make_tuple(loss, weight_total);
+}
+
+// The backward scatters into the target column of every row: the incoming
+// gradient is one value per row under reduction none, otherwise the single
+// value a reduced call leaves, divided by the total weight under mean.
+template <typename T>
+void nll_grad_typed(const T* grad_output, const int64_t* target,
+                    const T* weight, T* grad_input, int64_t rows, int64_t cols,
+                    int64_t ignore_index, int reduction, double total_weight) {
+    const bool per_row = reduction == 0;
+    const double inv_tw =
+        (reduction == 1 && total_weight > 0.0) ? 1.0 / total_weight : 1.0;
+    parallel_ranges(rows, 1, [&](int64_t begin, int64_t end) -> double {
+        for (int64_t r = begin; r < end; ++r) {
+            const int64_t t = target[r];
+            if (t == ignore_index) continue;
+            const double w = weight ? static_cast<double>(weight[t]) : 1.0;
+            const double g =
+                (per_row ? static_cast<double>(grad_output[r])
+                         : static_cast<double>(grad_output[0])) *
+                inv_tw;
+            grad_input[r * cols + t] = static_cast<T>(-w * g);
+        }
+        return 0.0;
+    });
+}
+
+// The hinge sum runs over every column except the target one.  The walk splits
+// the row around that column, so the target lane never enters the accumulator
+// and no correction term is needed afterwards.
+template <typename T>
+double multi_margin_rows_typed(const T* input, const int64_t* target,
+                               const T* weight, T* out, int64_t rows,
+                               int64_t cols, int p, double margin) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    const T mg = static_cast<T>(margin);
+    const Vec mgv(mg);
+    const double scale = 1.0 / static_cast<double>(cols);
+    return parallel_ranges(rows, cols,
+                           [&](int64_t begin, int64_t end) -> double {
+        double total = 0.0;
+        for (int64_t r = begin; r < end; ++r) {
+            const int64_t y = target[r];
+            const T* row = input + r * cols;
+            const T xy = row[y];
+            const Vec xyv(xy);
+            Vec acc(static_cast<T>(0));
+            int64_t i = 0;
+            for (; i + W <= y; i += W) {
+                const Vec z = mgv - xyv + Vec::loadu(row + i);
+                if (p == 1) {
+                    acc = acc + vec::maximum(z, zero);
+                } else {
+                    const Vec pos = vec::maximum(z, zero);
+                    acc = acc + pos * pos;
+                }
+            }
+            double sum = 0.0;
+            for (; i < y; ++i) {
+                const double z =
+                    margin - static_cast<double>(xy) +
+                    static_cast<double>(row[i]);
+                if (z > 0) sum += (p == 1) ? z : z * z;
+            }
+            i = y + 1;
+            for (; i + W <= cols; i += W) {
+                const Vec z = mgv - xyv + Vec::loadu(row + i);
+                if (p == 1) {
+                    acc = acc + vec::maximum(z, zero);
+                } else {
+                    const Vec pos = vec::maximum(z, zero);
+                    acc = acc + pos * pos;
+                }
+            }
+            for (; i < cols; ++i) {
+                const double z =
+                    margin - static_cast<double>(xy) +
+                    static_cast<double>(row[i]);
+                if (z > 0) sum += (p == 1) ? z : z * z;
+            }
+            sum += static_cast<double>(acc.reduce_add());
+            const double w = weight ? static_cast<double>(weight[y]) : 1.0;
+            const double answer = sum * w * scale;
+            total += answer;
+            if (out) out[r] = static_cast<T>(answer);
+        }
+        return total;
+    });
+}
+
+// The derivative is p z^(p-1) times the row gradient, the target-class weight
+// and the reduction scale; the target column receives the negated sum over the
+// other columns.  Like the forward, the row splits around the target column so
+// the target lane never contributes to the sum it negates.
+template <typename T>
+void multi_margin_grad_typed(const T* grad_output, const T* input,
+                             const int64_t* target, const T* weight,
+                             T* grad_input, int64_t rows, int64_t cols, int p,
+                             double margin, double scale, bool per_row) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    const T mg = static_cast<T>(margin);
+    const Vec mgv(mg);
+    parallel_ranges(rows, cols, [&](int64_t begin, int64_t end) -> double {
+        for (int64_t r = begin; r < end; ++r) {
+            const int64_t y = target[r];
+            const T* row = input + r * cols;
+            T* gout = grad_input + r * cols;
+            const T xy = row[y];
+            const Vec xyv(xy);
+            const double row_g =
+                per_row ? static_cast<double>(grad_output[r])
+                        : static_cast<double>(grad_output[0]);
+            const double w = weight ? static_cast<double>(weight[y]) : 1.0;
+            const double rs = scale * w * row_g;
+            Vec acc(static_cast<T>(0));
+            int64_t i = 0;
+            for (; i + W <= y; i += W) {
+                const Vec z = mgv - xyv + Vec::loadu(row + i);
+                const Vec pos = vec::maximum(z, zero);
+                const Vec h =
+                    (p == 1) ? Vec::blendv(zero, Vec(static_cast<T>(rs)),
+                                           z > zero)
+                             : pos * Vec(static_cast<T>(2.0 * rs));
+                acc = acc + h;
+                h.store(gout + i);
+            }
+            double sum = 0.0;
+            for (; i < y; ++i) {
+                const double z =
+                    margin - static_cast<double>(xy) +
+                    static_cast<double>(row[i]);
+                T h = static_cast<T>(0);
+                if (z > 0) {
+                    h = static_cast<T>((p == 1 ? 1.0 : 2.0 * z) * rs);
+                    sum += static_cast<double>(h);
+                }
+                gout[i] = h;
+            }
+            gout[y] = static_cast<T>(0);
+            i = y + 1;
+            for (; i + W <= cols; i += W) {
+                const Vec z = mgv - xyv + Vec::loadu(row + i);
+                const Vec pos = vec::maximum(z, zero);
+                const Vec h =
+                    (p == 1) ? Vec::blendv(zero, Vec(static_cast<T>(rs)),
+                                           z > zero)
+                             : pos * Vec(static_cast<T>(2.0 * rs));
+                acc = acc + h;
+                h.store(gout + i);
+            }
+            for (; i < cols; ++i) {
+                const double z =
+                    margin - static_cast<double>(xy) +
+                    static_cast<double>(row[i]);
+                T h = static_cast<T>(0);
+                if (z > 0) {
+                    h = static_cast<T>((p == 1 ? 1.0 : 2.0 * z) * rs);
+                    sum += static_cast<double>(h);
+                }
+                gout[i] = h;
+            }
+            sum += static_cast<double>(acc.reduce_add());
+            gout[y] = static_cast<T>(-sum);
+        }
+        return 0.0;
+    });
+}
+
+// One row first scatters 1.0 into the is_target mask at every listed class,
+// then walks each target's margin expression against the non-target columns;
+// the mask zeroes the target lanes inside the vector walk.
+template <typename T>
+double multilabel_margin_rows_typed(const T* input, const int64_t* target,
+                                    T* out, T* is_target, int64_t rows,
+                                    int64_t cols) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    const Vec one(static_cast<T>(1));
+    const double scale = 1.0 / static_cast<double>(cols);
+    return parallel_ranges(rows, cols,
+                           [&](int64_t begin, int64_t end) -> double {
+        double total = 0.0;
+        for (int64_t r = begin; r < end; ++r) {
+            const T* row = input + r * cols;
+            const int64_t* tg = target + r * cols;
+            T* is = is_target + r * cols;
+            for (int64_t dt = 0; dt < cols; ++dt) {
+                const int64_t idx = tg[dt];
+                if (idx < 0) break;
+                is[idx] = static_cast<T>(1);
+            }
+            double sum = 0.0;
+            for (int64_t dt = 0; dt < cols; ++dt) {
+                const int64_t idx = tg[dt];
+                if (idx < 0) break;
+                const T xy = row[idx];
+                const Vec xyv(xy);
+                const Vec base = one - Vec(xy);
+                Vec acc(static_cast<T>(0));
+                int64_t i = 0;
+                for (; i + W <= cols; i += W) {
+                    const Vec z = base + Vec::loadu(row + i);
+                    const Vec not_target = one - Vec::loadu(is + i);
+                    acc = acc + vec::maximum(z, zero) * not_target;
+                }
+                double sub = static_cast<double>(acc.reduce_add());
+                for (; i < cols; ++i) {
+                    if (is[i] == static_cast<T>(0)) {
+                        const double z =
+                            1.0 - static_cast<double>(xy) +
+                            static_cast<double>(row[i]);
+                        if (z > 0) sub += z;
+                    }
+                }
+                sum += sub;
+            }
+            const double answer = sum * scale;
+            total += answer;
+            if (out) out[r] = static_cast<T>(answer);
+        }
+        return total;
+    });
+}
+
+// For every (target, non-target) pair with positive margin the walk adds the
+// shared gradient to the non-target column and removes it from the target
+// column; the vector loop accumulates the non-target columns in place.
+template <typename T>
+void multilabel_margin_grad_typed(const T* grad_output, const T* input,
+                                  const int64_t* target, const T* is_target,
+                                  T* grad_input, int64_t rows, int64_t cols,
+                                  double scale, bool per_row) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    const Vec one(static_cast<T>(1));
+    parallel_ranges(rows, cols, [&](int64_t begin, int64_t end) -> double {
+        for (int64_t r = begin; r < end; ++r) {
+            const T* row = input + r * cols;
+            const int64_t* tg = target + r * cols;
+            const T* is = is_target + r * cols;
+            T* gout = grad_input + r * cols;
+            const double row_g =
+                per_row ? static_cast<double>(grad_output[r])
+                        : static_cast<double>(grad_output[0]);
+            const double g = scale * row_g;
+            const T gv = static_cast<T>(g);
+            for (int64_t dt = 0; dt < cols; ++dt) {
+                const int64_t idx = tg[dt];
+                if (idx < 0) break;
+                const T xy = row[idx];
+                const Vec xyv(xy);
+                const Vec base = one - Vec(xy);
+                Vec acc(static_cast<T>(0));
+                int64_t i = 0;
+                for (; i + W <= cols; i += W) {
+                    const Vec z = base + Vec::loadu(row + i);
+                    const Vec not_target = one - Vec::loadu(is + i);
+                    const Vec h =
+                        Vec::blendv(zero, Vec(gv), z > zero) * not_target;
+                    acc = acc + h;
+                    (Vec::loadu(gout + i) + h).store(gout + i);
+                }
+                double sub = static_cast<double>(acc.reduce_add());
+                for (; i < cols; ++i) {
+                    if (is[i] == static_cast<T>(0)) {
+                        const double z =
+                            1.0 - static_cast<double>(xy) +
+                            static_cast<double>(row[i]);
+                        if (z > 0) {
+                            gout[i] += gv;
+                            sub += static_cast<double>(gv);
+                        }
+                    }
+                }
+                gout[idx] = static_cast<T>(
+                    static_cast<double>(gout[idx]) - sub);
+            }
+        }
+        return 0.0;
+    });
+}
+
 
 void bce_into_impl(const void* input, const void* target, void* out, int64_t n,
                    int* bad_input, int* bad_target, int dtype) {
@@ -1927,6 +2260,173 @@ double triplet_rows_impl(const void* anchor, const void* positive,
     }
 }
 
+std::tuple<double, double> nll_rows_impl(const void* input, const void* target,
+                                         const void* weight, void* out,
+                                         int64_t rows, int64_t cols,
+                                         int64_t ignore_index, int has_weight,
+                                         int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return nll_rows_typed(static_cast<const double*>(input),
+                                  static_cast<const int64_t*>(target),
+                                  static_cast<const double*>(weight),
+                                  static_cast<double*>(out), rows, cols,
+                                  ignore_index, has_weight != 0);
+        case DType::Float32:
+            return nll_rows_typed(static_cast<const float*>(input),
+                                  static_cast<const int64_t*>(target),
+                                  static_cast<const float*>(weight),
+                                  static_cast<float*>(out), rows, cols,
+                                  ignore_index, has_weight != 0);
+        default:
+            TP_THROW(TypeError, "nll_loss: unsupported dtype");
+    }
+}
+
+double nll_weight_total_impl(const void* target, const void* weight,
+                             int64_t rows, int64_t ignore_index,
+                             int has_weight, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return nll_weight_total_typed(static_cast<const int64_t*>(target),
+                                          static_cast<const double*>(weight),
+                                          rows, ignore_index,
+                                          has_weight != 0);
+        case DType::Float32:
+            return nll_weight_total_typed(static_cast<const int64_t*>(target),
+                                          static_cast<const float*>(weight),
+                                          rows, ignore_index,
+                                          has_weight != 0);
+        default:
+            TP_THROW(TypeError, "nll_loss: unsupported dtype");
+    }
+}
+
+void nll_grad_impl(const void* grad_output, const void* target,
+                   const void* weight, void* grad_input, int64_t rows,
+                   int64_t cols, int64_t ignore_index, int reduction,
+                   double total_weight, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            nll_grad_typed(static_cast<const double*>(grad_output),
+                           static_cast<const int64_t*>(target),
+                           static_cast<const double*>(weight),
+                           static_cast<double*>(grad_input), rows, cols,
+                           ignore_index, reduction, total_weight);
+            break;
+        case DType::Float32:
+            nll_grad_typed(static_cast<const float*>(grad_output),
+                           static_cast<const int64_t*>(target),
+                           static_cast<const float*>(weight),
+                           static_cast<float*>(grad_input), rows, cols,
+                           ignore_index, reduction, total_weight);
+            break;
+        default:
+            TP_THROW(TypeError, "nll_loss backward: unsupported dtype");
+    }
+}
+
+double multi_margin_rows_impl(const void* input, const void* target,
+                              const void* weight, void* out, int64_t rows,
+                              int64_t cols, int p, double margin, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return multi_margin_rows_typed(
+                static_cast<const double*>(input),
+                static_cast<const int64_t*>(target),
+                static_cast<const double*>(weight),
+                static_cast<double*>(out), rows, cols, p, margin);
+        case DType::Float32:
+            return multi_margin_rows_typed(
+                static_cast<const float*>(input),
+                static_cast<const int64_t*>(target),
+                static_cast<const float*>(weight),
+                static_cast<float*>(out), rows, cols, p, margin);
+        default:
+            TP_THROW(TypeError, "multi_margin_loss: unsupported dtype");
+    }
+}
+
+void multi_margin_grad_impl(const void* grad_output, const void* input,
+                            const void* target, const void* weight,
+                            void* grad_input, int64_t rows, int64_t cols,
+                            int p, double margin, double scale, int per_row,
+                            int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            multi_margin_grad_typed(
+                static_cast<const double*>(grad_output),
+                static_cast<const double*>(input),
+                static_cast<const int64_t*>(target),
+                static_cast<const double*>(weight),
+                static_cast<double*>(grad_input), rows, cols, p, margin,
+                scale, per_row != 0);
+            break;
+        case DType::Float32:
+            multi_margin_grad_typed(
+                static_cast<const float*>(grad_output),
+                static_cast<const float*>(input),
+                static_cast<const int64_t*>(target),
+                static_cast<const float*>(weight),
+                static_cast<float*>(grad_input), rows, cols, p, margin,
+                scale, per_row != 0);
+            break;
+        default:
+            TP_THROW(TypeError, "multi_margin_loss backward: unsupported dtype");
+    }
+}
+
+double multilabel_margin_rows_impl(const void* input, const void* target,
+                                   void* out, void* is_target, int64_t rows,
+                                   int64_t cols, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return multilabel_margin_rows_typed(
+                static_cast<const double*>(input),
+                static_cast<const int64_t*>(target),
+                static_cast<double*>(out),
+                static_cast<double*>(is_target), rows, cols);
+        case DType::Float32:
+            return multilabel_margin_rows_typed(
+                static_cast<const float*>(input),
+                static_cast<const int64_t*>(target),
+                static_cast<float*>(out),
+                static_cast<float*>(is_target), rows, cols);
+        default:
+            TP_THROW(TypeError,
+                     "multilabel_margin_loss forward: unsupported dtype");
+    }
+}
+
+void multilabel_margin_grad_impl(const void* grad_output, const void* input,
+                                 const void* target, const void* is_target,
+                                 void* grad_input, int64_t rows, int64_t cols,
+                                 double scale, int per_row, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            multilabel_margin_grad_typed(
+                static_cast<const double*>(grad_output),
+                static_cast<const double*>(input),
+                static_cast<const int64_t*>(target),
+                static_cast<const double*>(is_target),
+                static_cast<double*>(grad_input), rows, cols, scale,
+                per_row != 0);
+            break;
+        case DType::Float32:
+            multilabel_margin_grad_typed(
+                static_cast<const float*>(grad_output),
+                static_cast<const float*>(input),
+                static_cast<const int64_t*>(target),
+                static_cast<const float*>(is_target),
+                static_cast<float*>(grad_input), rows, cols, scale,
+                per_row != 0);
+            break;
+        default:
+            TP_THROW(TypeError,
+                     "multilabel_margin_loss backward: unsupported dtype");
+    }
+}
+
 } // namespace
 
 // One slot per tier TU (the specializations live outside the capability
@@ -1967,6 +2467,13 @@ REGISTER_DISPATCH(cosine_grad_stub, &cosine_grad_impl);
 REGISTER_DISPATCH(bce_logits_rows_stub, &bce_logits_rows_impl);
 REGISTER_DISPATCH(multilabel_rows_stub, &multilabel_rows_impl);
 REGISTER_DISPATCH(triplet_rows_stub, &triplet_rows_impl);
+REGISTER_DISPATCH(nll_rows_stub, &nll_rows_impl);
+REGISTER_DISPATCH(nll_weight_total_stub, &nll_weight_total_impl);
+REGISTER_DISPATCH(nll_grad_stub, &nll_grad_impl);
+REGISTER_DISPATCH(multi_margin_rows_stub, &multi_margin_rows_impl);
+REGISTER_DISPATCH(multi_margin_grad_stub, &multi_margin_grad_impl);
+REGISTER_DISPATCH(multilabel_margin_rows_stub, &multilabel_margin_rows_impl);
+REGISTER_DISPATCH(multilabel_margin_grad_stub, &multilabel_margin_grad_impl);
 #else
 ALSO_REGISTER_AVX512_DISPATCH(bce_sum_stub, &bce_sum_impl);
 ALSO_REGISTER_AVX512_DISPATCH(bce_into_stub, &bce_into_impl);
@@ -2001,6 +2508,13 @@ ALSO_REGISTER_AVX512_DISPATCH(cosine_grad_stub, &cosine_grad_impl);
 ALSO_REGISTER_AVX512_DISPATCH(bce_logits_rows_stub, &bce_logits_rows_impl);
 ALSO_REGISTER_AVX512_DISPATCH(multilabel_rows_stub, &multilabel_rows_impl);
 ALSO_REGISTER_AVX512_DISPATCH(triplet_rows_stub, &triplet_rows_impl);
+ALSO_REGISTER_AVX512_DISPATCH(nll_rows_stub, &nll_rows_impl);
+ALSO_REGISTER_AVX512_DISPATCH(nll_weight_total_stub, &nll_weight_total_impl);
+ALSO_REGISTER_AVX512_DISPATCH(nll_grad_stub, &nll_grad_impl);
+ALSO_REGISTER_AVX512_DISPATCH(multi_margin_rows_stub, &multi_margin_rows_impl);
+ALSO_REGISTER_AVX512_DISPATCH(multi_margin_grad_stub, &multi_margin_grad_impl);
+ALSO_REGISTER_AVX512_DISPATCH(multilabel_margin_rows_stub, &multilabel_margin_rows_impl);
+ALSO_REGISTER_AVX512_DISPATCH(multilabel_margin_grad_stub, &multilabel_margin_grad_impl);
 #endif
 
 } // namespace cpu

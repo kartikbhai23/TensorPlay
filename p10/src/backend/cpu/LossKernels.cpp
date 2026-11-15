@@ -52,6 +52,9 @@ DEFINE_DISPATCH(cosine_rows_stub);
 DEFINE_DISPATCH(cosine_grad_stub);
 DEFINE_DISPATCH(multilabel_rows_stub);
 DEFINE_DISPATCH(triplet_rows_stub);
+DEFINE_DISPATCH(nll_rows_stub);
+DEFINE_DISPATCH(nll_weight_total_stub);
+DEFINE_DISPATCH(nll_grad_stub);
 
 template <typename scalar_t>
 std::tuple<Tensor, Tensor> nll_loss_impl(const Tensor& input_arg, const Tensor& target_arg,
@@ -117,6 +120,55 @@ std::tuple<Tensor, Tensor> nll_loss_impl(const Tensor& input_arg, const Tensor& 
 }
 
 std::tuple<Tensor, Tensor> nll_loss_kernel(const Tensor& input, const Tensor& target, const std::optional<Tensor>& weight, int64_t reduction, int64_t ignore_index) {
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    const bool no_batch = input.dim() == 1;
+    const bool has_w = weight.has_value() && weight->defined();
+    // The fused walk reads the gathered class scores in parallel; it covers
+    // contiguous Float32/Float64 inputs with an Int64 target, and the optional
+    // per-class weights in the input dtype.  Everything else falls back.
+    const bool fused =
+        (input.dtype() == DType::Float32 || input.dtype() == DType::Float64) &&
+        input.is_contiguous() && target.is_contiguous() &&
+        target.dtype() == DType::Int64 &&
+        (!has_w || (weight->dtype() == input.dtype() &&
+                    weight->is_contiguous()));
+    if (fused) {
+        const int64_t rows = no_batch ? 1 : input.size(0);
+        const int64_t cols = no_batch ? input.numel() : input.size(1);
+        const int64_t* tgt = target.data_ptr<int64_t>();
+        for (int64_t i = 0; i < rows; ++i) {
+            const int64_t t = tgt[i];
+            if (t != ignore_index && (t < 0 || t >= cols))
+                TP_THROW(IndexError, "Target ", t, " is out of bounds.");
+        }
+        const DType dt = input.dtype();
+        const Device& dev = input.device();
+        const int dtype = static_cast<int>(dt);
+        const void* wptr = has_w ? weight->data_ptr() : nullptr;
+        const int has_weight = has_w ? 1 : 0;
+        if (reduction == 0) {
+            Tensor per_row = Tensor::empty({rows}, dt, dev);
+            const auto [sum, tw] = nll_rows_stub(
+                DeviceType::CPU, input.data_ptr(), target.data_ptr(), wptr,
+                per_row.data_ptr(), rows, cols, ignore_index, has_weight,
+                dtype);
+            (void)sum;
+            Tensor result = no_batch ? per_row.reshape({}) : per_row;
+            // Unreduced batched losses carry no normalizer; a single-sample
+            // call reports its own weight.
+            const double reported = no_batch ? tw : 0.0;
+            return std::make_tuple(
+                result, Tensor::full({}, Scalar(reported), dt, dev));
+        }
+        const auto [sum, tw] = nll_rows_stub(
+            DeviceType::CPU, input.data_ptr(), target.data_ptr(), wptr,
+            nullptr, rows, cols, ignore_index, has_weight, dtype);
+        double value = sum;
+        if (reduction == 1) value /= tw;  // every target ignored: 0 / 0 is NaN
+        return std::make_tuple(Tensor::full({}, Scalar(value), dt, dev),
+                               Tensor::full({}, Scalar(tw), dt, dev));
+    }
     if (input.dtype() == DType::Float32) return nll_loss_impl<float>(input, target, weight, reduction, ignore_index);
     if (input.dtype() == DType::Float64) return nll_loss_impl<double>(input, target, weight, reduction, ignore_index);
     if (input.dtype() == DType::BFloat16) return nll_loss_impl<BFloat16>(input, target, weight, reduction, ignore_index);
@@ -125,7 +177,7 @@ std::tuple<Tensor, Tensor> nll_loss_kernel(const Tensor& input, const Tensor& ta
 }
 
 template <typename scalar_t>
-Tensor nll_loss_backward_impl(const Tensor& grad_output_arg, const Tensor& input,
+Tensor nll_loss_backward_impl(const Tensor& grad_output_arg, const Tensor& input_arg,
                               const Tensor& target_arg,
                               const std::optional<Tensor>& weight_arg, int64_t reduction,
                               int64_t ignore_index, const Tensor& total_weight) {
@@ -133,11 +185,16 @@ Tensor nll_loss_backward_impl(const Tensor& grad_output_arg, const Tensor& input
     // the seed a sum leaves behind is a single value spread across the whole row
     // axis, and an index or weight arriving from another layout is stored in its
     // own strides.
-    const Tensor grad_output = grad_output_arg.contiguous();
-    const Tensor target = target_arg.contiguous();
+    // A single sample arrives as a bare class vector with a 0-d target; it is
+    // lifted to one row so the walk below has a uniform shape.
+    const bool no_batch = input_arg.dim() == 1;
+    const Tensor input = (no_batch ? input_arg.unsqueeze(0) : input_arg).contiguous();
+    const Tensor grad_output = grad_output_arg.to(input.dtype()).contiguous();
+    const Tensor target = (no_batch ? target_arg.reshape({1}) : target_arg)
+                              .to(DType::Int64).contiguous();
     Tensor weight;
     if (weight_arg.has_value() && weight_arg->defined()) {
-        weight = weight_arg->contiguous();
+        weight = weight_arg->to(input.dtype()).contiguous();
     }
 
     int64_t n_batch = input.size(0);
@@ -183,10 +240,57 @@ Tensor nll_loss_backward_impl(const Tensor& grad_output_arg, const Tensor& input
         }
     }
 
+    if (no_batch) return grad_input.reshape({n_classes});
     return grad_input;
 }
 
-Tensor nll_loss_backward_kernel(const Tensor& grad_output, const Tensor& input, const Tensor& target, const std::optional<Tensor>& weight, int64_t reduction, int64_t ignore_index, const Tensor& total_weight) {
+Tensor nll_loss_backward_kernel(const Tensor& grad_output_arg, const Tensor& input, const Tensor& target, const std::optional<Tensor>& weight, int64_t reduction, int64_t ignore_index, const Tensor& total_weight) {
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    // The seed may arrive in a different float width than the score plane; the
+    // result is written at the score width, so the seed is read at that width.
+    const bool float_seed =
+        grad_output_arg.dtype() == DType::Float32 ||
+        grad_output_arg.dtype() == DType::Float64;
+    const bool float_scores =
+        input.dtype() == DType::Float32 || input.dtype() == DType::Float64;
+    const Tensor grad_output =
+        (float_seed && float_scores && grad_output_arg.dtype() != input.dtype())
+            ? grad_output_arg.to(input.dtype())
+            : grad_output_arg;
+    const bool no_batch = input.dim() == 1;
+    const bool has_w = weight.has_value() && weight->defined();
+    const int64_t rows = no_batch ? 1 : input.size(0);
+    const int64_t cols = no_batch ? input.numel() : input.size(1);
+    const bool fused =
+        (input.dtype() == DType::Float32 || input.dtype() == DType::Float64) &&
+        input.is_contiguous() && target.is_contiguous() &&
+        target.dtype() == DType::Int64 &&
+        (!has_w || (weight->dtype() == input.dtype() &&
+                    weight->is_contiguous())) &&
+        grad_output.is_contiguous() && grad_output.dtype() == input.dtype() &&
+        (reduction == 0 ? grad_output.numel() == rows
+                        : grad_output.numel() == 1);
+    if (fused) {
+        const DType dt = input.dtype();
+        const Device& dev = input.device();
+        const int dtype = static_cast<int>(dt);
+        const void* wptr = has_w ? weight->data_ptr() : nullptr;
+        double tw = 0.0;
+        if (total_weight.defined() && total_weight.numel() == 1) {
+            tw = total_weight.item().to<double>();
+        } else if (reduction == 1) {
+            tw = nll_weight_total_stub(DeviceType::CPU, target.data_ptr(),
+                                       wptr, rows, ignore_index,
+                                       has_w ? 1 : 0, dtype);
+        }
+        Tensor grad_input = Tensor::zeros({rows, cols}, dt, dev);
+        nll_grad_stub(DeviceType::CPU, grad_output.data_ptr(),
+                      target.data_ptr(), wptr, grad_input.data_ptr(), rows,
+                      cols, ignore_index, reduction, tw, dtype);
+        if (no_batch) grad_input = grad_input.reshape({cols});
+        return grad_input;
+    }
     if (input.dtype() == DType::Float32) return nll_loss_backward_impl<float>(grad_output, input, target, weight, reduction, ignore_index, total_weight);
     if (input.dtype() == DType::Float64) return nll_loss_backward_impl<double>(grad_output, input, target, weight, reduction, ignore_index, total_weight);
     if (input.dtype() == DType::BFloat16) return nll_loss_backward_impl<BFloat16>(grad_output, input, target, weight, reduction, ignore_index, total_weight);

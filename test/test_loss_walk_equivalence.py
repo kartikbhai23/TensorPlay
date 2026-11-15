@@ -26,6 +26,7 @@ POISSON_MODES = ((False, False), (False, True), (True, False), (True, True))
 REDUCTIONS = {"none": 0, "mean": 1, "sum": 2}
 SHAPES = [(4, 5), (7,), (2, 3, 4)]
 DTYPES = (torch.float32, torch.float64)
+NLL = tp.nn.functional.nll_loss
 
 
 def _pair(shape, dtype, seed):
@@ -543,6 +544,282 @@ class TestCosineWalk(unittest.TestCase):
                                     f"{name} ({dev})")
 
 
+class TestNllWalk(unittest.TestCase):
+    """The fused negative-log-likelihood walk agrees with the reference."""
+
+    NLL_SHAPES = [(7, 5), (4, 3)]
+
+    def _operands(self, shape, dtype, seed, use_weight, ignore):
+        generator = torch.Generator().manual_seed(seed)
+        x = torch.randn(*shape, dtype=dtype, generator=generator)
+        target = torch.randint(0, shape[1], (shape[0],), generator=generator)
+        if ignore:
+            target[::3] = -100
+        weight = (torch.rand(shape[1], dtype=dtype, generator=generator)
+                  if use_weight else None)
+        return x, target, weight
+
+    def test_forward(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for shape in self.NLL_SHAPES:
+                    for use_weight in (False, True):
+                        for ignore in (False, True):
+                            for name in REDUCTIONS:
+                                x, target, weight = self._operands(
+                                    shape, dtype, 67, use_weight, ignore)
+                                expected = torch_F.nll_loss(
+                                    x, target, weight=weight,
+                                    reduction=name, ignore_index=-100)
+                                got = NLL(
+                                    from_reference(x, dev),
+                                    from_reference(target, dev),
+                                    weight=(from_reference(weight, dev)
+                                            if weight is not None else None),
+                                    reduction=name, ignore_index=-100)
+                                self.assertEqual(tuple(got.shape),
+                                                 tuple(expected.shape))
+                                assert_reference_close(
+                                    got, expected,
+                                    msg=f"nll_loss {shape} {dtype} "
+                                        f"weight={use_weight} ignore={ignore} "
+                                        f"{name} ({dev})")
+
+    def test_gradient(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for shape in self.NLL_SHAPES:
+                    for use_weight in (False, True):
+                        for name in REDUCTIONS:
+                            x, target, weight = self._operands(
+                                shape, dtype, 69, use_weight, True)
+                            ref_leaf = x.clone().requires_grad_(True)
+                            ref_out = torch_F.nll_loss(
+                                ref_leaf, target, weight=weight,
+                                reduction=name, ignore_index=-100)
+                            seed = (torch.randn(ref_out.shape, dtype=dtype)
+                                    if name == "none"
+                                    else torch.ones((), dtype=dtype))
+                            ref_grad = torch.autograd.grad(
+                                ref_out, ref_leaf, grad_outputs=seed)[0]
+
+                            leaf = from_reference(x, dev, requires_grad=True)
+                            out = NLL(
+                                leaf, from_reference(target, dev),
+                                weight=(from_reference(weight, dev)
+                                        if weight is not None else None),
+                                reduction=name, ignore_index=-100)
+                            out.backward(from_reference(seed, dev))
+                            assert_reference_close(
+                                leaf.grad, ref_grad,
+                                msg=f"nll_loss grad {shape} {dtype} "
+                                    f"weight={use_weight} {name} ({dev})")
+
+    def test_single_sample(self):
+        # A single sample is a bare class vector with a 0-d target; only the
+        # host walk lifts it to one row.
+        for dev in reference_devices():
+            if dev != "cpu":
+                continue
+            for dtype in DTYPES:
+                generator = torch.Generator().manual_seed(71)
+                x = torch.randn(5, dtype=dtype, generator=generator)
+                target = torch.tensor(2)
+                for name in REDUCTIONS:
+                    ref_leaf = x.clone().requires_grad_(True)
+                    ref_out = torch_F.nll_loss(ref_leaf, target,
+                                               reduction=name)
+                    expected = torch_F.nll_loss(x, target, reduction=name)
+                    got = NLL(from_reference(x, dev),
+                                      from_reference(target, dev),
+                                      reduction=name)
+                    self.assertEqual(tuple(got.shape), tuple(expected.shape))
+                    assert_reference_close(
+                        got, expected,
+                        msg=f"nll_loss single {dtype} {name} ({dev})")
+                    # float32 seed against a float64 score plane
+                    seed = (torch.randn(ref_out.shape, dtype=dtype)
+                            if name == "none"
+                            else torch.ones((), dtype=torch.float32))
+                    ref_grad = torch.autograd.grad(
+                        ref_out, ref_leaf, grad_outputs=seed)[0]
+                    leaf = from_reference(x, dev, requires_grad=True)
+                    out = NLL(leaf, from_reference(target, dev),
+                                      reduction=name)
+                    out.backward(from_reference(seed, dev))
+                    assert_reference_close(
+                        leaf.grad, ref_grad,
+                        msg=f"nll_loss single grad {dtype} {name} ({dev})")
+
+
+class TestMultiMarginWalk(unittest.TestCase):
+    """The fused multi-margin walk agrees with the reference arithmetic."""
+
+    def _operands(self, shape, dtype, seed, use_weight):
+        generator = torch.Generator().manual_seed(seed)
+        x = torch.randn(*shape, dtype=dtype, generator=generator)
+        target = torch.randint(0, shape[-1], (shape[0],),
+                               generator=generator)
+        weight = (torch.rand(shape[-1], dtype=dtype, generator=generator)
+                  if use_weight else None)
+        return x, target, weight
+
+    def test_forward(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for p in (1, 2):
+                    for use_weight in (False, True):
+                        for name, reduction in REDUCTIONS.items():
+                            x, target, weight = self._operands(
+                                (6, 5), dtype, 73, use_weight)
+                            expected = torch_F.multi_margin_loss(
+                                x, target, p=p, margin=0.8, weight=weight,
+                                reduction=name)
+                            got = tp.multi_margin_loss(
+                                from_reference(x, dev),
+                                from_reference(target, dev),
+                                p=p, margin=0.8,
+                                weight=(from_reference(weight, dev)
+                                        if weight is not None else None),
+                                reduction=reduction)
+                            self.assertEqual(tuple(got.shape),
+                                             tuple(expected.shape))
+                            assert_reference_close(
+                                got, expected,
+                                msg=f"multi_margin_loss {dtype} p={p} "
+                                    f"weight={use_weight} {name} ({dev})")
+
+    def test_gradient(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for p in (1, 2):
+                    for use_weight in (False, True):
+                        for name, reduction in REDUCTIONS.items():
+                            x, target, weight = self._operands(
+                                (6, 5), dtype, 75, use_weight)
+                            ref_leaf = x.clone().requires_grad_(True)
+                            ref_out = torch_F.multi_margin_loss(
+                                ref_leaf, target, p=p, margin=0.8,
+                                weight=weight, reduction=name)
+                            seed = (torch.randn(ref_out.shape, dtype=dtype)
+                                    if name == "none"
+                                    else torch.ones((), dtype=dtype))
+                            ref_grad = torch.autograd.grad(
+                                ref_out, ref_leaf, grad_outputs=seed)[0]
+
+                            leaf = from_reference(x, dev, requires_grad=True)
+                            out = tp.multi_margin_loss(
+                                leaf, from_reference(target, dev),
+                                p=p, margin=0.8,
+                                weight=(from_reference(weight, dev)
+                                        if weight is not None else None),
+                                reduction=reduction)
+                            out.backward(from_reference(seed, dev))
+                            assert_reference_close(
+                                leaf.grad, ref_grad,
+                                msg=f"multi_margin_loss grad {dtype} p={p} "
+                                    f"weight={use_weight} {name} ({dev})")
+
+    def test_vector_and_scalar(self):
+        generator = torch.Generator().manual_seed(77)
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for shape, target in (((5,), torch.tensor([2])),
+                                      ((), torch.tensor(0))):
+                    for name, reduction in REDUCTIONS.items():
+                        x = torch.randn(shape, dtype=dtype,
+                                        generator=generator)
+                        ref_leaf = x.clone().requires_grad_(True)
+                        ref_out = torch_F.multi_margin_loss(
+                            ref_leaf, target, p=2, margin=0.5,
+                            reduction=name)
+                        expected = torch_F.multi_margin_loss(
+                            x, target, p=2, margin=0.5, reduction=name)
+                        got = tp.multi_margin_loss(
+                            from_reference(x, dev),
+                            from_reference(target, dev), p=2, margin=0.5,
+                            reduction=reduction)
+                        self.assertEqual(tuple(got.shape),
+                                         tuple(expected.shape))
+                        assert_reference_close(
+                            got, expected,
+                            msg=f"multi_margin_loss {shape} {dtype} {name} "
+                                f"({dev})")
+                        seed = (torch.randn(ref_out.shape, dtype=dtype)
+                                if name == "none"
+                                else torch.ones((), dtype=dtype))
+                        ref_grad = torch.autograd.grad(
+                            ref_out, ref_leaf, grad_outputs=seed)[0]
+                        leaf = from_reference(x, dev, requires_grad=True)
+                        out = tp.multi_margin_loss(
+                            leaf, from_reference(target, dev), p=2,
+                            margin=0.5, reduction=reduction)
+                        out.backward(from_reference(seed, dev))
+                        assert_reference_close(
+                            leaf.grad, ref_grad,
+                            msg=f"multi_margin_loss grad {shape} {dtype} "
+                                f"{name} ({dev})")
+
+
+class TestMultilabelMarginWalk(unittest.TestCase):
+    """The fused multi-label margin walk agrees with the reference."""
+
+    def _target(self, rows, classes, seed):
+        generator = torch.Generator().manual_seed(seed)
+        target = torch.full((rows, classes), -1, dtype=torch.int64)
+        for r in range(rows):
+            if r % 4 == 3:
+                continue  # no listed class: the row contributes nothing
+            count = int(torch.randint(1, classes + 1, (1,),
+                                      generator=generator).item())
+            order = torch.randperm(classes, generator=generator)[:count]
+            target[r, :count] = order
+        return target
+
+    def test_forward(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for name, reduction in REDUCTIONS.items():
+                    generator = torch.Generator().manual_seed(79)
+                    x = torch.randn(4, 6, dtype=dtype, generator=generator)
+                    target = self._target(4, 6, 81)
+                    expected = torch_F.multilabel_margin_loss(
+                        x, target, reduction=name)
+                    got = tp.multilabel_margin_loss(
+                        from_reference(x, dev),
+                        from_reference(target, dev), reduction=reduction)
+                    self.assertEqual(tuple(got.shape),
+                                     tuple(expected.shape))
+                    assert_reference_close(
+                        got, expected,
+                        msg=f"multilabel_margin_loss {dtype} {name} ({dev})")
+
+    def test_gradient(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for name, reduction in REDUCTIONS.items():
+                    generator = torch.Generator().manual_seed(83)
+                    x = torch.randn(4, 6, dtype=dtype, generator=generator)
+                    target = self._target(4, 6, 85)
+                    ref_leaf = x.clone().requires_grad_(True)
+                    ref_out = torch_F.multilabel_margin_loss(
+                        ref_leaf, target, reduction=name)
+                    seed = (torch.randn(ref_out.shape, dtype=dtype)
+                            if name == "none"
+                            else torch.ones((), dtype=dtype))
+                    ref_grad = torch.autograd.grad(
+                        ref_out, ref_leaf, grad_outputs=seed)[0]
+                    leaf = from_reference(x, dev, requires_grad=True)
+                    out = tp.multilabel_margin_loss(
+                        leaf, from_reference(target, dev),
+                        reduction=reduction)
+                    out.backward(from_reference(seed, dev))
+                    assert_reference_close(
+                        leaf.grad, ref_grad,
+                        msg=f"multilabel_margin_loss grad {dtype} {name} "
+                            f"({dev})")
+
+
 class TestEmptyPlane(unittest.TestCase):
     """Nothing walked answers an empty plane, zero, or no average at all."""
 
@@ -595,6 +872,34 @@ class TestEmptyPlane(unittest.TestCase):
             self.assertEqual(float(total.item()), 0.0)
             average = tp.cosine_embedding_loss(ce, ce, cet, reduction=1)
             self.assertTrue(float(average.item()) != float(average.item()))
+            # The class-index losses also reduce rows, so their empty plane is
+            # (0,); the average over no contributing weight is undefined while
+            # the row-averaged margin walks answer zero.
+            index_target = from_reference(
+                torch.zeros((0,), dtype=torch.int64), dev)
+            empty_plane = from_reference(empty, dev)
+            nll_plane = NLL(empty_plane, index_target, reduction="none")
+            self.assertEqual(tuple(nll_plane.shape), (0,))
+            self.assertEqual(float(NLL(
+                empty_plane, index_target, reduction="sum").item()), 0.0)
+            nll_mean = NLL(empty_plane, index_target, reduction="mean")
+            self.assertTrue(float(nll_mean.item()) != float(nll_mean.item()))
+            mm_plane = tp.multi_margin_loss(empty_plane, index_target,
+                                            reduction=0)
+            self.assertEqual(tuple(mm_plane.shape), (0,))
+            self.assertEqual(float(tp.multi_margin_loss(
+                empty_plane, index_target, reduction=1).item()), 0.0)
+            self.assertEqual(float(tp.multi_margin_loss(
+                empty_plane, index_target, reduction=2).item()), 0.0)
+            label_target = from_reference(
+                torch.zeros((0, 3), dtype=torch.int64), dev)
+            ml_plane = tp.multilabel_margin_loss(empty_plane, label_target,
+                                                 reduction=0)
+            self.assertEqual(tuple(ml_plane.shape), (0,))
+            self.assertEqual(float(tp.multilabel_margin_loss(
+                empty_plane, label_target, reduction=1).item()), 0.0)
+            self.assertEqual(float(tp.multilabel_margin_loss(
+                empty_plane, label_target, reduction=2).item()), 0.0)
 
 
 if __name__ == "__main__":
