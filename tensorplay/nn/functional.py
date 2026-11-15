@@ -2845,6 +2845,12 @@ def ctc_loss(
         )
         if captured is not None:
             return captured
+    if reduction == "elementwise_mean":
+        warnings.warn("reduction='elementwise_mean' is deprecated. Please use reduction='mean' instead.",
+                      stacklevel=2)
+        reduction = "mean"
+    elif reduction not in ("none", "mean", "sum"):
+        raise ValueError(f"{reduction} is not a valid value for reduction")
     if log_probs.dim() == 2:
         log_probs = log_probs.unsqueeze(1)
         unbatched = True
