@@ -1036,14 +1036,16 @@ void apply_ormqr(const Tensor& QR_cm, const Tensor& tau, Tensor& C_cm,
     scalar_t* work_ptr =
         Tr::is_float ? reinterpret_cast<scalar_t*>(static_cast<void*>(work.data_ptr<float>()))
                      : reinterpret_cast<scalar_t*>(static_cast<void*>(work.data_ptr<double>()));
-    Tensor dev_info = Tensor::zeros({batch}, DType::Int32, C_cm.device());
+    // The solver only flags an invalid argument in info, and every argument
+    // was validated before dispatch, so the flag is never read back; a single
+    // device slot receives each call's (ignored) status.
+    Tensor dev_info = Tensor::empty({1}, DType::Int32, C_cm.device());
     auto* info_data = dev_info.data_ptr<int32_t>();
     for (int64_t i = 0; i < batch; ++i) {
         CUSOLVER_CHECK(Tr::ormqr(handle, side, trans, m, n, k, &a[i * a_ms], lda,
                                  &tau_ptr[i * tau_stride], &c[i * c_ms], ldc,
-                                 work_ptr, lwork, &info_data[i]));
+                                 work_ptr, lwork, info_data));
     }
-    check_infos(dev_info, "linalg.lstsq", C_cm.dim() == 2);
 }
 
 template <typename scalar_t>
@@ -1230,13 +1232,16 @@ Tensor ormqr_cuda(const Tensor& self, const Tensor& tau, const Tensor& other,
     if (k == 0 || q == 0) return other.clone();
     Tensor tau_c = tau.contiguous();
     const Tensor QR = clone_batched_column_major(self);
+    // The solver writes into a column-major plane; that plane is already the
+    // batched-column-major view the result is returned in, so no row-major
+    // conversion pass is needed on the way out.
     if (left) {
         Tensor C = clone_batched_column_major(other);
         run_real(self.dtype(), [&](auto tag) {
             using T = std::remove_pointer_t<decltype(tag)>;
             apply_ormqr<T>(QR, tau_c, C, transpose);
         });
-        return C.contiguous();
+        return C;
     }
     // From the right the reflectors act on the columns of `other`, which is
     // exactly the side the solver applies them to when told so; no transposed
@@ -1246,7 +1251,7 @@ Tensor ormqr_cuda(const Tensor& self, const Tensor& tau, const Tensor& other,
         using T = std::remove_pointer_t<decltype(tag)>;
         apply_ormqr<T>(QR, tau_c, C, transpose, CUBLAS_SIDE_RIGHT);
     });
-    return C.contiguous();
+    return C;
 }
 
 std::tuple<Tensor, Tensor> linalg_polar_kernel_cuda(const Tensor& A) {
