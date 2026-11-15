@@ -21,6 +21,12 @@ namespace ops = tensorplay::tpx::ops;
 // The tier-compiled walks live in LossVecKernelsImpl.cpp.
 DEFINE_DISPATCH(bce_sum_stub);
 DEFINE_DISPATCH(bce_into_stub);
+DEFINE_DISPATCH(mse_sum_stub);
+DEFINE_DISPATCH(mse_into_stub);
+DEFINE_DISPATCH(mse_grad_stub);
+DEFINE_DISPATCH(l1_sum_stub);
+DEFINE_DISPATCH(l1_into_stub);
+DEFINE_DISPATCH(l1_grad_stub);
 DEFINE_DISPATCH(bce_logits_rows_stub);
 DEFINE_DISPATCH(huber_sum_stub);
 DEFINE_DISPATCH(huber_into_stub);
@@ -285,46 +291,63 @@ Tensor nll_loss2d_backward_kernel(const Tensor& grad_output, const Tensor& input
 }
 
 // MSE Loss
+// The squared deviation is read once per operand and folded in the same walk:
+// no deviation plane is materialized, and the mean shares the fold by the
+// element count.
 Tensor mse_loss_kernel(const Tensor& input, const Tensor& target, int64_t reduction) {
-    // reduction: 0=none, 1=mean, 2=sum
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    if (fused_float(input, target)) {
+        const int64_t n = input.numel();
+        const DType dt = input.dtype();
+        const Device& dev = input.device();
+        const int dtype = static_cast<int>(dt);
+        if (reduction == 0) {
+            Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt, dev);
+            mse_into_stub(DeviceType::CPU, input.data_ptr(), target.data_ptr(),
+                          out.data_ptr(), n, dtype);
+            return out;
+        }
+        const double total = mse_sum_stub(DeviceType::CPU, input.data_ptr(),
+                                          target.data_ptr(), n, dtype);
+        if (reduction == 1)
+            return Tensor::full({}, Scalar(total / static_cast<double>(n)), dt, dev);
+        return Tensor::full({}, Scalar(total), dt, dev);
+    }
     Tensor diff = input - target;
     Tensor sq_diff = diff * diff;
-    
-    if (reduction == 0) { // None
-        return sq_diff;
-    } else if (reduction == 1) { // Mean
-        return sq_diff.mean();
-    } else if (reduction == 2) { // Sum
-        return sq_diff.sum();
-    }
-    TP_THROW(ValueError, "Invalid reduction mode");
+    if (reduction == 0) return sq_diff;
+    if (reduction == 1) return sq_diff.mean();
+    return sq_diff.sum();
 }
 
+// dL/dx = 2 (x - t) * g, shared by the element count when the forward averaged.
 Tensor mse_loss_backward_kernel(const Tensor& grad_output, const Tensor& input, const Tensor& target, int64_t reduction) {
-    Tensor diff = input - target;
-    Tensor grad_input;
-    
-    if (reduction == 0) { // None
-        // grad_output shape matches input/target shape (broadcasted)
-        // L = (x-y)^2
-        // dL/dx = 2(x-y) * dL_out
-        grad_input = 2.0 * diff * grad_output;
-    } else {
-        // Scalar output
-        // Mean: L = mean((x-y)^2) = 1/N * sum((x-y)^2)
-        // dL/dx = 2/N * (x-y) * grad_output
-        // Sum: L = sum((x-y)^2)
-        // dL/dx = 2 * (x-y) * grad_output
-        
-        double scale = 2.0;
-        if (reduction == 1) {
-            scale /= (double)input.numel();
-        }
-        
-        grad_input = (scale * diff) * grad_output;
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    const int64_t n = input.numel();
+    const bool fused =
+        fused_float(input, target) && grad_output.dtype() == input.dtype() &&
+        same_layout(grad_output, input) && grad_output.numel() == n;
+    if (fused) {
+        const DType dt = input.dtype();
+        const int dtype = static_cast<int>(dt);
+        const double scale = reduction == 1
+                                 ? 2.0 / static_cast<double>(n)
+                                 : 2.0;
+        Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt,
+                   input.device());
+        mse_grad_stub(DeviceType::CPU, grad_output.data_ptr(),
+                      input.data_ptr(), target.data_ptr(), out.data_ptr(), n,
+                      scale, dtype);
+        return out;
     }
-    
-    return grad_input;
+    Tensor diff = input - target;
+    if (reduction == 0) return 2.0 * diff * grad_output;
+    const double scale = reduction == 1
+                             ? 2.0 / static_cast<double>(n)
+                             : 2.0;
+    return (scale * diff) * grad_output;
 }
 
 
@@ -360,14 +383,54 @@ Tensor xlogy_shim(const Tensor& x, const Tensor& y) {
 
 } // anonymous namespace
 
+// The absolute deviation read the same way: one load of each operand per lane,
+// folded by the walk, and the mean shares the fold by the element count.
 Tensor l1_loss_kernel(const Tensor& input, const Tensor& target, int64_t reduction) {
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    if (fused_float(input, target)) {
+        const int64_t n = input.numel();
+        const DType dt = input.dtype();
+        const Device& dev = input.device();
+        const int dtype = static_cast<int>(dt);
+        if (reduction == 0) {
+            Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt, dev);
+            l1_into_stub(DeviceType::CPU, input.data_ptr(), target.data_ptr(),
+                         out.data_ptr(), n, dtype);
+            return out;
+        }
+        const double total = l1_sum_stub(DeviceType::CPU, input.data_ptr(),
+                                         target.data_ptr(), n, dtype);
+        if (reduction == 1)
+            return Tensor::full({}, Scalar(total / static_cast<double>(n)), dt, dev);
+        return Tensor::full({}, Scalar(total), dt, dev);
+    }
     return loss_reduce((input - target).abs(), reduction);
 }
 
+// The side the deviation sits on, carried by the incoming gradient and shared
+// by the element count when the forward averaged.
 Tensor l1_loss_backward_kernel(const Tensor& grad_output, const Tensor& input,
                                const Tensor& target, int64_t reduction) {
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    const int64_t n = input.numel();
+    const bool fused =
+        fused_float(input, target) && grad_output.dtype() == input.dtype() &&
+        same_layout(grad_output, input) && grad_output.numel() == n;
+    if (fused) {
+        const DType dt = input.dtype();
+        const int dtype = static_cast<int>(dt);
+        const double scale =
+            reduction == 1 ? 1.0 / static_cast<double>(n) : 1.0;
+        Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt,
+                   input.device());
+        l1_grad_stub(DeviceType::CPU, grad_output.data_ptr(), input.data_ptr(),
+                     target.data_ptr(), out.data_ptr(), n, scale, dtype);
+        return out;
+    }
     Tensor g = (input - target).sign() * grad_output;
-    return scale_grad(g, reduction, input.numel());
+    return scale_grad(g, reduction, n);
 }
 
 // z = |x - t|; z < beta ? 0.5 z^2 / beta : z - 0.5 beta. The switch is strict,

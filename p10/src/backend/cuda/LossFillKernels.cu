@@ -22,6 +22,8 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <optional>
 #include <tuple>
 #include <type_traits>
@@ -617,6 +619,14 @@ Tensor mse_loss_cuda(const Tensor& input, const Tensor& target,
             (reduction == 1 && n) ? 1.0 / static_cast<double>(n) : 1.0;
         Tensor result = Tensor::empty({}, acc, input.device());
         if (!n) {
+            if (reduction == 1) {
+                // An average over an empty plane divides nothing by nothing.
+                return Tensor::full(
+                           std::vector<int64_t>{},
+                           Scalar(std::numeric_limits<double>::quiet_NaN()),
+                           acc, input.device())
+                    .to(input.dtype());
+            }
             // Nothing to fold, so the answer is the zero the accumulator would
             // have held.
             Tensor total = Tensor::zeros({1}, acc, input.device());

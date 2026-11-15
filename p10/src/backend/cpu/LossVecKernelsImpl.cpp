@@ -91,6 +91,158 @@ void huber_into_typed(const T* input, const T* target, T* out, int64_t n,
                     });
 }
 
+// z = x - t, squared and folded.  One load of each operand answers a whole
+// lane of the sum, so the deviation plane the composed form would allocate
+// never exists.
+template <typename T>
+double mse_sum_typed(const T* input, const T* target, int64_t n) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    return parallel_ranges(n, kElementwiseUnit,
+                           [&](int64_t begin, int64_t end) -> double {
+                               Vec acc(static_cast<T>(0));
+                               int64_t i = begin;
+                               for (; i + W <= end; i += W) {
+                                   const Vec z = Vec::loadu(input + i) -
+                                                 Vec::loadu(target + i);
+                                   acc = acc + z * z;
+                               }
+                               double total =
+                                   static_cast<double>(acc.reduce_add());
+                               for (; i < end; ++i) {
+                                   const T z = input[i] - target[i];
+                                   total += static_cast<double>(z * z);
+                               }
+                               return total;
+                           });
+}
+
+template <typename T>
+void mse_into_typed(const T* input, const T* target, T* out, int64_t n) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec z = Vec::loadu(input + i) -
+                                          Vec::loadu(target + i);
+                            (z * z).store(out + i);
+                        }
+                        for (; i < end; ++i) {
+                            const T z = input[i] - target[i];
+                            out[i] = z * z;
+                        }
+                        return 0.0;
+                    });
+}
+
+// The squared walk answers twice the deviation, moved by the incoming
+// gradient lane by lane.
+template <typename T>
+void mse_grad_typed(const T* grad_output, const T* input, const T* target,
+                    T* out, int64_t n, double scale) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec slope(static_cast<T>(scale));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec z = Vec::loadu(input + i) -
+                                          Vec::loadu(target + i);
+                            (slope * z * Vec::loadu(grad_output + i))
+                                .store(out + i);
+                        }
+                        for (; i < end; ++i) {
+                            const T z = input[i] - target[i];
+                            out[i] = static_cast<T>(scale) * z *
+                                     grad_output[i];
+                        }
+                        return 0.0;
+                    });
+}
+
+// The same deviation read without its sign.
+template <typename T>
+double l1_sum_typed(const T* input, const T* target, int64_t n) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    return parallel_ranges(n, kElementwiseUnit,
+                           [&](int64_t begin, int64_t end) -> double {
+                               Vec acc(static_cast<T>(0));
+                               int64_t i = begin;
+                               for (; i + W <= end; i += W) {
+                                   const Vec z = Vec::loadu(input + i) -
+                                                 Vec::loadu(target + i);
+                                   acc = acc + z.abs();
+                               }
+                               double total =
+                                   static_cast<double>(acc.reduce_add());
+                               for (; i < end; ++i) {
+                                   const T z = input[i] - target[i];
+                                   total += static_cast<double>(
+                                       z < static_cast<T>(0) ? -z : z);
+                               }
+                               return total;
+                           });
+}
+
+template <typename T>
+void l1_into_typed(const T* input, const T* target, T* out, int64_t n) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec z = Vec::loadu(input + i) -
+                                          Vec::loadu(target + i);
+                            z.abs().store(out + i);
+                        }
+                        for (; i < end; ++i) {
+                            const T z = input[i] - target[i];
+                            out[i] = z < static_cast<T>(0) ? -z : z;
+                        }
+                        return 0.0;
+                    });
+}
+
+// The absolute walk answers the side the deviation sits on: both sides carry
+// one, and the width itself answers nothing.
+template <typename T>
+void l1_grad_typed(const T* grad_output, const T* input, const T* target,
+                   T* out, int64_t n, double scale) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    const Vec one(static_cast<T>(scale));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec z = Vec::loadu(input + i) -
+                                          Vec::loadu(target + i);
+                            const Vec side = Vec::blendv(
+                                zero, Vec::blendv(-one, one, z > zero),
+                                z != zero);
+                            (side * Vec::loadu(grad_output + i))
+                                .store(out + i);
+                        }
+                        for (; i < end; ++i) {
+                            const T z = input[i] - target[i];
+                            const T side = z > static_cast<T>(0)
+                                               ? static_cast<T>(1)
+                                               : (z < static_cast<T>(0)
+                                                      ? static_cast<T>(-1)
+                                                      : static_cast<T>(0));
+                            out[i] = side * static_cast<T>(scale) *
+                                     grad_output[i];
+                        }
+                        return 0.0;
+                    });
+}
+
 // log x and log(1 - x), both floored at -100, in the operand width.
 template <typename T>
 double bce_sum_typed(const T* input, const T* target, int64_t n,
@@ -463,6 +615,112 @@ double huber_sum_impl(const void* input, const void* target, int64_t n,
     }
 }
 
+double mse_sum_impl(const void* input, const void* target, int64_t n,
+                   int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return mse_sum_typed(static_cast<const double*>(input),
+                                 static_cast<const double*>(target), n);
+        case DType::Float32:
+            return mse_sum_typed(static_cast<const float*>(input),
+                                 static_cast<const float*>(target), n);
+        default:
+            TP_THROW(TypeError, "mse_loss: unsupported dtype");
+    }
+}
+
+void mse_into_impl(const void* input, const void* target, void* out, int64_t n,
+                   int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            mse_into_typed(static_cast<const double*>(input),
+                           static_cast<const double*>(target),
+                           static_cast<double*>(out), n);
+            break;
+        case DType::Float32:
+            mse_into_typed(static_cast<const float*>(input),
+                           static_cast<const float*>(target),
+                           static_cast<float*>(out), n);
+            break;
+        default:
+            TP_THROW(TypeError, "mse_loss: unsupported dtype");
+    }
+}
+
+void mse_grad_impl(const void* grad_output, const void* input,
+                   const void* target, void* out, int64_t n, double scale,
+                   int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            mse_grad_typed(static_cast<const double*>(grad_output),
+                           static_cast<const double*>(input),
+                           static_cast<const double*>(target),
+                           static_cast<double*>(out), n, scale);
+            break;
+        case DType::Float32:
+            mse_grad_typed(static_cast<const float*>(grad_output),
+                           static_cast<const float*>(input),
+                           static_cast<const float*>(target),
+                           static_cast<float*>(out), n, scale);
+            break;
+        default:
+            TP_THROW(TypeError, "mse_loss backward: unsupported dtype");
+    }
+}
+
+double l1_sum_impl(const void* input, const void* target, int64_t n,
+                   int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return l1_sum_typed(static_cast<const double*>(input),
+                                static_cast<const double*>(target), n);
+        case DType::Float32:
+            return l1_sum_typed(static_cast<const float*>(input),
+                                static_cast<const float*>(target), n);
+        default:
+            TP_THROW(TypeError, "l1_loss: unsupported dtype");
+    }
+}
+
+void l1_into_impl(const void* input, const void* target, void* out, int64_t n,
+                  int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            l1_into_typed(static_cast<const double*>(input),
+                          static_cast<const double*>(target),
+                          static_cast<double*>(out), n);
+            break;
+        case DType::Float32:
+            l1_into_typed(static_cast<const float*>(input),
+                          static_cast<const float*>(target),
+                          static_cast<float*>(out), n);
+            break;
+        default:
+            TP_THROW(TypeError, "l1_loss: unsupported dtype");
+    }
+}
+
+void l1_grad_impl(const void* grad_output, const void* input,
+                  const void* target, void* out, int64_t n, double scale,
+                  int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            l1_grad_typed(static_cast<const double*>(grad_output),
+                          static_cast<const double*>(input),
+                          static_cast<const double*>(target),
+                          static_cast<double*>(out), n, scale);
+            break;
+        case DType::Float32:
+            l1_grad_typed(static_cast<const float*>(grad_output),
+                          static_cast<const float*>(input),
+                          static_cast<const float*>(target),
+                          static_cast<float*>(out), n, scale);
+            break;
+        default:
+            TP_THROW(TypeError, "l1_loss backward: unsupported dtype");
+    }
+}
+
 double multilabel_rows_impl(const void* input, const void* target, void* out,
                             int64_t rows, int64_t width, int dtype) {
     switch (static_cast<DType>(dtype)) {
@@ -534,6 +792,12 @@ double triplet_rows_impl(const void* anchor, const void* positive,
 #ifndef CPU_CAPABILITY_AVX512
 REGISTER_DISPATCH(bce_sum_stub, &bce_sum_impl);
 REGISTER_DISPATCH(bce_into_stub, &bce_into_impl);
+REGISTER_DISPATCH(mse_sum_stub, &mse_sum_impl);
+REGISTER_DISPATCH(mse_into_stub, &mse_into_impl);
+REGISTER_DISPATCH(mse_grad_stub, &mse_grad_impl);
+REGISTER_DISPATCH(l1_sum_stub, &l1_sum_impl);
+REGISTER_DISPATCH(l1_into_stub, &l1_into_impl);
+REGISTER_DISPATCH(l1_grad_stub, &l1_grad_impl);
 REGISTER_DISPATCH(huber_into_stub, &huber_into_impl);
 REGISTER_DISPATCH(huber_sum_stub, &huber_sum_impl);
 REGISTER_DISPATCH(bce_logits_rows_stub, &bce_logits_rows_impl);
@@ -542,6 +806,12 @@ REGISTER_DISPATCH(triplet_rows_stub, &triplet_rows_impl);
 #else
 ALSO_REGISTER_AVX512_DISPATCH(bce_sum_stub, &bce_sum_impl);
 ALSO_REGISTER_AVX512_DISPATCH(bce_into_stub, &bce_into_impl);
+ALSO_REGISTER_AVX512_DISPATCH(mse_sum_stub, &mse_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(mse_into_stub, &mse_into_impl);
+ALSO_REGISTER_AVX512_DISPATCH(mse_grad_stub, &mse_grad_impl);
+ALSO_REGISTER_AVX512_DISPATCH(l1_sum_stub, &l1_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(l1_into_stub, &l1_into_impl);
+ALSO_REGISTER_AVX512_DISPATCH(l1_grad_stub, &l1_grad_impl);
 ALSO_REGISTER_AVX512_DISPATCH(huber_into_stub, &huber_into_impl);
 ALSO_REGISTER_AVX512_DISPATCH(huber_sum_stub, &huber_sum_impl);
 ALSO_REGISTER_AVX512_DISPATCH(bce_logits_rows_stub, &bce_logits_rows_impl);

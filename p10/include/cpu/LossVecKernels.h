@@ -31,6 +31,35 @@ using bce_into_fn = void (*)(const void* input, const void* target, void* out,
                              int64_t n, int* bad_input, int* bad_target,
                              int dtype);
 
+// mse_loss: z = x - t, answered as z^2 per element.  Both walks read the two
+// operands once and never build the deviation plane; the sum walk folds the
+// squared deviations and the into walk stores them (same length and dtype as
+// the operands).
+using mse_sum_fn = double (*)(const void* input, const void* target, int64_t n,
+                              int dtype);
+
+using mse_into_fn = void (*)(const void* input, const void* target, void* out,
+                             int64_t n, int dtype);
+
+// l1_loss: the same deviation read without its sign.
+using l1_sum_fn = double (*)(const void* input, const void* target, int64_t n,
+                             int dtype);
+
+using l1_into_fn = void (*)(const void* input, const void* target, void* out,
+                            int64_t n, int dtype);
+
+// The gradients the two squared and absolute losses answer: twice the
+// deviation, and the side it sits on, each carried by the incoming gradient and
+// by `scale` (the slope the reduction divides with, folded into the same walk).
+// Both write one element plane.
+using mse_grad_fn = void (*)(const void* grad_output, const void* input,
+                             const void* target, void* out, int64_t n,
+                             double scale, int dtype);
+
+using l1_grad_fn = void (*)(const void* grad_output, const void* input,
+                            const void* target, void* out, int64_t n,
+                            double scale, int dtype);
+
 // huber_loss: z = |x - t|; z <= delta ? 0.5 z^2 : delta (z - 0.5 delta).
 using huber_sum_fn = double (*)(const void* input, const void* target,
                                 int64_t n, double delta, int dtype);
@@ -72,6 +101,12 @@ using triplet_rows_fn = double (*)(const void* anchor, const void* positive,
 
 DECLARE_DISPATCH(bce_sum_fn, bce_sum_stub)
 DECLARE_DISPATCH(bce_into_fn, bce_into_stub)
+DECLARE_DISPATCH(mse_sum_fn, mse_sum_stub)
+DECLARE_DISPATCH(mse_into_fn, mse_into_stub)
+DECLARE_DISPATCH(mse_grad_fn, mse_grad_stub)
+DECLARE_DISPATCH(l1_sum_fn, l1_sum_stub)
+DECLARE_DISPATCH(l1_into_fn, l1_into_stub)
+DECLARE_DISPATCH(l1_grad_fn, l1_grad_stub)
 DECLARE_DISPATCH(huber_into_fn, huber_into_stub)
 DECLARE_DISPATCH(huber_sum_fn, huber_sum_stub)
 DECLARE_DISPATCH(bce_logits_rows_fn, bce_logits_rows_stub)
