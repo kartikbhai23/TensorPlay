@@ -4955,6 +4955,202 @@ int64_t sum_row_int(const T* x, int64_t n) {
     return total;
 }
 
+// A band of columns summed down the leading axis of an integral tensor.  The
+// totals are kept in the wide integer, and a total in the narrow width is
+// folded into them before it could overflow, so every answer is exact however
+// many rows are summed.  A whole band stays in two registers across the rows,
+// so each element is read exactly once and no converted copy is made.
+template <typename T, int64_t Step>
+__attribute__((target("avx2"), always_inline)) inline
+void sum_cols_int_band(const T* in, int64_t rows, int64_t cols, int64_t c,
+                       int64_t* out) {
+    __m256i lo = _mm256_setzero_si256();
+    __m256i hi = _mm256_setzero_si256();
+    if constexpr (sizeof(T) <= 2) {
+        // A band of eight columns is widened once per row; the narrow total is
+        // folded into the wide pair every few thousand rows.
+        constexpr int64_t kBlock = 2048;
+        for (int64_t r0 = 0; r0 < rows; r0 += kBlock) {
+            const int64_t r1 = std::min(rows, r0 + kBlock);
+            __m256i acc = _mm256_setzero_si256();
+            for (int64_t r = r0; r < r1; ++r) {
+                const T* p = in + r * cols + c;
+                __m256i band;
+                if constexpr (sizeof(T) == 1) {
+                    const __m128i raw = _mm_loadl_epi64(
+                        reinterpret_cast<const __m128i*>(p));
+                    if constexpr (std::is_unsigned_v<T>) {
+                        band = _mm256_cvtepu8_epi32(raw);
+                    } else {
+                        band = _mm256_cvtepi8_epi32(raw);
+                    }
+                } else {
+                    const __m128i raw = _mm_loadu_si128(
+                        reinterpret_cast<const __m128i*>(p));
+                    if constexpr (std::is_unsigned_v<T>) {
+                        band = _mm256_cvtepu16_epi32(raw);
+                    } else {
+                        band = _mm256_cvtepi16_epi32(raw);
+                    }
+                }
+                acc = _mm256_add_epi32(acc, band);
+            }
+            lo = _mm256_add_epi64(
+                lo, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(acc)));
+            hi = _mm256_add_epi64(
+                hi, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(acc, 1)));
+        }
+    } else if constexpr (sizeof(T) == 4) {
+        for (int64_t r = 0; r < rows; ++r) {
+            const __m256i band = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(in + r * cols + c));
+            if constexpr (std::is_unsigned_v<T>) {
+                lo = _mm256_add_epi64(
+                    lo, _mm256_cvtepu32_epi64(
+                            _mm256_castsi256_si128(band)));
+                hi = _mm256_add_epi64(
+                    hi, _mm256_cvtepu32_epi64(
+                            _mm256_extracti128_si256(band, 1)));
+            } else {
+                lo = _mm256_add_epi64(
+                    lo, _mm256_cvtepi32_epi64(
+                            _mm256_castsi256_si128(band)));
+                hi = _mm256_add_epi64(
+                    hi, _mm256_cvtepi32_epi64(
+                            _mm256_extracti128_si256(band, 1)));
+            }
+        }
+    } else {
+        // A width that already fills a lane is carried sixteen columns at a
+        // time, four chains of four lanes: the band of a row is contiguous, so
+        // a row is read in two whole cache lines rather than one fragment of
+        // eight, and the four chains keep four adds in flight over the rows.
+        static_assert(Step == 16);
+        __m256i a0 = _mm256_setzero_si256();
+        __m256i a1 = a0, a2 = a0, a3 = a0;
+        for (int64_t r = 0; r < rows; ++r) {
+            const __m256i* p = reinterpret_cast<const __m256i*>(
+                in + r * cols + c);
+            a0 = _mm256_add_epi64(a0, _mm256_loadu_si256(p));
+            a1 = _mm256_add_epi64(a1, _mm256_loadu_si256(p + 1));
+            a2 = _mm256_add_epi64(a2, _mm256_loadu_si256(p + 2));
+            a3 = _mm256_add_epi64(a3, _mm256_loadu_si256(p + 3));
+        }
+        alignas(32) int64_t sixteen[16];
+        _mm256_store_si256(reinterpret_cast<__m256i*>(sixteen), a0);
+        _mm256_store_si256(reinterpret_cast<__m256i*>(sixteen + 4), a1);
+        _mm256_store_si256(reinterpret_cast<__m256i*>(sixteen + 8), a2);
+        _mm256_store_si256(reinterpret_cast<__m256i*>(sixteen + 12), a3);
+        for (int64_t k = 0; k < Step; ++k) out[c + k] = sixteen[k];
+        return;
+    }
+    alignas(32) int64_t lanes[8];
+    _mm256_store_si256(reinterpret_cast<__m256i*>(lanes), lo);
+    _mm256_store_si256(reinterpret_cast<__m256i*>(lanes + 4), hi);
+    for (int64_t k = 0; k < Step; ++k) out[c + k] = lanes[k];
+}
+
+// One span of column bands, so a worker's share is a single call.
+template <typename T>
+__attribute__((target("avx2"), noinline))
+void sum_cols_int_span(const T* in, int64_t rows, int64_t cols, int64_t begin,
+                       int64_t end, int64_t* out) {
+    int64_t c = begin;
+    if constexpr (sizeof(T) == 8) {
+        for (; c + 16 <= end; c += 16) {
+            sum_cols_int_band<T, 16>(in, rows, cols, c, out);
+        }
+        // The columns past the last whole band are answered eight at a time
+        // and then one at a time.
+        for (; c + 4 <= end; c += 4) {
+            __m256i lo = _mm256_setzero_si256();
+            for (int64_t r = 0; r < rows; ++r) {
+                lo = _mm256_add_epi64(
+                    lo, _mm256_loadu_si256(reinterpret_cast<const __m256i*>(
+                            in + r * cols + c)));
+            }
+            alignas(32) int64_t lanes[4];
+            _mm256_store_si256(reinterpret_cast<__m256i*>(lanes), lo);
+            for (int64_t k = 0; k < 4; ++k) out[c + k] = lanes[k];
+        }
+    } else {
+        for (; c + 8 <= end; c += 8) {
+            sum_cols_int_band<T, 8>(in, rows, cols, c, out);
+        }
+    }
+    for (; c < end; ++c) {
+        int64_t total = 0;
+        for (int64_t r = 0; r < rows; ++r) {
+            total += static_cast<int64_t>(in[r * cols + c]);
+        }
+        out[c] = total;
+    }
+}
+
+template <typename T>
+static void sum_cols_int(const Tensor& input, int64_t* outp, int64_t rows,
+                         int64_t cols, int64_t grain) {
+    const T* in = reinterpret_cast<const T*>(input.data_ptr());
+    const int64_t bands = sizeof(T) == 8 ? 16 : 8;
+    const int64_t grain_cols = std::max<int64_t>(1, grain / std::max<int64_t>(rows, 1) / bands * bands);
+    parallel_for(0, cols, grain_cols, [&](int64_t b, int64_t e) {
+        sum_cols_int_span<T>(in, rows, cols, b, e, outp);
+    });
+}
+
+// The leading axis of an integral tensor summed into the wide integer its
+// answer is kept in.
+inline std::optional<Tensor> try_sum_leading_int(
+        const Tensor& input, const std::vector<int64_t>& out_shape) {
+    const DType dt = input.dtype();
+    if (!input.is_contiguous() || !isIntegralType(dt, true)) {
+        return std::nullopt;
+    }
+    if (input.dim() < 1) return std::nullopt;
+    const int64_t rows = input.size(0);
+    const int64_t cols = rows > 0 ? input.numel() / rows : 0;
+    if (rows < 2 || cols < 1) return std::nullopt;
+    // A band of columns is carried across every row, so one pass over the rows
+    // touches one cache line of every row.  While those lines stay in cache
+    // every element is still read exactly once; once the rows no longer fit,
+    // each pass reads a line to use a fraction of it, and the walk that streams
+    // the input once answers faster.
+    if (rows * 64 > 4LL * 1024 * 1024) return std::nullopt;
+    Tensor out = Tensor::empty(out_shape, DType::Int64, input.device());
+    int64_t* outp = out.data_ptr<int64_t>();
+    const int64_t grain = GRAIN_SIZE;
+    switch (dt) {
+        case DType::UInt8:
+        case DType::Bool:
+            sum_cols_int<uint8_t>(input, outp, rows, cols, grain);
+            break;
+        case DType::Int8:
+            sum_cols_int<int8_t>(input, outp, rows, cols, grain);
+            break;
+        case DType::Int16:
+            sum_cols_int<int16_t>(input, outp, rows, cols, grain);
+            break;
+        case DType::UInt16:
+            sum_cols_int<uint16_t>(input, outp, rows, cols, grain);
+            break;
+        case DType::Int32:
+            sum_cols_int<int32_t>(input, outp, rows, cols, grain);
+            break;
+        case DType::UInt32:
+            sum_cols_int<uint32_t>(input, outp, rows, cols, grain);
+            break;
+        case DType::Int64:
+            sum_cols_int<int64_t>(input, outp, rows, cols, grain);
+            break;
+        case DType::UInt64:
+            sum_cols_int<uint64_t>(input, outp, rows, cols, grain);
+            break;
+        default:
+            return std::nullopt;
+    }
+    return out;
+}
+
 // Every row of an integral tensor summed the same way, split among the workers.
 template <typename T>
 __attribute__((target("avx2"), noinline))
@@ -5312,6 +5508,11 @@ Tensor sum_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims,
         if (rank >= 1 && axis == rank - 1 && self.is_contiguous()) {
             if (std::optional<Tensor> direct =
                     try_sum_lastdim_int(self, out_shape)) {
+                return std::move(*direct);
+            }
+        } else if (axis == 0 && self.is_contiguous()) {
+            if (std::optional<Tensor> direct =
+                    try_sum_leading_int(self, out_shape)) {
                 return std::move(*direct);
             }
         }
