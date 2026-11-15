@@ -1050,7 +1050,11 @@ struct LogAddExp2Pair {
         T m = std::max(x, y);
         if (m == -std::numeric_limits<T>::infinity()) return m;
         if (m != m) return m;
-        return m + std::log1p(std::exp2(-std::fabs(x - y))) / static_cast<T>(M_LN2);
+        // Scaling by one over the natural logarithm, not dividing by it: the
+        // vector fold carries the same constant, so both widths of the map
+        // answer with the same operations.
+        return m + std::log1p(std::exp2(-std::fabs(x - y))) *
+                       static_cast<T>(1.4426950408889634073599246810018921L);
     }
 };
 struct CopysignPair {
@@ -1245,16 +1249,20 @@ Tensor& logaddexp_out_cpu(const Tensor& a, const Tensor& b, Tensor& out) {
         a, b, out, LogAddExpPair{}, "logaddexp");
 }
 Tensor logaddexp2_cpu(const Tensor& a, const Tensor& b) {
-    return binary_float_kernel(a, b, LogAddExp2Pair{}, "logaddexp2");
+    return pair_math_kernel<vecbinary::BOp::LogAddExp2>(
+        a, b, LogAddExp2Pair{}, "logaddexp2");
 }
 Tensor& logaddexp2_out_cpu(const Tensor& a, const Tensor& b, Tensor& out) {
-    return binary_float_out_kernel(a, b, out, logaddexp2_cpu, LogAddExp2Pair{}, "logaddexp2");
+    return pair_math_out_kernel<vecbinary::BOp::LogAddExp2>(
+        a, b, out, LogAddExp2Pair{}, "logaddexp2");
 }
 Tensor copysign_cpu(const Tensor& a, const Tensor& b) {
-    return binary_float_kernel(a, b, CopysignPair{}, "copysign");
+    return pair_math_kernel<vecbinary::BOp::CopySign>(a, b, CopysignPair{},
+                                                      "copysign");
 }
 Tensor& copysign_out_cpu(const Tensor& a, const Tensor& b, Tensor& out) {
-    return binary_float_out_kernel(a, b, out, copysign_cpu, CopysignPair{}, "copysign");
+    return pair_math_out_kernel<vecbinary::BOp::CopySign>(
+        a, b, out, CopysignPair{}, "copysign");
 }
 Tensor copysign_scalar_cpu(const Tensor& self, const Scalar& other) {
     // The sign comes from the scalar alone, so the divisor width never
@@ -1318,6 +1326,51 @@ inline T step_toward(T from, T to) {
     }
 }
 
+// The step at the widths that have a vector form: the library answers eight
+// (or four) lanes at a time, and the tail takes the element-wise step.  The
+// reduced widths have no such form -- a step there is an increment of the
+// 16-bit layout, which the walk above takes lane by lane.
+#if defined(TP_VECBINARY_SLEEF)
+__attribute__((target("avx2,fma")))
+void nextafter_f32_avx2(const float* a, const float* b, float* d, int64_t n) {
+    int64_t i = 0;
+    for (; i + 16 <= n; i += 16) {
+        _mm256_storeu_ps(d + i,
+                         Sleef_nextafterf8(_mm256_loadu_ps(a + i),
+                                           _mm256_loadu_ps(b + i)));
+        _mm256_storeu_ps(d + i + 8,
+                         Sleef_nextafterf8(_mm256_loadu_ps(a + i + 8),
+                                           _mm256_loadu_ps(b + i + 8)));
+    }
+    for (; i + 8 <= n; i += 8) {
+        _mm256_storeu_ps(d + i,
+                         Sleef_nextafterf8(_mm256_loadu_ps(a + i),
+                                           _mm256_loadu_ps(b + i)));
+    }
+    for (; i < n; ++i) d[i] = std::nextafter(a[i], b[i]);
+}
+
+__attribute__((target("avx2,fma")))
+void nextafter_f64_avx2(const double* a, const double* b, double* d,
+                        int64_t n) {
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        _mm256_storeu_pd(d + i,
+                         Sleef_nextafterd4(_mm256_loadu_pd(a + i),
+                                           _mm256_loadu_pd(b + i)));
+        _mm256_storeu_pd(d + i + 4,
+                         Sleef_nextafterd4(_mm256_loadu_pd(a + i + 4),
+                                           _mm256_loadu_pd(b + i + 4)));
+    }
+    for (; i + 4 <= n; i += 4) {
+        _mm256_storeu_pd(d + i,
+                         Sleef_nextafterd4(_mm256_loadu_pd(a + i),
+                                           _mm256_loadu_pd(b + i)));
+    }
+    for (; i < n; ++i) d[i] = std::nextafter(a[i], b[i]);
+}
+#endif
+
 template <typename T>
 void nextafter_fill(const Tensor& ac, const Tensor& bc, Tensor& out) {
     const T* ap = ac.data_ptr<T>();
@@ -1341,6 +1394,28 @@ Tensor nextafter_kernel(const Tensor& a, const Tensor& b,
         static_cast<std::vector<int64_t>>(b.shape()));
     DType dt = promoteTypes(a.dtype(), b.dtype());
     if (!isFloatingType(dt)) dt = DType::Float32;
+#if defined(TP_VECBINARY_SLEEF)
+    // The packed same-width pair answers several lanes at a time; a broadcast,
+    // a mixed width, a reduced width and a caller-supplied destination all
+    // keep the element-wise form below.
+    if (destination == nullptr && vecbinary::avx2_available() &&
+        a.dtype() == dt && b.dtype() == dt && a.shape() == b.shape() &&
+        (dt == DType::Float32 || dt == DType::Float64) &&
+        a.is_contiguous() && b.is_contiguous()) {
+        Tensor out = Tensor::empty(out_shape, dt, a.device());
+        const int64_t n = out.numel();
+        if (n > 0) {
+            if (dt == DType::Float32) {
+                nextafter_f32_avx2(a.data_ptr<float>(), b.data_ptr<float>(),
+                                   out.data_ptr<float>(), n);
+            } else {
+                nextafter_f64_avx2(a.data_ptr<double>(), b.data_ptr<double>(),
+                                   out.data_ptr<double>(), n);
+            }
+        }
+        return out;
+    }
+#endif
     Tensor ac = a.to(dt).expand(out_shape).contiguous();
     Tensor bc = b.to(dt).expand(out_shape).contiguous();
     Tensor out = destination != nullptr

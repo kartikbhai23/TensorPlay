@@ -48,6 +48,8 @@ extern "C" {
 #endif
 __m256 Sleef_fmodf8(__m256, __m256);
 __m256d Sleef_fmodd4(__m256d, __m256d);
+__m256 Sleef_nextafterf8(__m256, __m256);
+__m256d Sleef_nextafterd4(__m256d, __m256d);
 #ifdef __cplusplus
 }
 #endif
@@ -63,7 +65,15 @@ namespace cpu {
 namespace vecbinary {
 
 // Which pairwise map the chunk answers.
-enum class BOp : int { Hypot, Atan2, LogAddExp, Remainder, Fmod };
+enum class BOp : int {
+    Hypot,
+    Atan2,
+    LogAddExp,
+    LogAddExp2,
+    Remainder,
+    Fmod,
+    CopySign,
+};
 
 // Two equal infinities cancel in the difference the fold takes, so the
 // folded term would be a not-a-number there; the answer is the infinity
@@ -78,6 +88,22 @@ inline double log_add_exp_value(double x, double y) {
     if (std::isinf(x) && x == y) return x;
     const double m = std::max(x, y);
     return m + std::log1p(std::exp(-std::fabs(x - y)));
+}
+
+// The same fold one base lower: the folded term is exp2 of the distance,
+// scaled back to a natural logarithm at the end.
+inline float log_add_exp2_value(float x, float y) {
+    if (std::isinf(x) && x == y) return x;
+    const float m = std::max(x, y);
+    return m + std::log1p(std::exp2(-std::fabs(x - y))) *
+                   static_cast<float>(1.4426950408889634073599246810018921);
+}
+
+inline double log_add_exp2_value(double x, double y) {
+    if (std::isinf(x) && x == y) return x;
+    const double m = std::max(x, y);
+    return m + std::log1p(std::exp2(-std::fabs(x - y))) *
+                   1.4426950408889634073599246810018921;
 }
 
 // The answer of the map at the width of the operands, one element at a
@@ -111,6 +137,16 @@ inline float scalar_f32_of<BOp::Fmod>(float x, float y) {
     return std::fmod(x, y);
 }
 
+template <>
+inline float scalar_f32_of<BOp::LogAddExp2>(float x, float y) {
+    return log_add_exp2_value(x, y);
+}
+
+template <>
+inline float scalar_f32_of<BOp::CopySign>(float x, float y) {
+    return std::copysign(x, y);
+}
+
 inline bool avx2_available() {
 #if defined(TP_VECBINARY_X86)
     static const bool ok = __builtin_cpu_supports("avx2") != 0;
@@ -138,6 +174,10 @@ inline float scalar_f32(BOp op, float x, float y) {
         }
         case BOp::Fmod:
             return std::fmod(x, y);
+        case BOp::LogAddExp2:
+            return log_add_exp2_value(x, y);
+        case BOp::CopySign:
+            return std::copysign(x, y);
     }
     return 0.0f;
 }
@@ -156,6 +196,10 @@ inline double scalar_f64(BOp op, double x, double y) {
         }
         case BOp::Fmod:
             return std::fmod(x, y);
+        case BOp::LogAddExp2:
+            return log_add_exp2_value(x, y);
+        case BOp::CopySign:
+            return std::copysign(x, y);
     }
     return 0.0;
 }
@@ -183,6 +227,13 @@ inline uint16_t scalar_f16(BOp op, uint16_t a, uint16_t b) {
         }
         case BOp::Fmod:
             return tensorplay::cpu::vecreduced::narrow_one(std::fmod(x, y));
+        case BOp::LogAddExp2:
+            return tensorplay::cpu::vecreduced::narrow_one(
+                log_add_exp2_value(x, y));
+        case BOp::CopySign:
+            // The sign bit is the top bit of the layout, so the move is one
+            // mask and one merge whichever reduced width the lane holds.
+            return static_cast<uint16_t>((a & 0x7fff) | (b & 0x8000));
     }
     return 0;
 }
@@ -210,6 +261,11 @@ inline uint16_t scalar_bf16(BOp op, uint16_t a, uint16_t b) {
         case BOp::Fmod:
             return tensorplay::cpu::vecreduced::narrow_bf16_one(
                 std::fmod(x, y));
+        case BOp::LogAddExp2:
+            return tensorplay::cpu::vecreduced::narrow_bf16_one(
+                log_add_exp2_value(x, y));
+        case BOp::CopySign:
+            return static_cast<uint16_t>((a & 0x7fff) | (b & 0x8000));
     }
     return 0;
 }
@@ -248,13 +304,70 @@ inline __m256d log_add_exp_f64(__m256d x, __m256d y) {
     return _mm256_blendv_pd(sum, x, same_inf);
 }
 
+// The base-two sum folds the same way, one base lower: the distance goes
+// through exp2 and the logarithmic term is scaled back by 1/ln 2, which is
+// the constant the scalar form carries.
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256 log_add_exp2_f32(__m256 x, __m256 y) {
+    const __m256 signbit = _mm256_set1_ps(-0.0f);
+    const __m256 inf = _mm256_set1_ps(std::numeric_limits<float>::infinity());
+    const __m256 m = _mm256_max_ps(x, y);
+    const __m256 diff = _mm256_andnot_ps(signbit, _mm256_sub_ps(x, y));
+    const __m256 folded = _mm256_mul_ps(
+        tensorplay::tpsleef::log1p(
+            tensorplay::tpsleef::exp2(_mm256_xor_ps(diff, signbit))),
+        _mm256_set1_ps(1.4426950408889634073599246810018921f));
+    const __m256 sum = _mm256_add_ps(m, folded);
+    const __m256 same_inf = _mm256_and_ps(
+        _mm256_cmp_ps(x, y, _CMP_EQ_OQ),
+        _mm256_cmp_ps(_mm256_andnot_ps(signbit, x), inf, _CMP_EQ_OQ));
+    return _mm256_blendv_ps(sum, x, same_inf);
+}
+
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256d log_add_exp2_f64(__m256d x, __m256d y) {
+    const __m256d signbit = _mm256_set1_pd(-0.0);
+    const __m256d inf = _mm256_set1_pd(std::numeric_limits<double>::infinity());
+    const __m256d m = _mm256_max_pd(x, y);
+    const __m256d diff = _mm256_andnot_pd(signbit, _mm256_sub_pd(x, y));
+    const __m256d folded = _mm256_mul_pd(
+        tensorplay::tpsleef::log1p(
+            tensorplay::tpsleef::exp2(_mm256_xor_pd(diff, signbit))),
+        _mm256_set1_pd(1.4426950408889634073599246810018921));
+    const __m256d sum = _mm256_add_pd(m, folded);
+    const __m256d same_inf = _mm256_and_pd(
+        _mm256_cmp_pd(x, y, _CMP_EQ_OQ),
+        _mm256_cmp_pd(_mm256_andnot_pd(signbit, x), inf, _CMP_EQ_OQ));
+    return _mm256_blendv_pd(sum, x, same_inf);
+}
+
+// The sign of one operand on the magnitude of the other: three bit moves, and
+// every special value (a zero, an infinity, a not-a-number and its payload)
+// carries across untouched.
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256 copysign_f32(__m256 x, __m256 y) {
+    const __m256 signbit = _mm256_set1_ps(-0.0f);
+    return _mm256_or_ps(_mm256_andnot_ps(signbit, x),
+                        _mm256_and_ps(signbit, y));
+}
+
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256d copysign_f64(__m256d x, __m256d y) {
+    const __m256d signbit = _mm256_set1_pd(-0.0);
+    return _mm256_or_pd(_mm256_andnot_pd(signbit, x),
+                        _mm256_and_pd(signbit, y));
+}
+
 // A quotient far beyond the exponent range leaves the vector fmod a
 // not-a-number even though both operands are finite and the divisor is not
 // zero; a finite divisor always leaves a finite remainder, so those lanes
-// take the exact path one at a time.
+// take the exact path one at a time.  A not-a-number answer is the only sign
+// of that case, and it is rare, so the tests that tell it apart from the
+// map's own not-a-numbers run only once a lane has produced one.
 __attribute__((target("avx2,fma"), always_inline))
 inline __m256 fmod_pair_f32(__m256 x, __m256 y) {
     __m256 r = Sleef_fmodf8(x, y);
+    if (_mm256_movemask_ps(_mm256_cmp_ps(r, r, _CMP_UNORD_Q)) == 0) return r;
     const __m256 finite = _mm256_and_ps(_mm256_cmp_ps(x, x, _CMP_ORD_Q),
                                         _mm256_cmp_ps(y, y, _CMP_ORD_Q));
     const __m256 nonzero =
@@ -280,6 +393,7 @@ inline __m256 fmod_pair_f32(__m256 x, __m256 y) {
 __attribute__((target("avx2,fma"), always_inline))
 inline __m256d fmod_pair_f64(__m256d x, __m256d y) {
     __m256d r = Sleef_fmodd4(x, y);
+    if (_mm256_movemask_pd(_mm256_cmp_pd(r, r, _CMP_UNORD_Q)) == 0) return r;
     const __m256d finite = _mm256_and_pd(_mm256_cmp_pd(x, x, _CMP_ORD_Q),
                                          _mm256_cmp_pd(y, y, _CMP_ORD_Q));
     const __m256d nonzero =
@@ -357,6 +471,12 @@ static void f32_chunk_avx2(const float* a, const float* b, float* d,
         } else if constexpr (op == BOp::Fmod) {
             r0 = fmod_pair_f32(x0, y0);
             r1 = fmod_pair_f32(x1, y1);
+        } else if constexpr (op == BOp::LogAddExp2) {
+            r0 = log_add_exp2_f32(x0, y0);
+            r1 = log_add_exp2_f32(x1, y1);
+        } else if constexpr (op == BOp::CopySign) {
+            r0 = copysign_f32(x0, y0);
+            r1 = copysign_f32(x1, y1);
         } else {
             r0 = log_add_exp_f32(x0, y0);
             r1 = log_add_exp_f32(x1, y1);
@@ -376,6 +496,10 @@ static void f32_chunk_avx2(const float* a, const float* b, float* d,
             r = remainder_f32(x, y);
         } else if constexpr (op == BOp::Fmod) {
             r = fmod_pair_f32(x, y);
+        } else if constexpr (op == BOp::LogAddExp2) {
+            r = log_add_exp2_f32(x, y);
+        } else if constexpr (op == BOp::CopySign) {
+            r = copysign_f32(x, y);
         } else {
             r = log_add_exp_f32(x, y);
         }
@@ -396,6 +520,25 @@ __attribute__((target("avx2,fma,f16c"), noinline))
 static void f16_chunk_avx2(const uint16_t* a, const uint16_t* b,
                            uint16_t* d, int64_t begin, int64_t end) {
     int64_t i = begin;
+    // The sign of a lane is its top bit, so the map needs no widening: the
+    // magnitude of one operand and the sign of the other are one mask and one
+    // merge over sixteen lanes at a time.
+    if constexpr (op == BOp::CopySign) {
+        const __m256i keep = _mm256_set1_epi16(0x7fff);
+        const __m256i sign = _mm256_set1_epi16(static_cast<short>(0x8000));
+        for (; i + 16 <= end; i += 16) {
+            const __m256i xv = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(a + i));
+            const __m256i yv = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(b + i));
+            _mm256_storeu_si256(
+                reinterpret_cast<__m256i*>(d + i),
+                _mm256_or_si256(_mm256_and_si256(xv, keep),
+                                _mm256_and_si256(yv, sign)));
+        }
+        for (; i < end; ++i) d[i] = scalar_f16(op, a[i], b[i]);
+        return;
+    }
     // Two vectors are answered per step: the two answers do not depend on
     // each other, so the machine overlaps them instead of waiting for one
     // to finish before it starts the next.
@@ -417,6 +560,9 @@ static void f16_chunk_avx2(const uint16_t* a, const uint16_t* b,
         } else if constexpr (op == BOp::Fmod) {
             r0 = fmod_pair_f32(x0, y0);
             r1 = fmod_pair_f32(x1, y1);
+        } else if constexpr (op == BOp::LogAddExp2) {
+            r0 = log_add_exp2_f32(x0, y0);
+            r1 = log_add_exp2_f32(x1, y1);
         } else {
             r0 = log_add_exp_f32(x0, y0);
             r1 = log_add_exp_f32(x1, y1);
@@ -435,6 +581,8 @@ static void f16_chunk_avx2(const uint16_t* a, const uint16_t* b,
             r = remainder_f32(x, y);
         } else if constexpr (op == BOp::Fmod) {
             r = fmod_pair_f32(x, y);
+        } else if constexpr (op == BOp::LogAddExp2) {
+            r = log_add_exp2_f32(x, y);
         } else {
             r = log_add_exp_f32(x, y);
         }
@@ -455,6 +603,25 @@ __attribute__((target("avx2,fma"), noinline))
 static void bf16_chunk_avx2(const uint16_t* a, const uint16_t* b,
                             uint16_t* d, int64_t begin, int64_t end) {
     int64_t i = begin;
+    // The sign of a lane is its top bit, so the map needs no widening: the
+    // magnitude of one operand and the sign of the other are one mask and one
+    // merge over sixteen lanes at a time.
+    if constexpr (op == BOp::CopySign) {
+        const __m256i keep = _mm256_set1_epi16(0x7fff);
+        const __m256i sign = _mm256_set1_epi16(static_cast<short>(0x8000));
+        for (; i + 16 <= end; i += 16) {
+            const __m256i xv = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(a + i));
+            const __m256i yv = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(b + i));
+            _mm256_storeu_si256(
+                reinterpret_cast<__m256i*>(d + i),
+                _mm256_or_si256(_mm256_and_si256(xv, keep),
+                                _mm256_and_si256(yv, sign)));
+        }
+        for (; i < end; ++i) d[i] = scalar_bf16(op, a[i], b[i]);
+        return;
+    }
     // Two vectors are answered per step: the two answers do not depend on
     // each other, so the machine overlaps them instead of waiting for one
     // to finish before it starts the next.
@@ -478,6 +645,9 @@ static void bf16_chunk_avx2(const uint16_t* a, const uint16_t* b,
         } else if constexpr (op == BOp::Fmod) {
             r0 = fmod_pair_f32(x0, y0);
             r1 = fmod_pair_f32(x1, y1);
+        } else if constexpr (op == BOp::LogAddExp2) {
+            r0 = log_add_exp2_f32(x0, y0);
+            r1 = log_add_exp2_f32(x1, y1);
         } else {
             r0 = log_add_exp_f32(x0, y0);
             r1 = log_add_exp_f32(x1, y1);
@@ -497,6 +667,8 @@ static void bf16_chunk_avx2(const uint16_t* a, const uint16_t* b,
             r = remainder_f32(x, y);
         } else if constexpr (op == BOp::Fmod) {
             r = fmod_pair_f32(x, y);
+        } else if constexpr (op == BOp::LogAddExp2) {
+            r = log_add_exp2_f32(x, y);
         } else {
             r = log_add_exp_f32(x, y);
         }
@@ -530,6 +702,12 @@ static void f64_chunk_avx2(const double* a, const double* b, double* d,
         } else if constexpr (op == BOp::Fmod) {
             r0 = fmod_pair_f64(x0, y0);
             r1 = fmod_pair_f64(x1, y1);
+        } else if constexpr (op == BOp::LogAddExp2) {
+            r0 = log_add_exp2_f64(x0, y0);
+            r1 = log_add_exp2_f64(x1, y1);
+        } else if constexpr (op == BOp::CopySign) {
+            r0 = copysign_f64(x0, y0);
+            r1 = copysign_f64(x1, y1);
         } else {
             r0 = log_add_exp_f64(x0, y0);
             r1 = log_add_exp_f64(x1, y1);
@@ -549,6 +727,10 @@ static void f64_chunk_avx2(const double* a, const double* b, double* d,
             r = remainder_f64(x, y);
         } else if constexpr (op == BOp::Fmod) {
             r = fmod_pair_f64(x, y);
+        } else if constexpr (op == BOp::LogAddExp2) {
+            r = log_add_exp2_f64(x, y);
+        } else if constexpr (op == BOp::CopySign) {
+            r = copysign_f64(x, y);
         } else {
             r = log_add_exp_f64(x, y);
         }
