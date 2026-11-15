@@ -631,8 +631,8 @@ class TestNllWalk(unittest.TestCase):
                                                reduction=name)
                     expected = torch_F.nll_loss(x, target, reduction=name)
                     got = NLL(from_reference(x, dev),
-                                      from_reference(target, dev),
-                                      reduction=name)
+                              from_reference(target, dev),
+                              reduction=name)
                     self.assertEqual(tuple(got.shape), tuple(expected.shape))
                     assert_reference_close(
                         got, expected,
@@ -645,11 +645,161 @@ class TestNllWalk(unittest.TestCase):
                         ref_out, ref_leaf, grad_outputs=seed)[0]
                     leaf = from_reference(x, dev, requires_grad=True)
                     out = NLL(leaf, from_reference(target, dev),
-                                      reduction=name)
+                              reduction=name)
                     out.backward(from_reference(seed, dev))
                     assert_reference_close(
                         leaf.grad, ref_grad,
                         msg=f"nll_loss single grad {dtype} {name} ({dev})")
+
+
+class TestNll2dWalk(unittest.TestCase):
+    """The fused spatial negative-log-likelihood walk agrees with the reference.
+
+    A four-dimensional score plane keeps one target per spatial position, so the
+    walk sweeps a sample's positions as its batch unit.
+    """
+
+    SHAPES = [(5, 7, 3, 4), (2, 4, 1, 6)]
+
+    def _operands(self, shape, dtype, seed, use_weight, ignore):
+        generator = torch.Generator().manual_seed(seed)
+        batch, classes, height, width = shape
+        x = torch.randn(*shape, dtype=dtype, generator=generator)
+        target = torch.randint(0, classes, (batch, height, width),
+                               generator=generator)
+        if ignore:
+            target[::2] = -100
+        weight = (torch.rand(classes, dtype=dtype, generator=generator)
+                  if use_weight else None)
+        return x, target, weight
+
+    def test_forward(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for shape in self.SHAPES:
+                    for use_weight in (False, True):
+                        for ignore in (False, True):
+                            for name in REDUCTIONS:
+                                x, target, weight = self._operands(
+                                    shape, dtype, 107, use_weight, ignore)
+                                expected = torch_F.nll_loss(
+                                    x, target, weight=weight, reduction=name,
+                                    ignore_index=-100)
+                                got = NLL(
+                                    from_reference(x, dev),
+                                    from_reference(target, dev),
+                                    weight=(from_reference(weight, dev)
+                                            if weight is not None else None),
+                                    reduction=name, ignore_index=-100)
+                                self.assertEqual(tuple(got.shape),
+                                                 tuple(expected.shape))
+                                assert_reference_close(
+                                    got, expected,
+                                    msg=f"nll_loss2d {shape} {dtype} "
+                                        f"weight={use_weight} ignore={ignore} "
+                                        f"{name} ({dev})")
+
+    def test_gradient(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for shape in self.SHAPES:
+                    for use_weight in (False, True):
+                        for name in REDUCTIONS:
+                            x, target, weight = self._operands(
+                                shape, dtype, 109, use_weight, True)
+                            ref_leaf = x.clone().requires_grad_(True)
+                            ref_out = torch_F.nll_loss(
+                                ref_leaf, target, weight=weight,
+                                reduction=name, ignore_index=-100)
+                            seed = (torch.randn(ref_out.shape, dtype=dtype)
+                                    if name == "none"
+                                    else torch.ones((), dtype=dtype))
+                            ref_grad = torch.autograd.grad(
+                                ref_out, ref_leaf, grad_outputs=seed)[0]
+                            leaf = from_reference(x, dev, requires_grad=True)
+                            out = NLL(
+                                leaf, from_reference(target, dev),
+                                weight=(from_reference(weight, dev)
+                                        if weight is not None else None),
+                                reduction=name, ignore_index=-100)
+                            out.backward(from_reference(seed, dev))
+                            assert_reference_close(
+                                leaf.grad, ref_grad,
+                                msg=f"nll_loss2d grad {shape} {dtype} "
+                                    f"weight={use_weight} {name} ({dev})")
+
+    def test_narrow_seed(self):
+        # A float32 seed against a float64 plane answers at the plane width;
+        # the host walk reads the seed at the score width.
+        for dev in reference_devices():
+            if dev != "cpu":
+                continue
+            x, target, _ = self._operands((3, 4, 2, 5), torch.float64, 111,
+                                          False, False)
+            for name in REDUCTIONS:
+                ref_leaf = x.clone().requires_grad_(True)
+                ref_out = torch_F.nll_loss(ref_leaf, target, reduction=name)
+                seed = (torch.randn(ref_out.shape, dtype=torch.float64)
+                        if name == "none"
+                        else torch.ones((), dtype=torch.float32))
+                ref_grad = torch.autograd.grad(
+                    ref_out, ref_leaf, grad_outputs=seed)[0]
+                leaf = from_reference(x, dev, requires_grad=True)
+                out = NLL(leaf, from_reference(target, dev), reduction=name)
+                out.backward(from_reference(seed, dev))
+                assert_reference_close(
+                    leaf.grad, ref_grad,
+                    msg=f"nll_loss2d narrow-seed {name} ({dev})")
+
+    def test_higher_rank(self):
+        # (N, C, d1, d2, d3) folds onto the spatial walk through a four-rank
+        # view, so the same axis sweep answers it.
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                generator = torch.Generator().manual_seed(113)
+                x = torch.randn(2, 6, 3, 3, 4, dtype=dtype,
+                                generator=generator)
+                target = torch.randint(0, 6, (2, 3, 3, 4),
+                                       generator=generator)
+                for name in REDUCTIONS:
+                    ref_leaf = x.clone().requires_grad_(True)
+                    ref_out = torch_F.nll_loss(ref_leaf, target,
+                                               reduction=name)
+                    got = NLL(from_reference(x, dev),
+                              from_reference(target, dev), reduction=name)
+                    self.assertEqual(tuple(got.shape), tuple(ref_out.shape))
+                    assert_reference_close(
+                        got, ref_out,
+                        msg=f"nll_loss5d {dtype} {name} ({dev})")
+                    seed = (torch.randn(ref_out.shape, dtype=dtype)
+                            if name == "none"
+                            else torch.ones((), dtype=dtype))
+                    ref_grad = torch.autograd.grad(
+                        ref_out, ref_leaf, grad_outputs=seed)[0]
+                    leaf = from_reference(x, dev, requires_grad=True)
+                    out = NLL(leaf, from_reference(target, dev),
+                              reduction=name)
+                    out.backward(from_reference(seed, dev))
+                    assert_reference_close(
+                        leaf.grad, ref_grad,
+                        msg=f"nll_loss5d grad {dtype} {name} ({dev})")
+
+    def test_layout_fallback(self):
+        # A transposed spatial plane keeps the class axis second and must still
+        # answer the same numbers through the composing path.
+        for dev in reference_devices():
+            x, target, _ = self._operands((4, 6, 2, 3), torch.float32, 115,
+                                          False, False)
+            for name in REDUCTIONS:
+                expected = torch_F.nll_loss(x.permute(0, 1, 3, 2),
+                                            target.permute(0, 2, 1),
+                                            reduction=name)
+                plane = from_reference(x, dev).permute(0, 1, 3, 2)
+                labels = from_reference(target, dev).permute(0, 2, 1)
+                got = NLL(plane, labels, reduction=name)
+                assert_reference_close(
+                    got, expected,
+                    msg=f"nll_loss2d transposed {name} ({dev})")
 
 
 class TestMultiMarginWalk(unittest.TestCase):
@@ -900,6 +1050,18 @@ class TestEmptyPlane(unittest.TestCase):
                 empty_plane, label_target, reduction=1).item()), 0.0)
             self.assertEqual(float(tp.multilabel_margin_loss(
                 empty_plane, label_target, reduction=2).item()), 0.0)
+            # The spatial class-index walk keeps the same convention: an empty
+            # sample plane answers nothing, a zero sum, and no average.
+            spatial_plane = from_reference(
+                torch.zeros((0, 5, 2, 2), dtype=torch.float64), dev)
+            spatial_target = from_reference(
+                torch.zeros((0, 2, 2), dtype=torch.int64), dev)
+            nll2d_plane = NLL(spatial_plane, spatial_target, reduction="none")
+            self.assertEqual(tuple(nll2d_plane.shape), (0, 2, 2))
+            self.assertEqual(float(NLL(
+                spatial_plane, spatial_target, reduction="sum").item()), 0.0)
+            nll2d_mean = NLL(spatial_plane, spatial_target, reduction="mean")
+            self.assertTrue(float(nll2d_mean.item()) != float(nll2d_mean.item()))
 
 
 if __name__ == "__main__":

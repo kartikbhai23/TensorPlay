@@ -236,6 +236,25 @@ using nll_grad_fn = void (*)(const void* grad_output, const void* target,
                              int64_t rows, int64_t cols, int64_t ignore_index,
                              int reduction, double total_weight, int dtype);
 
+// nll_loss2d: the score plane is (batch, classes, height, width) with one
+// target per spatial position, so each batch element owns height*width
+// adjacent rows and the class stride is that same spatial length.  The walk
+// answers the same row quantity as nll_loss and returns the loss sum; when
+// `out` is not null it also stores every row answer there.
+using nll2d_rows_fn = double (*)(const void* input, const void* target,
+                                 const void* weight, void* out, int64_t batch,
+                                 int64_t classes, int64_t hw,
+                                 int64_t ignore_index, int has_weight,
+                                 int dtype);
+
+// The backward scatters into the target class of every spatial position, with
+// the same reduction handling as nll_loss.
+using nll2d_grad_fn = void (*)(const void* grad_output, const void* target,
+                               const void* weight, void* grad_input,
+                               int64_t batch, int64_t classes, int64_t hw,
+                               int64_t ignore_index, int reduction,
+                               double total_weight, int dtype);
+
 // multi_margin_loss: row r answers
 // sum_{d != y} max(0, margin - x_y + x_d)^p * w[y] / C, with y the target
 // class.  The return value is the sum over rows; when `out` is not null the
@@ -313,6 +332,8 @@ DECLARE_DISPATCH(triplet_rows_fn, triplet_rows_stub)
 DECLARE_DISPATCH(nll_rows_fn, nll_rows_stub)
 DECLARE_DISPATCH(nll_weight_total_fn, nll_weight_total_stub)
 DECLARE_DISPATCH(nll_grad_fn, nll_grad_stub)
+DECLARE_DISPATCH(nll2d_rows_fn, nll2d_rows_stub)
+DECLARE_DISPATCH(nll2d_grad_fn, nll2d_grad_stub)
 DECLARE_DISPATCH(multi_margin_rows_fn, multi_margin_rows_stub)
 DECLARE_DISPATCH(multi_margin_grad_fn, multi_margin_grad_stub)
 DECLARE_DISPATCH(multilabel_margin_rows_fn, multilabel_margin_rows_stub)

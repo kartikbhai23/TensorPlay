@@ -1368,6 +1368,67 @@ void nll_grad_typed(const T* grad_output, const int64_t* target,
     });
 }
 
+// The spatial plane of nll_loss2d keeps a sample's height*width positions
+// adjacent, so the walk takes the batch axis as its parallel unit and sweeps
+// the positions inside it: the row index needs no division, and one sample's
+// sampled class column is reached with a class stride equal to the spatial
+// length.
+template <typename T>
+double nll2d_rows_typed(const T* input, const int64_t* target, const T* weight,
+                        T* out, int64_t batch, int64_t classes, int64_t hw,
+                        int64_t ignore_index, bool has_weight) {
+    return parallel_ranges(batch, hw, [&](int64_t begin, int64_t end) -> double {
+        double total = 0.0;
+        for (int64_t b = begin; b < end; ++b) {
+            const T* base = input + b * classes * hw;
+            const int64_t* trow = target + b * hw;
+            T* orow = out ? out + b * hw : nullptr;
+            for (int64_t pos = 0; pos < hw; ++pos) {
+                const int64_t t = trow[pos];
+                double row_loss = 0.0;
+                if (t != ignore_index) {
+                    const double w =
+                        has_weight ? static_cast<double>(weight[t]) : 1.0;
+                    row_loss = -static_cast<double>(base[t * hw + pos]) * w;
+                }
+                total += row_loss;
+                if (orow) orow[pos] = static_cast<T>(row_loss);
+            }
+        }
+        return total;
+    });
+}
+
+// The backward writes only the target class of every spatial position, one
+// scattered value per sampled score.
+template <typename T>
+void nll2d_grad_typed(const T* grad_output, const int64_t* target,
+                      const T* weight, T* grad_input, int64_t batch,
+                      int64_t classes, int64_t hw, int64_t ignore_index,
+                      int reduction, double total_weight) {
+    const bool per_row = reduction == 0;
+    const double inv_tw =
+        (reduction == 1 && total_weight > 0.0) ? 1.0 / total_weight : 1.0;
+    parallel_ranges(batch, hw, [&](int64_t begin, int64_t end) -> double {
+        for (int64_t b = begin; b < end; ++b) {
+            const int64_t* trow = target + b * hw;
+            T* grow = grad_input + b * classes * hw;
+            for (int64_t pos = 0; pos < hw; ++pos) {
+                const int64_t t = trow[pos];
+                if (t == ignore_index) continue;
+                const double w = weight ? static_cast<double>(weight[t]) : 1.0;
+                const double g =
+                    (per_row
+                         ? static_cast<double>(grad_output[b * hw + pos])
+                         : static_cast<double>(grad_output[0])) *
+                    inv_tw;
+                grow[t * hw + pos] = static_cast<T>(-w * g);
+            }
+        }
+        return 0.0;
+    });
+}
+
 // The hinge sum runs over every column except the target one.  The walk splits
 // the row around that column, so the target lane never enters the accumulator
 // and no correction term is needed afterwards.
@@ -2326,6 +2387,52 @@ void nll_grad_impl(const void* grad_output, const void* target,
     }
 }
 
+double nll2d_rows_impl(const void* input, const void* target,
+                       const void* weight, void* out, int64_t batch,
+                       int64_t classes, int64_t hw, int64_t ignore_index,
+                       int has_weight, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return nll2d_rows_typed(static_cast<const double*>(input),
+                                    static_cast<const int64_t*>(target),
+                                    static_cast<const double*>(weight),
+                                    static_cast<double*>(out), batch, classes,
+                                    hw, ignore_index, has_weight != 0);
+        case DType::Float32:
+            return nll2d_rows_typed(static_cast<const float*>(input),
+                                    static_cast<const int64_t*>(target),
+                                    static_cast<const float*>(weight),
+                                    static_cast<float*>(out), batch, classes,
+                                    hw, ignore_index, has_weight != 0);
+        default:
+            TP_THROW(TypeError, "nll_loss2d: unsupported dtype");
+    }
+}
+
+void nll2d_grad_impl(const void* grad_output, const void* target,
+                     const void* weight, void* grad_input, int64_t batch,
+                     int64_t classes, int64_t hw, int64_t ignore_index,
+                     int reduction, double total_weight, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            nll2d_grad_typed(static_cast<const double*>(grad_output),
+                             static_cast<const int64_t*>(target),
+                             static_cast<const double*>(weight),
+                             static_cast<double*>(grad_input), batch, classes,
+                             hw, ignore_index, reduction, total_weight);
+            break;
+        case DType::Float32:
+            nll2d_grad_typed(static_cast<const float*>(grad_output),
+                             static_cast<const int64_t*>(target),
+                             static_cast<const float*>(weight),
+                             static_cast<float*>(grad_input), batch, classes,
+                             hw, ignore_index, reduction, total_weight);
+            break;
+        default:
+            TP_THROW(TypeError, "nll_loss2d backward: unsupported dtype");
+    }
+}
+
 double multi_margin_rows_impl(const void* input, const void* target,
                               const void* weight, void* out, int64_t rows,
                               int64_t cols, int p, double margin, int dtype) {
@@ -2470,6 +2577,8 @@ REGISTER_DISPATCH(triplet_rows_stub, &triplet_rows_impl);
 REGISTER_DISPATCH(nll_rows_stub, &nll_rows_impl);
 REGISTER_DISPATCH(nll_weight_total_stub, &nll_weight_total_impl);
 REGISTER_DISPATCH(nll_grad_stub, &nll_grad_impl);
+REGISTER_DISPATCH(nll2d_rows_stub, &nll2d_rows_impl);
+REGISTER_DISPATCH(nll2d_grad_stub, &nll2d_grad_impl);
 REGISTER_DISPATCH(multi_margin_rows_stub, &multi_margin_rows_impl);
 REGISTER_DISPATCH(multi_margin_grad_stub, &multi_margin_grad_impl);
 REGISTER_DISPATCH(multilabel_margin_rows_stub, &multilabel_margin_rows_impl);
@@ -2511,6 +2620,8 @@ ALSO_REGISTER_AVX512_DISPATCH(triplet_rows_stub, &triplet_rows_impl);
 ALSO_REGISTER_AVX512_DISPATCH(nll_rows_stub, &nll_rows_impl);
 ALSO_REGISTER_AVX512_DISPATCH(nll_weight_total_stub, &nll_weight_total_impl);
 ALSO_REGISTER_AVX512_DISPATCH(nll_grad_stub, &nll_grad_impl);
+ALSO_REGISTER_AVX512_DISPATCH(nll2d_rows_stub, &nll2d_rows_impl);
+ALSO_REGISTER_AVX512_DISPATCH(nll2d_grad_stub, &nll2d_grad_impl);
 ALSO_REGISTER_AVX512_DISPATCH(multi_margin_rows_stub, &multi_margin_rows_impl);
 ALSO_REGISTER_AVX512_DISPATCH(multi_margin_grad_stub, &multi_margin_grad_impl);
 ALSO_REGISTER_AVX512_DISPATCH(multilabel_margin_rows_stub, &multilabel_margin_rows_impl);
