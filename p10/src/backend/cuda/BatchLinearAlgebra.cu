@@ -87,29 +87,6 @@ Tensor cholesky_inverse_cuda(const Tensor& self, bool upper) {
     return from_compute(inverse, dt);
 }
 
-Tensor cholesky_solve_cuda(const Tensor& self, const Tensor& input2, bool upper) {
-    // self = B (..., n, rhs); input2 = factor; solve (L L^T) X = B with two
-    // triangular sweeps, as in the classic potrs factorization.
-    require_float(self, "cholesky_solve");
-    require_float(input2, "cholesky_solve");
-    const DType dt = self.dtype();
-    const Tensor factor = to_compute(input2);
-    const Tensor rhs = to_compute(self);
-    Tensor inner, solution;
-    if (upper) {
-        // A = U^T U: U Y = B (upper), then U^T X = Y (lower).
-        inner = ops::linalg_solve_triangular(factor, rhs, true, true, false);
-        solution = ops::linalg_solve_triangular(
-            factor.transpose(-2, -1), inner, false, true, false);
-    } else {
-        // A = L L^T: L Y = B (lower), then L^T X = Y (upper).
-        inner = ops::linalg_solve_triangular(factor, rhs, false, true, false);
-        solution = ops::linalg_solve_triangular(
-            factor.transpose(-2, -1), inner, true, true, false);
-    }
-    return from_compute(solution, dt);
-}
-
 std::tuple<Tensor, Tensor> triangular_solve_cuda(const Tensor& self, const Tensor& A,
                                                  bool upper, bool transpose,
                                                  bool unitriangular) {
@@ -157,7 +134,6 @@ std::tuple<Tensor, Tensor, Tensor> svd_cuda(const Tensor& self, bool some, bool 
 TENSORPLAY_LIBRARY_IMPL(CUDA, BatchLinearAlgebra) {
     m.impl("cholesky", cholesky_cuda);
     m.impl("cholesky_inverse", cholesky_inverse_cuda);
-    m.impl("cholesky_solve", cholesky_solve_cuda);
     m.impl("triangular_solve", triangular_solve_cuda);
     m.impl("svd", svd_cuda);
 }

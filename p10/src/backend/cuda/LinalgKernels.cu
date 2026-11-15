@@ -231,6 +231,11 @@ struct CusolverTraits<float> {
                                   int lda, float* work, int lwork, int* info) {
         return cusolverDnSpotrf(h, fill_mode(uplo), n, a, lda, work, lwork, info);
     }
+    static cusolverStatus_t potrs(cusolverDnHandle_t h, cublasFillMode_t uplo,
+                                  int n, int nrhs, const float* a, int lda,
+                                  float* b, int ldb, int* info) {
+        return cusolverDnSpotrs(h, uplo, n, nrhs, a, lda, b, ldb, info);
+    }
     static cusolverStatus_t getrf_bufferSize(cusolverDnHandle_t h, int m, int n,
                                              float* a, int lda, int* lw) {
         return cusolverDnSgetrf_bufferSize(h, m, n, a, lda, lw);
@@ -324,6 +329,11 @@ struct CusolverTraits<double> {
     static cusolverStatus_t potrf(cusolverDnHandle_t h, char uplo, int n, double* a,
                                   int lda, double* work, int lwork, int* info) {
         return cusolverDnDpotrf(h, fill_mode(uplo), n, a, lda, work, lwork, info);
+    }
+    static cusolverStatus_t potrs(cusolverDnHandle_t h, cublasFillMode_t uplo,
+                                  int n, int nrhs, const double* a, int lda,
+                                  double* b, int ldb, int* info) {
+        return cusolverDnDpotrs(h, uplo, n, nrhs, a, lda, b, ldb, info);
     }
     static cusolverStatus_t getrf_bufferSize(cusolverDnHandle_t h, int m, int n,
                                              double* a, int lda, int* lw) {
@@ -1445,6 +1455,55 @@ Tensor linalg_solve_triangular_kernel_cuda(const Tensor& A, const Tensor& B,
     return B_cm.contiguous();
 }
 
+// ----------------------------------------------------- cholesky solve -----
+
+Tensor cholesky_solve_kernel_cuda(const Tensor& self, const Tensor& input2,
+                                  bool upper) {
+    const char* api = "cholesky_solve";
+    check_is_matrix(self, api, "self");
+    square_check_inputs(input2, api, "input2");
+    if (self.dtype() != input2.dtype()) {
+        TP_THROW(RuntimeError, api, ": Expected self and input2 to have the same "
+                 "dtype, but found self of type ", scalarTypeName(self.dtype()),
+                 " and input2 of type ", scalarTypeName(input2.dtype()),
+                 " instead.");
+    }
+    if (self.size(-2) != input2.size(-1)) {
+        TP_THROW(RuntimeError, api, ": input2.size(-1) must equal self.size(-2), "
+                 "got ", input2.size(-1), " and ", self.size(-2));
+    }
+    // Both operands broadcast to one batch; the solver consumes the
+    // column-major planes and writes the solution over the right-hand side.
+    const auto batch = broadcast_batch(self, input2);
+    Tensor B_cm = clone_batched_column_major(expand_to_batch(self, batch));
+    Tensor A_cm = clone_batched_column_major(expand_to_batch(input2, batch));
+    const int64_t bs = linear_batch_size(batch);
+    const int n = static_cast<int>(input2.size(-1));
+    const int nrhs = static_cast<int>(self.size(-1));
+    const int lda = std::max(1, static_cast<int>(input2.size(-2)));
+    const int ldb = std::max(1, static_cast<int>(self.size(-2)));
+    const cublasFillMode_t uplo =
+        upper ? CUBLAS_FILL_MODE_UPPER : CUBLAS_FILL_MODE_LOWER;
+    run_real(self.dtype(), [&](auto tag) {
+        using T = std::remove_pointer_t<decltype(tag)>;
+        using Tr = CusolverTraits<T>;
+        auto* a = A_cm.data_ptr<T>();
+        auto* b = B_cm.data_ptr<T>();
+        const int64_t a_ms = matrix_stride_of(A_cm);
+        const int64_t b_ms = matrix_stride_of(B_cm);
+        const auto handle = CUDAContext::getCusolverDnHandle();
+        // info only flags an invalid argument, which the validation above has
+        // already ruled out, so the status is never read back.
+        Tensor info = Tensor::empty({1}, DType::Int32, self.device());
+        int32_t* info_data = info.data_ptr<int32_t>();
+        for (int64_t i = 0; i < bs; ++i) {
+            CUSOLVER_CHECK(Tr::potrs(handle, uplo, n, nrhs, &a[i * a_ms], lda,
+                                     &b[i * b_ms], ldb, info_data));
+        }
+    });
+    return B_cm.contiguous();
+}
+
 // ------------------------------------------------------------------ lstsq --
 
 // Squares and sums the trailing rows of the column-major working RHS. After
@@ -1778,6 +1837,7 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, LinalgKernels) {
     m.impl("linalg_lu", linalg_lu_kernel_cuda);
     m.impl("linalg_lu_solve", linalg_lu_solve_kernel_cuda);
     m.impl("linalg_solve_triangular", linalg_solve_triangular_kernel_cuda);
+    m.impl("cholesky_solve", cholesky_solve_kernel_cuda);
     m.impl("_linalg_eigh", linalg_eigh_internal_kernel_cuda);
     m.impl("_linalg_eigh.eigenvalues", linalg_eigh_internal_out_kernel_cuda);
     m.impl("linalg_eigh.eigvals", linalg_eigh_eigvals_out_kernel_cuda);
