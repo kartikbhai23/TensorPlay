@@ -24,6 +24,7 @@
 | P0 | 四个环境变量设置被同文件后段的硬编码值覆盖 | 静默失效，已核实 | 已修复 |
 | P1 | post-grad 缺 `reorder_for_locality` / `remove_assert_ops` / `reciprocal_sqrt_to_rsqrt`，`split_cat` 表无人调用 | 能力缺失，已核实 | 已补 |
 | P1 | `record_function` span 不进图，因此 post-grad 的 span 删除规则没有作用对象 | 能力缺失，已核实 | 已对齐（§4.6） |
+| P1 | 切分与合并互为逆运算时两个算子都不必留下，此前只有点名 `split_cat` 表才处理 | 能力缺失，已核实 | 已补（§4.2） |
 | P1 | 前端无字节码帧求值/图中断/恢复，Python 副作用只发生一次 | 架构差异，已复现 | 未修（架构选择） |
 | P1 | `dynamic_shapes` 只接受 bool，无自动 dynamic、无 `Dim`、`mark_static` 为空操作 | 能力缺失，已核实 | 未修 |
 | P1 | 无 AOTInductor 部署包、无 cudagraph trees、无 oneDNN/MKLDNN/quantized/freezing/CPU GEMM 模板 | 子系统缺失，静态确认 | 未修 |
@@ -35,7 +36,7 @@
 `pytest test/stax` 实测（修复前）：**1568 passed, 2 failed, 1 skipped**（1571 项，约 2 分 4 秒）。
 其中一个失败是确定性的 P0 正确性 bug；另一个是容差/顺序相关的偶发（单独运行通过）。
 
-`pytest test/stax -q` 实测（本轮修复后）：**1587 passed, 1 skipped**（1 分 06 秒），
+`pytest test/stax -q` 实测（本轮修复后）：**1591 passed, 1 skipped**（1 分 04 秒），
 `pytest test/fx test/test_public_surface.py`：**247 passed**，`pytest test/higher_order_ops test/export`：**126 passed**。
 原先那两个失败都已不再是失败：确定性那个随 §2.1 修好；偶发那个是 bf16 容差写死 `2e-4` 造成的，
 现在按 dtype 的机器精度取容差。
@@ -264,7 +265,7 @@ for _ in range(3):
 4. `group_batch_fusion_passes(graph, pre_grad=False)`；
 5. `remove_noop_ops(graph)`；
 6. `remove_assert_ops(graph)`：删掉 `_assert_tensor_metadata`（它是承诺、不是计算，留着会挡融合）；
-7. `pass_patterns` 逐张表 `apply`（新增 `reciprocal(sqrt(x)) → rsqrt(x)`；`fuse_attention` 的 SDPA 模式与 `pad_mm` 注册在 `joint_graph.patterns`，只在联合图上生效）；
+7. `pass_patterns` 逐张表 `apply`（新增 `reciprocal(sqrt(x)) → rsqrt(x)`；`pass_patterns[2]` 新增两条无条件重写：`cat` 把一次切分的全部片段按原序拼回时整对删除，`split` 恰好沿合并的接缝切开一个 `cat` 时把每个 `getitem` 直接接到对应的片段上。两条都同时认 `split.sizes` 与 `split_with_sizes`：前端把列表切分记为前者，而移植来的表只写了后者。`fuse_attention` 的 SDPA 模式与 `pad_mm` 注册在 `joint_graph.patterns`，只在联合图上生效）；
 8. `config.post_grad_fusion_options` 里点名的表逐张 `apply`（`split_cat.py` 的 8 张表；默认空表，因此与上游默认一样不跑，用户点名才跑）；
 9. `config.post_grad_custom_post_pass`（新增开关，默认 `None`）。
 
@@ -285,13 +286,15 @@ for _ in range(3):
 
 ### 4.3 与上游的差距
 
-`graph_passes/post_grad.py` 本轮从 378 行补到 535 行，上游 2,521 行。仍缺的代表性 pass：
+`graph_passes/post_grad.py` 本轮从 565 行补到 704 行（接线前 378 行），上游 2,521 行。仍缺的代表性 pass：
 
 - ~~`reorder_for_locality`~~、~~`remove_assert_ops`~~、~~`reciprocal_sqrt_to_rsqrt`~~：本轮补齐，见 §4.2；
 - `remove_profiler_ops`：本仓库没有 profiler 记录算子（`_record_function_enter/exit` 未注册），补了也是死代码，暂不做；
 - `decompose_scan_to_while_loop` / `decompose_map_to_while_loop`
 - `fix_auto_functionalized_dtype_views`
-- `splitwithsizes_cat` / `cat_splitwithsizes`
+- ~~`splitwithsizes_cat` / `cat_splitwithsizes`~~：本轮补齐，见 §4.2；
+- `cat_slice_cat`（`cat([a, a[:, :n]], 1)` 折成一次 `cat`）；
+- `pointless_cumsum`（常量填充的 `cumsum` 写成 ramp）：仿写过一版，卡在“替换节点要在 post-grad 里新造 `arange`/`reshape`/`expand`”。此时区域跑在只描述值的模式里，新造工厂算子的 `meta["val"]` 落在 meta 设备上；降级把它们当 meta 常量，运行期报设备不匹配。要等假值元数据刷新（`fx_utils.FakeTensorUpdater` 已存在但 `post_grad_passes` 尚未调用）接进来之后再做；
 - `view_to_reshape`（只服务 C++ 部署形态）
 - `unfuse_bias_add` / `unfuse_bias_baddbmm`
 - addmm / addcdiv FMA 融合
@@ -303,7 +306,8 @@ for _ in range(3):
 - `remove_noop_ops`、batch fusion、`remove_assert_ops`、按需的 `split_cat` 表现在会作用到真实区域（推理与训练都走 post-grad）。
 - `reorder_for_locality` 默认在推理区域生效：生产者被挪到读者之前，随机数算子不挪。实测 `(...).relu()` 与 `(...).sin()` 相加再乘第三条分支时，第三条分支的计算被挪到加法之后；带 `randn` 的同类图里 `randn` 保持原位。
 - SDPA（`fuse_attention`，30 个模式）与 `pad_mm` 的决策注册在 `joint_graph.patterns` 里，因此只在**联合图**（训练 / 走 AOT 的区域）上生效；纯推理区域不会命中——这与上游把这两族模式只注册进 joint graph 的做法一致。实测：训练区域可编译并通过；推理区域的手写 attention 数值正确但不会改写成融合注意力。
-- `cat`/`split` 复用现在可用了，但要用户在 `config.post_grad_fusion_options` 里点名（默认不跑）；内存受限 `mm` 分解仍未接线。
+- 切分与合并互为逆运算的整对（`x.split([...])` 的每个片段按原序 `cat` 回来、`split` 恰好沿 `cat` 的接缝切开）默认就会被删掉，不需要点名；只有**部分**片段的重建才需要用户在 `config.post_grad_fusion_options` 里点名 `split_cat` 表。乱序重拼、位置不同的切分都会保留原样。
+- 内存受限 `mm` 分解仍未接线。
 
 ### 4.5 剩余修复方向
 
@@ -449,7 +453,7 @@ cpp_wrapper=use_cuda_codegen,
 ```
 pytest test/stax -q
 # 修复前：1568 passed, 2 failed, 1 skipped in 124.65s
-# 修复后：1587 passed, 1 skipped in 66.68s
+# 修复后：1591 passed, 1 skipped in 64.52s
 ```
 
 修复前的两个失败：
@@ -462,7 +466,7 @@ pytest test/stax -q
 测试覆盖缺口（与上游 `test/inductor` 对比）：
 
 - 无 `torchinductor_opinfo` 全量算子对拍；
-- 无 max-autotune 全量、mkldnn、quantization、AOTI、cudagraph trees、compile_worker、fx_passes、pattern_matcher、select_algorithm、templates、foreach、multi_kernel、pad_mm、freezing、jagged、serialization 的对应测试（本轮补了 `test/stax/test_stax_post_grad_passes.py`，覆盖断言删除、局部性重排、随机算子保持、`rsqrt` 改写、`split_cat` 开关；以及 `test/stax/test_stax_profiler_spans.py`，覆盖 span 进图与删除、开关默认关闭、训练区域、profiler 会话可见性）；
+- 无 max-autotune 全量、mkldnn、quantization、AOTI、cudagraph trees、compile_worker、fx_passes、pattern_matcher、select_algorithm、templates、foreach、multi_kernel、pad_mm、freezing、jagged、serialization 的对应测试（本轮补了 `test/stax/test_stax_post_grad_passes.py`，覆盖断言删除、局部性重排、随机算子保持、`rsqrt` 改写、切分与合并互为逆运算时的整对删除及乱序/错位保留；以及 `test/stax/test_stax_profiler_spans.py`，覆盖 span 进图与删除、开关默认关闭、训练区域、profiler 会话可见性）；
 - `compile_worker` 无测试；
 - 无 fuzzer / `test_operators`。
 
@@ -629,6 +633,7 @@ pytest test/stax -q -p no:randomly
 | `790d42b8` `feat(compiler)` | post-grad 补 DCE、局部性重排（随机算子与写回边界不跨）、删除元数据断言、`1/sqrt → rsqrt`、按名启用 `split_cat` 表 |
 | `aa8a674d` `test(compiler)` | 新增 `test/stax/test_stax_post_grad_passes.py`（7 项） |
 | `4c81959b` `feat(compiler)` | profiler span 写进图（两种记录都认）并在 custom pre pass 之后删除；前端开关默认关闭；新增 `test/stax/test_stax_profiler_spans.py`（6 项，见 §4.6） |
+| `dcf2b1d3` `feat(compiler)` | `pass_patterns[2]` 新增两条无条件重写：切分被全部按序拼回、`cat` 被沿接缝切回片段时整对删除；两种 split 记法都认；测试补 6 项 |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
