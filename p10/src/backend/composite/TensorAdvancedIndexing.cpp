@@ -54,9 +54,14 @@ Tensor put_native(const Tensor& self, const Tensor& index,
         src = ops::slice(ops::tile(src, {reps}), 0, 0, idx.numel());
     }
     Tensor flat = ops::view(out, {-1});
-    const Tensor updated = accumulate ? ops::index_add(flat, 0, idx, src)
-                                      : ops::index_copy(flat, 0, idx, src);
-    ops::copy_(flat, updated);
+    // The scatter runs on the copy that is already the answer: building a
+    // second full buffer and copying it back would move the whole tensor twice
+    // more for no gain.
+    if (accumulate) {
+        ops::index_add_(flat, 0, idx, src);
+    } else {
+        ops::index_copy_(flat, 0, idx, src);
+    }
     return out;
 }
 
