@@ -22,10 +22,10 @@ def _make_sample_map(fn, args):
     return dict(zip(names, args))
 
 
-def _assert_grads_match_eager(fn, args, policy, required=None, rtol=1e-5, atol=1e-6, partitioner="default"):
+def _assert_grads_match_eager(fn, args, policy, required=None, rtol=1e-5, atol=1e-6, partitioner="default", memory_budget=None):
     smap = _make_sample_map(fn, args)
     gm = Tracer().trace(fn, sample_inputs=smap)
-    result = build_aot(gm, sample_inputs=smap, required_grads=required, policy=policy, partitioner=partitioner)
+    result = build_aot(gm, sample_inputs=smap, required_grads=required, policy=policy, partitioner=partitioner, memory_budget=memory_budget)
     out, grads = result.value_and_grad(*args)
 
     eager_args = [a.clone().requires_grad_(True) for a in args]
@@ -158,12 +158,153 @@ def test_min_cut_saves_no_more_than_default():
     assert len(m.saved_names) <= len(d.saved_names)
 
 
-def test_min_cut_budget_limits_saved_bytes():
-    def fn(x):
-        return x.mul(x).mul(x).mul(x).sum()
+def _saved_value_bytes(result):
+    """Bytes held by the values the forward hands the backward."""
 
-    smap = {"x": tp.tensor([1.0])}
+    by_name = {node.name: node for node in result.forward_gm.graph.nodes}
+    total = 0
+    for name in result.saved_names:
+        value = by_name[name].meta.get("val")
+        numel = getattr(value, "numel", None)
+        if callable(numel):
+            itemsize = int(getattr(getattr(value, "dtype", None), "itemsize", 4) or 4)
+            total += int(numel()) * itemsize
+    return total
+
+
+def test_memory_budget_limits_saved_bytes():
+    def fn(x, w, idx):
+        h = w.index_select(0, idx)
+        return (h * x).sum() + (h.sin() * x).sum()
+
+    smap = {
+        "x": tp.randn(2),
+        "w": tp.randn(4),
+        "idx": tp.tensor([0, 1]),
+    }
+
+    def saved(budget):
+        gm = Tracer().trace(fn, sample_inputs=smap)
+        kwargs = {} if budget is None else {"memory_budget": budget}
+        result = build_aot(
+            gm, sample_inputs=smap, partitioner="min_cut", **kwargs
+        )
+        return len(result.saved_names), _saved_value_bytes(result)
+
+    names, held = saved(None)
+    assert names == 1 and held > 0
+    assert saved(1.0) == (names, held)
+    # A fraction below what the cheapest-to-run cut holds recomputes instead.
+    assert saved(0.9) == (0, 0)
+    assert saved(0.0) == (0, 0)
+
+
+@pytest.mark.parametrize("budget", [2, -0.1])
+def test_memory_budget_out_of_range_is_rejected(budget):
+    def fn(x, w, idx):
+        return (w.index_select(0, idx) * x).sum()
+
+    smap = {"x": tp.randn(2), "w": tp.randn(4), "idx": tp.tensor([0, 1])}
     gm = Tracer().trace(fn, sample_inputs=smap)
-    r = build_aot(gm, sample_inputs=smap, partitioner="min_cut",
-                  memory_budget=16)
-    assert isinstance(r.saved_names, list)
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        build_aot(gm, sample_inputs=smap, partitioner="min_cut", memory_budget=budget)
+
+
+@pytest.mark.parametrize("budget", [True, "half"])
+def test_memory_budget_rejects_a_non_number(budget):
+    def fn(x, w, idx):
+        return (w.index_select(0, idx) * x).sum()
+
+    smap = {"x": tp.randn(2), "w": tp.randn(4), "idx": tp.tensor([0, 1])}
+    gm = Tracer().trace(fn, sample_inputs=smap)
+    with pytest.raises(TypeError, match="must be a number"):
+        build_aot(gm, sample_inputs=smap, partitioner="min_cut", memory_budget=budget)
+
+
+@pytest.mark.parametrize("budget", [0.5, 0.0])
+def test_memory_budget_partition_keeps_gradients(budget):
+    def fn(x, w, idx):
+        h = w.index_select(0, idx)
+        return (h * x).sum() + (h.sin() * x).sum()
+
+    args = [tp.randn(2), tp.randn(4), tp.tensor([0, 1])]
+    _assert_grads_match_eager(
+        fn, args, "save_needed", partitioner="min_cut", memory_budget=budget
+    )
+
+
+# ---------------------------------------------------------------------------
+# inference input updates
+# ---------------------------------------------------------------------------
+
+
+def _compile_inference(fn, primals, *, keep):
+    from tensorplay.compiler._core.aot_autograd import aot_function
+
+    def backend(gm, inputs, **kwargs):
+        return gm.forward
+
+    return aot_function(
+        fn, primals, fw_compiler=backend, keep_inference_input_mutations=keep
+    )
+
+
+def _graph_of(compiled):
+    return compiled._tensorplay_aot_graphs[0]
+
+
+def _copy_nodes(gm):
+    return [
+        node
+        for node in gm.graph.nodes
+        if getattr(node.target, "_opname", None) == "copy_"
+    ]
+
+
+def _bump(x, buf):
+    buf.add_(1.0)
+    return x * 2
+
+
+def test_inference_update_can_run_outside_the_graph():
+    compiled = _compile_inference(
+        _bump, [tp.ones(2), tp.zeros(2)], keep=False
+    )
+    value, buffer = tp.ones(2), tp.zeros(2)
+
+    assert compiled(value, buffer).tolist() == [2.0, 2.0]
+    assert buffer.tolist() == [1.0, 1.0]
+    # The wrapper updates the caller's tensor, so repeats accumulate.
+    assert compiled(value, buffer).tolist() == [2.0, 2.0]
+    assert buffer.tolist() == [2.0, 2.0]
+
+    graph = _graph_of(compiled)
+    assert _copy_nodes(graph) == []
+    # The region still writes an input; a replay path is told so.
+    assert graph.meta["input_update_placeholders"] == (1,)
+
+
+def test_inference_update_can_stay_in_the_graph():
+    compiled = _compile_inference(_bump, [tp.ones(2), tp.zeros(2)], keep=True)
+    value, buffer = tp.ones(2), tp.zeros(2)
+
+    assert compiled(value, buffer).tolist() == [2.0, 2.0]
+    assert buffer.tolist() == [1.0, 1.0]
+    assert compiled(value, buffer).tolist() == [2.0, 2.0]
+    assert buffer.tolist() == [2.0, 2.0]
+
+    graph = _graph_of(compiled)
+    assert len(_copy_nodes(graph)) == 1
+    assert "input_update_placeholders" not in graph.meta
+
+
+@pytest.mark.parametrize("keep", [False, True])
+def test_inference_without_updates_is_unchanged(keep):
+    def fn(x):
+        return x + 1
+
+    compiled = _compile_inference(fn, [tp.ones(2)], keep=keep)
+    assert compiled(tp.ones(2)).tolist() == [2.0, 2.0]
+    graph = _graph_of(compiled)
+    assert _copy_nodes(graph) == []
+    assert "input_update_placeholders" not in graph.meta
