@@ -181,7 +181,13 @@ Tensor reduce_loss_elems(const Tensor& elems, int64_t reduction, int64_t n,
     const double scale =
         (reduction == 1 && n) ? 1.0 / static_cast<double>(n) : 1.0;
     if (n == 0) {
-        result.zero_();
+        // An average over no elements divides zero by zero; a sum over no
+        // elements is zero.
+        if (reduction == 1) {
+            result.fill_(Scalar(std::numeric_limits<double>::quiet_NaN()));
+        } else {
+            result.zero_();
+        }
         return result.to(in_dtype);
     }
     const auto stream = getCurrentCUDAStream().stream();
