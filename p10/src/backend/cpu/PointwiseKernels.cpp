@@ -10,6 +10,7 @@
 #include "Allocator.h"
 #include "OutWrite.h"
 #include "Parallel.h"
+#include "cpu/PairMath.h"
 #include "cpu/VecUnary.h"
 #include "cpu/VecReducedMath.h"
 #include "cpu/ComplexUnary.h"
@@ -3544,6 +3545,14 @@ Tensor pow_tensor_tensor_kernel(const Tensor& self, const Tensor& exponent) {
 
     Tensor self_c = (self.dtype() == result_dtype) ? self : self.to(result_dtype);
     Tensor exp_c = (exponent.dtype() == result_dtype) ? exponent : exponent.to(result_dtype);
+
+    // The reduced widths are answered a vector of lanes at a time in single
+    // precision: the operands widen, the power is answered there, and the
+    // answer narrows once.
+    if ((result_dtype == DType::Float16 || result_dtype == DType::BFloat16) &&
+        pair_vector_takes(self_c, exp_c)) {
+        return pair_math_alloc<vecbinary::BOp::Pow>(self_c, exp_c);
+    }
 
     // Single vectorized pass when both operands are dense, share one shape
     // and stay in a vector-capable float dtype; anything else (broadcasting,

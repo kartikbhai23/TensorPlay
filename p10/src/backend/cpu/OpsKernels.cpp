@@ -15,6 +15,7 @@
 #include "cpu/ComplexUnary.h"
 #include "cpu/FloatMathLoops.h"
 #include "cpu/VecUnary.h"
+#include "cpu/PairMath.h"
 #include "cpu/VecBinaryMath.h"
 
 #include <vector>
@@ -677,14 +678,25 @@ struct DivRoundedPair {
             // Half/BFloat16 round through Float32, the width their arithmetic
             // is defined at; float and double keep their own.
             using C = std::conditional_t<std::is_same_v<T, double>, double, float>;
-            const C q = static_cast<C>(x) / static_cast<C>(y);
-            return static_cast<T>(floor_mode ? std::floor(q) : std::trunc(q));
+            const C xc = static_cast<C>(x);
+            const C yc = static_cast<C>(y);
+            return static_cast<T>(floor_mode
+                                      ? vecbinary::floor_div_value(xc, yc)
+                                      : std::trunc(xc / yc));
         }
     }
 };
 
 Tensor div_rounded_core(const Tensor& a, const Tensor& b, DivRounding rounding) {
     if (rounding == DivRounding::kTrue) return true_divide_core(a, b);
+    // A floating pair of one width, in one shape and packed, is answered a
+    // vector at a time; an integral pair keeps the flat map.
+    if (pair_vector_takes(a, b)) {
+        if (rounding == DivRounding::kFloor) {
+            return pair_math_alloc<vecbinary::BOp::FloorDiv>(a, b);
+        }
+        return pair_math_alloc<vecbinary::BOp::TruncDiv>(a, b);
+    }
     // Rounded division stays in the input dtype: an integral pair must come
     // back integral, which the float promotion of true division loses.
     return binary_same_kernel(a, b,
@@ -1075,98 +1087,6 @@ Tensor xlogy_cpu(const Tensor& a, const Tensor& b) {
 Tensor& xlogy_out_cpu(const Tensor& a, const Tensor& b, Tensor& out) {
     return binary_float_out_kernel(a, b, out, xlogy_cpu, XlogyPair{}, "xlogy");
 }
-// The pairwise maps whose answer is a library call per element answer
-// several elements at a time on the vector path.  The flat loop answers
-// them one element at a time, and a reduced-width pair would cross between
-// the two widths on a pass of its own before the answer is computed.
-//
-// The path is taken when both operands carry the same floating width, have
-// the same shape, are packed, and the destination is a packed tensor of that
-// width and shape that no operand reads through.  Everything else -- a
-// broadcast pair, a mixed pair -- is left to the flat loop.
-static bool pair_math_takes(const Tensor& a, const Tensor& b, const Tensor& out) {
-    if (!vecbinary::avx2_available() || a.dtype() != b.dtype() ||
-        out.dtype() != a.dtype()) {
-        return false;
-    }
-    const DType dt = a.dtype();
-    if (dt != DType::Float32 && dt != DType::Float64 &&
-        dt != DType::Float16 && dt != DType::BFloat16) {
-        return false;
-    }
-    if (a.shape() != b.shape() || a.shape() != out.shape() ||
-        !a.is_contiguous() || !b.is_contiguous() || !out.is_contiguous()) {
-        return false;
-    }
-    // Neither operand may be a second window over the bytes the destination
-    // covers: the walk reads an element after it has written another.
-    return destination_takes_flat(
-        out, out.device(), dt, static_cast<std::vector<int64_t>>(a.shape()), a, b);
-}
-
-// The walk is spread over the pool: a chunk of the answer is handed to a
-// thread, and the thread answers the elements of that chunk.
-template <vecbinary::BOp op, typename T>
-static void pair_math_walk(const T* a, const T* b, T* d, int64_t n) {
-    // The chunk kernels exist only where SLEEF's AVX2 bodies are built;
-    // elsewhere avx2_available() is false and no caller reaches the walk.
-#if defined(TP_VECBINARY_SLEEF)
-    parallel_for_balanced(0, n, GRAIN_SIZE, [&](int64_t begin, int64_t end) {
-        if constexpr (std::is_same_v<T, float>) {
-            vecbinary::f32_chunk_avx2<op>(
-                a + begin, b + begin, d + begin, 0, end - begin);
-        } else if constexpr (std::is_same_v<T, double>) {
-            vecbinary::f64_chunk_avx2<op>(a + begin, b + begin, d + begin, 0,
-                                           end - begin);
-        } else if constexpr (std::is_same_v<T, tensorplay::BFloat16>) {
-            vecbinary::bf16_chunk_avx2<op>(
-                reinterpret_cast<const uint16_t*>(a + begin),
-                reinterpret_cast<const uint16_t*>(b + begin),
-                reinterpret_cast<uint16_t*>(d + begin), 0, end - begin);
-        } else {
-            vecbinary::f16_chunk_avx2<op>(
-                reinterpret_cast<const uint16_t*>(a + begin),
-                reinterpret_cast<const uint16_t*>(b + begin),
-                reinterpret_cast<uint16_t*>(d + begin), 0, end - begin);
-        }
-    });
-#endif
-}
-
-template <vecbinary::BOp op, typename F>
-static Tensor pair_math_kernel(const Tensor& a, const Tensor& b, F f,
-                               const char* name) {
-    if (vecbinary::avx2_available() && a.dtype() == b.dtype() &&
-        (a.dtype() == DType::Float32 || a.dtype() == DType::Float64 ||
-         a.dtype() == DType::Float16 || a.dtype() == DType::BFloat16) &&
-        a.shape() == b.shape() && a.is_contiguous() && b.is_contiguous()) {
-        Tensor result = Tensor::empty(
-            static_cast<std::vector<int64_t>>(a.shape()), a.dtype(),
-            a.device());
-        const int64_t n = result.numel();
-        if (n > 0) {
-            if (a.dtype() == DType::Float32) {
-                pair_math_walk<op>(a.data_ptr<float>(), b.data_ptr<float>(),
-                                   result.data_ptr<float>(), n);
-            } else if (a.dtype() == DType::Float64) {
-                pair_math_walk<op>(a.data_ptr<double>(), b.data_ptr<double>(),
-                                   result.data_ptr<double>(), n);
-            } else if (a.dtype() == DType::BFloat16) {
-                pair_math_walk<op>(
-                    a.data_ptr<tensorplay::BFloat16>(),
-                    b.data_ptr<tensorplay::BFloat16>(),
-                    result.data_ptr<tensorplay::BFloat16>(), n);
-            } else {
-                pair_math_walk<op>(
-                    a.data_ptr<tensorplay::Half>(), b.data_ptr<tensorplay::Half>(),
-                    result.data_ptr<tensorplay::Half>(), n);
-            }
-        }
-        return result;
-    }
-    return binary_float_kernel(a, b, f, name);
-}
-
 // The same pairing for fmod and the modulo built on it.  Integral operands
 // keep their own semantics and stay on the flat map, as do pairs that are
 // broadcast, mixed-width, or not packed; the floating pairs that do fit are
@@ -1174,70 +1094,8 @@ static Tensor pair_math_kernel(const Tensor& a, const Tensor& b, F f,
 template <vecbinary::BOp op, typename F>
 static Tensor fmod_like_pair_kernel(const Tensor& a, const Tensor& b, F f,
                                     const char* name) {
-    if (vecbinary::avx2_available() && a.dtype() == b.dtype() &&
-        (a.dtype() == DType::Float32 || a.dtype() == DType::Float64 ||
-         a.dtype() == DType::Float16 || a.dtype() == DType::BFloat16) &&
-        a.shape() == b.shape() && a.is_contiguous() && b.is_contiguous()) {
-        Tensor result = Tensor::empty(
-            static_cast<std::vector<int64_t>>(a.shape()), a.dtype(),
-            a.device());
-        const int64_t n = result.numel();
-        if (n > 0) {
-            if (a.dtype() == DType::Float32) {
-                pair_math_walk<op>(a.data_ptr<float>(), b.data_ptr<float>(),
-                                   result.data_ptr<float>(), n);
-            } else if (a.dtype() == DType::Float64) {
-                pair_math_walk<op>(a.data_ptr<double>(), b.data_ptr<double>(),
-                                   result.data_ptr<double>(), n);
-            } else if (a.dtype() == DType::BFloat16) {
-                pair_math_walk<op>(
-                    a.data_ptr<tensorplay::BFloat16>(),
-                    b.data_ptr<tensorplay::BFloat16>(),
-                    result.data_ptr<tensorplay::BFloat16>(), n);
-            } else {
-                pair_math_walk<op>(
-                    a.data_ptr<tensorplay::Half>(), b.data_ptr<tensorplay::Half>(),
-                    result.data_ptr<tensorplay::Half>(), n);
-            }
-        }
-        return result;
-    }
+    if (pair_vector_takes(a, b)) return pair_math_alloc<op>(a, b);
     return binary_same_kernel(a, b, f, name);
-}
-
-// The same map with the destination the caller holds: the answer is laid on
-// it directly when it is packed and holds the width the map answers in.
-template <vecbinary::BOp op, typename F>
-static Tensor& pair_math_out_kernel(const Tensor& a, const Tensor& b,
-                                    Tensor& out, F f, const char* name) {
-    if (pair_math_takes(a, b, out)) {
-        const int64_t n = out.numel();
-        if (n > 0) {
-            if (out.dtype() == DType::Float32) {
-                pair_math_walk<op>(a.data_ptr<float>(), b.data_ptr<float>(),
-                                   out.data_ptr<float>(), n);
-            } else if (out.dtype() == DType::Float64) {
-                pair_math_walk<op>(a.data_ptr<double>(), b.data_ptr<double>(),
-                                   out.data_ptr<double>(), n);
-            } else if (out.dtype() == DType::BFloat16) {
-                pair_math_walk<op>(
-                    a.data_ptr<tensorplay::BFloat16>(),
-                    b.data_ptr<tensorplay::BFloat16>(),
-                    out.data_ptr<tensorplay::BFloat16>(), n);
-            } else {
-                pair_math_walk<op>(
-                    a.data_ptr<tensorplay::Half>(), b.data_ptr<tensorplay::Half>(),
-                    out.data_ptr<tensorplay::Half>(), n);
-            }
-        }
-        return out;
-    }
-    return binary_float_out_kernel(
-        a, b, out,
-        [=](const Tensor&, const Tensor&) {
-            return pair_math_kernel<op>(a, b, f, name);
-        },
-        f, name);
 }
 
 Tensor logaddexp_cpu(const Tensor& a, const Tensor& b) {

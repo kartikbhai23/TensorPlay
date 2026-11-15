@@ -8,6 +8,7 @@
 #include "TensorIteratorOps.h"
 #include "Exception.h"
 #include "Parallel.h"
+#include "cpu/PairMath.h"
 #include "cpu/VecUnary.h"
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
@@ -655,11 +656,19 @@ struct MinimumOp {
     }
 };
 
+// A floating pair of one width, in one shape and packed, is answered a vector
+// at a time; everything else keeps the flat map.
 Tensor maximum_cpu(const Tensor& self, const Tensor& other) {
+    if (pair_vector_takes(self, other)) {
+        return pair_math_alloc<vecbinary::BOp::Maximum>(self, other);
+    }
     return maximum_minimum_kernel_impl(self, other, MaximumOp());
 }
 
 Tensor minimum_cpu(const Tensor& self, const Tensor& other) {
+    if (pair_vector_takes(self, other)) {
+        return pair_math_alloc<vecbinary::BOp::Minimum>(self, other);
+    }
     return maximum_minimum_kernel_impl(self, other, MinimumOp());
 }
 
@@ -691,10 +700,18 @@ Tensor fmin_cpu(const Tensor& self, const Tensor& other) {
 }
 
 Tensor& maximum_out_cpu(const Tensor& self, const Tensor& other, Tensor& out) {
+    if (pair_math_takes(self, other, out)) {
+        return pair_math_out_kernel<vecbinary::BOp::Maximum>(
+            self, other, out, MaximumOp(), "maximum");
+    }
     return maximum_minimum_out_kernel(self, other, out, MaximumOp());
 }
 
 Tensor& minimum_out_cpu(const Tensor& self, const Tensor& other, Tensor& out) {
+    if (pair_math_takes(self, other, out)) {
+        return pair_math_out_kernel<vecbinary::BOp::Minimum>(
+            self, other, out, MinimumOp(), "minimum");
+    }
     return maximum_minimum_out_kernel(self, other, out, MinimumOp());
 }
 

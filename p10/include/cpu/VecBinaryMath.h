@@ -73,6 +73,11 @@ enum class BOp : int {
     Remainder,
     Fmod,
     CopySign,
+    Maximum,
+    Minimum,
+    Pow,
+    FloorDiv,
+    TruncDiv,
 };
 
 // Two equal infinities cancel in the difference the fold takes, so the
@@ -104,6 +109,37 @@ inline double log_add_exp2_value(double x, double y) {
     const double m = std::max(x, y);
     return m + std::log1p(std::exp2(-std::fabs(x - y))) *
                    1.4426950408889634073599246810018921;
+}
+
+// The quotient rounded down.  The truncated remainder is taken out first, so
+// the division sees an exact multiple of the divisor, and a quotient that
+// still lands a step above its floor is pulled back one.  A zero quotient
+// keeps the sign of the plain division, and a zero divisor keeps its
+// infinite answer.
+inline float floor_div_value(float a, float b) {
+    if (b == 0.0f) return a / b;
+    const float mod = std::fmod(a, b);
+    float div = (a - mod) / b;
+    if ((mod != 0.0f) && ((b < 0.0f) != (mod < 0.0f))) div -= 1.0f;
+    if (div != 0.0f) {
+        float fd = std::floor(div);
+        if (div - fd > 0.5f) fd += 1.0f;
+        return fd;
+    }
+    return std::copysign(0.0f, a / b);
+}
+
+inline double floor_div_value(double a, double b) {
+    if (b == 0.0) return a / b;
+    const double mod = std::fmod(a, b);
+    double div = (a - mod) / b;
+    if ((mod != 0.0) && ((b < 0.0) != (mod < 0.0))) div -= 1.0;
+    if (div != 0.0) {
+        double fd = std::floor(div);
+        if (div - fd > 0.5) fd += 1.0;
+        return fd;
+    }
+    return std::copysign(0.0, a / b);
 }
 
 // The answer of the map at the width of the operands, one element at a
@@ -147,6 +183,33 @@ inline float scalar_f32_of<BOp::CopySign>(float x, float y) {
     return std::copysign(x, y);
 }
 
+template <>
+inline float scalar_f32_of<BOp::Maximum>(float x, float y) {
+    return (x != x || y != y) ? std::numeric_limits<float>::quiet_NaN()
+                              : (x < y ? y : x);
+}
+
+template <>
+inline float scalar_f32_of<BOp::Minimum>(float x, float y) {
+    return (x != x || y != y) ? std::numeric_limits<float>::quiet_NaN()
+                              : (x < y ? x : y);
+}
+
+template <>
+inline float scalar_f32_of<BOp::Pow>(float x, float y) {
+    return std::pow(x, y);
+}
+
+template <>
+inline float scalar_f32_of<BOp::FloorDiv>(float x, float y) {
+    return floor_div_value(x, y);
+}
+
+template <>
+inline float scalar_f32_of<BOp::TruncDiv>(float x, float y) {
+    return std::trunc(x / y);
+}
+
 inline bool avx2_available() {
 #if defined(TP_VECBINARY_X86)
     static const bool ok = __builtin_cpu_supports("avx2") != 0;
@@ -178,6 +241,20 @@ inline float scalar_f32(BOp op, float x, float y) {
             return log_add_exp2_value(x, y);
         case BOp::CopySign:
             return std::copysign(x, y);
+        case BOp::Maximum:
+            return (x != x || y != y)
+                       ? std::numeric_limits<float>::quiet_NaN()
+                       : (x < y ? y : x);
+        case BOp::Minimum:
+            return (x != x || y != y)
+                       ? std::numeric_limits<float>::quiet_NaN()
+                       : (x < y ? x : y);
+        case BOp::Pow:
+            return std::pow(x, y);
+        case BOp::FloorDiv:
+            return floor_div_value(x, y);
+        case BOp::TruncDiv:
+            return std::trunc(x / y);
     }
     return 0.0f;
 }
@@ -200,6 +277,20 @@ inline double scalar_f64(BOp op, double x, double y) {
             return log_add_exp2_value(x, y);
         case BOp::CopySign:
             return std::copysign(x, y);
+        case BOp::Maximum:
+            return (x != x || y != y)
+                       ? std::numeric_limits<double>::quiet_NaN()
+                       : (x < y ? y : x);
+        case BOp::Minimum:
+            return (x != x || y != y)
+                       ? std::numeric_limits<double>::quiet_NaN()
+                       : (x < y ? x : y);
+        case BOp::Pow:
+            return std::pow(x, y);
+        case BOp::FloorDiv:
+            return floor_div_value(x, y);
+        case BOp::TruncDiv:
+            return std::trunc(x / y);
     }
     return 0.0;
 }
@@ -234,6 +325,21 @@ inline uint16_t scalar_f16(BOp op, uint16_t a, uint16_t b) {
             // The sign bit is the top bit of the layout, so the move is one
             // mask and one merge whichever reduced width the lane holds.
             return static_cast<uint16_t>((a & 0x7fff) | (b & 0x8000));
+        case BOp::Maximum:
+            return tensorplay::cpu::vecreduced::narrow_one(
+                scalar_f32_of<BOp::Maximum>(x, y));
+        case BOp::Minimum:
+            return tensorplay::cpu::vecreduced::narrow_one(
+                scalar_f32_of<BOp::Minimum>(x, y));
+        case BOp::Pow:
+            return tensorplay::cpu::vecreduced::narrow_one(
+                scalar_f32_of<BOp::Pow>(x, y));
+        case BOp::FloorDiv:
+            return tensorplay::cpu::vecreduced::narrow_one(
+                scalar_f32_of<BOp::FloorDiv>(x, y));
+        case BOp::TruncDiv:
+            return tensorplay::cpu::vecreduced::narrow_one(
+                scalar_f32_of<BOp::TruncDiv>(x, y));
     }
     return 0;
 }
@@ -266,6 +372,21 @@ inline uint16_t scalar_bf16(BOp op, uint16_t a, uint16_t b) {
                 log_add_exp2_value(x, y));
         case BOp::CopySign:
             return static_cast<uint16_t>((a & 0x7fff) | (b & 0x8000));
+        case BOp::Maximum:
+            return tensorplay::cpu::vecreduced::narrow_bf16_one(
+                scalar_f32_of<BOp::Maximum>(x, y));
+        case BOp::Minimum:
+            return tensorplay::cpu::vecreduced::narrow_bf16_one(
+                scalar_f32_of<BOp::Minimum>(x, y));
+        case BOp::Pow:
+            return tensorplay::cpu::vecreduced::narrow_bf16_one(
+                scalar_f32_of<BOp::Pow>(x, y));
+        case BOp::FloorDiv:
+            return tensorplay::cpu::vecreduced::narrow_bf16_one(
+                scalar_f32_of<BOp::FloorDiv>(x, y));
+        case BOp::TruncDiv:
+            return tensorplay::cpu::vecreduced::narrow_bf16_one(
+                scalar_f32_of<BOp::TruncDiv>(x, y));
     }
     return 0;
 }
@@ -356,6 +477,108 @@ inline __m256d copysign_f64(__m256d x, __m256d y) {
     const __m256d signbit = _mm256_set1_pd(-0.0);
     return _mm256_or_pd(_mm256_andnot_pd(signbit, x),
                         _mm256_and_pd(signbit, y));
+}
+
+// The larger of two lanes, and a not-a-number with every payload bit set
+// where either operand is one: the unordered comparison already carries the
+// all-ones pattern, so it is merged in rather than selected.
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256 maximum_f32(__m256 x, __m256 y) {
+    return _mm256_or_ps(_mm256_max_ps(x, y),
+                        _mm256_cmp_ps(x, y, _CMP_UNORD_Q));
+}
+
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256 minimum_f32(__m256 x, __m256 y) {
+    return _mm256_or_ps(_mm256_min_ps(x, y),
+                        _mm256_cmp_ps(x, y, _CMP_UNORD_Q));
+}
+
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256d maximum_f64(__m256d x, __m256d y) {
+    return _mm256_or_pd(_mm256_max_pd(x, y),
+                        _mm256_cmp_pd(x, y, _CMP_UNORD_Q));
+}
+
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256d minimum_f64(__m256d x, __m256d y) {
+    return _mm256_or_pd(_mm256_min_pd(x, y),
+                        _mm256_cmp_pd(x, y, _CMP_UNORD_Q));
+}
+
+// The quotient rounded down, a vector lane at a time: the truncated
+// remainder is taken out first, a quotient whose remainder disagrees in sign
+// with the divisor steps down one, and a quotient sitting a step above its
+// floor is pulled back.  A quotient that overflowed while the dividend did
+// not leaves the remainder unusable, so those lanes divide the dividend
+// itself.
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256 floor_div_f32(__m256 x, __m256 y) {
+    const __m256 zero = _mm256_setzero_ps();
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 absmask = _mm256_set1_ps(-0.0f);
+    const __m256 inf = _mm256_set1_ps(std::numeric_limits<float>::infinity());
+    const __m256 basic = _mm256_div_ps(x, y);
+    const __m256 mod = Sleef_fmodf8(x, y);
+    const __m256 over = _mm256_and_ps(
+        _mm256_cmp_ps(_mm256_andnot_ps(absmask, basic), inf, _CMP_EQ_OQ),
+        _mm256_cmp_ps(_mm256_andnot_ps(absmask, x), inf, _CMP_NEQ_OQ));
+    const __m256 whole = _mm256_blendv_ps(_mm256_sub_ps(x, mod), x, over);
+    __m256 div = _mm256_div_ps(whole, y);
+    const __m256 mixed = _mm256_xor_ps(_mm256_cmp_ps(y, zero, _CMP_LT_OQ),
+                                       _mm256_cmp_ps(mod, zero, _CMP_LT_OQ));
+    const __m256 down = _mm256_and_ps(
+        _mm256_cmp_ps(mod, zero, _CMP_NEQ_UQ), mixed);
+    div = _mm256_blendv_ps(div, _mm256_sub_ps(div, one), down);
+    __m256 fd = _mm256_floor_ps(div);
+    const __m256 above = _mm256_cmp_ps(_mm256_sub_ps(div, fd),
+                                       _mm256_set1_ps(0.5f), _CMP_GT_OQ);
+    fd = _mm256_blendv_ps(fd, _mm256_add_ps(fd, one), above);
+    const __m256 signed_zero =
+        _mm256_and_ps(basic, _mm256_set1_ps(-0.0f));
+    fd = _mm256_blendv_ps(fd, signed_zero,
+                          _mm256_cmp_ps(div, zero, _CMP_EQ_OQ));
+    return _mm256_blendv_ps(fd, basic, _mm256_cmp_ps(y, zero, _CMP_EQ_OQ));
+}
+
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256 trunc_div_f32(__m256 x, __m256 y) {
+    return _mm256_round_ps(_mm256_div_ps(x, y),
+                           _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
+}
+
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256d floor_div_f64(__m256d x, __m256d y) {
+    const __m256d zero = _mm256_setzero_pd();
+    const __m256d one = _mm256_set1_pd(1.0);
+    const __m256d absmask = _mm256_set1_pd(-0.0);
+    const __m256d inf = _mm256_set1_pd(std::numeric_limits<double>::infinity());
+    const __m256d basic = _mm256_div_pd(x, y);
+    const __m256d mod = Sleef_fmodd4(x, y);
+    const __m256d over = _mm256_and_pd(
+        _mm256_cmp_pd(_mm256_andnot_pd(absmask, basic), inf, _CMP_EQ_OQ),
+        _mm256_cmp_pd(_mm256_andnot_pd(absmask, x), inf, _CMP_NEQ_OQ));
+    const __m256d whole = _mm256_blendv_pd(_mm256_sub_pd(x, mod), x, over);
+    __m256d div = _mm256_div_pd(whole, y);
+    const __m256d mixed = _mm256_xor_pd(_mm256_cmp_pd(y, zero, _CMP_LT_OQ),
+                                        _mm256_cmp_pd(mod, zero, _CMP_LT_OQ));
+    const __m256d down = _mm256_and_pd(
+        _mm256_cmp_pd(mod, zero, _CMP_NEQ_UQ), mixed);
+    div = _mm256_blendv_pd(div, _mm256_sub_pd(div, one), down);
+    __m256d fd = _mm256_floor_pd(div);
+    const __m256d above = _mm256_cmp_pd(_mm256_sub_pd(div, fd),
+                                        _mm256_set1_pd(0.5), _CMP_GT_OQ);
+    fd = _mm256_blendv_pd(fd, _mm256_add_pd(fd, one), above);
+    const __m256d signed_zero = _mm256_and_pd(basic, _mm256_set1_pd(-0.0));
+    fd = _mm256_blendv_pd(fd, signed_zero,
+                          _mm256_cmp_pd(div, zero, _CMP_EQ_OQ));
+    return _mm256_blendv_pd(fd, basic, _mm256_cmp_pd(y, zero, _CMP_EQ_OQ));
+}
+
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256d trunc_div_f64(__m256d x, __m256d y) {
+    return _mm256_round_pd(_mm256_div_pd(x, y),
+                           _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
 }
 
 // A quotient far beyond the exponent range leaves the vector fmod a
@@ -477,6 +700,21 @@ static void f32_chunk_avx2(const float* a, const float* b, float* d,
         } else if constexpr (op == BOp::CopySign) {
             r0 = copysign_f32(x0, y0);
             r1 = copysign_f32(x1, y1);
+        } else if constexpr (op == BOp::Maximum) {
+            r0 = maximum_f32(x0, y0);
+            r1 = maximum_f32(x1, y1);
+        } else if constexpr (op == BOp::Minimum) {
+            r0 = minimum_f32(x0, y0);
+            r1 = minimum_f32(x1, y1);
+        } else if constexpr (op == BOp::Pow) {
+            r0 = tensorplay::tpsleef::pow(x0, y0);
+            r1 = tensorplay::tpsleef::pow(x1, y1);
+        } else if constexpr (op == BOp::FloorDiv) {
+            r0 = floor_div_f32(x0, y0);
+            r1 = floor_div_f32(x1, y1);
+        } else if constexpr (op == BOp::TruncDiv) {
+            r0 = trunc_div_f32(x0, y0);
+            r1 = trunc_div_f32(x1, y1);
         } else {
             r0 = log_add_exp_f32(x0, y0);
             r1 = log_add_exp_f32(x1, y1);
@@ -500,6 +738,16 @@ static void f32_chunk_avx2(const float* a, const float* b, float* d,
             r = log_add_exp2_f32(x, y);
         } else if constexpr (op == BOp::CopySign) {
             r = copysign_f32(x, y);
+        } else if constexpr (op == BOp::Maximum) {
+            r = maximum_f32(x, y);
+        } else if constexpr (op == BOp::Minimum) {
+            r = minimum_f32(x, y);
+        } else if constexpr (op == BOp::Pow) {
+            r = tensorplay::tpsleef::pow(x, y);
+        } else if constexpr (op == BOp::FloorDiv) {
+            r = floor_div_f32(x, y);
+        } else if constexpr (op == BOp::TruncDiv) {
+            r = trunc_div_f32(x, y);
         } else {
             r = log_add_exp_f32(x, y);
         }
@@ -563,6 +811,21 @@ static void f16_chunk_avx2(const uint16_t* a, const uint16_t* b,
         } else if constexpr (op == BOp::LogAddExp2) {
             r0 = log_add_exp2_f32(x0, y0);
             r1 = log_add_exp2_f32(x1, y1);
+        } else if constexpr (op == BOp::Maximum) {
+            r0 = maximum_f32(x0, y0);
+            r1 = maximum_f32(x1, y1);
+        } else if constexpr (op == BOp::Minimum) {
+            r0 = minimum_f32(x0, y0);
+            r1 = minimum_f32(x1, y1);
+        } else if constexpr (op == BOp::Pow) {
+            r0 = tensorplay::tpsleef::pow(x0, y0);
+            r1 = tensorplay::tpsleef::pow(x1, y1);
+        } else if constexpr (op == BOp::FloorDiv) {
+            r0 = floor_div_f32(x0, y0);
+            r1 = floor_div_f32(x1, y1);
+        } else if constexpr (op == BOp::TruncDiv) {
+            r0 = trunc_div_f32(x0, y0);
+            r1 = trunc_div_f32(x1, y1);
         } else {
             r0 = log_add_exp_f32(x0, y0);
             r1 = log_add_exp_f32(x1, y1);
@@ -583,6 +846,16 @@ static void f16_chunk_avx2(const uint16_t* a, const uint16_t* b,
             r = fmod_pair_f32(x, y);
         } else if constexpr (op == BOp::LogAddExp2) {
             r = log_add_exp2_f32(x, y);
+        } else if constexpr (op == BOp::Maximum) {
+            r = maximum_f32(x, y);
+        } else if constexpr (op == BOp::Minimum) {
+            r = minimum_f32(x, y);
+        } else if constexpr (op == BOp::Pow) {
+            r = tensorplay::tpsleef::pow(x, y);
+        } else if constexpr (op == BOp::FloorDiv) {
+            r = floor_div_f32(x, y);
+        } else if constexpr (op == BOp::TruncDiv) {
+            r = trunc_div_f32(x, y);
         } else {
             r = log_add_exp_f32(x, y);
         }
@@ -648,6 +921,21 @@ static void bf16_chunk_avx2(const uint16_t* a, const uint16_t* b,
         } else if constexpr (op == BOp::LogAddExp2) {
             r0 = log_add_exp2_f32(x0, y0);
             r1 = log_add_exp2_f32(x1, y1);
+        } else if constexpr (op == BOp::Maximum) {
+            r0 = maximum_f32(x0, y0);
+            r1 = maximum_f32(x1, y1);
+        } else if constexpr (op == BOp::Minimum) {
+            r0 = minimum_f32(x0, y0);
+            r1 = minimum_f32(x1, y1);
+        } else if constexpr (op == BOp::Pow) {
+            r0 = tensorplay::tpsleef::pow(x0, y0);
+            r1 = tensorplay::tpsleef::pow(x1, y1);
+        } else if constexpr (op == BOp::FloorDiv) {
+            r0 = floor_div_f32(x0, y0);
+            r1 = floor_div_f32(x1, y1);
+        } else if constexpr (op == BOp::TruncDiv) {
+            r0 = trunc_div_f32(x0, y0);
+            r1 = trunc_div_f32(x1, y1);
         } else {
             r0 = log_add_exp_f32(x0, y0);
             r1 = log_add_exp_f32(x1, y1);
@@ -669,6 +957,16 @@ static void bf16_chunk_avx2(const uint16_t* a, const uint16_t* b,
             r = fmod_pair_f32(x, y);
         } else if constexpr (op == BOp::LogAddExp2) {
             r = log_add_exp2_f32(x, y);
+        } else if constexpr (op == BOp::Maximum) {
+            r = maximum_f32(x, y);
+        } else if constexpr (op == BOp::Minimum) {
+            r = minimum_f32(x, y);
+        } else if constexpr (op == BOp::Pow) {
+            r = tensorplay::tpsleef::pow(x, y);
+        } else if constexpr (op == BOp::FloorDiv) {
+            r = floor_div_f32(x, y);
+        } else if constexpr (op == BOp::TruncDiv) {
+            r = trunc_div_f32(x, y);
         } else {
             r = log_add_exp_f32(x, y);
         }
@@ -708,6 +1006,21 @@ static void f64_chunk_avx2(const double* a, const double* b, double* d,
         } else if constexpr (op == BOp::CopySign) {
             r0 = copysign_f64(x0, y0);
             r1 = copysign_f64(x1, y1);
+        } else if constexpr (op == BOp::Maximum) {
+            r0 = maximum_f64(x0, y0);
+            r1 = maximum_f64(x1, y1);
+        } else if constexpr (op == BOp::Minimum) {
+            r0 = minimum_f64(x0, y0);
+            r1 = minimum_f64(x1, y1);
+        } else if constexpr (op == BOp::Pow) {
+            r0 = tensorplay::tpsleef::pow(x0, y0);
+            r1 = tensorplay::tpsleef::pow(x1, y1);
+        } else if constexpr (op == BOp::FloorDiv) {
+            r0 = floor_div_f64(x0, y0);
+            r1 = floor_div_f64(x1, y1);
+        } else if constexpr (op == BOp::TruncDiv) {
+            r0 = trunc_div_f64(x0, y0);
+            r1 = trunc_div_f64(x1, y1);
         } else {
             r0 = log_add_exp_f64(x0, y0);
             r1 = log_add_exp_f64(x1, y1);
@@ -731,6 +1044,16 @@ static void f64_chunk_avx2(const double* a, const double* b, double* d,
             r = log_add_exp2_f64(x, y);
         } else if constexpr (op == BOp::CopySign) {
             r = copysign_f64(x, y);
+        } else if constexpr (op == BOp::Maximum) {
+            r = maximum_f64(x, y);
+        } else if constexpr (op == BOp::Minimum) {
+            r = minimum_f64(x, y);
+        } else if constexpr (op == BOp::Pow) {
+            r = tensorplay::tpsleef::pow(x, y);
+        } else if constexpr (op == BOp::FloorDiv) {
+            r = floor_div_f64(x, y);
+        } else if constexpr (op == BOp::TruncDiv) {
+            r = trunc_div_f64(x, y);
         } else {
             r = log_add_exp_f64(x, y);
         }
