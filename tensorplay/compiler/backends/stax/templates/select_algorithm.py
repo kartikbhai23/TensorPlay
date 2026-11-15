@@ -5804,10 +5804,12 @@ def realize_inputs(*args):
     """
 
     if len(args) == 1:
-        realized = args[0]
+        realized = ir.ExternKernel.realize_input(args[0])
+        # A number shaped like a value is not a value: the requirement is about
+        # how a tensor's elements are walked, and there is nothing to walk.
         if not realized.has_tensor_output():
             return realized
-        return realized.require_stride1()
+        return ir.ExternKernel.require_stride1(realized)
     return [realize_inputs(x) for x in args]
 
 
