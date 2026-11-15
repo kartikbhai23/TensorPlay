@@ -3103,9 +3103,30 @@ inline void bf16_store8_avx2(uint16_t* d, __m256i r) {
     }
 
 // Same shape as the Half walk: a constant op folds apply_f32's dispatch away.
+// The transcendentals have a long chain per vector, so four of them are in
+// flight: a wider step than the shared walk, whose cheap maps are limited by
+// the store and rounding traffic instead.
+#define TP_BF16_WIDE_16(EXPR)                                              \
+    {                                                                      \
+        for (; i + 32 <= n; i += 32) {                                     \
+            __m256i r0, r1, r2, r3;                                        \
+            TP_BF16_STEP(EXPR, i, r0)                                      \
+            TP_BF16_STEP(EXPR, i + 8, r1)                                  \
+            TP_BF16_STEP(EXPR, i + 16, r2)                                 \
+            TP_BF16_STEP(EXPR, i + 24, r3)                                 \
+            bf16_store16_avx2(dst + i, r0, r1);                            \
+            bf16_store16_avx2(dst + i + 16, r2, r3);                       \
+        }                                                                  \
+        for (; i + 8 <= n; i += 8) {                                       \
+            __m256i r0;                                                    \
+            TP_BF16_STEP(EXPR, i, r0)                                      \
+            bf16_store8_avx2(dst + i, r0);                                 \
+        }                                                                  \
+    }
+
 #define TP_BF16_CONST_OP(OP)                                               \
     case VOp::OP:                                                          \
-        TP_BF16_CHUNK_8(apply_f32(VOp::OP, prm, x))                        \
+        TP_BF16_WIDE_16(apply_f32(VOp::OP, prm, x))                        \
         break;
 
 // Same split as the Half walk: the shared dispatch gets its own loop.
@@ -3241,6 +3262,7 @@ static void bf16_chunk_avx2(VOp op, VParams prm, const uint16_t* src, uint16_t* 
 #undef TP_BF16_CHUNK_8
 #undef TP_BF16_RAW16
 #undef TP_BF16_BITS16
+#undef TP_BF16_WIDE_16
 #undef TP_BF16_CONST_OP
     for (; i < n; ++i) {
         uint32_t bits = static_cast<uint32_t>(src[i]) << 16;
