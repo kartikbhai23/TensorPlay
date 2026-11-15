@@ -657,6 +657,16 @@ class TritonKernel(SIMDKernel):  # type: ignore[misc,valid-type]
             ),
         }
 
+        if config.write_are_deterministic_algorithms_enabled:
+            # A reduction has several equally valid orders, and a launch that
+            # picks one of them is not interchangeable with a launch that was
+            # asked to pick a fixed one.  The record says which was asked for,
+            # so the reader that filters configurations for determinism sees
+            # the answer instead of assuming it.
+            tp_meta["are_deterministic_algorithms_enabled"] = (
+                tp.are_deterministic_algorithms_enabled()
+            )
+
         if config.profile_bandwidth:
             tp_meta["profile_bandwidth"] = config.profile_bandwidth
             tp_meta["profile_bandwidth_output"] = config.profile_bandwidth_output

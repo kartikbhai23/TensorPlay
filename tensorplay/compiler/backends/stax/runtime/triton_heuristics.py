@@ -29,7 +29,7 @@ import re
 import threading
 import time
 from collections import namedtuple
-from typing import Any, Callable, Container, Final, Generic, Literal, TypeVar, cast
+from typing import Any, Callable, Container, Final, Generic, Literal, Mapping, TypeVar, cast
 
 import tensorplay as tp
 
@@ -1284,6 +1284,36 @@ def _resolve_load_device(device: int | None, device_type: str) -> int | None:
     return get_interface_for_device(
         device_type.replace("hip", "cuda").replace("maca", "cuda")
     ).current_device()
+
+
+def _launch_field_schema(binary: Any) -> Mapping[str, Any] | None:
+    """The binary's own table of launch fields, when it offers one.
+
+    A compiled kernel may describe what a launch needs as a table that says
+    what each field means.  Those names stay readable as the runtime behind
+    the kernel changes, while reading the fields off the object works only for
+    whichever ones the version in hand happens to have.  The table is used
+    when the settings ask for it and the binary has one; otherwise the fields
+    are read off the object as before.
+    """
+
+    if not config.use_launch_metadata_schema:
+        return None
+    schema = getattr(binary, "launch_metadata_schema", None)
+    return schema if isinstance(schema, Mapping) else None
+
+
+def _schema_or_probed(
+    schema: Mapping[str, Any] | None, field: str, probe: Callable[[], Any]
+) -> Any:
+    """One launch field, taken from the table when it lists it."""
+
+    if schema is not None:
+        try:
+            return schema[field]
+        except (KeyError, IndexError, TypeError):
+            pass
+    return probe()
 
 
 class CachingAutotuner(KernelInterface):
@@ -3295,6 +3325,7 @@ class TritonCompileResult(CompileResult[CompiledKernel]):
         binary_shared = (
             binary.shared if hasattr(binary, "shared") else binary.metadata.shared
         )
+        schema = _launch_field_schema(binary)
 
         if knobs is None:
             launch_enter = binary.__class__.launch_enter_hook
@@ -3319,11 +3350,15 @@ class TritonCompileResult(CompileResult[CompiledKernel]):
                 if hasattr(binary, "packed_metadata")
                 else binary.metadata
             ),
-            "shared": binary_shared,
-            "num_warps": (
-                binary.num_warps
-                if hasattr(binary, "num_warps")
-                else binary.metadata.num_warps
+            "shared": _schema_or_probed(schema, "shared_mem", lambda: binary_shared),
+            "num_warps": _schema_or_probed(
+                schema,
+                "num_warps",
+                lambda: (
+                    binary.num_warps
+                    if hasattr(binary, "num_warps")
+                    else binary.metadata.num_warps
+                ),
             ),
             "cta_args": (
                 (
