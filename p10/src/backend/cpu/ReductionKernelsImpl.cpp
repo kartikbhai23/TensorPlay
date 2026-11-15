@@ -4814,6 +4814,214 @@ inline std::optional<Tensor> review_permuted_reduction(
     return back.contiguous();
 }
 
+// Four answers of a band summed into the wider integer the total is kept in.
+__attribute__((target("avx2"), always_inline)) inline
+int64_t sum_band_i64(__m256i v) {
+    const __m128i pair = _mm_add_epi64(_mm256_castsi256_si128(v),
+                                       _mm256_extracti128_si256(v, 1));
+    return static_cast<int64_t>(_mm_cvtsi128_si64(pair) +
+                                _mm_extract_epi64(pair, 1));
+}
+
+// A row of integers summed into the wider integer its answer is kept in.  A
+// band of the row is widened once and kept in registers, so every element is
+// read exactly once and the answer is formed without a converted copy of the
+// row that is eight times its size.  A partial sum in the narrow width is
+// folded into the wide one before it can overflow, so every answer is exact.
+template <typename T>
+__attribute__((target("avx2"), always_inline)) inline
+int64_t sum_row_int(const T* x, int64_t n) {
+    __m256i wide = _mm256_setzero_si256();
+    int64_t i = 0;
+    const __m256i one16 = _mm256_set1_epi16(1);
+    if constexpr (sizeof(T) == 1) {
+        if constexpr (std::is_unsigned_v<T>) {
+            // A byte band folds eight bytes into each lane of the wide total
+            // in one step.
+            const __m256i zero = _mm256_setzero_si256();
+            for (; i + 32 <= n; i += 32) {
+                wide = _mm256_add_epi64(
+                    wide,
+                    _mm256_sad_epu8(
+                        _mm256_loadu_si256(
+                            reinterpret_cast<const __m256i*>(x + i)),
+                        zero));
+            }
+        } else {
+            const __m256i one8 = _mm256_set1_epi8(1);
+            __m256i part = _mm256_setzero_si256();
+            for (; i + 32 <= n; i += 32) {
+                const __m256i band = _mm256_madd_epi16(
+                    _mm256_maddubs_epi16(
+                        one8, _mm256_loadu_si256(
+                                  reinterpret_cast<const __m256i*>(x + i))),
+                    one16);
+                part = _mm256_add_epi32(part, band);
+                if (((i + 32) & 131071) == 0) {
+                    wide = _mm256_add_epi64(
+                        wide, _mm256_cvtepi32_epi64(
+                                  _mm256_castsi256_si128(part)));
+                    wide = _mm256_add_epi64(
+                        wide, _mm256_cvtepi32_epi64(
+                                  _mm256_extracti128_si256(part, 1)));
+                    part = _mm256_setzero_si256();
+                }
+            }
+            wide = _mm256_add_epi64(
+                wide, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(part)));
+            wide = _mm256_add_epi64(
+                wide,
+                _mm256_cvtepi32_epi64(_mm256_extracti128_si256(part, 1)));
+        }
+    } else if constexpr (sizeof(T) == 2) {
+        if constexpr (std::is_unsigned_v<T>) {
+            __m256i part = _mm256_setzero_si256();
+            for (; i + 16 <= n; i += 16) {
+                const __m128i half0 = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i*>(x + i));
+                const __m128i half1 = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i*>(x + i + 8));
+                part = _mm256_add_epi32(
+                    part, _mm256_add_epi32(_mm256_cvtepu16_epi32(half0),
+                                           _mm256_cvtepu16_epi32(half1)));
+                if (((i + 16) & 65535) == 0) {
+                    wide = _mm256_add_epi64(
+                        wide, _mm256_cvtepi32_epi64(
+                                  _mm256_castsi256_si128(part)));
+                    wide = _mm256_add_epi64(
+                        wide, _mm256_cvtepi32_epi64(
+                                  _mm256_extracti128_si256(part, 1)));
+                    part = _mm256_setzero_si256();
+                }
+            }
+            wide = _mm256_add_epi64(
+                wide, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(part)));
+            wide = _mm256_add_epi64(
+                wide,
+                _mm256_cvtepi32_epi64(_mm256_extracti128_si256(part, 1)));
+        } else {
+            __m256i part = _mm256_setzero_si256();
+            for (; i + 16 <= n; i += 16) {
+                const __m256i band = _mm256_madd_epi16(
+                    _mm256_loadu_si256(
+                        reinterpret_cast<const __m256i*>(x + i)),
+                    one16);
+                part = _mm256_add_epi32(part, band);
+                if (((i + 16) & 262143) == 0) {
+                    wide = _mm256_add_epi64(
+                        wide, _mm256_cvtepi32_epi64(
+                                  _mm256_castsi256_si128(part)));
+                    wide = _mm256_add_epi64(
+                        wide, _mm256_cvtepi32_epi64(
+                                  _mm256_extracti128_si256(part, 1)));
+                    part = _mm256_setzero_si256();
+                }
+            }
+            wide = _mm256_add_epi64(
+                wide, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(part)));
+            wide = _mm256_add_epi64(
+                wide,
+                _mm256_cvtepi32_epi64(_mm256_extracti128_si256(part, 1)));
+        }
+    } else if constexpr (sizeof(T) == 4) {
+        // A half-width band is sign or zero extended once and carried in the
+        // wide total directly.
+        for (; i + 8 <= n; i += 8) {
+            const __m256i band = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(x + i));
+            __m256i low;
+            __m256i high;
+            if constexpr (std::is_unsigned_v<T>) {
+                low = _mm256_cvtepu32_epi64(_mm256_castsi256_si128(band));
+                high = _mm256_cvtepu32_epi64(
+                    _mm256_extracti128_si256(band, 1));
+            } else {
+                low = _mm256_cvtepi32_epi64(_mm256_castsi256_si128(band));
+                high = _mm256_cvtepi32_epi64(
+                    _mm256_extracti128_si256(band, 1));
+            }
+            wide = _mm256_add_epi64(wide, _mm256_add_epi64(low, high));
+        }
+    } else {
+        for (; i + 4 <= n; i += 4) {
+            wide = _mm256_add_epi64(
+                wide,
+                _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i*>(x + i)));
+        }
+    }
+    int64_t total = sum_band_i64(wide);
+    for (; i < n; ++i) total += static_cast<int64_t>(x[i]);
+    return total;
+}
+
+// Every row of an integral tensor summed the same way, split among the workers.
+template <typename T>
+__attribute__((target("avx2"), noinline))
+static void sum_rows_int_span(const T* in, int64_t* outp, int64_t begin,
+                              int64_t end, int64_t d_size) {
+    for (int64_t r = begin; r < end; ++r) {
+        outp[r] = sum_row_int<T>(in + r * d_size, d_size);
+    }
+}
+
+template <typename T>
+static void sum_rows_int(const Tensor& input, int64_t* outp, int64_t rows,
+                         int64_t d_size, int64_t grain) {
+    const T* in = reinterpret_cast<const T*>(input.data_ptr());
+    parallel_for(0, rows, grain, [&](int64_t b, int64_t e) {
+        sum_rows_int_span<T>(in, outp, b, e, d_size);
+    });
+}
+
+// The last axis of an integral tensor summed into the wide integer its answer
+// is kept in: every row is one contiguous pass, so it is summed where it lies.
+inline std::optional<Tensor> try_sum_lastdim_int(
+        const Tensor& input, const std::vector<int64_t>& out_shape) {
+    const DType dt = input.dtype();
+    if (!input.is_contiguous() || !isIntegralType(dt, true)) {
+        return std::nullopt;
+    }
+    if (input.dim() < 1) return std::nullopt;
+    const int64_t d_size = input.size(input.dim() - 1);
+    if (d_size < 1 || input.numel() == 0) return std::nullopt;
+    const int64_t rows = input.numel() / d_size;
+    Tensor out = Tensor::empty(out_shape, DType::Int64, input.device());
+    int64_t* outp = out.data_ptr<int64_t>();
+    const int64_t row_grain =
+        std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(d_size, 1));
+    switch (dt) {
+        case DType::UInt8:
+        case DType::Bool:
+            sum_rows_int<uint8_t>(input, outp, rows, d_size, row_grain);
+            break;
+        case DType::Int8:
+            sum_rows_int<int8_t>(input, outp, rows, d_size, row_grain);
+            break;
+        case DType::Int16:
+            sum_rows_int<int16_t>(input, outp, rows, d_size, row_grain);
+            break;
+        case DType::UInt16:
+            sum_rows_int<uint16_t>(input, outp, rows, d_size, row_grain);
+            break;
+        case DType::Int32:
+            sum_rows_int<int32_t>(input, outp, rows, d_size, row_grain);
+            break;
+        case DType::UInt32:
+            sum_rows_int<uint32_t>(input, outp, rows, d_size, row_grain);
+            break;
+        case DType::Int64:
+            sum_rows_int<int64_t>(input, outp, rows, d_size, row_grain);
+            break;
+        case DType::UInt64:
+            sum_rows_int<uint64_t>(input, outp, rows, d_size, row_grain);
+            break;
+        default:
+            return std::nullopt;
+    }
+    return out;
+}
+
 Tensor sum_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims, bool keepdim, DType dtype) {
     DType out_dtype = dtype;
     if (out_dtype == DType::Undefined) {
@@ -5094,6 +5302,21 @@ Tensor sum_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims,
     } else if (out_dtype == DType::ComplexHalf || out_dtype == DType::BComplex32) {
         acc_dtype = DType::ComplexFloat;
     }
+
+    // An integral tensor whose answer is a wide integer is summed where it
+    // lies, one contiguous row at a time, instead of through a converted copy
+    // of the whole input first.
+    if (acc_dtype == DType::Int64 && dims.size() == 1) {
+        const int64_t rank = self.dim();
+        const int64_t axis = dims[0] < 0 ? dims[0] + rank : dims[0];
+        if (rank >= 1 && axis == rank - 1 && self.is_contiguous()) {
+            if (std::optional<Tensor> direct =
+                    try_sum_lastdim_int(self, out_shape)) {
+                return std::move(*direct);
+            }
+        }
+    }
+
     Tensor out = Tensor::zeros(out_shape, acc_dtype, self.device());
     
     Tensor input = self;
