@@ -3,6 +3,7 @@
 #include "Dispatcher.h"
 #include "Scalar.h"
 #include "Exception.h"
+#include "ErrorReporting.h"
 #include "Utils.h"
 #include "TypePromotion.h"
 #include "CUDARuntime.h"
@@ -534,17 +535,40 @@ Tensor tp_soft_margin_loss_backward_cuda(const Tensor& grad_output,
 Tensor tp_cosine_embedding_loss_cuda(const Tensor& input1, const Tensor& input2,
                                      const Tensor& target, double margin,
                                      int64_t reduction) {
-    const std::vector<int64_t> reduce_dims{1};
-    Tensor n1 = (input1 * input1).sum(reduce_dims) + 1e-12;
-    Tensor n2 = (input2 * input2).sum(reduce_dims) + 1e-12;
-    Tensor denom = (n1 * n2).sqrt();
-    Tensor cosine = (input1 * input2).sum(reduce_dims) / denom;
+    tp_validate_reduction(reduction);
+    const int64_t targ_dim = target.dim();
+    if (targ_dim != 1 && targ_dim != 0) {
+        TP_THROW(RuntimeError,
+                 "0D or 1D target tensor expected, multi-target not supported");
+    }
+    if (targ_dim == 1 && (input1.dim() != 2 || input2.dim() != 2)) {
+        TP_THROW(RuntimeError,
+                 "1D target tensor expects 2D input tensors, but found inputs "
+                 "with sizes ", format_sizes(shape_of(input1)), " and ",
+                 format_sizes(shape_of(input2)), ".");
+    }
+    if (targ_dim == 0 && (input1.dim() != 1 || input2.dim() != 1)) {
+        TP_THROW(RuntimeError,
+                 "0D target tensor expects 1D input tensors, but found inputs "
+                 "with sizes ", format_sizes(shape_of(input1)), " and ",
+                 format_sizes(shape_of(input2)), ".");
+    }
+    const std::vector<int64_t> reduce_dims{targ_dim};
+    Tensor prod_sum = (input1 * input2).sum(reduce_dims);
+    Tensor mag1 = (input1 * input1).sum(reduce_dims) + 1e-12;
+    Tensor mag2 = (input2 * input2).sum(reduce_dims) + 1e-12;
+    // The product of the two magnitudes is a temporary nobody else holds, so
+    // its root lands on it rather than on a fresh buffer.
+    Tensor denom = (mag1 * mag2).sqrt_();
+    Tensor cosine = prod_sum / denom;
     Tensor zeros = Tensor::zeros_like(cosine);
-    Tensor negative = Tensor::where((cosine - margin).lt(Scalar(0)), Scalar(0),
-                                    cosine - margin);
-    Tensor loss = Tensor::where(target.eq(Scalar(1)), Scalar(1) - cosine,
-                                Tensor::where(target.eq(Scalar(-1)), negative,
-                                              zeros));
+    // The two target cases are disjoint, so their contributions add: the
+    // positive side carries the plain distance, the negative side the margin
+    // one, and each is zero where its own target bit is clear.
+    Tensor pos = Scalar(1) - cosine;
+    Tensor neg = (cosine - margin).clamp_min_(Scalar(0));
+    Tensor loss = Tensor::where(target.eq(Scalar(1)), pos, zeros) +
+                  Tensor::where(target.eq(Scalar(-1)), neg, zeros);
     return tp_loss_reduce(loss, reduction);
 }
 
@@ -552,29 +576,38 @@ std::tuple<Tensor, Tensor> tp_cosine_embedding_loss_backward_cuda(
         const Tensor& grad_output, const Tensor& input1, const Tensor& input2,
         const Tensor& target, double margin, int64_t reduction) {
     tp_validate_reduction(reduction);
-    const std::vector<int64_t> reduce_dims{1};
+    const int64_t targ_dim = target.dim();
+    const std::vector<int64_t> reduce_dims{targ_dim};
     Tensor n1 = (input1 * input1).sum(reduce_dims) + 1e-12;
     Tensor n2 = (input2 * input2).sum(reduce_dims) + 1e-12;
-    Tensor denom = (n1 * n2).sqrt();
+    Tensor denom = (n1 * n2).sqrt_();
     Tensor cosine = (input1 * input2).sum(reduce_dims) / denom;
 
-    Tensor ones = Tensor::ones({input1.size(0)}, input1.dtype(), input1.device());
+    const bool per_row = targ_dim == 1;
+    Tensor ones = Tensor::ones(per_row ? std::vector<int64_t>{input1.size(0)}
+                                       : std::vector<int64_t>{},
+                               input1.dtype(), input1.device());
     Tensor dl_dcos = Tensor::where(
         target.eq(Scalar(1)), -ones,
         Tensor::where(target.eq(Scalar(-1)),
                       (cosine - margin).gt(Scalar(0)).to(input1.dtype()),
                       Tensor::zeros_like(ones)));
     if (reduction == 1) {
-        dl_dcos = dl_dcos / static_cast<double>(input1.size(0));
+        dl_dcos = dl_dcos / static_cast<double>(ones.numel());
     }
 
-    Tensor cosine_col = cosine.unsqueeze(1);
-    Tensor denom_col = denom.unsqueeze(1);
+    // With a per-row target the cosine and the magnitudes are columns, so they
+    // stretch along the embedding axis; a single target leaves them scalars.
+    auto as_column = [per_row](const Tensor& t) {
+        return per_row ? t.unsqueeze(1) : t;
+    };
+    Tensor cosine_col = as_column(cosine);
+    Tensor denom_col = as_column(denom);
     Tensor grad1 = (input2 / denom_col) -
-                   cosine_col * (input1 / n1.unsqueeze(1));
+                   cosine_col * (input1 / as_column(n1));
     Tensor grad2 = (input1 / denom_col) -
-                   cosine_col * (input2 / n2.unsqueeze(1));
-    Tensor multiplier = (dl_dcos * grad_output).unsqueeze(1);
+                   cosine_col * (input2 / as_column(n2));
+    Tensor multiplier = as_column(dl_dcos * grad_output);
     return std::make_tuple(grad1 * multiplier, grad2 * multiplier);
 }
 
