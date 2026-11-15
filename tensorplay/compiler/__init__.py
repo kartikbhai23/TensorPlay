@@ -1155,7 +1155,6 @@ def compile(
     name: str | None = None,
     disable: bool = False,
     recompile_limit: int | None = None,
-    isolate_recompiles: bool = False,
     strict_native: bool = False,
     dynamic_shapes: Any = None,
 ) -> Callable[..., Any]:
@@ -1221,7 +1220,6 @@ def compile(
             name=name,
             disable=disable,
             recompile_limit=recompile_limit,
-            isolate_recompiles=isolate_recompiles,
             strict_native=strict_native,
             dynamic_shapes=dynamic_shapes,
         )
@@ -1260,7 +1258,6 @@ def compile(
         name=name,
         disable=False,
         recompile_limit=recompile_limit,
-        isolate_recompiles=isolate_recompiles,
         strict_native=strict_native,
         dynamic_shapes=dynamic_shapes,
     )

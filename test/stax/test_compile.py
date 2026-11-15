@@ -203,6 +203,21 @@ def test_mode_and_options_are_mutually_exclusive():
         tp.compile(lambda x: x + 1, mode="default", options={})
 
 
+def test_compile_offers_no_recompile_isolation_switch():
+    """Entries are per compiled callable, so there is nothing to isolate.
+
+    A switch that kept entries apart from other compile calls' entries would
+    be answered by the frontend already; a switch that shared them cannot be
+    honoured.  Neither is offered, and asking for it is refused rather than
+    accepted and ignored.
+    """
+
+    with pytest.raises(TypeError, match="isolate_recompiles"):
+        tp.compile(lambda x: x + 1, isolate_recompiles=True)
+    with pytest.raises(TypeError, match="isolate_recompiles"):
+        tp.compile(isolate_recompiles=False)
+
+
 def test_fullgraph_specializes_data_dependent_control_flow():
     """D1: execute-mode capture specializes tensor-data branches."""
 

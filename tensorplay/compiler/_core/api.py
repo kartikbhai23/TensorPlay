@@ -395,7 +395,6 @@ def compile(
     name: str | None = None,
     disable: bool = False,
     recompile_limit: int | None = None,
-    isolate_recompiles: bool = False,
     strict_native: bool = False,
     dynamic_shapes: Any = None,
 ) -> Callable[..., Any]:
@@ -481,7 +480,6 @@ def compile(
             name=name,
             disable=disable,
             recompile_limit=recompile_limit,
-            isolate_recompiles=isolate_recompiles,
             strict_native=strict_native,
             dynamic_shapes=decorated_shapes,
         )
@@ -513,7 +511,6 @@ def compile(
                 options=options,
                 name=name,
                 recompile_limit=recompile_limit,
-                isolate_recompiles=isolate_recompiles,
                 strict_native=strict_native,
                 dynamic_shapes=shape_spec,
             ),
@@ -856,7 +853,6 @@ def compile(
         True if dynamic_generalized else dynamic
     )
     optimized._tensorplay_dynamic_shapes = normalized_dynamic_shapes  # type: ignore[attr-defined]
-    optimized._tensorplay_isolate_recompiles = isolate_recompiles  # type: ignore[attr-defined]
     optimized._tensorplay_recompile_limit = specialization_limit  # type: ignore[attr-defined]
     _compiled_wrappers.add(optimized)
     if dispatcher is not None:
