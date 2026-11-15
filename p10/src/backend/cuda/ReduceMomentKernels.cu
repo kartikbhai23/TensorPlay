@@ -12,6 +12,10 @@ namespace cuda {
 
 using namespace reduce_family;
 
+std::tuple<Tensor, Tensor> std_mean_dim_kernel(
+        const Tensor& self, const std::vector<int64_t>& dim,
+        int64_t correction, bool keepdim);
+
 namespace {
 
 template <typename T, typename OutT = T>
@@ -41,17 +45,18 @@ Tensor welford_same_dtype(
             reduction_output_shape(input, spec, keepdim),
             Scalar(std::numeric_limits<float>::quiet_NaN()), input.dtype(), input.device());
     }
-    return run_reduction_typed<T, StateT, T, Ops, 2>(
+    return run_reduction_typed<T, StateT, T, Ops, 4>(
         input, spec, keepdim, input.dtype(),
         Ops{static_cast<AccT>(correction), take_sqrt}, StateT{AccT(0), AccT(0), 0, AccT(0)});
 }
 
-// var and mean out of one Welford pass: the accumulator already carries both,
-// so the mean rides along instead of re-reading the whole input.
+// var (or std) and mean out of one Welford pass: the accumulator already
+// carries both, so the mean rides along instead of re-reading the whole input
+// and the square root lands in the same projection.
 template <typename T, typename IndexT>
 std::tuple<Tensor, Tensor> welford_var_mean_same_dtype(
         const Tensor& input, const ReductionSpec& spec, bool keepdim,
-        int64_t correction) {
+        int64_t correction, bool take_sqrt) {
     using AccT = same_dtype_acc_t<T>;
     using StateT = WelfordData<AccT, IndexT>;
     using Ops = WelfordOps<AccT, T, IndexT>;
@@ -62,9 +67,11 @@ std::tuple<Tensor, Tensor> welford_var_mean_same_dtype(
                 Tensor::full(shape, nan_value, input.dtype(), input.device())};
     }
     Tensor mean = Tensor::empty(shape, input.dtype(), input.device());
-    Tensor var = run_reduction_typed<T, StateT, T>(
+    // Four independent accumulators per thread: the per-element update is a
+    // serial chain through the running mean, so the group supplies the ILP.
+    Tensor var = run_reduction_typed<T, StateT, T, Ops, 4>(
         input, spec, keepdim, input.dtype(),
-        Ops{static_cast<AccT>(correction), false},
+        Ops{static_cast<AccT>(correction), take_sqrt},
         StateT{AccT(0), AccT(0), 0, AccT(0)}, &mean);
     return {var, mean};
 }
@@ -74,14 +81,14 @@ std::tuple<Tensor, Tensor> welford_var_mean_same_dtype(
 template <typename T>
 std::tuple<Tensor, Tensor> welford_var_mean_dispatch(
         const Tensor& input, const ReductionSpec& spec, bool keepdim,
-        int64_t correction) {
+        int64_t correction, bool take_sqrt) {
     if (spec.reduced_numel <=
         static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
         return welford_var_mean_same_dtype<T, int32_t>(
-            input, spec, keepdim, correction);
+            input, spec, keepdim, correction, take_sqrt);
     }
     return welford_var_mean_same_dtype<T, int64_t>(
-        input, spec, keepdim, correction);
+        input, spec, keepdim, correction, take_sqrt);
 }
 
 
@@ -94,8 +101,7 @@ std::tuple<Tensor, Tensor> var_mean_cuda(const Tensor& self, const std::vector<i
 
 std::tuple<Tensor, Tensor> std_mean_cuda(const Tensor& self, const std::vector<int64_t>& dim,
                                          bool unbiased, bool keepdim) {
-    auto vm = var_mean_cuda(self, dim, unbiased, keepdim);
-    return {std::get<0>(vm).sqrt(), std::get<1>(vm)};
+    return std_mean_dim_kernel(self, dim, unbiased ? 1 : 0, keepdim);
 }
 
 
@@ -226,7 +232,19 @@ std::tuple<Tensor, Tensor> var_mean_dim_kernel(
     }
     const ReductionSpec spec = make_reduction_spec(self, dim);
     TP_DISPATCH_FLOAT_REDUCTION(welford_var_mean_dispatch, self.dtype(), self, spec,
-                                keepdim, correction);
+                                keepdim, correction, false);
+}
+
+std::tuple<Tensor, Tensor> std_mean_dim_kernel(
+        const Tensor& self, const std::vector<int64_t>& dim,
+        int64_t correction, bool keepdim) {
+    if (isComplexType(self.dtype())) {
+        return {var_dim_kernel(self, dim, correction, keepdim).sqrt(),
+                mean_dim_kernel(self, dim, keepdim, DType::Undefined)};
+    }
+    const ReductionSpec spec = make_reduction_spec(self, dim);
+    TP_DISPATCH_FLOAT_REDUCTION(welford_var_mean_dispatch, self.dtype(), self, spec,
+                                keepdim, correction, true);
 }
 
 Tensor var_kernel(const Tensor& self, int64_t correction) {

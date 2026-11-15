@@ -35,7 +35,7 @@ constexpr int kDefaultValuesPerThread = 4;
 constexpr int kMaxCachedReduceDevices = 64;
 // Bump when the header-only launch path changes; this also keeps generated
 // CUDA objects from silently reusing an older reduction implementation.
-constexpr int kReductionEngineRevision = 16;
+constexpr int kReductionEngineRevision = 17;
 
 // Load width of one reduction unit: 16-bit elements take eight per
 // instruction (one 16B vector), wider elements four.  The width is a property
@@ -962,6 +962,7 @@ struct has_translate_idx<Ops, std::void_t<decltype(
 template <typename InputT, typename AccT, typename OutputT, typename Ops,
           int ValuesPerThread, int InputVecSize, typename SecondOutputT = OutputT>
 struct ReduceOp {
+    using acc_type = AccT;
     ReduceConfig config;
     const InputT* input;
     OutputT* output;
@@ -1415,17 +1416,27 @@ struct ReduceOp {
     }
 };
 
+// Occupancy floor per accumulator width.  The bound is enforced against the
+// kernel's maximum block size, so it fixes the register budget: a four-block
+// floor leaves 32 registers per thread, which a four-word accumulator plus its
+// per-thread copies cannot hold, and ptxas answers with local-memory traffic.
+// Wide accumulators get the two-block floor (64 registers) instead; the simple
+// one-word families keep four blocks so their occupancy is untouched.
+template <typename AccT>
+inline constexpr int kReduceMinBlocks = sizeof(AccT) > 8 ? 2 : 4;
+
 template <typename InputT, typename AccT, typename OutputT, typename Ops,
           int ValuesPerThread, int InputVecSize, typename SecondOutputT = OutputT,
           bool Generic = false>
-__global__ void __launch_bounds__(kMaxReduceThreads, 4)
+__global__ void __launch_bounds__(kMaxReduceThreads, kReduceMinBlocks<AccT>)
 reduce_kernel(ReduceOp<InputT, AccT, OutputT, Ops, ValuesPerThread,
                     InputVecSize, SecondOutputT> op) {
     op.template run<1, Generic>();
 }
 
 template <int OutputVecSize, typename Reduction>
-__global__ void __launch_bounds__(kMaxReduceThreads / OutputVecSize, 4)
+__global__ void __launch_bounds__(kMaxReduceThreads / OutputVecSize,
+                                  kReduceMinBlocks<typename Reduction::acc_type>)
 reduce_output_kernel(Reduction op) {
     op.template run<OutputVecSize>();
 }

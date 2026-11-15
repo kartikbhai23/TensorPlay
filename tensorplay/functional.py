@@ -6027,6 +6027,15 @@ def nansum(input, dim=[], keepdim=False, *, out=None):
             return _captured
     return _C.nansum(self=input, dim=dim, keepdim=keepdim)
 
+def _moment_pair(op, input, dim, correction, keepdim):
+    # The plain boolean overload is the first candidate the binding checks;
+    # spelling the call as (dim, unbiased, keepdim) keeps 0/1 corrections off
+    # the keyword ladder, which otherwise formats a mismatch for every
+    # earlier candidate before reaching the correction form.
+    if correction == 0 or correction == 1:
+        return op(input, [] if dim is None else dim, correction == 1, keepdim)
+    return op(input, dim, correction=correction, keepdim=keepdim)
+
 def std_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if _capturing():
         _captured = _capture_call(std_mean, (input, dim, unbiased, keepdim), {"correction": correction})
@@ -6038,7 +6047,7 @@ def std_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
         dim = [dim]
     elif dim is not None:
         dim = list(dim)
-    return _C.std_mean(input, dim, correction=correction, keepdim=keepdim)
+    return _moment_pair(_C.std_mean, input, dim, correction, keepdim)
 
 def var_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if _capturing():
@@ -6051,7 +6060,7 @@ def var_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
         dim = [dim]
     elif dim is not None:
         dim = list(dim)
-    return _C.var_mean(input, dim, correction=correction, keepdim=keepdim)
+    return _moment_pair(_C.var_mean, input, dim, correction, keepdim)
 
 def trace(input, *, out=None):
     if out is not None:
