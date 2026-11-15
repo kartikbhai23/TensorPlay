@@ -312,16 +312,28 @@ def _lower_stax_region(
 
     from tensorplay.graph.experimental.symbolic_shapes import ShapeEnv
 
-    graph = GraphLowering(
-        graph_module,
-        example_inputs,
-        shape_env=ShapeEnv(duck_shape=not is_backward) if dynamic_shapes else None,
-        cpp_wrapper=use_cuda_codegen,
-        aot_mode=training,
-        extern_node_serializer=None,
-        is_inference=not training,
-        is_backward=is_backward,
-    )
+    # A region compiled before is recognised before it is lowered: its key
+    # covers the program, the values it reads from its module, the example
+    # inputs, the settings in force and the toolchain, which is everything the
+    # artifact is decided by.  A symbolic region is not keyed this way, because
+    # its artifact carries a shape guard whose evidence is the lowering itself,
+    # so it is always lowered.
+    cache_key = None
+    artifact = None
+    if not dynamic_shapes:
+        from .graph_artifact_cache import lookup as _lookup_artifact
+        from .graph_artifact_cache import region_key as _artifact_region_key
+
+        cache_key = _artifact_region_key(
+            graph_module,
+            example_inputs,
+            is_inference=not training,
+            is_backward=is_backward,
+            aot_mode=training,
+            use_cuda_codegen=use_cuda_codegen,
+        )
+        artifact = _lookup_artifact(cache_key)
+
     # Everything from here on is being done about this region, and anything
     # asked along the way -- what a kernel reads, how big an extent is, what a
     # buffer is written into -- is answered by the region it belongs to.  So
@@ -336,10 +348,51 @@ def _lower_stax_region(
         _enter_lowered_graph_scope as _enter_lowered_graph_scope,
         _exit_lowered_graph_scope as _exit_lowered_graph_scope,
     )
+    from .graph_lowering import realize_region
+
+    compiled_module = None
+    if artifact is not None:
+        try:
+            # A stored artifact is reached without lowering anything: its
+            # wrapper is the printed program and its constants are the values
+            # that program reads by name.
+            compiled_module = realize_region(
+                artifact.wrapper_code,
+                artifact.constants,
+                artifact.opaque_value_type_classes,
+            )
+        except Exception as exc:  # noqa: BLE001 - a stale entry is a miss
+            # An entry that no longer realizes -- a runtime that changed under
+            # it, a class that no longer imports -- is treated as absent: the
+            # region is lowered again and the entry is replaced.
+            if os.environ.get("TP_STAX_CACHE_DEBUG"):
+                import traceback as _tb
+
+                print(
+                    f"[stax-cache] unreadable artifact: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                _tb.print_exc(limit=20, file=sys.stderr)
+            compiled_module = None
+
+    graph = None
+    if compiled_module is None:
+        graph = GraphLowering(
+            graph_module,
+            example_inputs,
+            shape_env=ShapeEnv(duck_shape=not is_backward) if dynamic_shapes else None,
+            cpp_wrapper=use_cuda_codegen,
+            aot_mode=training,
+            extern_node_serializer=None,
+            is_inference=not training,
+            is_backward=is_backward,
+        )
+        graph.artifact_key = cache_key
 
     # Layouts and timings asked of operators while planning are asked under
     # the conditions the written-out code runs them in.
-    _enter_lowered_graph_scope()
+    if graph is not None:
+        _enter_lowered_graph_scope()
     try:
         # A recorder of what was emitted is current for the whole of the
         # compilation, because both the schedule and the region's own picture
@@ -350,15 +403,16 @@ def _lower_stax_region(
         # mode sits on the dispatch stack, and a stack with no mode makes the
         # generated Python-dispatch kernel pop nothing on entry.
         fake_mode = FakeTensorMode(allow_non_fake_inputs=True)
-        with (
-            set_fake_mode(fake_mode),
-            VirtualMachine.set_fake_mode(fake_mode),
-            FakeTensorMode(allow_non_fake_inputs=True),
-            set_graph(graph),
-            VirtualMachine.set_debug_handler(Debug()),
-        ):
-            graph.run(*example_inputs)
-            compiled_module = graph.compile_to_module()
+        if graph is not None:
+            with (
+                set_fake_mode(fake_mode),
+                VirtualMachine.set_fake_mode(fake_mode),
+                FakeTensorMode(allow_non_fake_inputs=True),
+                set_graph(graph),
+                VirtualMachine.set_debug_handler(Debug()),
+            ):
+                graph.run(*example_inputs)
+                compiled_module = graph.compile_to_module()
     except NotImplementedError as exc:
         # A region whose printed form this compiler does not cover has no built
         # artifact, and an artifact that cannot be entered is worse than none:
@@ -405,7 +459,8 @@ def _lower_stax_region(
         )
         return graph_module.recompile()
     finally:
-        _exit_lowered_graph_scope()
+        if graph is not None:
+            _exit_lowered_graph_scope()
     # The generated entry point takes the region's arguments as one sequence,
     # because that is how the written-out code receives them, and it hands back
     # a sequence of results for the same reason.  Everything that calls a
@@ -419,7 +474,11 @@ def _lower_stax_region(
         from .shape_guards import build_input_guard
 
         input_guard = build_input_guard(graph)
-    single_output = bool(getattr(graph, "single_output", False))
+    single_output = (
+        bool(getattr(graph, "single_output", False))
+        if graph is not None
+        else artifact.single_output
+    )
     # The generated entry point takes the region's arguments as one sequence,
     # in the order the region's placeholders stand.  The artifact is reached
     # through the same signature the region was captured under, so keyword

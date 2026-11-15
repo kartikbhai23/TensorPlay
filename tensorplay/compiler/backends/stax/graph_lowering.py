@@ -29,7 +29,6 @@ from tensorplay.utils import _pytree as pytree
 from . import config, ir
 from .fx_utils import count_flops_fx
 from .graph_artifact_cache import publish as _publish_graph_artifact
-from .graph_artifact_cache import lookup as _lookup_graph_artifact
 from .loops import compute_required_storage_length, contiguous_strides
 from .utils import (
     gather_origins,
@@ -489,6 +488,125 @@ def is_mkldnn_conv(node) -> bool:
     return False
 
 
+def _load_python_wrapper(wrapper_code: ValueWithLineMap, attrs: dict[str, Any]):
+    """Write what was printed, and load it back as something callable.
+
+    The text is written to a file under a key derived from it, and the file is
+    found again by that key, so a program printed twice is loaded once.  Which
+    source line each part of it came from is carried along with it, so that a
+    failure inside the program can be reported against the line of the region
+    that produced it rather than against the line of the program it was
+    printed into.
+    """
+
+    from .codecache import PyCodeCache
+
+    linemap = [(line_no, node.stack_trace) for line_no, node in wrapper_code.line_map]
+    key, path = PyCodeCache.write(wrapper_code.value)
+    return PyCodeCache.load_by_key_path(key, path, linemap=linemap, attrs=attrs)
+
+
+def _build_cpp_wrapper(wrapper_code: CppWrapperCode):
+    """Compile the generated C++ wrapper into a shared object.
+
+    The wrapper text is written to the code cache under a key derived from its
+    content and the compiler flags, built with the same host toolchain used for
+    generated host kernels, and loaded with ctypes.  The returned module
+    aliases graph input tensors and allocates output and intermediate buffers
+    on every call.
+    """
+
+    import ctypes
+    import os
+    import sysconfig
+
+    from .codecache import write
+    from .cpp_builder import CppBuilder, CppOptions, get_cpp_compiler, package_paths
+
+    paths = package_paths()
+    compiler = get_cpp_compiler()
+    if paths is None or not compiler:
+        raise RuntimeError("host C++ runtime is unavailable")
+    include_dir, generated_include_dir, lib_dir = paths
+    generated_ops_dir = os.path.join(
+        os.path.dirname(os.path.dirname(include_dir)),
+        "build",
+        "generated",
+    )
+    python_include = sysconfig.get_paths().get("include")
+    if not python_include:
+        raise RuntimeError("Python headers are unavailable")
+    options = CppOptions(
+        compiler=compiler,
+        include_dirs=[
+            include_dir,
+            generated_include_dir,
+            generated_ops_dir,
+            python_include,
+        ],
+        cflags=[
+            "-std=c++20",
+            "-O3",
+            "-fPIC",
+            "-shared",
+            "-pthread",
+            "-fopenmp",
+        ],
+        library_dirs=[lib_dir],
+        libraries=["p10", "gomp"],
+        ldflags=["-pthread", f"-Wl,-rpath,{lib_dir}"],
+    )
+    key, source_path = write(
+        wrapper_code.value,
+        "cpp",
+        extra=options.command(["<sources>"], "<output>").__repr__(),
+    )
+    output_path = os.path.join(os.path.dirname(source_path), f"{key}.so")
+    builder = CppBuilder(
+        name=os.path.basename(output_path),
+        sources=[source_path],
+        options=options,
+        output_dir=os.path.dirname(source_path),
+    )
+    if not os.path.exists(output_path):
+        builder.build()
+
+    lib = ctypes.CDLL(output_path)
+    call_fn = lib.call
+    call_fn.restype = None
+    call_fn.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_long)]
+    return CppWrapperModule(call_fn, wrapper_code)
+
+
+def realize_region(
+    wrapper_code: object,
+    constants: dict[str, Any] | None = None,
+    opaque_value_type_classes: dict[str, Any] | None = None,
+    torchbind_constants: dict[str, Any] | None = None,
+):
+    """The callable module a printed wrapper stands for.
+
+    A wrapper is built through the route its own kind names: a Python wrapper
+    is written and imported, a C++ wrapper is compiled and loaded.  The values
+    the program reads by name are bound into the module it becomes, which is
+    why they travel with the stored artifact rather than being looked up from
+    the module again.
+    """
+
+    if isinstance(wrapper_code, ValueWithLineMap):
+        return _load_python_wrapper(
+            wrapper_code,
+            {
+                **(constants or {}),
+                **(torchbind_constants or {}),
+                **(opaque_value_type_classes or {}),
+            },
+        )
+    if isinstance(wrapper_code, CppWrapperCode):
+        return _build_cpp_wrapper(wrapper_code)
+    raise NotImplementedError(f"Unrecognized wrapper code type: {type(wrapper_code)}")
+
+
 class GraphLowering(Interpreter):
     def __init__(
         self,
@@ -589,6 +707,10 @@ class GraphLowering(Interpreter):
         # attribute path, and the path means nothing without the module it is
         # relative to.
         self.example_inputs = list(example_inputs)
+        #: The name this region's finished artifact is stored under, when it
+        #: was lowered under one.  A region lowered as part of another region
+        #: has none: what is stored belongs to a region a caller can reach.
+        self.artifact_key: str | None = None
         # The buffers in the order they were made, and the same ones by name.
         # Both are kept because one question asks which order things were made
         # in and the other asks what a name refers to, and either can be asked
@@ -2558,38 +2680,15 @@ class GraphLowering(Interpreter):
         self.scheduler.codegen()
 
     def _compile_to_module_lines(self, wrapper_code):
-        """Write what was printed, and load it back as something callable.
-
-        The text is written to a file under a key derived from it, and the file
-        is found again by that key, so a region printed twice is loaded once.
-        Which source line each part of the wrapper came from is carried along
-        with it, so that a failure inside the wrapper can be reported against
-        the line of this region that produced it rather than against the line of
-        the wrapper it was printed into.
-        """
-
-        from .codecache import PyCodeCache
-
-        linemap = [
-            (line_no, node.stack_trace)
-            for line_no, node in wrapper_code.line_map
-        ]
-        key, path = PyCodeCache.write(wrapper_code.value)
-
-        mod = PyCodeCache.load_by_key_path(
-            key,
-            path,
-            linemap=linemap,
-            attrs={
+        """Write this region's printed program and load it back."""
+        return _load_python_wrapper(
+            wrapper_code,
+            {
                 **self.constants,
                 **self.torchbind_constants,
                 **self.opaque_value_type_classes,
             },
         )
-        self.cache_key = key
-        self.cache_path = path
-        self.cache_linemap = linemap
-        return mod
 
     def compile_to_module(self):
         """This region as something built, named, and callable on its own.
@@ -2599,105 +2698,33 @@ class GraphLowering(Interpreter):
         the same region asked for again is recognised as the same region and
         the built file is reached rather than rebuilt.
 
-        Scheduling and printing a region depends on nothing but the region, so
-        a wrapper stored under this region's name is loaded instead of being
-        worked out again; the builder that runs on it is content-addressed on
-        its own, so a stored wrapper reaches the binary it built the first
-        time.
+        A region lowered under a key is published under that key, so a later
+        process reaches the finished artifact instead of lowering, scheduling,
+        printing and building it again.  The builder that runs on the stored
+        wrapper is content-addressed on its own, so the stored wrapper reaches
+        the binary it built the first time.
         """
-
-        wrapper_code = _lookup_graph_artifact(self)
-        if wrapper_code is not None:
-            if isinstance(wrapper_code, ValueWithLineMap):
-                return self._compile_to_module_lines(wrapper_code)
-            return self._compile_to_cpp_module(wrapper_code)
 
         wrapper_code, _ = self.codegen()
-        _publish_graph_artifact(self, wrapper_code)
-
-        if isinstance(wrapper_code, CppWrapperCode):
-            return self._compile_to_cpp_module(wrapper_code)
-        if isinstance(wrapper_code, ValueWithLineMap):
-            return self._compile_to_module_lines(wrapper_code)
-        if isinstance(wrapper_code, FileBackedGraphModule):
-            return wrapper_code
-        raise NotImplementedError(
-            f"Unrecognized wrapper code type: {type(wrapper_code)}"
+        module = realize_region(
+            wrapper_code,
+            constants=self.constants,
+            opaque_value_type_classes=self.opaque_value_type_classes,
+            torchbind_constants=self.torchbind_constants,
         )
+        _publish_graph_artifact(
+            self.artifact_key,
+            wrapper_code,
+            self.constants,
+            self.opaque_value_type_classes,
+            self.single_output,
+            self.torchbind_constants,
+        )
+        return module
 
     def _compile_to_cpp_module(self, wrapper_code: CppWrapperCode):
-        """Compile the generated C++ wrapper into a shared object.
-
-        The wrapper text is written to the code cache under a key derived from
-        its content and the compiler flags, built with the same host toolchain
-        used for generated host kernels, and loaded with ctypes.  The returned
-        module aliases graph input tensors and allocates output and
-        intermediate buffers on every call.
-        """
-
-        import ctypes
-        import os
-        import sysconfig
-
-        from .codecache import write
-        from .cpp_builder import CppBuilder, CppOptions, get_cpp_compiler, package_paths
-
-        paths = package_paths()
-        compiler = get_cpp_compiler()
-        if paths is None or not compiler:
-            raise RuntimeError("host C++ runtime is unavailable")
-        include_dir, generated_include_dir, lib_dir = paths
-        generated_ops_dir = os.path.join(
-            os.path.dirname(os.path.dirname(include_dir)),
-            "build",
-            "generated",
-        )
-        python_include = sysconfig.get_paths().get("include")
-        if not python_include:
-            raise RuntimeError("Python headers are unavailable")
-        options = CppOptions(
-            compiler=compiler,
-            include_dirs=[
-                include_dir,
-                generated_include_dir,
-                generated_ops_dir,
-                python_include,
-            ],
-            cflags=[
-                "-std=c++20",
-                "-O3",
-                "-fPIC",
-                "-shared",
-                "-pthread",
-                "-fopenmp",
-            ],
-            library_dirs=[lib_dir],
-            libraries=["p10", "gomp"],
-            ldflags=["-pthread", f"-Wl,-rpath,{lib_dir}"],
-        )
-        key, source_path = write(
-            wrapper_code.value,
-            "cpp",
-            extra=options.command(["<sources>"], "<output>").__repr__(),
-        )
-        output_path = os.path.join(os.path.dirname(source_path), f"{key}.so")
-        builder = CppBuilder(
-            name=os.path.basename(output_path),
-            sources=[source_path],
-            options=options,
-            output_dir=os.path.dirname(source_path),
-        )
-        if not os.path.exists(output_path):
-            builder.build()
-
-        lib = ctypes.CDLL(output_path)
-        call_fn = lib.call
-        call_fn.restype = None
-        call_fn.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_long)]
-
-        self.cache_key = key
-        self.cache_path = source_path
-        return CppWrapperModule(call_fn, wrapper_code)
+        """Compile this region's C++ wrapper into a shared object."""
+        return _build_cpp_wrapper(wrapper_code)
 
     def finalize(self) -> None:
         """Settle every buffer's layout, now that the region is all known.
