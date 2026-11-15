@@ -134,9 +134,27 @@ inline T sum(const T* x, int64_t begin, int64_t end) {
     using Vec = Vectorized<T>;
     constexpr int64_t W = static_cast<int64_t>(Vec::size());
     const int64_t n = end - begin;
-    if (n < 16 * W) {
+    if (n < 4 * W) {
         T s = T(0);
         for (int64_t i = begin; i < end; ++i) s += x[i];
+        return s;
+    }
+    // A range of a few vectors is read through four accumulators: the wider
+    // ladder below would pay for sixteen lanes' worth of setup on a span it
+    // cannot fill, and a scalar walk of a few dozen elements is slower still.
+    if (n < 16 * W) {
+        Vec b0(T(0)), b1(T(0)), b2(T(0)), b3(T(0));
+        int64_t i = begin;
+        for (; i + 4 * W <= end; i += 4 * W) {
+            b0 = b0 + Vec::loadu(x + i);
+            b1 = b1 + Vec::loadu(x + i + W);
+            b2 = b2 + Vec::loadu(x + i + 2 * W);
+            b3 = b3 + Vec::loadu(x + i + 3 * W);
+        }
+        Vec acc = (b0 + b1) + (b2 + b3);
+        for (; i + W <= end; i += W) acc = acc + Vec::loadu(x + i);
+        T s = acc.reduce_add();
+        for (; i < end; ++i) s += x[i];
         return s;
     }
     // Sixteen accumulators keep the serial chain of any one of them at a

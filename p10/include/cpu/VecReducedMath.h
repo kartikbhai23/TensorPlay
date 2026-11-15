@@ -209,6 +209,16 @@ inline void store_bf16_16(uint16_t* p, __m256 lo, __m256 hi) {
         _mm256_permute4x64_epi64(packed, 0xD8));
 }
 
+// One answer crossed to the half layout by the hardware conversion, for a
+// walk whose step answers a single element.
+__attribute__((target("avx2,f16c"), noinline))
+inline uint16_t narrow_one_hw(float value) {
+    return static_cast<uint16_t>(_mm_extract_epi16(
+        _mm_cvtps_ph(_mm_set_ss(value),
+                     _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC),
+        0));
+}
+
 // Sixteen answers landed by one store, given in the two-answer form that the
 // widening above hands back.  The packing takes four words from each register
 // per half, and the two registers hold the leading and the trailing four of
@@ -239,6 +249,11 @@ inline float widen_one(uint16_t bits) {
 inline uint16_t narrow_one(float value) {
     return tensorplay::Half(value).x;
 }
+
+#if !defined(TP_VECREDUCED_X86)
+// A machine without the hardware conversion keeps the software crossing.
+inline uint16_t narrow_one_hw(float value) { return narrow_one(value); }
+#endif
 
 inline float widen_bf16_one(uint16_t bits) {
     return tensorplay::detail::bfloat16_to_float_bits(bits);

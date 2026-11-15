@@ -374,6 +374,218 @@ static bool try_normsq_real(const void* xv, int64_t n, DType dt, double* out) {
     return normsq_reduced(xv, n, dt, nslots, out);
 }
 
+// The plain sum of a reduced-width stream, in single precision like the
+// squares above: one row of twenty-four lanes folded through four chains.
+template <bool BFloat>
+__attribute__((target("avx2,fma,f16c"), noinline))
+float sum_reduced_chunk(const uint16_t* x, int64_t b, int64_t e) {
+    __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
+    __m256 a2 = _mm256_setzero_ps(), a3 = _mm256_setzero_ps();
+    int64_t i = b;
+    for (; i + 32 <= e; i += 32) {
+        a0 = _mm256_add_ps(a0, BFloat
+            ? tensorplay::cpu::vecreduced::widen_bf16_8(x + i)
+            : tensorplay::cpu::vecreduced::widen8(x + i));
+        a1 = _mm256_add_ps(a1, BFloat
+            ? tensorplay::cpu::vecreduced::widen_bf16_8(x + i + 8)
+            : tensorplay::cpu::vecreduced::widen8(x + i + 8));
+        a2 = _mm256_add_ps(a2, BFloat
+            ? tensorplay::cpu::vecreduced::widen_bf16_8(x + i + 16)
+            : tensorplay::cpu::vecreduced::widen8(x + i + 16));
+        a3 = _mm256_add_ps(a3, BFloat
+            ? tensorplay::cpu::vecreduced::widen_bf16_8(x + i + 24)
+            : tensorplay::cpu::vecreduced::widen8(x + i + 24));
+    }
+    __m256 acc = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+    for (; i + 8 <= e; i += 8) {
+        acc = _mm256_add_ps(acc, BFloat
+            ? tensorplay::cpu::vecreduced::widen_bf16_8(x + i)
+            : tensorplay::cpu::vecreduced::widen8(x + i));
+    }
+    alignas(32) float lanes[8];
+    _mm256_store_ps(lanes, acc);
+    float s = ((lanes[0] + lanes[1]) + (lanes[2] + lanes[3])) +
+              ((lanes[4] + lanes[5]) + (lanes[6] + lanes[7]));
+    for (; i < e; ++i) {
+        s += BFloat ? tensorplay::cpu::vecreduced::widen_bf16_one(x[i])
+                    : tensorplay::cpu::vecreduced::widen_one(x[i]);
+    }
+    return s;
+}
+
+// A packed row of a reduced width summed through a range of columns, folded
+// into the column totals a caller keeps.
+template <bool BFloat>
+__attribute__((target("avx2,fma,f16c"), always_inline))
+inline __m256 widen_row(const uint16_t* p) {
+    if constexpr (BFloat) return tensorplay::cpu::vecreduced::widen_bf16_8(p);
+    return tensorplay::cpu::vecreduced::widen8(p);
+}
+
+template <bool BFloat>
+__attribute__((target("avx2,fma,f16c"), noinline))
+void accumulate_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
+                             int64_t cols, float* acc) {
+    // Four rows land in one column total before that total is read back, so
+    // the column buffer is touched a quarter as often.
+    int64_t r = begin;
+    const int64_t r4 = begin + (end - begin) / 4 * 4;
+    for (; r < r4; r += 4) {
+        const uint16_t* r0 = x + r * cols;
+        const uint16_t* r1 = r0 + cols;
+        const uint16_t* r2 = r1 + cols;
+        const uint16_t* r3 = r2 + cols;
+        int64_t c = 0;
+        for (; c + 8 <= cols; c += 8) {
+            const __m256 sum = _mm256_add_ps(
+                _mm256_add_ps(widen_row<BFloat>(r0 + c), widen_row<BFloat>(r1 + c)),
+                _mm256_add_ps(widen_row<BFloat>(r2 + c), widen_row<BFloat>(r3 + c)));
+            _mm256_storeu_ps(acc + c, _mm256_add_ps(_mm256_loadu_ps(acc + c), sum));
+        }
+        for (; c < cols; ++c) {
+            const auto one = [](const uint16_t* p) {
+                return BFloat ? tensorplay::cpu::vecreduced::widen_bf16_one(*p)
+                              : tensorplay::cpu::vecreduced::widen_one(*p);
+            };
+            acc[c] += ((one(r0 + c) + one(r1 + c)) + (one(r2 + c) + one(r3 + c)));
+        }
+    }
+    for (; r < end; ++r) {
+        const uint16_t* rp = x + r * cols;
+        int64_t c = 0;
+        for (; c + 8 <= cols; c += 8) {
+            _mm256_storeu_ps(acc + c,
+                             _mm256_add_ps(_mm256_loadu_ps(acc + c),
+                                           widen_row<BFloat>(rp + c)));
+        }
+        for (; c < cols; ++c) {
+            acc[c] += BFloat ? tensorplay::cpu::vecreduced::widen_bf16_one(rp[c])
+                             : tensorplay::cpu::vecreduced::widen_one(rp[c]);
+        }
+    }
+}
+
+// The column totals of every worker, merged in the order the workers were
+// numbered and crossed to the layout of the answer a vector at a time.
+template <bool BFloat>
+__attribute__((target("avx2,fma,f16c"), noinline))
+void store_column_totals(const float* const* partials, int64_t nthreads,
+                         int64_t cols, uint16_t* out) {
+    int64_t c = 0;
+    for (; c + 8 <= cols; c += 8) {
+        __m256 s = _mm256_setzero_ps();
+        for (int64_t t = 0; t < nthreads; ++t) {
+            s = _mm256_add_ps(s, _mm256_loadu_ps(partials[t] + c));
+        }
+        if constexpr (BFloat) {
+            tensorplay::cpu::vecreduced::store_bf16_8(out + c, s);
+        } else {
+            tensorplay::cpu::vecreduced::lay_f16_8<false>(out + c, s);
+        }
+    }
+    for (; c < cols; ++c) {
+        float s = 0.f;
+        for (int64_t t = 0; t < nthreads; ++t) s += partials[t][c];
+        if constexpr (BFloat) {
+            out[c] = tensorplay::cpu::vecreduced::narrow_bf16_one(s);
+        } else {
+            out[c] = tensorplay::cpu::vecreduced::narrow_one_hw(s);
+        }
+    }
+}
+
+inline bool reduced_sum_takes(DType dt) {
+    if (dt == DType::Float16) {
+        return tensorplay::cpu::vecreduced::f16c_available();
+    }
+    return dt == DType::BFloat16;
+}
+
+// The last axis of a packed tensor, one row of lanes at a time.
+inline std::optional<Tensor> try_sum_lastdim_reduced(
+        const Tensor& input, const std::vector<int64_t>& out_shape) {
+    if (!input.is_contiguous() || !reduced_sum_takes(input.dtype())) {
+        return std::nullopt;
+    }
+    const int64_t d_size = input.size(input.dim() - 1);
+    if (d_size < 8 || input.numel() == 0) return std::nullopt;
+    const int64_t rows = input.numel() / d_size;
+    const bool half_width = input.dtype() == DType::Float16;
+    const uint16_t* in = half_width
+        ? reinterpret_cast<const uint16_t*>(input.data_ptr<tensorplay::Half>())
+        : reinterpret_cast<const uint16_t*>(
+              input.data_ptr<tensorplay::BFloat16>());
+    Tensor out = Tensor::empty(out_shape, input.dtype(), input.device());
+    uint16_t* outp = half_width
+        ? reinterpret_cast<uint16_t*>(out.data_ptr<tensorplay::Half>())
+        : reinterpret_cast<uint16_t*>(out.data_ptr<tensorplay::BFloat16>());
+    const int64_t row_grain =
+        std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(d_size, 1));
+    parallel_for(0, rows, row_grain, [&](int64_t b, int64_t e) {
+        for (int64_t r = b; r < e; ++r) {
+            const uint16_t* row = in + r * d_size;
+            if (half_width) {
+                outp[r] = tensorplay::cpu::vecreduced::narrow_one_hw(
+                    sum_reduced_chunk<false>(row, 0, d_size));
+            } else {
+                outp[r] = tensorplay::cpu::vecreduced::narrow_bf16_one(
+                    sum_reduced_chunk<true>(row, 0, d_size));
+            }
+        }
+    });
+    return out;
+}
+
+// The leading axis of a packed tensor: whole rows land in per-worker column
+// totals, which are then merged and narrowed once.
+inline std::optional<Tensor> try_sum_leading_reduced(
+        const Tensor& input, const std::vector<int64_t>& out_shape) {
+    if (!input.is_contiguous() || input.dim() < 1 ||
+        !reduced_sum_takes(input.dtype())) {
+        return std::nullopt;
+    }
+    const int64_t rows = input.size(0);
+    const int64_t cols = rows > 0 ? input.numel() / rows : 0;
+    // A narrow column count leaves too little work between the column totals
+    // being read back and written again; the four-rows-in-one-register walk
+    // keeps the totals in flight instead and answers that case faster.
+    if (rows == 0 || cols < 128) return std::nullopt;
+    const bool half_width = input.dtype() == DType::Float16;
+    const uint16_t* in = half_width
+        ? reinterpret_cast<const uint16_t*>(input.data_ptr<tensorplay::Half>())
+        : reinterpret_cast<const uint16_t*>(
+              input.data_ptr<tensorplay::BFloat16>());
+    const int64_t nthreads = std::max<int64_t>(1, get_num_threads());
+    std::vector<std::vector<float>> partials(
+        static_cast<size_t>(nthreads), std::vector<float>(static_cast<size_t>(cols), 0.f));
+    // A task takes at least four rows, so the four-row fold below engages
+    // even when a row already fills a task's worth of work.
+    const int64_t row_grain = std::max<int64_t>(
+        4, GRAIN_SIZE / std::max<int64_t>(cols, 1));
+    parallel_for(0, rows, row_grain, [&](int64_t b, int64_t e) {
+        float* acc = partials[static_cast<size_t>(get_thread_num())].data();
+        if (half_width) {
+            accumulate_rows_reduced<false>(in, b, e, cols, acc);
+        } else {
+            accumulate_rows_reduced<true>(in, b, e, cols, acc);
+        }
+    });
+    Tensor out = Tensor::empty(out_shape, input.dtype(), input.device());
+    uint16_t* outp = half_width
+        ? reinterpret_cast<uint16_t*>(out.data_ptr<tensorplay::Half>())
+        : reinterpret_cast<uint16_t*>(out.data_ptr<tensorplay::BFloat16>());
+    std::vector<const float*> columns(static_cast<size_t>(nthreads), nullptr);
+    for (int64_t t = 0; t < nthreads; ++t) {
+        columns[static_cast<size_t>(t)] = partials[static_cast<size_t>(t)].data();
+    }
+    if (half_width) {
+        store_column_totals<false>(columns.data(), nthreads, cols, outp);
+    } else {
+        store_column_totals<true>(columns.data(), nthreads, cols, outp);
+    }
+    return out;
+}
+
 }  // namespace
 
 template <typename scalar_t, typename acc_t, typename out_t>
@@ -563,7 +775,7 @@ Tensor norm_dim_kernel_impl(const Tensor& self,
                     out.data_ptr<tensorplay::Half>());
                 parallel_for(0, outer, row_grain, [&](int64_t b, int64_t e) {
                     for (int64_t r = b; r < e; ++r)
-                        op[r] = tensorplay::cpu::vecreduced::narrow_one(
+                        op[r] = tensorplay::cpu::vecreduced::narrow_one_hw(
                             std::sqrt(sumsq_f16_chunk(in + r * row, 0, row)));
                 });
                 return out;
@@ -3003,6 +3215,24 @@ Tensor sum_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims,
         }
         if (dims.size() == 1) {
             const int64_t dim = dims[0] < 0 ? dims[0] + ndim : dims[0];
+#if defined(__x86_64__)
+            // A reduced width folds the last axis a row of lanes at a time,
+            // and the leading axis a whole row of lanes at a time, without a
+            // converted copy of the input.
+            if (input.dtype() == out_dtype) {
+                if (dim == ndim - 1) {
+                    if (std::optional<Tensor> folded =
+                            try_sum_lastdim_reduced(input, out_shape)) {
+                        return std::move(*folded);
+                    }
+                } else if (dim == 0) {
+                    if (std::optional<Tensor> folded =
+                            try_sum_leading_reduced(input, out_shape)) {
+                        return std::move(*folded);
+                    }
+                }
+            }
+#endif
             // try_sum_dim_real is x86-only like try_sum_leading_rows above.
 #if defined(__x86_64__)
             if (input.dtype() == out_dtype &&
