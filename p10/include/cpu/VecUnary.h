@@ -2240,6 +2240,15 @@ static void half_chunk_avx2(VOp op, VParams prm, const uint16_t* src, uint16_t* 
     int64_t n = e - b;
     int64_t i = 0;
     switch (op) {
+        // Cheap maps carry their own case so the dispatch stays outside the
+        // walk: a generic per-step call would put the whole op switch, with
+        // its register-pressure spill, inside the loop body.
+        case VOp::Reciprocal:
+            TP_HALF_CHUNK_8(_mm256_div_ps(_mm256_set1_ps(1.0f), x))
+            break;
+        case VOp::Exp2:
+            TP_HALF_CHUNK_8(tensorplay::tpsleef::exp2(x))
+            break;
         case VOp::Sinc:
             TP_HALF_CHUNK_8(v_sinc_f32x8(x))
             break;
@@ -2891,61 +2900,82 @@ static void f64_chunk_avx512(VOp op, VParams prm, const double* src, double* dst
 
 // Same one-branch-per-chunk split as the Half loop: only the ops that read
 // runtime parameters need it, the rest keep the generic body.
-// Four vectors in flight, for the reason given at the half-precision walk:
-// the widen, the arithmetic and the narrow form one long chain per vector, so
-// a single stream idles the ports between steps.
-#define TP_BF16_STEP(EXPR, OFF)                                           \
+// Two vectors in flight per step: the widen, the arithmetic and the narrow
+// form one long chain per vector, and one 32-byte store covers both.
+//
+// The round-to-nearest-even narrowing of one eight-lane vector.  A NaN that
+// reaches the rounding add can carry a mantissa that overflows into the
+// exponent (0x7FFFFFFF + the bias lands on 0x8000), so unordered lanes are
+// pinned to a canonical NaN instead.  Every other lane keeps the plain
+// +(bias + lsb) >> 16 form, which is exactly the scalar narrowing rule.
+__attribute__((target("avx2,fma")))
+inline __m256i bf16_round_avx2(__m256 y) {
+    __m256i u = _mm256_castps_si256(y);
+    __m256i rounding = _mm256_add_epi32(
+        _mm256_set1_epi32(0x7FFFu),
+        _mm256_srli_epi32(_mm256_and_si256(u, _mm256_set1_epi32(0x10000u)), 16));
+    __m256i r = _mm256_srli_epi32(_mm256_add_epi32(u, rounding), 16);
+    return _mm256_blendv_epi8(r, _mm256_set1_epi32(0x7FC0),
+                              _mm256_castps_si256(_mm256_cmp_ps(y, y, _CMP_UNORD_Q)));
+}
+
+// Two rounded vectors become one 32-byte store: PACKUS keeps the low half of
+// every 32-bit lane, and the 64-bit-lane shuffle puts the two halves in lane
+// order.  The rounding result always fits an unsigned 16-bit lane, so the
+// signed saturation of PACKUS never engages.
+__attribute__((target("avx2,fma")))
+inline void bf16_store16_avx2(uint16_t* d, __m256i r0, __m256i r1) {
+    __m256i packed = _mm256_packus_epi32(r0, r1);
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(d),
+                        _mm256_permute4x64_epi64(packed, 0xD8));
+}
+
+__attribute__((target("avx2,fma")))
+inline void bf16_store8_avx2(uint16_t* d, __m256i r) {
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(d),
+                     _mm_packus_epi32(_mm256_castsi256_si128(r),
+                                      _mm256_extracti128_si256(r, 1)));
+}
+
+#define TP_BF16_STEP(EXPR, OFF, OUT)                                      \
     {                                                                     \
         __m256 x = _mm256_castsi256_ps(_mm256_slli_epi32(                 \
             _mm256_cvtepu16_epi32(_mm_loadu_si128(                        \
                 reinterpret_cast<const __m128i*>(src + (OFF)))),          \
             16));                                                         \
         __m256 y = (EXPR);                                                \
-        __m256i u = _mm256_castps_si256(y);                               \
-        __m256i rounding = _mm256_add_epi32(                              \
-            _mm256_set1_epi32(0x7FFFu),                                   \
-            _mm256_srli_epi32(                                            \
-                _mm256_and_si256(u, _mm256_set1_epi32(0x10000u)), 16));   \
-        __m256i r = _mm256_srli_epi32(_mm256_add_epi32(u, rounding), 16); \
-        r = _mm256_blendv_epi8(r, _mm256_set1_epi32(0x7FC0),            \
-                              _mm256_castps_si256(_mm256_cmp_ps(          \
-                                  y, y, _CMP_UNORD_Q)));                  \
-        __m256i p = _mm256_shuffle_epi8(r, pack_pick);                    \
-        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + (OFF)),         \
-                         _mm_unpacklo_epi64(_mm256_castsi256_si128(p),    \
-                                            _mm256_extracti128_si256(p, 1))); \
+        OUT = bf16_round_avx2(y);                                         \
     }
 
 #define TP_BF16_CHUNK_8(EXPR)                                             \
     {                                                                     \
-        for (; i + 32 <= n; i += 32) {                                    \
-            TP_BF16_STEP(EXPR, i)                                         \
-            TP_BF16_STEP(EXPR, i + 8)                                     \
-            TP_BF16_STEP(EXPR, i + 16)                                    \
-            TP_BF16_STEP(EXPR, i + 24)                                    \
+        for (; i + 16 <= n; i += 16) {                                    \
+            __m256i r0, r1;                                               \
+            TP_BF16_STEP(EXPR, i, r0)                                     \
+            TP_BF16_STEP(EXPR, i + 8, r1)                                 \
+            bf16_store16_avx2(dst + i, r0, r1);                           \
         }                                                                 \
         for (; i + 8 <= n; i += 8) {                                      \
-            TP_BF16_STEP(EXPR, i)                                         \
+            __m256i r0;                                                   \
+            TP_BF16_STEP(EXPR, i, r0)                                     \
+            bf16_store8_avx2(dst + i, r0);                                \
         }                                                                 \
     }
 
 __attribute__((target("avx2,fma"), noinline))
 static void bf16_chunk_avx2(VOp op, VParams prm, const uint16_t* src, uint16_t* dst, int64_t b, int64_t e) {
-    const __m256i shift = _mm256_set1_epi32(16);
-    (void)shift;
-    // Narrowing picks the low half of every 32-bit result.  Byte indices are
-    // lane-local, so each 128-bit lane contributes four bf16 values and the
-    // -1 selectors zero the rest of the lane; the two halves are then
-    // concatenated.  Keeping this in registers matters: a stack round trip
-    // per vector costs more than the widen/compute pair it follows.
-    const __m256i pack_pick = _mm256_setr_epi8(
-        0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1,
-        0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1);
     src += b;
     dst += b;
     int64_t n = e - b;
     int64_t i = 0;
     switch (op) {
+        // Same reason as the Half walk: keep the op switch out of the body.
+        case VOp::Reciprocal:
+            TP_BF16_CHUNK_8(_mm256_div_ps(_mm256_set1_ps(1.0f), x))
+            break;
+        case VOp::Exp2:
+            TP_BF16_CHUNK_8(tensorplay::tpsleef::exp2(x))
+            break;
         case VOp::Sinc:
             TP_BF16_CHUNK_8(v_sinc_f32x8(x))
             break;
@@ -3639,6 +3669,28 @@ inline bool vec_ready() {
 #else
     return false;
 #endif
+}
+
+// Ops whose reduced-width walk is written out as a case (rather than the
+// generic fallback) in the Half and BFloat16 chunk kernels.  A caller deciding
+// between that walk and an evaluate-at-Float32 pass asks here, so the answer
+// cannot drift from the kernels below.
+inline bool reduced_chunk_ready(VOp op) {
+    switch (op) {
+        case VOp::Reciprocal:
+        case VOp::Exp2:
+        case VOp::Sinc:
+        case VOp::Hardtanh:
+        case VOp::LeakyRelu:
+        case VOp::Softshrink:
+        case VOp::Threshold:
+        case VOp::Hardshrink:
+        case VOp::Elu:
+        case VOp::Softplus:
+            return true;
+        default:
+            return false;
+    }
 }
 
 // fp16 path: widen to f32 (FMA/F16C), run the f32 kernels, narrow back with

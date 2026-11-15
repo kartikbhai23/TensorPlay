@@ -851,7 +851,8 @@ Tensor reciprocal_cpu(const Tensor& self) {
                                  vecunary::VOp::Reciprocal);
 }
 Tensor& reciprocal_out_cpu(const Tensor& self, Tensor& out) {
-    if ((self.dtype() == DType::Float32 || self.dtype() == DType::Float64) &&
+    if ((self.dtype() == DType::Float32 || self.dtype() == DType::Float64 ||
+         self.dtype() == DType::Float16 || self.dtype() == DType::BFloat16) &&
         destination_takes_flat(out, self.device(), self.dtype(),
                                static_cast<std::vector<int64_t>>(self.shape()),
                                self)) {
@@ -881,7 +882,8 @@ Tensor exp2_cpu(const Tensor& self) {
     return float_math_vec_kernel(self, Exp2Scalar{}, "exp2", vecunary::VOp::Exp2);
 }
 Tensor& exp2_out_cpu(const Tensor& self, Tensor& out) {
-    if ((self.dtype() == DType::Float32 || self.dtype() == DType::Float64) &&
+    if ((self.dtype() == DType::Float32 || self.dtype() == DType::Float64 ||
+         self.dtype() == DType::Float16 || self.dtype() == DType::BFloat16) &&
         destination_takes_flat(out, self.device(), self.dtype(),
                                static_cast<std::vector<int64_t>>(self.shape()),
                                self)) {
@@ -895,7 +897,8 @@ Tensor sinc_cpu(const Tensor& self) {
     return float_math_vec_kernel(self, SincScalar{}, "sinc", vecunary::VOp::Sinc);
 }
 Tensor& sinc_out_cpu(const Tensor& self, Tensor& out) {
-    if ((self.dtype() == DType::Float32 || self.dtype() == DType::Float64) &&
+    if ((self.dtype() == DType::Float32 || self.dtype() == DType::Float64 ||
+         self.dtype() == DType::Float16 || self.dtype() == DType::BFloat16) &&
         destination_takes_flat(out, self.device(), self.dtype(),
                                static_cast<std::vector<int64_t>>(self.shape()),
                                self)) {
@@ -1847,6 +1850,13 @@ Tensor softshrink_cpu(const Tensor& self, const Scalar& lambd) {
 Tensor& softshrink_out_cpu(const Tensor& self, const Scalar& lambd, Tensor& out) {
     check_shrink_dtype(self, "softshrink");
     double l = lambd.toDouble();
+    if (destination_takes_flat(out, self.device(), self.dtype(),
+                               static_cast<std::vector<int64_t>>(self.shape()), self)) {
+        float_math_vec_kernel(self, SoftshrinkBand{l}, "softshrink",
+                              vecunary::VOp::Softshrink,
+                              vecunary::VParams{l, 0.0, 0.0}, &out);
+        return out;
+    }
     return dtype_unary_out_kernel(
         self, out, [l](const Tensor& v) { return softshrink_cpu(v, Scalar(l)); },
         SoftshrinkBand{l}, "softshrink");
@@ -1968,7 +1978,8 @@ struct ThresholdAt {
 Tensor threshold_cpu(const Tensor& self, const Scalar& threshold, const Scalar& value) {
     if (isQuantizedType(self.dtype())) return quantized::activation(self, 6, threshold.toDouble(), value.toDouble());
 
-    if (self.dtype() == DType::Float32 || self.dtype() == DType::Float64) {
+    if (self.dtype() == DType::Float32 || self.dtype() == DType::Float64 ||
+        self.dtype() == DType::Float16 || self.dtype() == DType::BFloat16) {
         return float_math_vec_kernel(self, ThresholdAt{threshold.toDouble(), value.toDouble()},
                                      "threshold", vecunary::VOp::Threshold,
                                      vecunary::VParams{threshold.toDouble(), value.toDouble(), 0.0});
@@ -1984,7 +1995,8 @@ Tensor& threshold_out_cpu(const Tensor& self, const Scalar& threshold, const Sca
     const DType in = self.dtype();
     // A destination that fits the flat map takes the vector walk itself, which
     // also covers the in-place call where the destination is the operand.
-    if ((in == DType::Float32 || in == DType::Float64) &&
+    if ((in == DType::Float32 || in == DType::Float64 ||
+         in == DType::Float16 || in == DType::BFloat16) &&
         destination_takes_flat(out, self.device(), in,
                                static_cast<std::vector<int64_t>>(self.shape()), self)) {
         float_math_vec_kernel(self, ThresholdAt{t, val}, "threshold", vecunary::VOp::Threshold,
