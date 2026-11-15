@@ -1,5 +1,47 @@
 # tensorplay.compiler
 
+## Shape policy
+
+A compile call chooses how tensor extents are treated:
+
+* With no shape argument, capture fixes the example sizes.  If a later call
+  misses only because a size changed (and nothing else in the guard set did),
+  the frontend clears the concrete specialization and captures the region
+  again with every extent that is not 0 or 1 symbolic, so one artifact then
+  serves the sizes already seen and the ones that follow.  This upgrade needs
+  a backend that declares `supports_symbolic_shapes` and is controlled by
+  `tensorplay.compiler.config.automatic_dynamic_shapes`.
+* `dynamic=True` captures extents symbolically from the first call.  It keeps
+  the rank in the specialization key and lets the backend accept the shape
+  range.
+* `dynamic_shapes` names the axes that may vary, per argument:
+
+  ```python
+  tensorplay.compile(
+      fn,
+      dynamic_shapes={"x": {0: tensorplay.export.Dim("batch")}},
+  )
+  ```
+
+  Unnamed axes keep the example size and are checked before a cached region
+  runs, so changing one creates a new specialization instead of silently
+  reusing a region sized for the example.  A dimension may carry `min`/`max`
+  bounds; an example outside them is rejected before capture.  The
+  specification needs a backend that declares `supports_symbolic_shapes`.
+
+`tensorplay.compiler.mark_static(tensor, dim=None)` pins a tensor's extents (or
+one axis) to the example sizes.  Called before `compile`, it removes those axes
+from the shape policy; called inside the captured function, it makes reads of
+that extent answer with the example size and keeps a condition on it, so a
+changed size recompiles rather than reusing a region that assumed the old one.
+
+`tensorplay.compiler.disallow_in_graph(fn)` declares that a callable must not
+be absorbed into a captured region.  A capture that reaches it raises
+`GraphCaptureError` instead of recording the call: the region is one graph, so
+there is no partial capture to resume after the call, and recording a call
+whose effect the graph cannot carry would repeat that effect once per compiled
+call.
+
 ## Autograd limitations
 
 In v1.1.0, regions compiled with STAX or an AOT autograd backend support

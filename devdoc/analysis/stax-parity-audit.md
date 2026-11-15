@@ -26,7 +26,7 @@
 | P1 | `record_function` span 不进图，因此 post-grad 的 span 删除规则没有作用对象 | 能力缺失，已核实 | 已对齐（§4.6） |
 | P1 | 切分与合并互为逆运算时两个算子都不必留下，此前只有点名 `split_cat` 表才处理 | 能力缺失，已核实 | 已补（§4.2） |
 | P1 | 前端无字节码帧求值/图中断/恢复，Python 副作用只发生一次 | 架构差异，已复现 | 未修（架构选择） |
-| P1 | `dynamic_shapes` 只接受 bool，无自动 dynamic、无 `Dim`、`mark_static` 为空操作 | 能力缺失，已核实 | 未修 |
+| P1 | `dynamic_shapes` 只接受 bool，无自动 dynamic、无 `Dim`、`mark_static` 为空操作 | 能力缺失，已核实 | 已修复（§3.2、§13） |
 | P1 | 无 AOTInductor 部署包、无 cudagraph trees、无 oneDNN/MKLDNN/quantized/freezing/CPU GEMM 模板 | 子系统缺失，静态确认 | 未修 |
 | P1 | 设备只注册 cpu/cuda；MPS/XPU/MTIA/ROCm 无代码生成 | 设备覆盖缺口，静态确认 | 未修 |
 | P1 | 整图 cache、分布式 overlap、bucketing 未接线 | 运行时能力缺口，静态确认 | 未修 |
@@ -36,7 +36,7 @@
 `pytest test/stax` 实测（修复前）：**1568 passed, 2 failed, 1 skipped**（1571 项，约 2 分 4 秒）。
 其中一个失败是确定性的 P0 正确性 bug；另一个是容差/顺序相关的偶发（单独运行通过）。
 
-`pytest test/stax -q` 实测（本轮修复后）：**1591 passed, 1 skipped**（1 分 04 秒），
+`pytest test/stax -q` 实测（本轮修复后）：**1607 passed, 1 skipped**（1 分 03 秒），
 `pytest test/fx test/test_public_surface.py`：**247 passed**，`pytest test/higher_order_ops test/export`：**126 passed**。
 原先那两个失败都已不再是失败：确定性那个随 §2.1 修好；偶发那个是 bf16 容差写死 `2e-4` 造成的，
 现在按 dtype 的机器精度取容差。
@@ -220,10 +220,21 @@ for _ in range(3):
 
 ### 3.2 动态形状 API 不完整
 
-- `tp.compile(dynamic_shapes=...)` 只接受 bool（`compiler/__init__.py:1074-1082`，`_core/api.py:340-346`）；`Dim` / `Dim.AUTO` / 范围约束只存在于 `tensorplay.export`，未接到 `compile`。
-- 无自动 dynamic：实测 12 个不同 shape 调用 → 12 次后端编译；上游会在若干次重编译后自动转为符号。
-- `mark_static` 直接返回输入（`compiler/__init__.py:708-719`）；`disallow_in_graph` 不做任何登记（`:694-706`）。
-- 无 `mark_dynamic` / `constrain_as_size` / `mark_unbacked` / `explain` 对应物。
+- ~~`tp.compile(dynamic_shapes=...)` 只接受 bool；`Dim` / 范围约束只存在于 `tensorplay.export`，未接到 `compile`。~~
+  已修复：`dynamic_shapes` 接受按参数名的映射或按位置的序列，`Dim` / `Dim.AUTO` /
+  `Dim.STATIC` / 静态 int 都生效；具名轴成符号，未具名轴保留样例尺寸并在运行前校验；
+  `min`/`max` 与静态尺寸在捕获前对样例校验；需要声明 `supports_symbolic_shapes`
+  的后端，否则在 `compile` 时明确报错。三维入口（映射、位置、装饰器）都有测试。
+- ~~无自动 dynamic：12 个不同 shape 调用 → 12 次后端编译。~~
+  已修复：`config.automatic_dynamic_shapes`（默认开）在“仅张量尺寸变化导致守卫失配”
+  时清空具体特化并以符号重捕一次；数据分支、梯度态、模块态、dtype/device/layout
+  变化仍走普通特化。实测 3 个不同 size → 2 次后端编译（先具体、再符号），后续复用。
+- ~~`mark_static` 直接返回输入；`disallow_in_graph` 不做任何登记。~~
+  已修复：`mark_static` 在编译前把轴从形状策略中移除，在捕获中钉住样例尺寸并保留
+  等式守卫；`disallow_in_graph` 登记被禁目标，捕获适配器和 `Tracer.create_proxy`
+  两条路径都会抛 `GraphCaptureError`，不再静默吸收。
+- 仍无 `mark_dynamic` / `constrain_as_size` / `mark_unbacked` / `explain` 对应物；
+  单区域捕获模型没有图中断，“禁止吸收”只能整段拒绝，不能把前后两段拆成两个图。
 
 ### 3.3 守卫覆盖面
 
@@ -506,7 +517,8 @@ pytest test/stax -q
 
 ### P1（能力对齐）
 
-1. 自动 dynamic + `dynamic_shapes=Dim` + `mark_static` / `disallow_in_graph` 真正生效。
+1. ~~自动 dynamic + `dynamic_shapes=Dim` + `mark_static` / `disallow_in_graph` 真正生效。~~
+   已完成（§3.2、§13）：自动 dynamic 只在“仅尺寸变化”的守卫失配上触发；`dynamic_shapes` 支持映射/位置/装饰器三种写法与 `Dim` 约束；`mark_static` 在编译前与捕获中都生效；`disallow_in_graph` 整段拒绝而不再静默吸收。
 2. ~~补 §4.3 里仍缺的 pass（`reorder_for_locality`、`remove_assert_ops`、`split_cat` 接线等）。~~ 已完成（`remove_profiler_ops` 除外，本仓库无对应算子）。
 3. CPU GEMM 模板 + micro-gemm 变体；oneDNN/MKLDNN；quantized lowering。
 4. AOTInductor 部署包；cudagraph trees。
@@ -634,6 +646,9 @@ pytest test/stax -q -p no:randomly
 | `aa8a674d` `test(compiler)` | 新增 `test/stax/test_stax_post_grad_passes.py`（7 项） |
 | `4c81959b` `feat(compiler)` | profiler span 写进图（两种记录都认）并在 custom pre pass 之后删除；前端开关默认关闭；新增 `test/stax/test_stax_profiler_spans.py`（6 项，见 §4.6） |
 | `dcf2b1d3` `feat(compiler)` | `pass_patterns[2]` 新增两条无条件重写：切分被全部按序拼回、`cat` 被沿接缝切回片段时整对删除；两种 split 记法都认；测试补 6 项 |
+| `979f5757` `feat(compiler)` | `tp.compile` 统一到记录感知的 facade；捕获根按模块全局与闭包包重建；`disallow_in_graph` 登记并由捕获适配器和 `create_proxy` 双重拒绝；`mark_static` 记录/校验轴并转发捕获内标记 |
+| `a828ff04` `feat(compiler)` | 新增 `_core/shape_policy.py`；`dynamic_shapes` 支持映射/位置/`Dim`/范围/静态 int；自动 dynamic（`config.automatic_dynamic_shapes`）；符号捕获按声明策略建符号并读钉住尺寸；导出 `check_dynamic_shapes` |
+| `6240f4f1` `test(compiler)` | 新增 `test/stax/test_stax_dynamic_shapes.py`（18 项）；`sin(x)+1` 近零点改用与其余用例一致的绝对容差，消除一 ulp 差异造成的偶发失败 |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
