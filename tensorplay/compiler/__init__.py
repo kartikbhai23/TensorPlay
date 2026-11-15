@@ -46,8 +46,6 @@ class _CallableRecord:
     original: Callable[..., Any]
     mode: str
     replacement: Callable[..., Any] | None = None
-    can_constant_fold_through: bool = False
-    skip_signature_check: bool = False
     reason: str | None = None
     recursive: bool = True
     options: Any = None
@@ -169,7 +167,13 @@ def _mark_callable(fn: Callable[..., Any], attribute: str) -> Callable[..., Any]
 
 
 def export(fn: Callable[..., Any] | None = None) -> Any:
-    """Mark a module method as an entry point visible to graph capture."""
+    """Mark a module method as an entry point for definition tooling.
+
+    The mark is recorded on the callable for tooling to read.  Capture does
+    not need it: a region traces whatever the program calls, so a method
+    marked here is captured exactly when it is reached, whether or not it
+    carries the mark.
+    """
 
     if fn is None:
         return lambda actual: _mark_callable(
@@ -179,13 +183,23 @@ def export(fn: Callable[..., Any] | None = None) -> Any:
 
 
 def unused(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Mark a callable as an eager-only helper."""
+    """Mark a helper as one the scripting path leaves alone.
+
+    The mark is recorded on the callable and nothing else changes: this build
+    has no scripting path, and capture treats the callable like any other one,
+    tracing it when it is reached.  Declaring a callable out of the graph is
+    :func:`disallow_in_graph`.
+    """
 
     return _mark_callable(fn, "__tensorplay_compiler_unused__")
 
 
 def overload_method(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Mark a method declaration as an overload during inspection."""
+    """Mark a method declaration as an overload for definition tooling.
+
+    Python keeps the last definition of a name, and so does capture: the mark
+    says which declarations are alternatives, not which one a call reaches.
+    """
 
     return _mark_callable(fn, "__tensorplay_compiler_overload__")
 
@@ -208,8 +222,6 @@ def _register_record(
     mode: str,
     *,
     replacement: Callable[..., Any] | None = None,
-    can_constant_fold_through: bool = False,
-    skip_signature_check: bool = False,
     reason: str | None = None,
     recursive: bool = True,
     options: Any = None,
@@ -233,8 +245,6 @@ def _register_record(
         original=fn,
         mode=mode,
         replacement=replacement,
-        can_constant_fold_through=can_constant_fold_through,
-        skip_signature_check=skip_signature_check,
         reason=reason,
         recursive=recursive,
         options=options,
@@ -864,7 +874,18 @@ def substitute_in_graph(
     can_constant_fold_through: bool = False,
     skip_signature_check: bool = False,
 ) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
-    """Register a graph-time implementation for a callable."""
+    """Register a graph-time implementation for a callable.
+
+    ``can_constant_fold_through`` asks that arguments which are plain Python
+    constants be answered by the original function rather than by recording a
+    call.  Capture here already evaluates a call whose arguments are all
+    constants while tracing, so a constant-only call never becomes a node: the
+    shortcut this asks for is what capture does anyway, and the argument is
+    accepted as a hint rather than as a mode to switch between.
+
+    ``skip_signature_check`` skips the registration-time comparison between
+    the two signatures, for a replacement whose arity has to differ.
+    """
 
     if not _is_function(original_fn):
         raise TypeError(
@@ -886,13 +907,7 @@ def substitute_in_graph(
             )
         if not skip_signature_check:
             _check_substitution_signature(original_fn, replacement)
-        _register_record(
-            original_fn,
-            "substitute",
-            replacement=replacement,
-            can_constant_fold_through=can_constant_fold_through,
-            skip_signature_check=skip_signature_check,
-        )
+        _register_record(original_fn, "substitute", replacement=replacement)
         record = _record_for(original_fn)
         if record is None:
             raise RuntimeError("substitution registration did not create a record")
