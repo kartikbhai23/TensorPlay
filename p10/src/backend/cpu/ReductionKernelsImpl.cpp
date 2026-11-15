@@ -3018,6 +3018,149 @@ inline void sum_leading_narrow_range(const Scalar* TP_RESTRICT in,
     }
 }
 
+// The same walk over a column count that is not a whole number of
+// lane-vectors: the last band folds with the lanes past the column count
+// replaced by zero, and the tensor's own last row is read through a padded
+// copy, so no read leaves the buffer and no store writes past the answer's own
+// end.
+template <typename Scalar, int64_t NC>
+inline void sum_leading_narrow_tail_range(const Scalar* TP_RESTRICT in,
+                                          Scalar* TP_RESTRICT dst, int64_t rows,
+                                          int64_t cols, int64_t begin) {
+    using Vec = Vectorized<Scalar>;
+    constexpr int64_t vs = Vec::size();
+    const int64_t span = cols - begin;
+    const int64_t tail = span - (NC - 1) * vs;
+    const Vec zero(Scalar(0));
+    alignas(64) unsigned char bits[vs * sizeof(Scalar)];
+    std::memset(bits, 0, sizeof(bits));
+    std::memset(bits, 0xFF, static_cast<size_t>(tail) * sizeof(Scalar));
+    const Vec keep = Vec::loadu(reinterpret_cast<const Scalar*>(bits));
+    const int64_t last = begin + (NC - 1) * vs;
+
+    Vec acc[NC];
+    for (int64_t u = 0; u + 1 < NC; ++u) acc[u] = Vec::loadu(in + begin + u * vs);
+    acc[NC - 1] = Vec::blendv(zero, Vec::loadu(in + last), keep);
+    int64_t r = 1;
+    for (; r + 4 < rows; r += 4) {
+        const Scalar* TP_RESTRICT p0 = in + (r + 0) * cols;
+        const Scalar* TP_RESTRICT p1 = in + (r + 1) * cols;
+        const Scalar* TP_RESTRICT p2 = in + (r + 2) * cols;
+        const Scalar* TP_RESTRICT p3 = in + (r + 3) * cols;
+        for (int64_t u = 0; u + 1 < NC; ++u) {
+            const int64_t at = begin + u * vs;
+            acc[u] = acc[u] + ((Vec::loadu(p0 + at) + Vec::loadu(p1 + at)) +
+                               (Vec::loadu(p2 + at) + Vec::loadu(p3 + at)));
+        }
+        acc[NC - 1] = acc[NC - 1] +
+            ((Vec::blendv(zero, Vec::loadu(p0 + last), keep) +
+              Vec::blendv(zero, Vec::loadu(p1 + last), keep)) +
+             (Vec::blendv(zero, Vec::loadu(p2 + last), keep) +
+              Vec::blendv(zero, Vec::loadu(p3 + last), keep)));
+    }
+    for (; r < rows - 1; ++r) {
+        const Scalar* TP_RESTRICT p = in + r * cols;
+        for (int64_t u = 0; u + 1 < NC; ++u) {
+            acc[u] = acc[u] + Vec::loadu(p + begin + u * vs);
+        }
+        acc[NC - 1] = acc[NC - 1] + Vec::blendv(zero, Vec::loadu(p + last), keep);
+    }
+    {
+        const Scalar* TP_RESTRICT p = in + (rows - 1) * cols;
+        for (int64_t u = 0; u + 1 < NC; ++u) {
+            acc[u] = acc[u] + Vec::loadu(p + begin + u * vs);
+        }
+        alignas(64) Scalar pad[vs];
+        std::memcpy(pad, p + last, static_cast<size_t>(tail) * sizeof(Scalar));
+        for (int64_t k = tail; k < vs; ++k) pad[k] = Scalar(0);
+        acc[NC - 1] = acc[NC - 1] + Vec::loadu(pad);
+    }
+    for (int64_t u = 0; u + 1 < NC; ++u) acc[u].store(dst + begin + u * vs);
+    alignas(64) Scalar lanes[vs];
+    acc[NC - 1].store(lanes);
+    std::memcpy(dst + last, lanes, static_cast<size_t>(tail) * sizeof(Scalar));
+}
+
+// Dispatch the ragged walk by the number of lane-vectors its column span
+// needs; the span may start at a band boundary.
+template <typename Scalar>
+inline bool sum_leading_narrow_tail_dispatch(const Scalar* TP_RESTRICT in,
+                                             Scalar* TP_RESTRICT out,
+                                             int64_t rows, int64_t cols,
+                                             int64_t begin) {
+    using Vec = Vectorized<Scalar>;
+    constexpr int64_t vs = Vec::size();
+    const int64_t span = cols - begin;
+    switch ((span + vs - 1) / vs) {
+        case 1:
+            sum_leading_narrow_tail_range<Scalar, 1>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 2:
+            sum_leading_narrow_tail_range<Scalar, 2>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 3:
+            sum_leading_narrow_tail_range<Scalar, 3>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 4:
+            sum_leading_narrow_tail_range<Scalar, 4>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 5:
+            sum_leading_narrow_tail_range<Scalar, 5>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 6:
+            sum_leading_narrow_tail_range<Scalar, 6>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 7:
+            sum_leading_narrow_tail_range<Scalar, 7>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 8:
+            sum_leading_narrow_tail_range<Scalar, 8>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 9:
+            sum_leading_narrow_tail_range<Scalar, 9>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 10:
+            sum_leading_narrow_tail_range<Scalar, 10>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 11:
+            sum_leading_narrow_tail_range<Scalar, 11>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 12:
+            sum_leading_narrow_tail_range<Scalar, 12>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 13:
+            sum_leading_narrow_tail_range<Scalar, 13>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 14:
+            sum_leading_narrow_tail_range<Scalar, 14>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 15:
+            sum_leading_narrow_tail_range<Scalar, 15>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        case 16:
+            sum_leading_narrow_tail_range<Scalar, 16>(in, out, rows, cols,
+                                                       begin);
+            return true;
+        default:
+            return false;
+    }
+}
+
 // Dispatch the narrow-column walk over the data types it serves; a row count
 // too short to fill four folds is left to the other shapes.
 template <typename Scalar>
@@ -3026,8 +3169,27 @@ inline bool sum_leading_narrow_impl(const Scalar* TP_RESTRICT in,
                                     int64_t cols) {
     using Vec = Vectorized<Scalar>;
     constexpr int64_t vs = Vec::size();
-    if (rows < 8 || cols == 0 || cols % vs != 0) {
+    constexpr int64_t bands = 16 * vs;
+    if (rows < 8 || cols == 0) {
         return false;
+    }
+    if (cols > bands) {
+        // More columns than the register file holds at once: a slice that still
+        // fits a level-one cache is walked in passes of sixteen lane-vectors,
+        // so every total stays in a register across the rows it folds.
+        if (cols * static_cast<int64_t>(sizeof(Scalar)) > 4096) return false;
+        int64_t begin = 0;
+        for (; begin + bands <= cols; begin += bands) {
+            sum_leading_narrow_range<Scalar, 16>(in, out, rows, cols, begin);
+        }
+        if (begin < cols) {
+            return sum_leading_narrow_tail_dispatch<Scalar>(in, out, rows, cols,
+                                                            begin);
+        }
+        return true;
+    }
+    if (cols % vs != 0) {
+        return sum_leading_narrow_tail_dispatch<Scalar>(in, out, rows, cols, 0);
     }
     switch (cols / vs) {
         case 1:
@@ -3053,6 +3215,27 @@ inline bool sum_leading_narrow_impl(const Scalar* TP_RESTRICT in,
             return true;
         case 8:
             sum_leading_narrow_range<Scalar, 8>(in, out, rows, cols, 0);
+            return true;
+        case 9:
+            sum_leading_narrow_range<Scalar, 9>(in, out, rows, cols, 0);
+            return true;
+        case 10:
+            sum_leading_narrow_range<Scalar, 10>(in, out, rows, cols, 0);
+            return true;
+        case 11:
+            sum_leading_narrow_range<Scalar, 11>(in, out, rows, cols, 0);
+            return true;
+        case 12:
+            sum_leading_narrow_range<Scalar, 12>(in, out, rows, cols, 0);
+            return true;
+        case 13:
+            sum_leading_narrow_range<Scalar, 13>(in, out, rows, cols, 0);
+            return true;
+        case 14:
+            sum_leading_narrow_range<Scalar, 14>(in, out, rows, cols, 0);
+            return true;
+        case 15:
+            sum_leading_narrow_range<Scalar, 15>(in, out, rows, cols, 0);
             return true;
         case 16:
             sum_leading_narrow_range<Scalar, 16>(in, out, rows, cols, 0);
