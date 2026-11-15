@@ -99,34 +99,46 @@ inline Tensor float_math_vec_kernel(const Tensor& self, F f, const char* name,
                                     const Tensor* destination = nullptr) {
     const DType in = self.dtype();
     const bool reduced = in == DType::Float16 || in == DType::BFloat16;
-    const bool reduced_vec = op == vecunary::VOp::Reciprocal ||
-                             op == vecunary::VOp::Exp2 ||
-                             op == vecunary::VOp::Sinc ||
-                             op == vecunary::VOp::Hardshrink ||
-                             op == vecunary::VOp::Softshrink;
-    if (reduced && reduced_vec) {
-        Tensor w = self.contiguous();
-        Tensor t = destination != nullptr
-                       ? *destination
-                       : Tensor::empty(static_cast<std::vector<int64_t>>(w.shape()), in,
-                                       w.device());
-        if (op == vecunary::VOp::Hardshrink || op == vecunary::VOp::Softshrink) {
-            prm.p0 = in == DType::Float16
-                         ? static_cast<float>(Half(static_cast<float>(prm.p0)))
-                         : static_cast<float>(BFloat16(static_cast<float>(prm.p0)));
-        }
-        parallel::parallel_for(0, w.numel(), parallel::GRAIN_SIZE, [&](int64_t b, int64_t e) {
-            if (in == DType::Float16) {
-                vecunary::run_f16(op, prm,
-                    reinterpret_cast<const uint16_t*>(w.data_ptr<Half>()),
-                    reinterpret_cast<uint16_t*>(t.data_ptr<Half>()), b, e);
-            } else {
-                vecunary::run_bf16(op, prm,
-                    reinterpret_cast<const uint16_t*>(w.data_ptr<BFloat16>()),
-                    reinterpret_cast<uint16_t*>(t.data_ptr<BFloat16>()), b, e);
+    if (reduced) {
+        if (vecunary::reduced_chunk_ready(op)) {
+            Tensor w = self.contiguous();
+            Tensor t = destination != nullptr
+                           ? *destination
+                           : Tensor::empty(static_cast<std::vector<int64_t>>(w.shape()), in,
+                                           w.device());
+            if (op == vecunary::VOp::Hardshrink || op == vecunary::VOp::Softshrink) {
+                prm.p0 = in == DType::Float16
+                             ? static_cast<float>(Half(static_cast<float>(prm.p0)))
+                             : static_cast<float>(BFloat16(static_cast<float>(prm.p0)));
             }
-        });
-        return t;
+            parallel::parallel_for(0, w.numel(), parallel::GRAIN_SIZE, [&](int64_t b, int64_t e) {
+                if (in == DType::Float16) {
+                    vecunary::run_f16(op, prm,
+                        reinterpret_cast<const uint16_t*>(w.data_ptr<Half>()),
+                        reinterpret_cast<uint16_t*>(t.data_ptr<Half>()), b, e);
+                } else {
+                    vecunary::run_bf16(op, prm,
+                        reinterpret_cast<const uint16_t*>(w.data_ptr<BFloat16>()),
+                        reinterpret_cast<uint16_t*>(t.data_ptr<BFloat16>()), b, e);
+                }
+            });
+            return t;
+        }
+        // No reduced-width walk for this map: evaluating it at Float32 and
+        // narrowing the single result costs two conversion passes, while the
+        // generic loop would run the scalar routine per element.
+        if (op != vecunary::VOp::None && vecunary::vec_ready()) {
+            Tensor widened = float_math_vec_kernel(self.to(DType::Float32), f, name, op, prm);
+            Tensor narrowed = widened.to(in);
+            if (destination != nullptr) {
+                // The handle is copied, not the storage: the values still land
+                // where the caller's destination points.
+                Tensor t = *destination;
+                return write_out(t, narrowed);
+            }
+            return narrowed;
+        }
+        return float_math_kernel(self, f, name, destination);
     }
     if (in != DType::Float32 && in != DType::Float64)
         return float_math_kernel(self, f, name, destination);
