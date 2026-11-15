@@ -22,6 +22,13 @@
 namespace tensorplay {
 namespace cuda {
 
+#if defined(USE_CUDNN) && defined(TP_HAS_CUDNN_FRONTEND)
+bool conv3d_backward_data_v8(const Tensor& grad_input, const Tensor& weight,
+                             const Tensor& grad_output, const std::vector<int64_t>& stride,
+                             const std::vector<int64_t>& padding,
+                             const std::vector<int64_t>& dilation, int64_t groups);
+#endif
+
 #ifdef USE_CUDNN
 // Declared here rather than pulled in from the cuDNN shared header: that header
 // also declares a parameter-expansion helper whose name this file defines
@@ -418,7 +425,14 @@ Tensor conv_transpose3d_cuda(const Tensor& input, const Tensor& weight, const Te
     Tensor out = Tensor::empty({input_c.size(0), C_out, D_out, H_out, W_out},
                                input_c.dtype(), input_c.device());
 
+    if (out.numel() == 0) return out;
     cudnnHandle_t handle = CUDAContext::getCudnnHandle();
+#ifdef TP_HAS_CUDNN_FRONTEND
+    if (conv3d_backward_data_v8(out, weight_c, input_c, stride, padding, dilation, groups)) {
+        conv3d_add_bias(handle, out, bias);
+        return out;
+    }
+#endif
     TensorDescNd dy_desc; dy_desc.set(input_c);
     FilterDescNd w_desc; w_desc.set(weight_c);
     TensorDescNd dx_desc; dx_desc.set(out);
@@ -429,6 +443,7 @@ Tensor conv_transpose3d_cuda(const Tensor& input, const Tensor& weight, const Te
                            ":" + std::to_string(static_cast<int>(input_c.device().index()));
     key_append(algo_key, input_c.shape());
     key_append(algo_key, weight_c.shape());
+    key_append(algo_key, out.shape());
     key_append(algo_key, padding);
     key_append(algo_key, stride);
     key_append(algo_key, dilation);

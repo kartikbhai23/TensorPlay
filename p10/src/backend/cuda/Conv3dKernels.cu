@@ -256,14 +256,18 @@ inline int64_t conv3d_alignment_of(const void* ptr) {
 struct Conv3dFwdKey {
     cudnnDataType_t dtype;
     int64_t N, C, D, H, W, K, kD, kH, kW, groups;
+    int64_t Do, Ho, Wo, x_align, w_align, y_align;
     int64_t pd, ph, pw, sd, sh, sw, dd, dh, dw;
     int device;
+    int operation;
     bool allow_tf32;
     bool deterministic;
     bool operator==(const Conv3dFwdKey& o) const {
         return dtype == o.dtype && N == o.N && C == o.C && D == o.D && H == o.H &&
                W == o.W && K == o.K && kD == o.kD && kH == o.kH && kW == o.kW &&
-               groups == o.groups && pd == o.pd && ph == o.ph && pw == o.pw &&
+               groups == o.groups && Do == o.Do && Ho == o.Ho && Wo == o.Wo &&
+               x_align == o.x_align && w_align == o.w_align && y_align == o.y_align &&
+               operation == o.operation && pd == o.pd && ph == o.ph && pw == o.pw &&
                sd == o.sd && sh == o.sh && sw == o.sw && dd == o.dd &&
                dh == o.dh && dw == o.dw && device == o.device &&
                allow_tf32 == o.allow_tf32 && deterministic == o.deterministic;
@@ -274,27 +278,26 @@ struct Conv3dFwdKeyHash {
     size_t operator()(const Conv3dFwdKey& k) const {
         size_t h = std::hash<int64_t>{}(k.N);
         for (auto v : {k.C, k.D, k.H, k.W, k.K, k.kD, k.kH, k.kW, k.groups,
+                       k.Do, k.Ho, k.Wo, k.x_align, k.w_align, k.y_align,
                        k.pd, k.ph, k.pw, k.sd, k.sh, k.sw, k.dd, k.dh, k.dw}) {
             h = h * 1000003 ^ std::hash<int64_t>{}(v);
         }
         h = h * 1000003 ^ std::hash<int>{}(static_cast<int>(k.dtype));
         h = h * 1000003 ^ std::hash<int>{}(k.device);
+        h = h * 1000003 ^ std::hash<int>{}(k.operation);
         h = h * 1000003 ^ std::hash<int>{}(static_cast<int>(k.allow_tf32));
         h = h * 1000003 ^ std::hash<int>{}(static_cast<int>(k.deterministic));
         return h;
     }
 };
 
-// Runs the forward convolution through the graph frontend.  Every tensor is
-// packed NCDHW, so geometry, dtype and the two numeric switches identify a
-// plan; planning happens once per identity and later calls replay the
-// execution descriptor, leaving one execute as the whole host side.
-inline void conv3d_forward_v8(const Tensor& input, const Tensor& weight,
+// Packed NCDHW operands share a cached plan for each geometry and operation.
+inline bool conv3d_run_v8(const Tensor& input, const Tensor& weight,
                               const Tensor& out,
                               const std::vector<int64_t>& stride,
                               const std::vector<int64_t>& padding,
                               const std::vector<int64_t>& dilation,
-                              int64_t groups) {
+                              int64_t groups, cudnnBackendDescriptorType_t operation) {
     static std::unordered_map<Conv3dFwdKey, std::shared_ptr<fe::ExecutionPlan>,
                               Conv3dFwdKeyHash> g_conv3d_plan_cache;
     static std::mutex g_conv3d_plan_mutex;
@@ -311,10 +314,13 @@ inline void conv3d_forward_v8(const Tensor& input, const Tensor& weight,
     const int64_t Do = out.size(2), Ho = out.size(3), Wo = out.size(4);
 
     Conv3dFwdKey key{dtype, N, C, D, H, W, K, kD, kH, kW, groups,
+                     Do, Ho, Wo, conv3d_alignment_of(input.data_ptr()),
+                     conv3d_alignment_of(weight.data_ptr()), conv3d_alignment_of(out.data_ptr()),
                      padding[0], padding[1], padding[2],
                      stride[0], stride[1], stride[2],
                      dilation[0], dilation[1], dilation[2],
                      static_cast<int>(input.device().index()),
+                     static_cast<int>(operation),
                      allow_tf32, deterministic};
 
     cudnnHandle_t handle = CUDAContext::getCudnnHandle();
@@ -368,13 +374,15 @@ inline void conv3d_forward_v8(const Tensor& input, const Tensor& weight,
                                  .setDilation(3, dil)
                                  .build();
 
-            fe::Operation conv_op = fe::OperationBuilder(
-                                        CUDNN_BACKEND_OPERATION_CONVOLUTION_FORWARD_DESCRIPTOR)
-                                        .setxDesc(x_desc)
-                                        .setwDesc(w_desc)
-                                        .setyDesc(y_desc)
-                                        .setcDesc(conv_desc)
-                                        .build();
+            auto builder = fe::OperationBuilder(operation);
+            if (operation == CUDNN_BACKEND_OPERATION_CONVOLUTION_FORWARD_DESCRIPTOR) {
+                builder.setxDesc(x_desc).setwDesc(w_desc).setyDesc(y_desc);
+            } else if (operation == CUDNN_BACKEND_OPERATION_CONVOLUTION_BACKWARD_DATA_DESCRIPTOR) {
+                builder.setdxDesc(x_desc).setwDesc(w_desc).setdyDesc(y_desc);
+            } else {
+                builder.setxDesc(x_desc).setdwDesc(w_desc).setdyDesc(y_desc);
+            }
+            fe::Operation conv_op = builder.setcDesc(conv_desc).build();
             std::array<fe::Operation const*, 1> ops = {&conv_op};
             auto op_graph = fe::OperationGraphBuilder()
                                 .setHandle(handle)
@@ -438,7 +446,7 @@ inline void conv3d_forward_v8(const Tensor& input, const Tensor& weight,
                 plan = first_buildable(plain_filtered);
             }
             if (!plan) {
-                TP_THROW(RuntimeError, "cuDNN: no executable engine configs for conv3d");
+                return false;
             }
             g_conv3d_plan_cache[key] = plan;
         }
@@ -456,12 +464,38 @@ inline void conv3d_forward_v8(const Tensor& input, const Tensor& weight,
                             .build();
     CUDNN_CHECK(cudnnBackendExecute(handle, plan->get_raw_desc(),
                                    variant_pack.get_raw_desc()));
+    return true;
+}
+
+inline bool conv3d_try_run_v8(const Tensor& input, const Tensor& weight, const Tensor& out,
+                              const std::vector<int64_t>& stride,
+                              const std::vector<int64_t>& padding,
+                              const std::vector<int64_t>& dilation, int64_t groups,
+                              cudnnBackendDescriptorType_t operation) {
+    try {
+        return conv3d_run_v8(input, weight, out, stride, padding, dilation, groups, operation);
+    } catch (const fe::cudnnException&) {
+        return false;
+    }
 }
 #endif
 
 #endif
 
 }
+
+#if defined(USE_CUDNN) && defined(TP_HAS_CUDNN_FRONTEND)
+bool conv3d_backward_data_v8(const Tensor& grad_input, const Tensor& weight,
+                             const Tensor& grad_output, const std::vector<int64_t>& stride,
+                             const std::vector<int64_t>& padding,
+                             const std::vector<int64_t>& dilation, int64_t groups) {
+    if (groups != 1 || !grad_input.numel() || !grad_output.numel() || conv_autotune_enabled()) {
+        return false;
+    }
+    return conv3d_try_run_v8(grad_input, weight, grad_output, stride, padding, dilation, groups,
+                             CUDNN_BACKEND_OPERATION_CONVOLUTION_BACKWARD_DATA_DESCRIPTOR);
+}
+#endif
 
 Tensor conv3d_cuda(const Tensor& input, const Tensor& weight, const Tensor& bias,
                    const std::vector<int64_t>& stride_arg, const std::vector<int64_t>& padding_arg,
@@ -495,8 +529,9 @@ Tensor conv3d_cuda(const Tensor& input, const Tensor& weight, const Tensor& bias
 #ifdef TP_HAS_CUDNN_FRONTEND
     // Benchmark mode keeps the enumerating path, whose timed search covers
     // the algorithm space this graph formulation does not name.
-    if (!conv_autotune_enabled()) {
-        conv3d_forward_v8(input_c, weight_c, out, stride, padding, dilation, groups);
+    if (!conv_autotune_enabled() &&
+        conv3d_try_run_v8(input_c, weight_c, out, stride, padding, dilation, groups,
+                          CUDNN_BACKEND_OPERATION_CONVOLUTION_FORWARD_DESCRIPTOR)) {
         conv3d_add_bias(handle, out, bias);
         return out;
     }
@@ -566,14 +601,19 @@ Tensor conv3d_grad_input_cuda(const Tensor& grad_output, const Tensor& input, co
     Tensor input_c = input.is_contiguous() ? input : input.contiguous();
     Tensor weight_c = weight.is_contiguous() ? weight : weight.contiguous();
 
+    Tensor grad_input = Tensor::empty_like(input_c, DType::Undefined, input_c.device());
+#ifdef TP_HAS_CUDNN_FRONTEND
+    if (conv3d_backward_data_v8(grad_input, weight_c, grad_output_c,
+                                stride, padding, dilation, groups)) {
+        return grad_input;
+    }
+#endif
     cudnnHandle_t handle = CUDAContext::getCudnnHandle();
     TensorDescNd dy_desc; dy_desc.set(grad_output_c);
     FilterDescNd w_desc; w_desc.set(weight_c);
     TensorDescNd dx_desc; dx_desc.set(input_c);
     ConvDescNd conv_desc;
     conv_desc.set(padding, stride, dilation, groups, input_c.dtype());
-
-    Tensor grad_input = Tensor::empty_like(input_c, DType::Undefined, input_c.device());
 
     std::string algo_key = "c3gi:" + std::to_string(static_cast<int>(input_c.dtype())) +
                            ":" + std::to_string(static_cast<int>(input_c.device().index()));
@@ -634,14 +674,20 @@ Tensor conv3d_grad_weight_cuda(const Tensor& grad_output, const Tensor& input, c
     Tensor input_c = input.is_contiguous() ? input : input.contiguous();
     Tensor weight_c = weight.is_contiguous() ? weight : weight.contiguous();
 
+    Tensor grad_weight = Tensor::empty_like(weight_c, DType::Undefined, weight_c.device());
+#ifdef TP_HAS_CUDNN_FRONTEND
+    if (groups == 1 && input_c.numel() && grad_output_c.numel() && !conv_autotune_enabled() &&
+        conv3d_try_run_v8(input_c, grad_weight, grad_output_c, stride, padding, dilation, groups,
+                          CUDNN_BACKEND_OPERATION_CONVOLUTION_BACKWARD_FILTER_DESCRIPTOR)) {
+        return grad_weight;
+    }
+#endif
     cudnnHandle_t handle = CUDAContext::getCudnnHandle();
     TensorDescNd x_desc; x_desc.set(input_c);
     TensorDescNd dy_desc; dy_desc.set(grad_output_c);
     FilterDescNd dw_desc; dw_desc.set(weight_c);
     ConvDescNd conv_desc;
     conv_desc.set(padding, stride, dilation, groups, input_c.dtype());
-
-    Tensor grad_weight = Tensor::empty_like(weight_c, DType::Undefined, weight_c.device());
 
     std::string algo_key = "c3gw:" + std::to_string(static_cast<int>(input_c.dtype())) +
                            ":" + std::to_string(static_cast<int>(input_c.device().index()));
