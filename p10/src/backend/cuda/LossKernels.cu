@@ -410,9 +410,47 @@ Tensor tp_kl_div_backward_cuda(const Tensor& grad_output, const Tensor& input,
 Tensor tp_margin_ranking_loss_cuda(const Tensor& input1, const Tensor& input2,
                                    const Tensor& target, double margin,
                                    int64_t reduction) {
-    Tensor raw = -(input1 - input2) * target + margin;
-    Tensor loss = Tensor::where(raw.lt(Scalar(0)), Scalar(0), raw);
-    return tp_loss_reduce(loss, reduction);
+    tp_validate_reduction(reduction);
+    const DType acc = loss_carry_dtype(input1.dtype());
+    // The difference, the target weight, the margin offset and the clamp all
+    // land in one traversal: the staged form would write and re-read a full
+    // elementwise tensor for every term.
+    const std::vector<int64_t> shape = broadcast_shapes(
+        broadcast_shapes(shape_of(input1), shape_of(input2)), shape_of(target));
+    Tensor a = expand_carry_dev(input1, shape, acc);
+    Tensor b = expand_carry_dev(input2, shape, acc);
+    Tensor t = expand_carry_dev(target, shape, acc);
+    Tensor elems = Tensor::empty(shape, acc, input1.device());
+    const int64_t n = elems.numel();
+    if (n) {
+        TensorIterator iter = TensorIteratorConfig()
+            .check_all_same_dtype(true)
+            .add_output(elems)
+            .add_const_input(a)
+            .add_const_input(b)
+            .add_const_input(t)
+            .build();
+        // The clamp keeps the raw value when it is not negative, so a NaN
+        // passes through and a negative zero survives, as the minimum bound
+        // of a value rejects neither.
+        if (acc == DType::Float64) {
+            gpu_kernel(iter, [margin] __host__ __device__(
+                double x, double y, double tv) -> double {
+                const double v = -tv * (x - y) + margin;
+                return v < 0.0 ? 0.0 : v;
+            });
+        } else {
+            const float m = static_cast<float>(margin);
+            gpu_kernel(iter, [m] __host__ __device__(
+                float x, float y, float tv) -> float {
+                const float v = -tv * (x - y) + m;
+                return v < 0.0f ? 0.0f : v;
+            });
+        }
+        CUDA_CHECK(cudaGetLastError());
+    }
+    if (reduction == 0) return elems.to(input1.dtype());
+    return tp_loss_reduce(elems, reduction);
 }
 
 std::tuple<Tensor, Tensor> tp_margin_ranking_loss_backward_cuda(
