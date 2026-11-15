@@ -6093,6 +6093,203 @@ Tensor sum_abs_error_kernel_impl(const Tensor& self, const Tensor& other,
     return fused_dual_reduce_impl(self, other, dims, keepdim, /*squared=*/false);
 }
 
+// A named axis other than the trailing block, with an inner run narrow enough
+// to hold in registers: every band of the run carries its extremum across the
+// reduced rows, so a row costs one compare per band instead of a conversion per
+// element.  A band that runs past the end of the run reads what follows it in
+// the buffer and writes only its own lanes back; the tensor's own last row
+// reads through a copy that repeats a value, which cannot change the extremum
+// of the lanes that are kept.
+template <typename T, bool WantMax, int64_t NB>
+inline void extrema_narrow_real(const T* in, T* out, int64_t outer, int64_t red,
+                                int64_t inner) {
+    using Vec = Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const int64_t keep = inner - (NB - 1) * W;
+    auto combine = [](const Vec& a, const Vec& b) {
+        return WantMax ? maximum(a, b) : minimum(a, b);
+    };
+    auto load = [](const T* p, int64_t lanes, bool pad) {
+        if (!pad) return Vec::loadu(p);
+        alignas(64) T copy[W];
+        std::memcpy(copy, p, static_cast<size_t>(lanes) * sizeof(T));
+        for (int64_t k = lanes; k < W; ++k) copy[k] = copy[0];
+        return Vec::loadu(copy);
+    };
+    for (int64_t o = 0; o < outer; ++o) {
+        const T* base = in + o * red * inner;
+        T* dst = out + o * inner;
+        const bool last_block = o == outer - 1;
+        Vec acc[NB];
+        for (int64_t b = 0; b < NB; ++b) {
+            const bool pad = last_block && red == 1 && b == NB - 1 && keep < W;
+            acc[b] = load(base + b * W, keep, pad);
+        }
+        for (int64_t r = 1; r < red; ++r) {
+            const T* row = base + r * inner;
+            const bool last_row = last_block && r == red - 1;
+            for (int64_t b = 0; b < NB; ++b) {
+                const bool pad = last_row && b == NB - 1 && keep < W;
+                acc[b] = combine(acc[b], load(row + b * W, keep, pad));
+            }
+        }
+        for (int64_t b = 0; b < NB; ++b) {
+            const int64_t lanes = b == NB - 1 ? keep : W;
+            if (lanes >= W) {
+                acc[b].store(dst + b * W);
+            } else {
+                alignas(64) T held[W];
+                acc[b].store(held);
+                std::memcpy(dst + b * W, held,
+                            static_cast<size_t>(lanes) * sizeof(T));
+            }
+        }
+    }
+}
+
+template <typename T, bool WantMax>
+inline void extrema_narrow_real_dispatch(const T* in, T* out, int64_t outer,
+                                         int64_t red, int64_t inner) {
+    constexpr int64_t W = Vectorized<T>::size();
+    switch ((inner + W - 1) / W) {
+        case 1: extrema_narrow_real<T, WantMax, 1>(in, out, outer, red, inner); return;
+        case 2: extrema_narrow_real<T, WantMax, 2>(in, out, outer, red, inner); return;
+        case 3: extrema_narrow_real<T, WantMax, 3>(in, out, outer, red, inner); return;
+        case 4: extrema_narrow_real<T, WantMax, 4>(in, out, outer, red, inner); return;
+        default: return;
+    }
+}
+
+#if defined(__x86_64__)
+// The same walk over a packed width: a band of eight columns is widened once
+// per row and compared in single precision, and the packed value is formed
+// only when the band is written back.
+template <bool BFloat, bool WantMax, int64_t NB>
+__attribute__((target("avx2,fma,f16c"), noinline))
+void extrema_narrow_packed_hw(const uint16_t* in, uint16_t* out, int64_t outer,
+                              int64_t red, int64_t inner) {
+    constexpr int64_t W = 8;
+    const int64_t keep = inner - (NB - 1) * W;
+    for (int64_t o = 0; o < outer; ++o) {
+        const uint16_t* base = in + o * red * inner;
+        uint16_t* dst = out + o * inner;
+        const bool last_block = o == outer - 1;
+        __m256 acc[NB];
+        if (last_block && red == 1 && keep < W) {
+            for (int64_t b = 0; b < NB - 1; ++b) {
+                acc[b] = widen_row8<BFloat>(base + b * W);
+            }
+            alignas(16) uint16_t copy[W];
+            std::memcpy(copy, base + (NB - 1) * W,
+                        static_cast<size_t>(keep) * sizeof(uint16_t));
+            for (int64_t k = keep; k < W; ++k) copy[k] = copy[0];
+            acc[NB - 1] = widen_row8<BFloat>(copy);
+        } else {
+            for (int64_t b = 0; b < NB; ++b) {
+                acc[b] = widen_row8<BFloat>(base + b * W);
+            }
+        }
+        for (int64_t r = 1; r < red; ++r) {
+            const uint16_t* row = base + r * inner;
+            const bool last_row = last_block && r == red - 1;
+            for (int64_t b = 0; b < NB - 1; ++b) {
+                acc[b] = extremum_step8<WantMax>(
+                    acc[b], widen_row8<BFloat>(row + b * W));
+            }
+            if (last_row && keep < W) {
+                alignas(16) uint16_t copy[W];
+                std::memcpy(copy, row + (NB - 1) * W,
+                            static_cast<size_t>(keep) * sizeof(uint16_t));
+                for (int64_t k = keep; k < W; ++k) copy[k] = copy[0];
+                acc[NB - 1] = extremum_step8<WantMax>(
+                    acc[NB - 1], widen_row8<BFloat>(copy));
+            } else {
+                acc[NB - 1] = extremum_step8<WantMax>(
+                    acc[NB - 1], widen_row8<BFloat>(row + (NB - 1) * W));
+            }
+        }
+        for (int64_t b = 0; b < NB - 1; ++b) {
+            store_band_hw<BFloat>(dst, b * W, acc[b]);
+        }
+        const int64_t lanes = keep < W ? keep : W;
+        alignas(32) float held[W];
+        _mm256_store_ps(held, acc[NB - 1]);
+        for (int64_t k = 0; k < lanes; ++k) {
+            dst[(NB - 1) * W + k] = BFloat
+                ? tensorplay::cpu::vecreduced::narrow_bf16_one(held[k])
+                : tensorplay::cpu::vecreduced::narrow_one_hw(held[k]);
+        }
+    }
+}
+
+template <bool BFloat, bool WantMax>
+inline void extrema_narrow_packed_dispatch(const uint16_t* in, uint16_t* out,
+                                           int64_t outer, int64_t red,
+                                           int64_t inner) {
+    switch ((inner + 7) / 8) {
+        case 1: extrema_narrow_packed_hw<BFloat, WantMax, 1>(in, out, outer, red, inner); return;
+        case 2: extrema_narrow_packed_hw<BFloat, WantMax, 2>(in, out, outer, red, inner); return;
+        case 3: extrema_narrow_packed_hw<BFloat, WantMax, 3>(in, out, outer, red, inner); return;
+        case 4: extrema_narrow_packed_hw<BFloat, WantMax, 4>(in, out, outer, red, inner); return;
+        default: return;
+    }
+}
+#endif
+
+// One named axis between two kept ones, answered without the reduction
+// iterator: the inner run is short enough that its bands stay in registers for
+// the whole reduced axis.
+template <typename ctype>
+bool fold_narrow_extrema(Tensor& result, const Tensor& self, int64_t ndim,
+                         const std::vector<int64_t>& resolved,
+                         bool maximum_value) {
+    if (resolved.size() != 1 || ndim < 3) return false;
+    const int64_t d = resolved[0];
+    if (d <= 0 || d >= ndim - 1) return false;
+    if (!self.is_contiguous() || self.numel() == 0) return false;
+    int64_t outer = 1;
+    int64_t inner = 1;
+    for (int64_t i = 0; i < d; ++i) outer *= self.size(i);
+    for (int64_t i = d + 1; i < ndim; ++i) inner *= self.size(i);
+    const int64_t red = self.size(d);
+    if (red <= 0 || outer <= 0 || inner < 2) return false;
+    if (result.numel() != outer * inner) return false;
+    constexpr bool kReduced = std::is_same_v<ctype, tensorplay::Half> ||
+                              std::is_same_v<ctype, tensorplay::BFloat16>;
+    constexpr bool kReal = std::is_same_v<ctype, float> ||
+                           std::is_same_v<ctype, double>;
+    const ctype* data = self.data_ptr<ctype>();
+    ctype* out = result.data_ptr<ctype>();
+    if constexpr (kReal) {
+        constexpr int64_t W = Vectorized<ctype>::size();
+        if (inner > 4 * W) return false;
+        if (maximum_value) {
+            extrema_narrow_real_dispatch<ctype, true>(data, out, outer, red, inner);
+        } else {
+            extrema_narrow_real_dispatch<ctype, false>(data, out, outer, red, inner);
+        }
+        return true;
+    } else if constexpr (kReduced) {
+#if defined(__x86_64__)
+        if (inner > 32) return false;
+        if (!tensorplay::cpu::vecreduced::f16c_available()) return false;
+        constexpr bool kBFloat = std::is_same_v<ctype, tensorplay::BFloat16>;
+        const uint16_t* bits = reinterpret_cast<const uint16_t*>(data);
+        uint16_t* obits = reinterpret_cast<uint16_t*>(out);
+        if (maximum_value) {
+            extrema_narrow_packed_dispatch<kBFloat, true>(bits, obits, outer, red, inner);
+        } else {
+            extrema_narrow_packed_dispatch<kBFloat, false>(bits, obits, outer, red, inner);
+        }
+        return true;
+#else
+        return false;
+#endif
+    } else {
+        return false;
+    }
+}
+
 Tensor extrema_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims,
                               bool keepdim, bool maximum_value) {
     const int64_t ndim = self.dim();
@@ -6128,6 +6325,10 @@ Tensor extrema_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& d
                                             maximum_value)) { \
                 return result; \
             } \
+            if (fold_narrow_extrema<ctype>(result, self, ndim, resolved, \
+                                           maximum_value)) { \
+                return result; \
+            } \
         } \
         if constexpr (std::is_same_v<ctype, float> || \
                       std::is_same_v<ctype, double>) { \
@@ -6141,6 +6342,10 @@ Tensor extrema_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& d
             } \
             if (fold_leading_extrema<ctype>(result, self, ndim, resolved, \
                                             maximum_value)) { \
+                return result; \
+            } \
+            if (fold_narrow_extrema<ctype>(result, self, ndim, resolved, \
+                                           maximum_value)) { \
                 return result; \
             } \
         } \
