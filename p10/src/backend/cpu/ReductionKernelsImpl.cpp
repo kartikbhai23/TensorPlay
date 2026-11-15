@@ -12,6 +12,7 @@
 #include "cpu/Reduce.h"
 #include "cpu/vec/vec.h"
 #include "cpu/vec/vec_reduce.h"
+#include "cpu/VecReducedMath.h"
 #include "cpu/VecComplex.h"
 #include <iostream>
 #include <numeric>
@@ -242,6 +243,101 @@ struct NormOps {
 // --- tier-compiled sum of squares over a contiguous stream ------------------
 namespace {
 
+// The reduced widths are squared and summed in single precision: the square
+// of an element of either width does not fit the layout it came in.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+__attribute__((target("avx2,fma,f16c"), noinline))
+float sumsq_f16_chunk(const uint16_t* x, int64_t b, int64_t e) {
+    // Four accumulators stay in flight: one chain would wait on the latency
+    // of the fold, not on the stream it reads.
+    __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
+    __m256 a2 = _mm256_setzero_ps(), a3 = _mm256_setzero_ps();
+    int64_t i = b;
+    for (; i + 32 <= e; i += 32) {
+        const __m256 v0 = tensorplay::cpu::vecreduced::widen8(x + i);
+        const __m256 v1 = tensorplay::cpu::vecreduced::widen8(x + i + 8);
+        const __m256 v2 = tensorplay::cpu::vecreduced::widen8(x + i + 16);
+        const __m256 v3 = tensorplay::cpu::vecreduced::widen8(x + i + 24);
+        a0 = _mm256_fmadd_ps(v0, v0, a0);
+        a1 = _mm256_fmadd_ps(v1, v1, a1);
+        a2 = _mm256_fmadd_ps(v2, v2, a2);
+        a3 = _mm256_fmadd_ps(v3, v3, a3);
+    }
+    __m256 acc = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+    for (; i + 8 <= e; i += 8) {
+        const __m256 v = tensorplay::cpu::vecreduced::widen8(x + i);
+        acc = _mm256_fmadd_ps(v, v, acc);
+    }
+    alignas(32) float lanes[8];
+    _mm256_store_ps(lanes, acc);
+    float s = ((lanes[0] + lanes[1]) + (lanes[2] + lanes[3])) +
+              ((lanes[4] + lanes[5]) + (lanes[6] + lanes[7]));
+    for (; i < e; ++i) {
+        const float v = tensorplay::cpu::vecreduced::widen_one(x[i]);
+        s += v * v;
+    }
+    return s;
+}
+
+__attribute__((target("avx2,fma"), noinline))
+float sumsq_bf16_chunk(const uint16_t* x, int64_t b, int64_t e) {
+    __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
+    __m256 a2 = _mm256_setzero_ps(), a3 = _mm256_setzero_ps();
+    int64_t i = b;
+    for (; i + 32 <= e; i += 32) {
+        const __m256 v0 = tensorplay::cpu::vecreduced::widen_bf16_8(x + i);
+        const __m256 v1 = tensorplay::cpu::vecreduced::widen_bf16_8(x + i + 8);
+        const __m256 v2 = tensorplay::cpu::vecreduced::widen_bf16_8(x + i + 16);
+        const __m256 v3 = tensorplay::cpu::vecreduced::widen_bf16_8(x + i + 24);
+        a0 = _mm256_fmadd_ps(v0, v0, a0);
+        a1 = _mm256_fmadd_ps(v1, v1, a1);
+        a2 = _mm256_fmadd_ps(v2, v2, a2);
+        a3 = _mm256_fmadd_ps(v3, v3, a3);
+    }
+    __m256 acc = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+    for (; i + 8 <= e; i += 8) {
+        const __m256 v = tensorplay::cpu::vecreduced::widen_bf16_8(x + i);
+        acc = _mm256_fmadd_ps(v, v, acc);
+    }
+    alignas(32) float lanes[8];
+    _mm256_store_ps(lanes, acc);
+    float s = ((lanes[0] + lanes[1]) + (lanes[2] + lanes[3])) +
+              ((lanes[4] + lanes[5]) + (lanes[6] + lanes[7]));
+    for (; i < e; ++i) {
+        const float v = tensorplay::cpu::vecreduced::widen_bf16_one(x[i]);
+        s += v * v;
+    }
+    return s;
+}
+
+// The squares of a contiguous reduced-width buffer, one slot per worker.
+inline bool normsq_reduced(const void* xv, int64_t n, DType dt, int64_t nslots,
+                           double* out) {
+    constexpr int64_t kGrain = 32768;
+    const bool half_width = dt == DType::Float16;
+    if (half_width) {
+        if (!tensorplay::cpu::vecreduced::f16c_available()) return false;
+    } else if (dt != DType::BFloat16) {
+        return false;
+    }
+    const uint16_t* x = static_cast<const uint16_t*>(xv);
+    std::vector<float> part(static_cast<size_t>(nslots), 0.f);
+    tensorplay::parallel::parallel_for(0, n, kGrain, [&](int64_t b, int64_t e) {
+        float& slot = part[static_cast<size_t>(tensorplay::parallel::get_thread_num())];
+        slot += half_width ? sumsq_f16_chunk(x, b, e)
+                           : sumsq_bf16_chunk(x, b, e);
+    });
+    float s = 0.f;
+    for (int64_t k = 0; k < nslots; ++k) s += part[static_cast<size_t>(k)];
+    *out = static_cast<double>(s);
+    return true;
+}
+#else
+inline bool normsq_reduced(const void*, int64_t, DType, int64_t, double*) {
+    return false;
+}
+#endif
+
 // Streams the raw sum of squares over a contiguous buffer; returns false when
 // the caller should fall back to the iterator path (short inputs or a dtype
 // without a streaming path).  The caller applies the square root in the
@@ -275,7 +371,7 @@ static bool try_normsq_real(const void* xv, int64_t n, DType dt, double* out) {
         *out = s;
         return true;
     }
-    return false;
+    return normsq_reduced(xv, n, dt, nslots, out);
 }
 
 }  // namespace
@@ -321,8 +417,12 @@ Tensor norm_kernel_impl(const Tensor& self, double p) {
         double r = 0.0;
         if (try_normsq_real(self.data_ptr(), self.numel(), self.dtype(), &r)) {
             Tensor out = Tensor::empty({}, out_dtype, self.device());
-            if (self.dtype() == DType::Float32) out.fill_(Scalar(std::sqrt(static_cast<float>(r))));
-            else out.fill_(Scalar(std::sqrt(r)));
+            if (self.dtype() == DType::Float32 ||
+                isReducedFloatingType(self.dtype())) {
+                out.fill_(Scalar(std::sqrt(static_cast<float>(r))));
+            } else {
+                out.fill_(Scalar(std::sqrt(r)));
+            }
             return out;
         }
     }
@@ -412,9 +512,14 @@ Tensor norm_dim_kernel_impl(const Tensor& self,
     // pass and takes a single square root, while a pass per reduced dimension
     // reaches only a fraction of that rate.
     const int64_t nd = self.dim();
+    const bool reduced_fast =
+        self.dtype() == DType::BFloat16 ||
+        (self.dtype() == DType::Float16 &&
+         tensorplay::cpu::vecreduced::f16c_available());
     if (p == 2.0 && self.is_contiguous() && self.numel() > 0 && nd >= 1 &&
         !dims.empty() &&
-        (self.dtype() == DType::Float32 || self.dtype() == DType::Float64)) {
+        (self.dtype() == DType::Float32 || self.dtype() == DType::Float64 ||
+         reduced_fast)) {
         int64_t first = nd;
         bool trailing = true;
         for (int64_t d : dims) {
@@ -450,6 +555,32 @@ Tensor norm_dim_kernel_impl(const Tensor& self,
                 std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(row, 1));
             Tensor out = Tensor::empty(compute_reduction_shape(self, dims, keepdim),
                                        self.dtype(), self.device());
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+            if (self.dtype() == DType::Float16) {
+                const uint16_t* in = reinterpret_cast<const uint16_t*>(
+                    self.data_ptr<tensorplay::Half>());
+                uint16_t* op = reinterpret_cast<uint16_t*>(
+                    out.data_ptr<tensorplay::Half>());
+                parallel_for(0, outer, row_grain, [&](int64_t b, int64_t e) {
+                    for (int64_t r = b; r < e; ++r)
+                        op[r] = tensorplay::cpu::vecreduced::narrow_one(
+                            std::sqrt(sumsq_f16_chunk(in + r * row, 0, row)));
+                });
+                return out;
+            }
+            if (self.dtype() == DType::BFloat16) {
+                const uint16_t* in = reinterpret_cast<const uint16_t*>(
+                    self.data_ptr<tensorplay::BFloat16>());
+                uint16_t* op = reinterpret_cast<uint16_t*>(
+                    out.data_ptr<tensorplay::BFloat16>());
+                parallel_for(0, outer, row_grain, [&](int64_t b, int64_t e) {
+                    for (int64_t r = b; r < e; ++r)
+                        op[r] = tensorplay::cpu::vecreduced::narrow_bf16_one(
+                            std::sqrt(sumsq_bf16_chunk(in + r * row, 0, row)));
+                });
+                return out;
+            }
+#endif
             if (self.dtype() == DType::Float32) {
                 const float* in = self.data_ptr<float>();
                 float* op = out.data_ptr<float>();
