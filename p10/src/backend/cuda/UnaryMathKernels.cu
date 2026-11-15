@@ -390,14 +390,85 @@ Tensor& hypot_out_cuda(const Tensor& a, const Tensor& b, Tensor& out) {
     return binary_float_cuda_out(a, b, out, HypotFloatPair{}, "hypot");
 }
 
+// One representable step from `from` toward `to` in the 16-bit layout the
+// reduced widths share. Clearing the sign bit leaves a pattern that grows with
+// the magnitude, so a step away from zero is one increment of that pattern and
+// a step toward zero one decrement, with the sign carried through. A step
+// taken at Float32 instead is far below the 16-bit spacing, and the widened
+// answer narrows straight back to the value it started from.
+template <typename T>
+__host__ __device__ T nextafter16(T from, T to) {
+    using Bits = uint16_t;
+    constexpr Bits kSign = static_cast<Bits>(1) << 15;
+    if (from != from || to != to) return std::numeric_limits<T>::quiet_NaN();
+    Bits f = from.x;
+    const Bits t = to.x;
+    if (f == t) return from;
+    const Bits abs_f = static_cast<Bits>(f & ~kSign);
+    const Bits abs_t = static_cast<Bits>(t & ~kSign);
+    if (abs_f == 0) {
+        // Two zeros differ only in sign, so the answer is the one the step heads
+        // for; a zero stepping toward a value of either sign leaves by the
+        // smallest subnormal carrying that sign.
+        if (abs_t == 0) return to;
+        return T(static_cast<unsigned short>((t & kSign) | static_cast<Bits>(1)),
+                 T::from_bits());
+    }
+    f = (abs_f > abs_t || ((f ^ t) & kSign)) ? static_cast<Bits>(f - 1)
+                                             : static_cast<Bits>(f + 1);
+    return T(static_cast<unsigned short>(f), T::from_bits());
+}
+
+// Writes the reduced-width step into `out`, which must already carry the
+// broadcast shape and width.
+void nextafter_reduced_into(const Tensor& a, const Tensor& b, DType dt, Tensor& out) {
+    const std::vector<int64_t> out_shape = broadcast_shapes(shape_of(a), shape_of(b));
+    Tensor ac = a.to(dt).expand(out_shape);
+    Tensor bc = b.to(dt).expand(out_shape);
+    TensorIterator iter = TensorIteratorConfig()
+        .check_all_same_dtype(true)
+        .add_output(out)
+        .add_const_input(ac)
+        .add_const_input(bc)
+        .build();
+    if (dt == DType::Float16) {
+        gpu_kernel(iter, [] __host__ __device__(Half x, Half y) -> Half {
+            return nextafter16(x, y);
+        });
+    } else {
+        gpu_kernel(iter, [] __host__ __device__(BFloat16 x, BFloat16 y) -> BFloat16 {
+            return nextafter16(x, y);
+        });
+    }
+    CUDA_CHECK(cudaGetLastError());
+}
+
 Tensor nextafter_cuda(const Tensor& a, const Tensor& b) {
+    DType dt = promoteTypes(a.dtype(), b.dtype());
+    if (!isFloatingType(dt)) dt = DType::Float32;
+    if (dt == DType::Float16 || dt == DType::BFloat16) {
+        const std::vector<int64_t> out_shape = broadcast_shapes(shape_of(a), shape_of(b));
+        Tensor out = Tensor::empty(out_shape, dt, a.device());
+        if (out.numel() != 0) nextafter_reduced_into(a, b, dt, out);
+        return out;
+    }
     return binary_float_cuda(a, b, HFn44{}, "nextafter");
 }
 
 Tensor& nextafter_out_cuda(const Tensor& a, const Tensor& b, Tensor& out) {
+    DType dt = promoteTypes(a.dtype(), b.dtype());
+    if (!isFloatingType(dt)) dt = DType::Float32;
+    if (dt == DType::Float16 || dt == DType::BFloat16) {
+        const std::vector<int64_t> out_shape = broadcast_shapes(shape_of(a), shape_of(b));
+        if (destination_takes(out, a.device(), dt, out_shape) &&
+            read_while_write_is_safe(a, out) && read_while_write_is_safe(b, out)) {
+            if (out.numel() != 0) nextafter_reduced_into(a, b, dt, out);
+            return out;
+        }
+        return write_out(out, nextafter_cuda(a, b));
+    }
     return binary_float_cuda_out(a, b, out, HFn44{}, "nextafter");
 }
-
 Tensor gcd_cuda(const Tensor& a, const Tensor& b) {
     DType dt = promoteTypes(a.dtype(), b.dtype());
     if (isFloatingType(dt)) TP_THROW(TypeError, "gcd only supports integral tensors");

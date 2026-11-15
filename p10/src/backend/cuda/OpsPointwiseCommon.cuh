@@ -475,6 +475,12 @@ struct HFn44 : GenFnBase<HFn44> {
         return ::nextafter(x, y);
     
     }
+    // A double step from an exactly representable single is far below the
+    // single's own spacing, so widening the elements would answer the input
+    // unchanged; the step has to be taken at the result width.
+    __host__ __device__ float runf(float x, float y) const {
+        return ::nextafterf(x, y);
+    }
 };
 
 struct HFn45 : GenFnBase<HFn45> {
