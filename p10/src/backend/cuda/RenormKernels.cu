@@ -54,6 +54,29 @@ Tensor renorm_composite_cuda(const Tensor& self, const Scalar& p, int64_t dim, c
 // Everything else keeps the composite route.
 namespace {
 
+template <typename T>
+__global__ void renorm_rows_l2_kernel(const T* input, T* output, int64_t columns,
+                                      T max_norm) {
+    __shared__ T partial[256];
+    const int64_t base = static_cast<int64_t>(blockIdx.x) * columns;
+    T sum = 0;
+    for (int64_t col = threadIdx.x; col < columns; col += blockDim.x) {
+        T value = input[base + col];
+        sum += value * value;
+    }
+    partial[threadIdx.x] = sum;
+    __syncthreads();
+    for (int step = 128; step; step >>= 1) {
+        if (threadIdx.x < step) partial[threadIdx.x] += partial[threadIdx.x + step];
+        __syncthreads();
+    }
+    T norm = ::sqrt(partial[0]);
+    T factor = norm > max_norm ? max_norm / (norm + static_cast<T>(1e-7)) : T(1);
+    for (int64_t col = threadIdx.x; col < columns; col += blockDim.x) {
+        output[base + col] = input[base + col] * factor;
+    }
+}
+
 // norms keeps one value per position along `dim` (every other axis reduced
 // and kept as a size-1 axis): its flat slot is the element's index along dim.
 template <typename T>
@@ -65,7 +88,7 @@ __global__ void renorm_apply_kernel(int64_t numel, int64_t slice_span,
     for (; i < numel; i += stride) {
         const T n = norms[(i % slice_span) / inner];
         const T limit = static_cast<T>(max_norm);
-        const T f = n > limit ? static_cast<T>(max_norm / (static_cast<double>(n) + 1e-7))
+        const T f = n > limit ? limit / (n + static_cast<T>(1e-7))
                               : static_cast<T>(1);
         out[i] = self[i] * f;
     }
@@ -81,10 +104,29 @@ Tensor& renorm_out_cuda(const Tensor& self, const Scalar& p, int64_t dim,
         destination_takes(out, self.device(), dt,
                           static_cast<std::vector<int64_t>>(self.shape())) &&
         read_while_write_is_safe(self, out)) {
+        if (p.isComplex()) TP_THROW(TypeError, "renorm: p must be real-valued");
+        if (maxnorm.isComplex()) TP_THROW(TypeError, "renorm: maxnorm must be real-valued");
         const double pd = p.toDouble();
         const double max_norm = maxnorm.toDouble();
+        if (!(pd > 0.0)) TP_THROW(ValueError, "renorm: norm order must be positive");
+        if (!(max_norm >= 0.0)) TP_THROW(ValueError, "renorm: maxnorm must be non-negative");
         int64_t nd = self.dim();
+        if (nd <= 1) TP_THROW(RuntimeError, "renorm: input must have at least 2 dimensions");
         dim = wrap_dim(dim, nd);
+        if (nd == 2 && dim == 0 && pd == 2.0 && max_norm >= 0.0 &&
+            self.size(0) >= 32 && self.size(0) <= 65535 &&
+            self.size(1) > 0 && self.size(1) <= 4096) {
+            auto stream = getCurrentCUDAStream().stream();
+            if (dt == DType::Float64) {
+                renorm_rows_l2_kernel<double><<<static_cast<unsigned>(self.size(0)), 256, 0, stream>>>(
+                    self.data_ptr<double>(), out.data_ptr<double>(), self.size(1), max_norm);
+            } else {
+                renorm_rows_l2_kernel<float><<<static_cast<unsigned>(self.size(0)), 256, 0, stream>>>(
+                    self.data_ptr<float>(), out.data_ptr<float>(), self.size(1), static_cast<float>(max_norm));
+            }
+            CUDA_CHECK(cudaGetLastError());
+            return out;
+        }
         std::vector<int64_t> reduce_dims;
         reduce_dims.reserve(static_cast<size_t>(nd - 1));
         for (int64_t axis = 0; axis < nd; ++axis) {
