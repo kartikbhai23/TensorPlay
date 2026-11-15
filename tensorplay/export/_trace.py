@@ -1312,14 +1312,27 @@ def export(
         args/kwargs: example inputs binding argument defaults.
         dynamic_shapes: dimension specification per argument (dict, sequence,
             :class:`ShapesCollection`, or :class:`AdditionalInputs`).
-        strict: reserved for callers of the strict capture contract; capture
-            validation is identical in both modes.
+        strict: whether to select a capture that evaluates the program's
+            bytecode and resumes across graph breaks.  This build records one
+            execution of the program and refuses the constructs such a capture
+            would elide, so only ``strict=False`` names a capture that exists;
+            ``strict=True`` is refused rather than answered with a graph built
+            another way.
         preserve_module_call_signature: submodule paths whose call metadata is
             recorded in ``module_call_graph`` for module-level tooling.
     """
 
     if not callable(model):
         raise TypeError(f"model must be callable, got {type(model).__name__}")
+    if not isinstance(strict, bool):
+        raise TypeError(f"strict must be a bool, got {type(strict).__name__}")
+    if strict:
+        raise GraphCaptureError(
+            "strict=True asks for a capture that evaluates the program's bytecode "
+            "and resumes across graph breaks; this build records one execution of "
+            "the program and refuses what such a capture would elide, so there is "
+            "no second capture to select. Call export with strict=False."
+        )
     if isinstance(model, object) and hasattr(model, "named_modules"):
         known = {name for name, _ in model.named_modules(remove_duplicate=True)}
         unknown = [p for p in preserve_module_call_signature if p not in known]
@@ -1336,7 +1349,6 @@ def export(
             for path in preserve_module_call_signature
             if path not in existing
         )
-    del strict
     return program
 
 

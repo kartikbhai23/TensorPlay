@@ -83,6 +83,27 @@ def test_export_rejects_data_dependent_control_flow():
         tp_export.export(fn, tp.ones(3))
 
 
+def test_export_has_one_capture_and_refuses_the_other_name_for_it():
+    """Two names for one capture would make one of them a silent no-op.
+
+    The capture behind ``export`` records one execution and refuses the
+    constructs a bytecode-evaluating capture would resume across, so asking
+    for the latter is refused rather than answered with the former.
+    """
+
+    def fn(x):
+        return x * 2
+
+    program = tp_export.export(fn, tp.ones(3), strict=False)
+    assert program(tp.ones(3)).tolist() == [2.0, 2.0, 2.0]
+
+    with pytest.raises(GraphCaptureError, match="strict=True"):
+        tp_export.export(fn, tp.ones(3), strict=True)
+
+    with pytest.raises(TypeError, match="strict must be a bool"):
+        tp_export.export(fn, tp.ones(3), strict=1)
+
+
 def test_export_unrolls_iteration_over_a_fixed_extent():
     def fn(x):
         total = x
