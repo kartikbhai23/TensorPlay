@@ -1533,10 +1533,16 @@ Tensor logsumexp_cuda2(const Tensor& self, const std::vector<int64_t>& dim, bool
     }
     Tensor max_keep = amax_dim_kernel(sc, dims, true);
     const Scalar infinity(std::numeric_limits<double>::infinity());
-    Tensor safe_max = Tensor::where(max_keep.abs().eq(infinity), Scalar(0), max_keep);
-    Tensor summed = sum_dim_kernel((sc - safe_max).exp(), dims, keepdim, sc.dtype());
-    Tensor result = summed.log();
-    return result + (keepdim ? safe_max : safe_max.reshape(result.shape()));
+    Tensor safe_max = max_keep.masked_fill(max_keep.abs().eq(infinity), Scalar(0));
+    // The shifted buffer is a temporary the caller never sees, so the
+    // exponential lands on it and the logarithm on the sum: a separate output
+    // for each step would only add allocations to the same traffic.
+    Tensor shifted = sc - safe_max;
+    shifted.exp_();
+    Tensor result = sum_dim_kernel(shifted, dims, keepdim, sc.dtype());
+    result.log_();
+    result.add_(keepdim ? safe_max : safe_max.reshape(result.shape()));
+    return result;
 }
 
 } // namespace
