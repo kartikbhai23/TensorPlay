@@ -512,7 +512,7 @@ pytest test/stax -q
 | `reduce-overhead` 折叠启动开销 | 白皮书 `08c:52` | 仅无梯度/无原地/非动态/≤8 布局时；无树复用 |
 | Triton 内核并入缓存条目 | `config.py:1310` | `triton_bundler.py` 无调用者 |
 | 计算/通信 overlap + bucketing | `config.py:1710`；`config_comms.py` | 配置存在，IR/调度未接线 |
-| `NOT_COVERED` 算子“到达即抛” | `operator_coverage.py:15` | 实际走 eager extern fallback；且 `index_add`/`index_copy`/`scatter_add` 已有 lowering，表已过期 |
+| `NOT_COVERED` 算子“到达即抛” | `operator_coverage.py:15` | 实际走 eager extern fallback；`index_add`/`index_copy`/`scatter_add` 等 6 个已有 lowering 的名字已从表里删除，声明的可覆盖集不再与实表矛盾（§13） |
 | stax 后端 173,141 行 | 白皮书 `08c:9` | 当前 181,912 行 |
 | 符号捕获不支持无存储伪张量与数据相关输出尺寸 | `docs/source/stax.md:55` | 属实，且应明确到静态捕获路径 |
 
@@ -708,6 +708,8 @@ pytest test/stax -q -p no:randomly
 | `3b8a9207` `fix(compiler)` | 补齐移植模块读取却未绑定的 4 个设置；新增 `save_config_portable`；bucketing 改读存在的分布式命名空间；CUDA 精度上下文回退到进程级精度并把未暴露的缩减开关按缺席处理 |
 | `2431f64a` `test(compiler)` | 新增 `test/stax/test_stax_config_surface.py`（12 项）：读取名存在、编译线程首次使用时决定、带宽覆盖、bucket 模式来源、快照可写文本/分节/随设置变化/过滤私有名与自身辅助函数、隔离键稳定且随选择收缩 |
 | `c9d7abae` `test(compiler)` | 新增 `test/stax/test_stax_compile_worker.py`（8 项）与 `test/stax/test_stax_pattern_foreach_scan.py`（11 项），见 §8.3 |
+| `f9224c6f` `fix(compiler)` | `config_comms` 补上被读却未绑定的 `sink_waits_iterative_swap_with_collectives`；测试遍历后端所有 `config_comms.` 引用确认可解析 |
+| `3758e5fc` `fix(compiler)` | 覆盖表删除 6 个已有 lowering 的 `NOT_COVERED` 条目；分解需要的名字若已有 lowering/模板则不再折进未覆盖集；测试加断言禁止声明与实表漂移 |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
