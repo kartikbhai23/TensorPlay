@@ -918,6 +918,21 @@ inline __m256 v_acosh_f32x8(__m256 x) {
     return _mm256_blendv_ps(r, fixed, big);
 }
 
+// entr: -x*log(x) above zero, zero at zero, -inf below it, and NaN for NaN.
+// Selecting per lane keeps a block with mixed signs to one logarithm and three
+// compares; a scalar walk over the same block pays a mispredict per sign
+// change, which dominates as soon as the logarithm itself is vectorised.
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256 v_entr_f32(__m256 x) {
+    const __m256 zero = _mm256_setzero_ps();
+    const __m256 r = _mm256_mul_ps(_mm256_xor_ps(x, _mm256_set1_ps(kSignBitF)),
+                                   v_log_f32(x));
+    __m256 out = _mm256_blendv_ps(_mm256_set1_ps(-INFINITY), zero,
+                                  _mm256_cmp_ps(x, zero, _CMP_EQ_OQ));
+    out = _mm256_blendv_ps(out, r, _mm256_cmp_ps(x, zero, _CMP_GT_OQ));
+    return _mm256_blendv_ps(out, x, _mm256_cmp_ps(x, x, _CMP_UNORD_Q));
+}
+
 // Applies op to one AVX2 float vector.  Always-inline: only ever folded into
 // target-attributed callers below.
 __attribute__((target("avx2,fma"), always_inline))
@@ -947,6 +962,7 @@ inline __m256 apply_f32(VOp op, VParams prm, __m256 x) {
         case VOp::Exp2: return tensorplay::tpsleef::exp2(x);
         case VOp::Expm1: return tensorplay::tpsleef::expm1(x);
         case VOp::Log: return v_log_f32(x);
+        case VOp::Entr: return v_entr_f32(x);
         case VOp::Log2: return tensorplay::tpsleef::log2(x);
         case VOp::Log10: return tensorplay::tpsleef::log10(x);
         case VOp::Log1p: return tensorplay::tpsleef::log1p(x);
@@ -1215,6 +1231,9 @@ static void f32_chunk_avx2(VOp op, VParams prm, const float* src, float* dst, in
         }
         case VOp::Expm1:
             TP_F32_SIMPLE_LOOP_8(tensorplay::tpsleef::expm1(x));
+            break;
+        case VOp::Entr:
+            TP_F32_SIMPLE_LOOP_8(v_entr_f32(x));
             break;
         case VOp::Log:
             log_range_loop<LogBase::E>(s, d, n, i);
@@ -1791,6 +1810,33 @@ inline __m256d v_tanh_f64(__m256d x) {
                             _mm256_cmp_pd(ax, _mm256_set1_pd(0.5), _CMP_LT_OQ));
 }
 
+// acosh on double lanes, repaired where the library kernel's formula leaves
+// the double range.  It needs sqrt(x*x - 1), and the square overflows past
+// 1e154; the product there is so far above the discarded -1 that
+// log(x) + log(2) is the answer to within a rounding of the logarithm.
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256d v_acosh_f64x4(__m256d x) {
+    const __m256d r = tensorplay::tpsleef::acosh(x);
+    const __m256d big = _mm256_cmp_pd(x, _mm256_set1_pd(1e154), _CMP_GE_OQ);
+    if (_mm256_movemask_pd(big) == 0) return r;
+    const __m256d fixed =
+        _mm256_add_pd(tensorplay::tpsleef::log(x),
+                      _mm256_set1_pd(0.693147180559945309417232121458176568));
+    return _mm256_blendv_pd(r, fixed, big);
+}
+
+// entr on double lanes; see the float twin for the per-lane selection.
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256d v_entr_f64(__m256d x) {
+    const __m256d zero = _mm256_setzero_pd();
+    const __m256d r = _mm256_mul_pd(_mm256_xor_pd(x, _mm256_set1_pd(-0.0)),
+                                    v_log_f64<LogBase64::E>(x));
+    __m256d out = _mm256_blendv_pd(_mm256_set1_pd(-INFINITY), zero,
+                                   _mm256_cmp_pd(x, zero, _CMP_EQ_OQ));
+    out = _mm256_blendv_pd(out, r, _mm256_cmp_pd(x, zero, _CMP_GT_OQ));
+    return _mm256_blendv_pd(out, x, _mm256_cmp_pd(x, x, _CMP_UNORD_Q));
+}
+
 __attribute__((target("avx2,fma"), always_inline))
 inline __m256d apply_f64(VOp op, VParams prm, __m256d x) {
     const __m256d one = _mm256_set1_pd(1.0);
@@ -1818,6 +1864,7 @@ inline __m256d apply_f64(VOp op, VParams prm, __m256d x) {
         case VOp::Exp2: return tensorplay::tpsleef::exp2(x);
         case VOp::Expm1: return tensorplay::tpsleef::expm1(x);
         case VOp::Log: return v_log_f64<LogBase64::E>(x);
+        case VOp::Entr: return v_entr_f64(x);
         case VOp::Log2: return v_log_f64<LogBase64::Two>(x);
         case VOp::Log10: return v_log_f64<LogBase64::Ten>(x);
         case VOp::Log1p: return tensorplay::tpsleef::log1p(x);
@@ -1831,7 +1878,7 @@ inline __m256d apply_f64(VOp op, VParams prm, __m256d x) {
         case VOp::Cosh: return tensorplay::tpsleef::cosh(x);
         case VOp::Tanh: return v_tanh_f64(x);
         case VOp::Asinh: return tensorplay::tpsleef::asinh(x);
-        case VOp::Acosh: return tensorplay::tpsleef::acosh(x);
+        case VOp::Acosh: return v_acosh_f64x4(x);
         case VOp::Atanh: return tensorplay::tpsleef::atanh(x);
         case VOp::Erf: return v_erf_f64(x);
         case VOp::Erfc: return v_erfc_f64(x);
@@ -2026,6 +2073,9 @@ static void f64_chunk_avx2(VOp op, VParams prm, const double* src, double* dst, 
             break;
         case VOp::Expm1:
             TP_F64_SIMPLE_LOOP_4(tensorplay::tpsleef::expm1(x));
+            break;
+        case VOp::Entr:
+            TP_F64_SIMPLE_LOOP_4(v_entr_f64(x));
             break;
         case VOp::Log:
             TP_F64_SIMPLE_LOOP_4(v_log_f64<LogBase64::E>(x));
@@ -2431,6 +2481,18 @@ static inline __m512d v_sinc_f64_512(__m512d x) {
                               near_zero, _mm512_set1_pd(1.0));
 }
 
+// 512-bit twin of v_entr_f32.
+__attribute__((target("avx512f,avx512dq"), always_inline))
+static inline __m512 v_entr_f32_512(__m512 x) {
+    const __m512 zero = _mm512_setzero_ps();
+    const __m512 r = _mm512_mul_ps(_mm512_xor_ps(x, _mm512_set1_ps(kSignBitF512)),
+                                   tensorplay::tpsleef::log(x));
+    __m512 out = _mm512_mask_blend_ps(_mm512_cmp_ps_mask(x, zero, _CMP_EQ_OQ),
+                                      _mm512_set1_ps(-INFINITY), zero);
+    out = _mm512_mask_blend_ps(_mm512_cmp_ps_mask(x, zero, _CMP_GT_OQ), out, r);
+    return _mm512_mask_blend_ps(_mm512_cmp_ps_mask(x, x, _CMP_UNORD_Q), out, x);
+}
+
 __attribute__((target("avx512f,avx512dq"), always_inline))
 inline __m512 apply16_f32(VOp op, VParams prm, __m512 x) {
     const __m512 one = _mm512_set1_ps(1.0f);
@@ -2462,6 +2524,7 @@ inline __m512 apply16_f32(VOp op, VParams prm, __m512 x) {
         case VOp::Exp2: return tensorplay::tpsleef::exp2(x);
         case VOp::Expm1: return tensorplay::tpsleef::expm1(x);
         case VOp::Log: return tensorplay::tpsleef::log(x);
+        case VOp::Entr: return v_entr_f32_512(x);
         case VOp::Log2: return tensorplay::tpsleef::log2(x);
         case VOp::Log10: return tensorplay::tpsleef::log10(x);
         case VOp::Log1p: return tensorplay::tpsleef::log1p(x);
@@ -2710,6 +2773,18 @@ static void f32_chunk_avx512(VOp op, VParams prm, const float* src, float* dst, 
     for (; i < n; ++i) d[i] = scalar_apply(op, prm, s[i]);
 }
 
+// 512-bit twin of v_entr_f64.
+__attribute__((target("avx512f,avx512dq"), always_inline))
+static inline __m512d v_entr_f64_512(__m512d x) {
+    const __m512d zero = _mm512_setzero_pd();
+    const __m512d r = _mm512_mul_pd(_mm512_xor_pd(x, _mm512_set1_pd(-0.0)),
+                                    tensorplay::tpsleef::log(x));
+    __m512d out = _mm512_mask_blend_pd(_mm512_cmp_pd_mask(x, zero, _CMP_EQ_OQ),
+                                       _mm512_set1_pd(-INFINITY), zero);
+    out = _mm512_mask_blend_pd(_mm512_cmp_pd_mask(x, zero, _CMP_GT_OQ), out, r);
+    return _mm512_mask_blend_pd(_mm512_cmp_pd_mask(x, x, _CMP_UNORD_Q), out, x);
+}
+
 __attribute__((target("avx512f,avx512dq"), always_inline))
 inline __m512d apply16_f64(VOp op, VParams prm, __m512d x) {
     const __m512d one = _mm512_set1_pd(1.0);
@@ -2741,6 +2816,7 @@ inline __m512d apply16_f64(VOp op, VParams prm, __m512d x) {
         case VOp::Exp2: return tensorplay::tpsleef::exp2(x);
         case VOp::Expm1: return tensorplay::tpsleef::expm1(x);
         case VOp::Log: return tensorplay::tpsleef::log(x);
+        case VOp::Entr: return v_entr_f64_512(x);
         case VOp::Log2: return tensorplay::tpsleef::log2(x);
         case VOp::Log10: return tensorplay::tpsleef::log10(x);
         case VOp::Log1p: return tensorplay::tpsleef::log1p(x);
@@ -2755,7 +2831,18 @@ inline __m512d apply16_f64(VOp op, VParams prm, __m512d x) {
         case VOp::Cosh: return tensorplay::tpsleef::cosh(x);
         case VOp::Tanh: return tensorplay::tpsleef::tanh(x);
         case VOp::Asinh: return tensorplay::tpsleef::asinh(x);
-        case VOp::Acosh: return tensorplay::tpsleef::acosh(x);
+        case VOp::Acosh: {
+            // Same repair as the 256-bit helper; the library formula squares
+            // x, which overflows past 1e154.
+            const __m512d r = tensorplay::tpsleef::acosh(x);
+            const __mmask8 big =
+                _mm512_cmp_pd_mask(x, _mm512_set1_pd(1e154), _CMP_GE_OQ);
+            if (!big) return r;
+            const __m512d fixed =
+                _mm512_add_pd(tensorplay::tpsleef::log(x),
+                              _mm512_set1_pd(0.693147180559945309417232121458176568));
+            return _mm512_mask_blend_pd(big, r, fixed);
+        }
         case VOp::Atanh: return tensorplay::tpsleef::atanh(x);
         case VOp::Erf: return tensorplay::tpsleef::erf(x);
         case VOp::Erfc: return tensorplay::tpsleef::erfc(x);
@@ -3216,7 +3303,6 @@ void vmsAcos(const int, const float[], float[], const long long) TP_VML_NOTHROW;
 void vmsSinh(const int, const float[], float[], const long long) TP_VML_NOTHROW;
 void vmsCosh(const int, const float[], float[], const long long) TP_VML_NOTHROW;
 void vmsAsinh(const int, const float[], float[], const long long) TP_VML_NOTHROW;
-void vmsAcosh(const int, const float[], float[], const long long) TP_VML_NOTHROW;
 void vmsAtanh(const int, const float[], float[], const long long) TP_VML_NOTHROW;
 void vmsErf(const int, const float[], float[], const long long) TP_VML_NOTHROW;
 void vmsErfc(const int, const float[], float[], const long long) TP_VML_NOTHROW;
@@ -3250,7 +3336,6 @@ void vmdAtan(const int, const double[], double[], const long long) TP_VML_NOTHRO
 void vmdSinh(const int, const double[], double[], const long long) TP_VML_NOTHROW;
 void vmdCosh(const int, const double[], double[], const long long) TP_VML_NOTHROW;
 void vmdAsinh(const int, const double[], double[], const long long) TP_VML_NOTHROW;
-void vmdAcosh(const int, const double[], double[], const long long) TP_VML_NOTHROW;
 void vmdAtanh(const int, const double[], double[], const long long) TP_VML_NOTHROW;
 int MKL_Set_Num_Threads_Local(int);
 }
@@ -3307,7 +3392,6 @@ inline Vml64Entry vml64_entry(VOp op) {
         case VOp::Sinh:  return vmdSinh;
         case VOp::Cosh:  return vmdCosh;
         case VOp::Asinh: return vmdAsinh;
-        case VOp::Acosh: return vmdAcosh;
         case VOp::Erf:   return vmdErf;
         case VOp::Erfc:  return vmdErfc;
         case VOp::ErfInv: return vmdErfInv;
@@ -3339,32 +3423,17 @@ inline bool vml_only_op(VOp op) {
 inline void run_f32(VOp op, VParams prm, const float* src, float* dst, int64_t b, int64_t e);
 inline void run_f64(VOp op, VParams prm, const double* src, double* dst, int64_t b, int64_t e);
 
-// logit needs the clamping applied before the transcendental, entr the result
-// after it.  Both halves stay in the vector walk: the fix-up is one elementwise
-// pass, and the transcendental is the same entry the plain op uses, so the
-// composed form costs one extra pass over the block.  The entr and Bessel arms
-// read the source again after dst has been written, so an aliased pair takes
-// the element-wise form; sinc carries a real lane in the chunk kernels and
-// never lands here.
+// logit needs the clamping applied before the transcendental, spherical_j0 the
+// division applied after it.  Both halves stay in the vector walk: the fix-up
+// is one elementwise pass, and the transcendental is the same entry the plain
+// op uses, so the composed form costs one extra pass over the block.  The
+// Bessel arm reads the source again after dst has been written, so an aliased
+// pair takes the element-wise form; sinc carries a real lane in the chunk
+// kernels and never lands here, as does entr, whose branches are per-lane
+// selects in its own kernel.
 inline bool composed_f32(VOp op, VParams prm, const float* src, float* dst, int64_t b,
                          int64_t e) {
     switch (op) {
-        case VOp::Entr:
-            if (src == dst) {
-                for (int64_t i = b; i < e; ++i) dst[i] = scalar_apply(op, prm, src[i]);
-                return true;
-            }
-            run_f32(VOp::Log, {}, src, dst, b, e);
-            for (int64_t i = b; i < e; ++i) {
-                const float x = src[i];
-                const float v = dst[i];
-                dst[i] = x > 0.0f
-                             ? -x * v
-                             : (x == 0.0f ? 0.0f
-                                          : (x != x ? x
-                                                    : -std::numeric_limits<float>::infinity()));
-            }
-            return true;
         case VOp::Logit: {
             const float eps = static_cast<float>(prm.p0);
             const bool clamp = prm.p0 >= 0.0;
@@ -3393,22 +3462,6 @@ inline bool composed_f32(VOp op, VParams prm, const float* src, float* dst, int6
 inline bool composed_f64(VOp op, VParams prm, const double* src, double* dst, int64_t b,
                          int64_t e) {
     switch (op) {
-        case VOp::Entr:
-            if (src == dst) {
-                for (int64_t i = b; i < e; ++i) dst[i] = scalar_apply(op, prm, src[i]);
-                return true;
-            }
-            run_f64(VOp::Log, {}, src, dst, b, e);
-            for (int64_t i = b; i < e; ++i) {
-                const double x = src[i];
-                const double v = dst[i];
-                dst[i] = x > 0.0
-                             ? -x * v
-                             : (x == 0.0 ? 0.0
-                                         : (x != x ? x
-                                                   : -std::numeric_limits<double>::infinity()));
-            }
-            return true;
         case VOp::Logit: {
             const double eps = prm.p0;
             const bool clamp = prm.p0 >= 0.0;
