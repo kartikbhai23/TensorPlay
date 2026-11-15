@@ -240,11 +240,6 @@ struct CusolverTraits<float> {
                                   int* info) {
         return cusolverDnSgetrf(h, m, n, a, lda, work, ipiv, info); (void)lwork;
     }
-    static cusolverStatus_t getrs(cusolverDnHandle_t h, cublasOperation_t trans,
-                                  int n, int nrhs, const float* a, int lda,
-                                  const int* ipiv, float* b, int ldb, int* info) {
-        return cusolverDnSgetrs(h, trans, n, nrhs, a, lda, ipiv, b, ldb, info);
-    }
     static cusolverStatus_t geqrf_bufferSize(cusolverDnHandle_t h, int m, int n,
                                              float* a, int lda, int* lw) {
         return cusolverDnSgeqrf_bufferSize(h, m, n, a, lda, lw);
@@ -338,11 +333,6 @@ struct CusolverTraits<double> {
                                   int lda, int* ipiv, double* work, int lwork,
                                   int* info) {
         return cusolverDnDgetrf(h, m, n, a, lda, work, ipiv, info); (void)lwork;
-    }
-    static cusolverStatus_t getrs(cusolverDnHandle_t h, cublasOperation_t trans,
-                                  int n, int nrhs, const double* a, int lda,
-                                  const int* ipiv, double* b, int ldb, int* info) {
-        return cusolverDnDgetrs(h, trans, n, nrhs, a, lda, ipiv, b, ldb, info);
     }
     static cusolverStatus_t geqrf_bufferSize(cusolverDnHandle_t h, int m, int n,
                                              double* a, int lda, int* lw) {
@@ -470,48 +460,74 @@ std::tuple<Tensor, Tensor, Tensor> linalg_lu_factor_ex_kernel_cuda(const Tensor&
     return lu_factor_ex_cuda_impl(A, check_errors);
 }
 
-template <typename scalar_t>
-void host_det_slogdet(const Tensor& LU_h, const Tensor& piv_h, Tensor& det_out,
-                      Tensor* sign_out, Tensor* logabsdet_out) {
-    const int64_t bs = batch_count_of(LU_h);
-    const int64_t n = LU_h.size(-1);
-    const scalar_t* lu = LU_h.data_ptr<scalar_t>();
-    const int32_t* pv = piv_h.data_ptr<int32_t>();
-    std::vector<scalar_t> dets(bs), signs(bs), logs(bs);
-    const bool want_log = sign_out != nullptr;
-    for (int64_t b = 0; b < bs; ++b) {
-        scalar_t det = scalar_t(1), sgn = scalar_t(1), logdet = scalar_t(0);
-        bool singular = false;
-        for (int64_t i = 0; i < n; ++i) {
-            const scalar_t v = lu[b * n * n + i * n + i];
-            if (v == scalar_t(0)) { singular = true; break; }
-            det *= v;
-            logdet += std::log(std::abs(v));
-            sgn *= v < scalar_t(0) ? scalar_t(-1) : scalar_t(1);
-        }
-        int64_t sign_changes = 0;
-        for (int64_t i = 0; i < n; ++i)
-            if (pv[b * n + i] - 1 != static_cast<int32_t>(i)) ++sign_changes;
-        const scalar_t perm_sign = (sign_changes % 2 == 0) ? scalar_t(1) : scalar_t(-1);
-        if (want_log) {
-            signs[b] = singular ? scalar_t(0) : sgn * perm_sign;
-            logs[b] = singular ? -std::numeric_limits<scalar_t>::infinity() : logdet;
+// det and slogdet both read one diagonal and the sign of the permutation.
+// pass answers them per matrix: a warp walks the diagonal in strides and folds
+// its counts together, so nothing of the matrix travels through the host.  An
+// entry without a sign -- a zero or a missing value -- makes the sign zero,
+// while the logarithm follows the magnitudes and goes to -inf or undefined.
+template <typename T>
+__global__ void det_slogdet_kernel(int64_t n, const T* lu,
+                                   const int32_t* pivots, T* det_out,
+                                   T* sign_out, T* logabsdet_out) {
+    constexpr unsigned kFullWarp = 0xffffffffu;
+    const int64_t b = blockIdx.x;
+    const T* diag = lu + b * n * n;
+    const int32_t* piv = pivots + b * n;
+    T product = T(1);
+    T log_sum = T(0);
+    int negative = 0;
+    int zero = 0;
+    unsigned long long sign_changes = 0;
+    for (int64_t i = threadIdx.x; i < n; i += blockDim.x) {
+        const T v = diag[i * n + i];
+        product *= v;
+        if constexpr (std::is_same_v<T, float>) {
+            log_sum += logf(fabsf(v));
         } else {
-            dets[b] = singular ? scalar_t(0) : det * perm_sign;
+            log_sum += ::log(::fabs(v));
         }
+        negative ^= (v < T(0)) ? 1 : 0;
+        // A value that is neither above nor below zero carries no sign: a zero
+        // diagonal makes the whole sign zero, and a missing entry does too.
+        zero |= (v > T(0) || v < T(0)) ? 0 : 1;
+        sign_changes += (piv[i] - 1 != static_cast<int32_t>(i)) ? 1ULL : 0ULL;
     }
-    if (want_log) {
-        cudaMemcpyAsync(sign_out->data_ptr(), signs.data(),
-                        sizeof(scalar_t) * bs, cudaMemcpyHostToDevice,
-                        getCurrentCUDAStream().stream());
-        cudaMemcpyAsync(logabsdet_out->data_ptr(), logs.data(),
-                        sizeof(scalar_t) * bs, cudaMemcpyHostToDevice,
-                        getCurrentCUDAStream().stream());
-    } else {
-        cudaMemcpyAsync(det_out.data_ptr(), dets.data(),
-                        sizeof(scalar_t) * bs, cudaMemcpyHostToDevice,
-                        getCurrentCUDAStream().stream());
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        product *= __shfl_down_sync(kFullWarp, product, offset);
+        log_sum += __shfl_down_sync(kFullWarp, log_sum, offset);
+        negative ^= __shfl_down_sync(kFullWarp, negative, offset);
+        zero |= __shfl_down_sync(kFullWarp, zero, offset);
+        sign_changes += __shfl_down_sync(kFullWarp, sign_changes, offset);
     }
+    if (threadIdx.x != 0) return;
+    const T permutation = (sign_changes % 2 == 0) ? T(1) : T(-1);
+    if (det_out != nullptr) {
+        det_out[b] = permutation * product;
+    }
+    if (sign_out != nullptr) {
+        sign_out[b] = zero ? T(0)
+                           : permutation * (negative ? T(-1) : T(1));
+        logabsdet_out[b] = log_sum;
+    }
+}
+
+template <typename T>
+void device_det_slogdet(const Tensor& LU, const Tensor& pivots, Tensor* det_out,
+                        Tensor* sign_out, Tensor* logabsdet_out) {
+    // The matrix count is the product of the leading extents; an empty matrix
+    // still counts as one, whose answer is the empty product the kernel's
+    // untouched accumulators carry.
+    int64_t bs = 1;
+    for (int64_t dim = 0; dim + 2 < LU.dim(); ++dim) bs *= LU.size(dim);
+    if (bs == 0) return;
+    const int64_t n = LU.size(-1);
+    det_slogdet_kernel<T><<<static_cast<unsigned>(bs), 32, 0,
+                            getCurrentCUDAStream().stream()>>>(
+        n, LU.data_ptr<T>(), pivots.data_ptr<int32_t>(),
+        det_out == nullptr ? nullptr : det_out->data_ptr<T>(),
+        sign_out == nullptr ? nullptr : sign_out->data_ptr<T>(),
+        logabsdet_out == nullptr ? nullptr : logabsdet_out->data_ptr<T>());
+    CUDA_CHECK(cudaGetLastError());
 }
 
 std::tuple<Tensor, Tensor, Tensor> linalg_det_internal_kernel_cuda(
@@ -520,12 +536,10 @@ std::tuple<Tensor, Tensor, Tensor> linalg_det_internal_kernel_cuda(
     const Tensor src = A.is_contiguous() ? A.transpose(-2, -1) : A;
     auto [LU, pivots, info] = lu_factor_ex_cuda_impl(src, false);
     (void)info;
-    Tensor LU_h = LU.to(Device(DeviceType::CPU), A.dtype()).contiguous();
-    Tensor piv_h = pivots.to(Device(DeviceType::CPU), DType::Int32).contiguous();
     Tensor out = Tensor::empty(batch_shape_of(A), A.dtype(), A.device());
     run_real(A.dtype(), [&](auto tag) {
         using T = std::remove_pointer_t<decltype(tag)>;
-        host_det_slogdet<T>(LU_h, piv_h, out, nullptr, nullptr);
+        device_det_slogdet<T>(LU, pivots, &out, nullptr, nullptr);
     });
     return {out, LU, pivots};
 }
@@ -545,14 +559,11 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> linalg_slogdet_internal_kernel_cuda(
     const Tensor src = A.is_contiguous() ? A.transpose(-2, -1) : A;
     auto [LU, pivots, info] = lu_factor_ex_cuda_impl(src, false);
     (void)info;
-    Tensor LU_h = LU.to(Device(DeviceType::CPU), A.dtype()).contiguous();
-    Tensor piv_h = pivots.to(Device(DeviceType::CPU), DType::Int32).contiguous();
     auto sign = Tensor::empty(batch_shape_of(A), A.dtype(), A.device());
     auto logabsdet = Tensor::empty(batch_shape_of(A), A.dtype(), A.device());
     run_real(A.dtype(), [&](auto tag) {
         using T = std::remove_pointer_t<decltype(tag)>;
-        Tensor dummy;  // unused in slogdet mode
-        host_det_slogdet<T>(LU_h, piv_h, dummy, &sign, &logabsdet);
+        device_det_slogdet<T>(LU, pivots, nullptr, &sign, &logabsdet);
     });
     return {sign, logabsdet, LU, pivots};
 }
@@ -569,7 +580,7 @@ linalg_slogdet_internal_out_kernel_cuda(
     return {sign, logabsdet, LU, pivots};
 }
 
-// ------------------------------------------------------- getrs-based solve --
+// ------------------------------------------- solving against the factors --
 
 // The row permutation the factorisation applied, resolved once on the device
 // so that every row of the right-hand side can be placed at the same time:
@@ -592,8 +603,8 @@ __global__ void row_permutation_kernel(int64_t n, const int32_t* pivots,
 }
 
 // out[row, col] = src[rows[row], col] over a block of columns, both buffers
-// column-major.  One block per column keeps every access to a column's own
-// contiguous run, which is where the parenthesised rows land.
+// column-major.  One block per column keeps every access inside that column's
+// own contiguous run, which the rows only reorder.
 template <typename scalar_t>
 __global__ void gather_rows_kernel(const scalar_t* src, scalar_t* out,
                                    const int32_t* rows, int64_t ldb,
@@ -632,7 +643,7 @@ void apply_one_trsm(cublasHandle_t handle, const scalar_t* a, int64_t lda,
 // triangular solve, which answers this shape in a third of the time the
 // general solver takes for it.
 template <typename scalar_t>
-Tensor apply_getrs(const Tensor& LU_cm, const Tensor& pivots,
+Tensor solve_from_factors(const Tensor& LU_cm, const Tensor& pivots,
                    const Tensor& B_cm, bool transpose) {
     constexpr int64_t kColumnChunk = 65535;
     constexpr int64_t kRowsPerBlock = 256;
@@ -749,7 +760,7 @@ linalg_solve_ex_impl(const Tensor& A, const Tensor& B, bool left,
         Tensor B_cm = clone_batched_column_major(expand_to_batch(B_2d, batch));
         run_real(A.dtype(), [&](auto tag) {
             using T = std::remove_pointer_t<decltype(tag)>;
-            B_cm = apply_getrs<T>(LU_work, pivots, B_cm, false);
+            B_cm = solve_from_factors<T>(LU_work, pivots, B_cm, false);
         });
         result = B_cm.contiguous();
     } else {
@@ -758,7 +769,7 @@ linalg_solve_ex_impl(const Tensor& A, const Tensor& B, bool left,
             clone_batched_column_major(expand_to_batch(B_2d, batch).transpose(-2, -1));
         run_real(A.dtype(), [&](auto tag) {
             using T = std::remove_pointer_t<decltype(tag)>;
-            BT_cm = apply_getrs<T>(LU_work, pivots, BT_cm, true);
+            BT_cm = solve_from_factors<T>(LU_work, pivots, BT_cm, true);
         });
         result = BT_cm.contiguous().transpose(-2, -1).contiguous();
     }
@@ -922,7 +933,7 @@ Tensor linalg_lu_solve_kernel_cuda(const Tensor& LU, const Tensor& pivots,
         Tensor B_cm = clone_batched_column_major(expand_to_batch(B, batch));
         run_real(LU.dtype(), [&](auto tag) {
             using T = std::remove_pointer_t<decltype(tag)>;
-            B_cm = apply_getrs<T>(LU_work, piv_exp, B_cm, adjoint);
+            B_cm = solve_from_factors<T>(LU_work, piv_exp, B_cm, adjoint);
         });
         return B_cm.contiguous();
     }
@@ -930,7 +941,7 @@ Tensor linalg_lu_solve_kernel_cuda(const Tensor& LU, const Tensor& pivots,
         clone_batched_column_major(expand_to_batch(B, batch).transpose(-2, -1));
     run_real(LU.dtype(), [&](auto tag) {
         using T = std::remove_pointer_t<decltype(tag)>;
-        BT_cm = apply_getrs<T>(LU_work, piv_exp, BT_cm, !adjoint);
+        BT_cm = solve_from_factors<T>(LU_work, piv_exp, BT_cm, !adjoint);
     });
     return BT_cm.contiguous().transpose(-2, -1).contiguous();
 }
