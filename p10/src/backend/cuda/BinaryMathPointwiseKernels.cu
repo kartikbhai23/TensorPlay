@@ -251,10 +251,30 @@ Tensor binary_float_op_kernel_v2(const Tensor& self, const Tensor& other, Functo
 }
 
 struct PowFunctor { template<typename T> __device__ T operator()(T a, T b) const { return ::pow(a, b); } };
+// A power with a fixed small exponent folds into one multiply, a hardware
+// square root or a reciprocal; only the remaining exponents pay for the
+// general power.  These functors are private to this translation unit so that
+// each of them has exactly one instantiation of the element loop.
+namespace {
+struct PowSquare { template<typename T> __device__ T operator()(T x) const { return x * x; } };
+struct PowCube { template<typename T> __device__ T operator()(T x) const { return x * x * x; } };
+struct PowReciprocal {
+    template<typename T> __device__ T operator()(T x) const { return static_cast<T>(1) / x; }
+};
+struct PowReciprocalSquare {
+    template<typename T> __device__ T operator()(T x) const {
+        return static_cast<T>(1.0 / (x * x));
+    }
+};
+struct PowSqrt { template<typename T> __device__ T operator()(T x) const { return ::sqrt(x); } };
+struct PowRsqrt { template<typename T> __device__ T operator()(T x) const { return ::rsqrt(x); } };
+}  // namespace
 struct PowScalarFunctor {
     double exponent;
     PowScalarFunctor(double e) : exponent(e) {}
-    template<typename T> __device__ T operator()(T x) const { return ::pow(x, static_cast<T>(exponent)); }
+    template<typename T> __device__ T operator()(T x) const {
+        return ::pow(x, static_cast<T>(exponent));
+    }
 };
 struct PowBaseFunctor {
     double base;
@@ -387,7 +407,16 @@ Tensor pow_scalar_kernel_cuda(const Tensor& self, const Scalar& exponent) {
         return complex_math_kernel_cuda(
             base, CxPowScalar{exponent.to<tensorplay::complex<double>>()});
     }
-    return unary_float_op_kernel_v2(self, PowScalarFunctor(exponent.toDouble()));
+    // A named exponent replaces the general power with one multiply, a
+    // hardware square root or a reciprocal.
+    const double exponent_value = exponent.toDouble();
+    if (exponent_value == 2.0) return unary_float_op_kernel_v2(self, PowSquare());
+    if (exponent_value == 3.0) return unary_float_op_kernel_v2(self, PowCube());
+    if (exponent_value == -1.0) return unary_float_op_kernel_v2(self, PowReciprocal());
+    if (exponent_value == -2.0) return unary_float_op_kernel_v2(self, PowReciprocalSquare());
+    if (exponent_value == 0.5) return unary_float_op_kernel_v2(self, PowSqrt());
+    if (exponent_value == -0.5) return unary_float_op_kernel_v2(self, PowRsqrt());
+    return unary_float_op_kernel_v2(self, PowScalarFunctor(exponent_value));
 }
 Tensor pow_scalar_tensor_kernel_cuda(const Scalar& base, const Tensor& exponent) {
     const DType result_dtype = ops::result_type(base, exponent);
@@ -449,7 +478,22 @@ Tensor& pow_tensor_scalar_out_cuda(const Tensor& self, const Scalar& exponent, T
     const auto shape = static_cast<std::vector<int64_t>>(self.shape());
     if (destination_takes(out, self.device(), out_dtype, shape) &&
         read_while_write_is_safe(self, out)) {
-        unary_float_op_kernel_into(self, out, PowScalarFunctor(exponent.toDouble()));
+        const double exponent_value = exponent.toDouble();
+        if (exponent_value == 2.0) {
+            unary_float_op_kernel_into(self, out, PowSquare());
+        } else if (exponent_value == 3.0) {
+            unary_float_op_kernel_into(self, out, PowCube());
+        } else if (exponent_value == -1.0) {
+            unary_float_op_kernel_into(self, out, PowReciprocal());
+        } else if (exponent_value == -2.0) {
+            unary_float_op_kernel_into(self, out, PowReciprocalSquare());
+        } else if (exponent_value == 0.5) {
+            unary_float_op_kernel_into(self, out, PowSqrt());
+        } else if (exponent_value == -0.5) {
+            unary_float_op_kernel_into(self, out, PowRsqrt());
+        } else {
+            unary_float_op_kernel_into(self, out, PowScalarFunctor(exponent_value));
+        }
         return out;
     }
     return write_out(out, pow_scalar_kernel_cuda(self, exponent));
