@@ -475,6 +475,18 @@ def find_input_mutations(gm: Any) -> set[int]:
     return mutated
 
 
+def declared_input_mutations(gm: Any) -> set[int]:
+    """Placeholder indices whose value the wrapper writes after the run.
+
+    A region whose input is written is compiled as a mutation-free graph and
+    the update is copied back outside it, so the graph no longer shows the
+    write.  The graph module records which inputs those are, which keeps the
+    region from being replayed where a write to an input would break it.
+    """
+
+    return set(gm.meta.get("input_update_placeholders", ()))
+
+
 def get_device_node_mapping(gm: Any) -> dict[str, Any]:
     from ..._higher_order_ops._hop_base import value_device
 
@@ -560,7 +572,7 @@ def _iter_index_values(value: Any):
 
 
 def check_for_skip(gm: Any) -> str | None:
-    mutated = find_input_mutations(gm)
+    mutated = find_input_mutations(gm) | declared_input_mutations(gm)
     if mutated:
         return format_default_skip_message(f"mutated inputs ({len(mutated)} instances)")
     if skip := check_multiple_devices_or_any_cpu_nodes(get_device_node_mapping(gm)):
@@ -791,7 +803,7 @@ def wrap_skip_reason(
         return format_default_skip_message("no CUDA tensor input")
     if getattr(compiled, "_mutations", None):
         return format_default_skip_message("artifact replays input mutations")
-    mutated = find_input_mutations(gm)
+    mutated = find_input_mutations(gm) | declared_input_mutations(gm)
     if mutated:
         names = ", ".join(gm.graph.placeholders[i].name for i in sorted(mutated))
         return format_default_skip_message(f"mutated inputs ({names})")

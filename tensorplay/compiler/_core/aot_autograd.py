@@ -30,6 +30,7 @@ from typing import Any
 
 import tensorplay
 from tensorplay.graph import GraphModule
+from tensorplay.graph.node import Node
 from tensorplay.graph.experimental._dispatch_trace import (
     DispatchTracer,
     ProxyTensorDispatchMode,
@@ -101,7 +102,7 @@ def min_cut_rematerialization_partition(
     _joint_inputs: Sequence[Any],
     *,
     num_fwd_outputs: int,
-    memory_budget: int | None = None,
+    memory_budget: float | None = None,
 ):
     """Save the cheapest cut of forward values; recompute the rest in backward."""
 
@@ -194,6 +195,52 @@ def _trace_inputs(primals: Sequence[Any]) -> list[Any]:
             copied = detached.clone()
         copies.append(copied.requires_grad_(primal.requires_grad))
     return copies
+
+
+def _detach_input_updates(
+    gm: GraphModule,
+) -> tuple[GraphModule, list[tuple[int, int]]]:
+    """Move a written input's final value out of the graph, if there is one.
+
+    A graph whose input was written ends the run with a ``copy_`` from the
+    final value into that input, so that a caller sees the update.  A caller
+    that asked the region to leave its inputs alone gets those values as
+    results instead: the copies are removed and the values appended to the
+    outputs, and the returned pairs say which argument gets which result
+    position.  Nothing is returned when no input was written.
+    """
+
+    graph = gm.graph
+    positions = {node: index for index, node in enumerate(graph.placeholders)}
+    updates: list[tuple[int, int, Node]] = []
+    for node in list(graph.nodes):
+        if getattr(node.target, "_opname", None) != "copy_":
+            continue
+        if not node.args:
+            continue
+        destination = node.args[0]
+        if not isinstance(destination, Node) or destination not in positions:
+            continue
+        updates.append((positions[destination], 0, node))
+    if not updates:
+        return gm, []
+
+    output = graph.output_node
+    existing = output.args[0] if len(output.args) == 1 else output.args
+    if not isinstance(existing, tuple):
+        existing = (existing,)
+    produced = list(existing)
+    pairs: list[tuple[int, int]] = []
+    for argument, _, node in updates:
+        pairs.append((argument, len(produced)))
+        produced.append(node.args[1])
+    for _, _, node in updates:
+        graph.erase_node(node)
+    graph.output(tuple(produced))
+    gm.meta["input_update_placeholders"] = tuple(
+        sorted(argument for argument, _, _ in updates)
+    )
+    return gm, pairs
 
 
 def _trace_forward(fn: Callable[..., Any], primals: Sequence[Any], decompositions):
@@ -467,7 +514,6 @@ def aot_function(
             run_flattened._tensorplay_guard = lambda *args: guard(*tree_flatten(tuple(args))[0])
         return run_flattened
 
-    del keep_inference_input_mutations  # mutations stay in the traced graph order
     bw_compiler = bw_compiler or fw_compiler
     inference_compiler = inference_compiler or fw_compiler
     partition_fn = partition_fn or default_partition
@@ -476,9 +522,12 @@ def aot_function(
     )
 
     if not needs_grad:
+        input_updates: list[tuple[int, int]] = []
         with tensorplay.no_grad():
             fw_module, out_spec, _ = _trace_forward(fn, primals, decompositions)
             fw_module = _functionalize(fw_module, _trace_inputs(primals))
+            if not keep_inference_input_mutations:
+                fw_module, input_updates = _detach_input_updates(fw_module)
         compiled_fw = inference_compiler(fw_module, primals)
         from .api import _release_recorded_values
 
@@ -486,7 +535,12 @@ def aot_function(
 
         def run_inference(*args: Any) -> Any:
             with tensorplay.no_grad():
-                return tree_unflatten(list(_call(compiled_fw, args)), out_spec)
+                produced = _call(compiled_fw, args)
+                if input_updates:
+                    for argument, position in input_updates:
+                        args[argument].copy_(produced[position])
+                    produced = produced[: len(produced) - len(input_updates)]
+                return tree_unflatten(list(produced), out_spec)
 
         run_inference._tensorplay_aot_graphs = (fw_module,)  # type: ignore[attr-defined]
         run_inference._tensorplay_codegen = getattr(

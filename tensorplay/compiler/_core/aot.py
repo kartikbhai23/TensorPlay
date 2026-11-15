@@ -925,11 +925,40 @@ def _mincut_maxflow(
     return total_flow, reachable
 
 
+def _saved_value_bytes(saved: Sequence[Node]) -> int:
+    """The memory a kept set occupies, counting each kept buffer once."""
+
+    return sum(_nbytes(node.meta.get("val")) for node in saved)
+
+
+def _memory_budget_fraction(memory_budget: Any) -> float:
+    """Validate a memory budget and return it as a fraction of the default.
+
+    ``0`` keeps no activation and recomputes everything the backward reads;
+    ``1`` keeps the cut that is cheapest to run.  A value in between is a
+    fraction of what that cheapest-to-run cut would hold.
+    """
+
+    if memory_budget is None:
+        return 1.0
+    if isinstance(memory_budget, bool) or not isinstance(memory_budget, (int, float)):
+        raise TypeError(
+            f"memory_budget must be a number between 0 and 1, got "
+            f"{type(memory_budget).__name__}"
+        )
+    budget = float(memory_budget)
+    if not 0.0 <= budget <= 1.0:
+        raise ValueError(
+            f"memory_budget must be between 0 and 1, got {memory_budget!r}"
+        )
+    return budget
+
+
 def partition_min_cut(
     joint_gm: GraphModule,
     *,
     num_fwd_outputs: int = 1,
-    memory_budget: Optional[int] = None,
+    memory_budget: Optional[float] = None,
     ban_fusible_chains: bool = True,
 ):
     """Split a tagged joint graph, keeping the cheapest cut of forward values.
@@ -940,8 +969,15 @@ def partition_min_cut(
     copy of every operation between the kept values and its own.
     ``ban_fusible_chains`` turns on the rules that keep a value read far from
     where it was made or sitting at the end of a very long fusible run.
-    ``memory_budget`` is accepted for callers that pass one; the cut is
-    always the one that is cheapest to run.
+
+    ``memory_budget`` spends part of what that cut would hold on keeping
+    activations; the rest is recomputed.  ``None`` and ``1`` keep the whole
+    cut, ``0`` keeps nothing and clones the forward chains the backward reads
+    into the backward graph, and a value in between selects the larger of two
+    candidate cuts that fits, where the first holds only what the backward
+    cannot do without and the second is the cheapest-to-run one.  The chosen
+    cut is always one that can be recomputed, so a smaller budget can only
+    remove kept values.
     """
 
     joint = joint_gm.graph
@@ -966,6 +1002,45 @@ def partition_min_cut(
     )
     if saved_set is None:
         return partition_default(joint_gm, num_fwd_outputs=num_fwd_outputs)
+
+    budget = _memory_budget_fraction(memory_budget)
+    if budget == 0.0:
+        # Nothing is kept: every value the backward reads is cloned from the
+        # forward's producers.
+        return partition_default(
+            joint_gm, num_fwd_outputs=num_fwd_outputs, policy="recompute_all"
+        )
+    if budget < 1.0:
+        candidates = [saved_set]
+        if ban_fusible_chains:
+            aggressive = _choose_saved_values(
+                joint, user_outputs, bwd_out_args, heuristics=False
+            )
+            if aggressive is not None:
+                candidates.append(aggressive)
+        allowed = budget * _saved_value_bytes(saved_set)
+        fitting = [
+            candidate
+            for candidate in candidates
+            if _saved_value_bytes(candidate) <= allowed
+        ]
+        if fitting:
+            saved_set = min(fitting, key=_saved_value_bytes)
+        else:
+            # Nothing on hand fits: the backward may need more than the budget
+            # allows.  Values are dropped from the smallest cut, largest
+            # first, and the backward recomputes them from their producers.
+            smallest = min(candidates, key=_saved_value_bytes)
+            kept = set(smallest)
+            spent = _saved_value_bytes(kept)
+            for node in sorted(
+                smallest, key=lambda n: -_nbytes(n.meta.get("val"))
+            ):
+                if spent <= allowed:
+                    break
+                kept.discard(node)
+                spent = _saved_value_bytes(kept)
+            saved_set = kept
 
     # A forward operation that writes into something -- an input updated in
     # place, say a buffer counting the batches it has seen -- is held for that
