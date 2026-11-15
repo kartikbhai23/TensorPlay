@@ -373,13 +373,184 @@ class TestPoissonWalk(unittest.TestCase):
                                     f"{name} ({dev})")
 
 
+class TestMarginRankingWalk(unittest.TestCase):
+    """The fused margin_ranking pass agrees with the reference arithmetic."""
+
+    def test_forward(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for shape in SHAPES:
+                    for name, reduction in REDUCTIONS.items():
+                        ref_x1, ref_x2 = _pair(shape, dtype, 41)
+                        ref_t = torch.randn(*shape, dtype=dtype,
+                                            generator=torch.Generator().manual_seed(43)).sign()
+                        expected = torch_F.margin_ranking_loss(
+                            ref_x1, ref_x2, ref_t, margin=0.7, reduction=name)
+                        got = tp.margin_ranking_loss(
+                            from_reference(ref_x1, dev),
+                            from_reference(ref_x2, dev),
+                            from_reference(ref_t, dev),
+                            margin=0.7, reduction=reduction)
+                        self.assertEqual(tuple(got.shape),
+                                         tuple(expected.shape))
+                        assert_reference_close(
+                            got, expected,
+                            msg=f"margin_ranking_loss {shape} {dtype} {name} ({dev})")
+
+    def test_gradient(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for shape in SHAPES:
+                    for name, reduction in REDUCTIONS.items():
+                        ref_x1, ref_x2 = _pair(shape, dtype, 45)
+                        ref_t = torch.randn(*shape, dtype=dtype,
+                                            generator=torch.Generator().manual_seed(47)).sign()
+                        ref_leaves = [t.clone().requires_grad_(True)
+                                      for t in (ref_x1, ref_x2, ref_t)]
+                        ref_out = torch_F.margin_ranking_loss(
+                            *ref_leaves, margin=0.7, reduction=name)
+                        seed = (torch.randn(ref_out.shape, dtype=dtype)
+                                if name == "none"
+                                else torch.ones((), dtype=dtype))
+                        ref_grads = torch.autograd.grad(
+                            ref_out, ref_leaves, grad_outputs=seed)
+
+                        leaves = [from_reference(t, dev, requires_grad=True)
+                                  for t in (ref_x1, ref_x2, ref_t)]
+                        out = tp.margin_ranking_loss(
+                            *leaves, margin=0.7, reduction=reduction)
+                        out.backward(from_reference(seed, dev))
+                        for leaf, ref_grad in zip(leaves, ref_grads):
+                            assert_reference_close(
+                                leaf.grad, ref_grad,
+                                msg=f"margin_ranking_loss grad {shape} {dtype} "
+                                    f"{name} ({dev})")
+
+
+class TestHingeWalk(unittest.TestCase):
+    """The fused hinge_embedding pass agrees with the reference arithmetic."""
+
+    def _pair(self, shape, dtype, seed):
+        generator = torch.Generator().manual_seed(seed)
+        x = torch.randn(*shape, dtype=dtype, generator=generator)
+        t = torch.where(torch.rand(*shape, generator=generator) > 0.5,
+                        torch.ones(*shape, dtype=dtype),
+                        -torch.ones(*shape, dtype=dtype))
+        return x, t
+
+    def test_forward(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for shape in SHAPES:
+                    for name, reduction in REDUCTIONS.items():
+                        ref_x, ref_t = self._pair(shape, dtype, 51)
+                        expected = torch_F.hinge_embedding_loss(
+                            ref_x, ref_t, margin=1.0, reduction=name)
+                        got = tp.hinge_embedding_loss(
+                            from_reference(ref_x, dev),
+                            from_reference(ref_t, dev),
+                            margin=1.0, reduction=reduction)
+                        self.assertEqual(tuple(got.shape),
+                                         tuple(expected.shape))
+                        assert_reference_close(
+                            got, expected,
+                            msg=f"hinge_embedding_loss {shape} {dtype} {name} ({dev})")
+
+    def test_gradient(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for shape in SHAPES:
+                    for name, reduction in REDUCTIONS.items():
+                        ref_x, ref_t = self._pair(shape, dtype, 53)
+                        ref_leaf = ref_x.clone().requires_grad_(True)
+                        ref_out = torch_F.hinge_embedding_loss(
+                            ref_leaf, ref_t, margin=1.0, reduction=name)
+                        seed = (torch.randn(ref_out.shape, dtype=dtype)
+                                if name == "none"
+                                else torch.ones((), dtype=dtype))
+                        ref_grad = torch.autograd.grad(
+                            ref_out, ref_leaf, grad_outputs=seed)[0]
+
+                        leaf = from_reference(ref_x, dev, requires_grad=True)
+                        out = tp.hinge_embedding_loss(
+                            leaf, from_reference(ref_t, dev),
+                            margin=1.0, reduction=reduction)
+                        out.backward(from_reference(seed, dev))
+                        assert_reference_close(
+                            leaf.grad, ref_grad,
+                            msg=f"hinge_embedding_loss grad {shape} {dtype} "
+                                f"{name} ({dev})")
+
+
+class TestCosineWalk(unittest.TestCase):
+    """The fused cosine_embedding pass agrees with the reference arithmetic."""
+
+    COSINE_SHAPES = [(4, 5), (6, 3)]
+
+    def _pair(self, shape, dtype, seed):
+        generator = torch.Generator().manual_seed(seed)
+        x1 = torch.randn(*shape, dtype=dtype, generator=generator)
+        x2 = torch.randn(*shape, dtype=dtype, generator=generator)
+        target = torch.tensor([1.0, -1.0] * ((shape[0] + 1) // 2),
+                              dtype=dtype)[:shape[0]]
+        return x1, x2, target
+
+    def test_forward(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for shape in self.COSINE_SHAPES:
+                    for name, reduction in REDUCTIONS.items():
+                        ref_x1, ref_x2, ref_t = self._pair(shape, dtype, 61)
+                        expected = torch_F.cosine_embedding_loss(
+                            ref_x1, ref_x2, ref_t, margin=0.3, reduction=name)
+                        got = tp.cosine_embedding_loss(
+                            from_reference(ref_x1, dev),
+                            from_reference(ref_x2, dev),
+                            from_reference(ref_t, dev),
+                            margin=0.3, reduction=reduction)
+                        self.assertEqual(tuple(got.shape),
+                                         tuple(expected.shape))
+                        assert_reference_close(
+                            got, expected,
+                            msg=f"cosine_embedding_loss {shape} {dtype} {name} ({dev})")
+
+    def test_gradient(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for shape in self.COSINE_SHAPES:
+                    for name, reduction in REDUCTIONS.items():
+                        ref_x1, ref_x2, ref_t = self._pair(shape, dtype, 63)
+                        ref_leaves = [t.clone().requires_grad_(True)
+                                      for t in (ref_x1, ref_x2)]
+                        ref_out = torch_F.cosine_embedding_loss(
+                            *ref_leaves, ref_t, margin=0.3, reduction=name)
+                        seed = (torch.randn(ref_out.shape, dtype=dtype)
+                                if name == "none"
+                                else torch.ones((), dtype=dtype))
+                        ref_grads = torch.autograd.grad(
+                            ref_out, ref_leaves, grad_outputs=seed)
+
+                        leaves = [from_reference(t, dev, requires_grad=True)
+                                  for t in (ref_x1, ref_x2)]
+                        out = tp.cosine_embedding_loss(
+                            *leaves, from_reference(ref_t, dev),
+                            margin=0.3, reduction=reduction)
+                        out.backward(from_reference(seed, dev))
+                        for leaf, ref_grad in zip(leaves, ref_grads):
+                            assert_reference_close(
+                                leaf.grad, ref_grad,
+                                msg=f"cosine_embedding_loss grad {shape} {dtype} "
+                                    f"{name} ({dev})")
+
+
 class TestEmptyPlane(unittest.TestCase):
     """Nothing walked answers an empty plane, zero, or no average at all."""
 
     def test_empty_reductions(self):
         empty = torch.zeros((0, 3), dtype=torch.float64)
         fused_ops = OPS + ("smooth_l1_loss", "soft_margin_loss",
-                           "poisson_nll_loss")
+                           "poisson_nll_loss", "hinge_embedding_loss")
+        empty_target = torch.zeros((0,), dtype=torch.float64)
         for dev in reference_devices():
             for op in fused_ops:
                 plane = getattr(tp, op)(from_reference(empty, dev),
@@ -397,6 +568,33 @@ class TestEmptyPlane(unittest.TestCase):
                                           reduction=1)
                 self.assertEqual(tuple(average.shape), ())
                 self.assertTrue(float(average.item()) != float(average.item()))
+            # margin_ranking_loss takes three operands; its empty plane is (0,3).
+            mr = tp.margin_ranking_loss(from_reference(empty, dev),
+                                        from_reference(empty, dev),
+                                        from_reference(empty, dev),
+                                        reduction=0)
+            self.assertEqual(tuple(mr.shape), (0, 3))
+            self.assertEqual(mr.numel(), 0)
+            mr_sum = tp.margin_ranking_loss(from_reference(empty, dev),
+                                            from_reference(empty, dev),
+                                            from_reference(empty, dev),
+                                            reduction=2)
+            self.assertEqual(float(mr_sum.item()), 0.0)
+            mr_mean = tp.margin_ranking_loss(from_reference(empty, dev),
+                                             from_reference(empty, dev),
+                                             from_reference(empty, dev),
+                                             reduction=1)
+            self.assertTrue(float(mr_mean.item()) != float(mr_mean.item()))
+            # cosine_embedding_loss reduces rows, so its empty plane is (0,).
+            ce = from_reference(empty, dev)
+            cet = from_reference(empty_target, dev)
+            plane = tp.cosine_embedding_loss(ce, ce, cet, reduction=0)
+            self.assertEqual(tuple(plane.shape), (0,))
+            self.assertEqual(plane.numel(), 0)
+            total = tp.cosine_embedding_loss(ce, ce, cet, reduction=2)
+            self.assertEqual(float(total.item()), 0.0)
+            average = tp.cosine_embedding_loss(ce, ce, cet, reduction=1)
+            self.assertTrue(float(average.item()) != float(average.item()))
 
 
 if __name__ == "__main__":

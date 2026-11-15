@@ -130,6 +130,53 @@ using poisson_grad_fn = void (*)(const void* grad_output, const void* input,
                                  int log_input, double eps, double scale,
                                  int dtype);
 
+// hinge_embedding_loss: x when the target lane is 1, max(0, margin - x) when
+// it is -1, and their sum for any other lane.
+using hinge_sum_fn = double (*)(const void* input, const void* target, int64_t n,
+                                double margin, int dtype);
+
+using hinge_into_fn = void (*)(const void* input, const void* target, void* out,
+                               int64_t n, double margin, int dtype);
+
+// The gradient's slope is 1 for target 1, -(margin - x > 0) for target -1,
+// and 1 - (margin - x > 0) otherwise, carried by the incoming gradient and by
+// `scale`.
+using hinge_grad_fn = void (*)(const void* grad_output, const void* input,
+                               const void* target, void* out, int64_t n,
+                               double margin, double scale, int dtype);
+
+// margin_ranking_loss: max(0, margin - (x1 - x2) t) per lane.
+using margin_rank_sum_fn = double (*)(const void* input1, const void* input2,
+                                      const void* target, int64_t n,
+                                      double margin, int dtype);
+
+using margin_rank_into_fn = void (*)(const void* input1, const void* input2,
+                                     const void* target, void* out, int64_t n,
+                                     double margin, int dtype);
+
+// The gradient answers -(active t) to the first operand and its negation to
+// the second, where active is whether the margin expression stays positive.
+using margin_rank_grad_fn = void (*)(const void* grad_output, const void* input1,
+                                     const void* input2, const void* target,
+                                     void* out1, void* out2, int64_t n,
+                                     double margin, double scale, int dtype);
+
+// cosine_embedding_loss: row r answers 1 - cos when its target is 1,
+// max(0, cos - margin) when it is -1, and 0 otherwise, with cos the cosine of
+// the two row vectors.  The return value is the sum over rows; when `out` is
+// not null the walk also stores every row answer there.
+using cosine_rows_fn = double (*)(const void* x1, const void* x2,
+                                  const void* target, void* out, int64_t rows,
+                                  int64_t width, double margin, int dtype);
+
+// The gradient writes both input planes: row r carries
+// (x2/d - cos x1/n1) and (x1/d - cos x2/n2) times the row's loss slope, the
+// incoming gradient and `scale`.
+using cosine_grad_fn = void (*)(const void* grad_output, const void* x1,
+                                const void* x2, const void* target, void* out1,
+                                void* out2, int64_t rows, int64_t width,
+                                double margin, double scale, int dtype);
+
 // binary_cross_entropy_with_logits: w [pw t sp(-x) + (1 - t) sp(x)] with
 // sp(y) = max(y, 0) + log1p(exp(-|y|)).  `weight` and `pos_weight` are null
 // when the caller carries neither.
@@ -184,6 +231,14 @@ DECLARE_DISPATCH(softmargin_grad_fn, softmargin_grad_stub)
 DECLARE_DISPATCH(poisson_sum_fn, poisson_sum_stub)
 DECLARE_DISPATCH(poisson_into_fn, poisson_into_stub)
 DECLARE_DISPATCH(poisson_grad_fn, poisson_grad_stub)
+DECLARE_DISPATCH(hinge_sum_fn, hinge_sum_stub)
+DECLARE_DISPATCH(hinge_into_fn, hinge_into_stub)
+DECLARE_DISPATCH(hinge_grad_fn, hinge_grad_stub)
+DECLARE_DISPATCH(margin_rank_sum_fn, margin_rank_sum_stub)
+DECLARE_DISPATCH(margin_rank_into_fn, margin_rank_into_stub)
+DECLARE_DISPATCH(margin_rank_grad_fn, margin_rank_grad_stub)
+DECLARE_DISPATCH(cosine_rows_fn, cosine_rows_stub)
+DECLARE_DISPATCH(cosine_grad_fn, cosine_grad_stub)
 DECLARE_DISPATCH(bce_logits_rows_fn, bce_logits_rows_stub)
 DECLARE_DISPATCH(multilabel_rows_fn, multilabel_rows_stub)
 DECLARE_DISPATCH(triplet_rows_fn, triplet_rows_stub)

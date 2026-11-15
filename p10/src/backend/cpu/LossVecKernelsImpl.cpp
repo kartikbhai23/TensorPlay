@@ -384,6 +384,353 @@ void poisson_grad_typed(const T* grad_output, const T* input, const T* target,
                     });
 }
 
+// x when the target lane is 1, max(0, margin - x) when it is -1, and their
+// sum for any other lane.
+template <typename T>
+double hinge_sum_typed(const T* input, const T* target, int64_t n,
+                       double margin) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const T m = static_cast<T>(margin);
+    const Vec mv(m);
+    const Vec zero(static_cast<T>(0));
+    const Vec one(static_cast<T>(1));
+    const Vec neg_one(static_cast<T>(-1));
+    return parallel_ranges(n, kElementwiseUnit,
+                           [&](int64_t begin, int64_t end) -> double {
+        Vec acc(static_cast<T>(0));
+        int64_t i = begin;
+        for (; i + W <= end; i += W) {
+            const Vec x = Vec::loadu(input + i);
+            const Vec t = Vec::loadu(target + i);
+            const Vec pos = vec::maximum(mv - x, zero);
+            const Vec margin_part = Vec::blendv(zero, pos, t != one);
+            const Vec self_part = Vec::blendv(zero, x, t != neg_one);
+            acc = acc + margin_part + self_part;
+        }
+        double total = static_cast<double>(acc.reduce_add());
+        for (; i < end; ++i) {
+            const T x = input[i];
+            const T t = target[i];
+            const T pos = m - x > static_cast<T>(0) ? m - x : static_cast<T>(0);
+            const T margin_part =
+                t != static_cast<T>(1) ? pos : static_cast<T>(0);
+            const T self_part =
+                t != static_cast<T>(-1) ? x : static_cast<T>(0);
+            total += static_cast<double>(margin_part + self_part);
+        }
+        return total;
+    });
+}
+
+template <typename T>
+void hinge_into_typed(const T* input, const T* target, T* out, int64_t n,
+                      double margin) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const T m = static_cast<T>(margin);
+    const Vec mv(m);
+    const Vec zero(static_cast<T>(0));
+    const Vec one(static_cast<T>(1));
+    const Vec neg_one(static_cast<T>(-1));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec x = Vec::loadu(input + i);
+                            const Vec t = Vec::loadu(target + i);
+                            const Vec pos = vec::maximum(mv - x, zero);
+                            const Vec margin_part =
+                                Vec::blendv(zero, pos, t != one);
+                            const Vec self_part =
+                                Vec::blendv(zero, x, t != neg_one);
+                            (margin_part + self_part).store(out + i);
+                        }
+                        for (; i < end; ++i) {
+                            const T x = input[i];
+                            const T t = target[i];
+                            const T pos = m - x > static_cast<T>(0)
+                                              ? m - x
+                                              : static_cast<T>(0);
+                            out[i] = (t != static_cast<T>(1)
+                                          ? pos
+                                          : static_cast<T>(0)) +
+                                     (t != static_cast<T>(-1) ? x
+                                                              : static_cast<T>(0));
+                        }
+                        return 0.0;
+                    });
+}
+
+// The slope is 1 for target 1, -(margin - x > 0) for target -1, and
+// 1 - (margin - x > 0) otherwise.
+template <typename T>
+void hinge_grad_typed(const T* grad_output, const T* input, const T* target,
+                      T* out, int64_t n, double margin, double scale) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const T m = static_cast<T>(margin);
+    const Vec mv(m);
+    const Vec zero(static_cast<T>(0));
+    const Vec one(static_cast<T>(1));
+    const Vec neg_one(static_cast<T>(-1));
+    const Vec slope(static_cast<T>(scale));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec x = Vec::loadu(input + i);
+                            const Vec t = Vec::loadu(target + i);
+                            const Vec active =
+                                Vec::blendv(zero, one, (mv - x) > zero);
+                            const Vec inner =
+                                Vec::blendv(one - active, -active, t == neg_one);
+                            const Vec side = Vec::blendv(inner, one, t == one);
+                            (slope * side * Vec::loadu(grad_output + i))
+                                .store(out + i);
+                        }
+                        for (; i < end; ++i) {
+                            const T x = input[i];
+                            const T t = target[i];
+                            const T active = m - x > static_cast<T>(0)
+                                                 ? static_cast<T>(1)
+                                                 : static_cast<T>(0);
+                            const T side =
+                                t == static_cast<T>(1)
+                                    ? static_cast<T>(1)
+                                    : (t == static_cast<T>(-1)
+                                           ? -active
+                                           : static_cast<T>(1) - active);
+                            out[i] = side * static_cast<T>(scale) *
+                                     grad_output[i];
+                        }
+                        return 0.0;
+                    });
+}
+
+// max(0, margin - (x1 - x2) t), read once per operand and folded in the same
+// walk.
+template <typename T>
+double margin_rank_sum_typed(const T* input1, const T* input2,
+                             const T* target, int64_t n, double margin) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const T m = static_cast<T>(margin);
+    const Vec mv(m);
+    const Vec zero(static_cast<T>(0));
+    return parallel_ranges(n, kElementwiseUnit,
+                           [&](int64_t begin, int64_t end) -> double {
+        Vec acc(static_cast<T>(0));
+        int64_t i = begin;
+        for (; i + W <= end; i += W) {
+            const Vec d = Vec::loadu(input1 + i) - Vec::loadu(input2 + i);
+            const Vec t = Vec::loadu(target + i);
+            acc = acc + vec::maximum(mv - d * t, zero);
+        }
+        double total = static_cast<double>(acc.reduce_add());
+        for (; i < end; ++i) {
+            const T d = input1[i] - input2[i];
+            const T t = target[i];
+            const T lane = m - d * t > static_cast<T>(0) ? m - d * t
+                                                         : static_cast<T>(0);
+            total += static_cast<double>(lane);
+        }
+        return total;
+    });
+}
+
+template <typename T>
+void margin_rank_into_typed(const T* input1, const T* input2, const T* target,
+                            T* out, int64_t n, double margin) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const T m = static_cast<T>(margin);
+    const Vec mv(m);
+    const Vec zero(static_cast<T>(0));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec d =
+                                Vec::loadu(input1 + i) - Vec::loadu(input2 + i);
+                            const Vec t = Vec::loadu(target + i);
+                            (vec::maximum(mv - d * t, zero)).store(out + i);
+                        }
+                        for (; i < end; ++i) {
+                            const T d = input1[i] - input2[i];
+                            const T t = target[i];
+                            out[i] = m - d * t > static_cast<T>(0)
+                                         ? m - d * t
+                                         : static_cast<T>(0);
+                        }
+                        return 0.0;
+                    });
+}
+
+// The active mask is whether the margin expression stays positive; the first
+// operand receives -(active t) and the second its negation.
+template <typename T>
+void margin_rank_grad_typed(const T* grad_output, const T* input1,
+                            const T* input2, const T* target, T* out1, T* out2,
+                            int64_t n, double margin, double scale) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const T m = static_cast<T>(margin);
+    const Vec mv(m);
+    const Vec zero(static_cast<T>(0));
+    const Vec one(static_cast<T>(1));
+    const Vec slope(static_cast<T>(scale));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec d = Vec::loadu(input1 + i) -
+                                          Vec::loadu(input2 + i);
+                            const Vec t = Vec::loadu(target + i);
+                            const Vec active =
+                                Vec::blendv(zero, one, (mv - d * t) > zero);
+                            const Vec g = slope * active * t *
+                                          Vec::loadu(grad_output + i);
+                            (-g).store(out1 + i);
+                            g.store(out2 + i);
+                        }
+                        for (; i < end; ++i) {
+                            const T d = input1[i] - input2[i];
+                            const T t = target[i];
+                            const T active =
+                                m - d * t > static_cast<T>(0)
+                                    ? static_cast<T>(1)
+                                    : static_cast<T>(0);
+                            const T g = active * static_cast<T>(scale) * t *
+                                        grad_output[i];
+                            out1[i] = -g;
+                            out2[i] = g;
+                        }
+                        return 0.0;
+                    });
+}
+
+// One row's cosine: the two squared norms and the dot product are accumulated
+// in vector width, then the row answer is the target's branch on the cosine.
+// A row of nothing divides zero by zero, as the composed form does.
+template <typename T>
+double cosine_rows_typed(const T* x1, const T* x2, const T* target, T* out,
+                         int64_t rows, int64_t width, double margin) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    return parallel_ranges(rows, width,
+                           [&](int64_t begin, int64_t end) -> double {
+        double total = 0.0;
+        for (int64_t r = begin; r < end; ++r) {
+            const T* a = x1 + r * width;
+            const T* b = x2 + r * width;
+            Vec acc_a2(static_cast<T>(0));
+            Vec acc_b2(static_cast<T>(0));
+            Vec acc_ab(static_cast<T>(0));
+            int64_t i = 0;
+            for (; i + W <= width; i += W) {
+                const Vec av = Vec::loadu(a + i);
+                const Vec bv = Vec::loadu(b + i);
+                acc_a2 = acc_a2 + av * av;
+                acc_b2 = acc_b2 + bv * bv;
+                acc_ab = acc_ab + av * bv;
+            }
+            double n1 = static_cast<double>(acc_a2.reduce_add());
+            double n2 = static_cast<double>(acc_b2.reduce_add());
+            double dot = static_cast<double>(acc_ab.reduce_add());
+            for (; i < width; ++i) {
+                const double av = static_cast<double>(a[i]);
+                const double bv = static_cast<double>(b[i]);
+                n1 += av * av;
+                n2 += bv * bv;
+                dot += av * bv;
+            }
+            const double d = std::sqrt(n1 * n2);
+            const double cos = dot / d;
+            const double t = static_cast<double>(target[r]);
+            const double row = t == 1.0
+                                   ? 1.0 - cos
+                                   : (t == -1.0
+                                          ? std::max(0.0, cos - margin)
+                                          : 0.0);
+            total += row;
+            if (out) out[r] = static_cast<T>(row);
+        }
+        return total;
+    });
+}
+
+// The row's loss slope times the incoming gradient scales both input planes;
+// the denominator d is floored at 1e-12 while the squared norms divide as they
+// are, matching the composed backward.
+template <typename T>
+void cosine_grad_typed(const T* grad_output, const T* x1, const T* x2,
+                       const T* target, T* out1, T* out2, int64_t rows,
+                       int64_t width, double margin, double scale) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    parallel_ranges(rows, width,
+                    [&](int64_t begin, int64_t end) -> double {
+        for (int64_t r = begin; r < end; ++r) {
+            const T* a = x1 + r * width;
+            const T* b = x2 + r * width;
+            Vec acc_a2(static_cast<T>(0));
+            Vec acc_b2(static_cast<T>(0));
+            Vec acc_ab(static_cast<T>(0));
+            int64_t i = 0;
+            for (; i + W <= width; i += W) {
+                const Vec av = Vec::loadu(a + i);
+                const Vec bv = Vec::loadu(b + i);
+                acc_a2 = acc_a2 + av * av;
+                acc_b2 = acc_b2 + bv * bv;
+                acc_ab = acc_ab + av * bv;
+            }
+            double n1 = static_cast<double>(acc_a2.reduce_add());
+            double n2 = static_cast<double>(acc_b2.reduce_add());
+            double dot = static_cast<double>(acc_ab.reduce_add());
+            for (; i < width; ++i) {
+                const double av = static_cast<double>(a[i]);
+                const double bv = static_cast<double>(b[i]);
+                n1 += av * av;
+                n2 += bv * bv;
+                dot += av * bv;
+            }
+            const double d_raw = std::sqrt(n1 * n2);
+            const double d = std::max(d_raw, 1e-12);
+            const double cos = dot / d_raw;
+            const double t = static_cast<double>(target[r]);
+            const double dl_dcos =
+                t == 1.0 ? -1.0
+                         : (t == -1.0
+                                ? ((cos - margin) > 0.0 ? 1.0 : 0.0)
+                                : 0.0);
+            const double row_scale =
+                dl_dcos * static_cast<double>(grad_output[r]) * scale;
+            const Vec dd(static_cast<T>(d));
+            const Vec n1v(static_cast<T>(n1));
+            const Vec n2v(static_cast<T>(n2));
+            const Vec cv(static_cast<T>(cos));
+            const Vec rs(static_cast<T>(row_scale));
+            int64_t j = 0;
+            for (; j + W <= width; j += W) {
+                const Vec av = Vec::loadu(a + j);
+                const Vec bv = Vec::loadu(b + j);
+                ((bv / dd - cv * (av / n1v)) * rs).store(out1 + r * width + j);
+                ((av / dd - cv * (bv / n2v)) * rs).store(out2 + r * width + j);
+            }
+            for (; j < width; ++j) {
+                const double av = static_cast<double>(a[j]);
+                const double bv = static_cast<double>(b[j]);
+                out1[r * width + j] =
+                    static_cast<T>((bv / d - cos * av / n1) * row_scale);
+                out2[r * width + j] =
+                    static_cast<T>((av / d - cos * bv / n2) * row_scale);
+            }
+        }
+        return 0.0;
+    });
+}
+
 // z = x - t, squared and folded.  One load of each operand answers a whole
 // lane of the sum, so the deviation plane the composed form would allocate
 // never exists.
@@ -1184,6 +1531,177 @@ void poisson_grad_impl(const void* grad_output, const void* input,
     }
 }
 
+double hinge_sum_impl(const void* input, const void* target, int64_t n,
+                      double margin, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return hinge_sum_typed(static_cast<const double*>(input),
+                                   static_cast<const double*>(target), n,
+                                   margin);
+        case DType::Float32:
+            return hinge_sum_typed(static_cast<const float*>(input),
+                                   static_cast<const float*>(target), n,
+                                   margin);
+        default:
+            TP_THROW(TypeError, "hinge_embedding_loss: unsupported dtype");
+    }
+}
+
+void hinge_into_impl(const void* input, const void* target, void* out,
+                     int64_t n, double margin, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            hinge_into_typed(static_cast<const double*>(input),
+                             static_cast<const double*>(target),
+                             static_cast<double*>(out), n, margin);
+            break;
+        case DType::Float32:
+            hinge_into_typed(static_cast<const float*>(input),
+                             static_cast<const float*>(target),
+                             static_cast<float*>(out), n, margin);
+            break;
+        default:
+            TP_THROW(TypeError, "hinge_embedding_loss: unsupported dtype");
+    }
+}
+
+void hinge_grad_impl(const void* grad_output, const void* input,
+                     const void* target, void* out, int64_t n, double margin,
+                     double scale, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            hinge_grad_typed(static_cast<const double*>(grad_output),
+                             static_cast<const double*>(input),
+                             static_cast<const double*>(target),
+                             static_cast<double*>(out), n, margin, scale);
+            break;
+        case DType::Float32:
+            hinge_grad_typed(static_cast<const float*>(grad_output),
+                             static_cast<const float*>(input),
+                             static_cast<const float*>(target),
+                             static_cast<float*>(out), n, margin, scale);
+            break;
+        default:
+            TP_THROW(TypeError, "hinge_embedding_loss backward: unsupported dtype");
+    }
+}
+
+double margin_rank_sum_impl(const void* input1, const void* input2,
+                            const void* target, int64_t n, double margin,
+                            int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return margin_rank_sum_typed(static_cast<const double*>(input1),
+                                         static_cast<const double*>(input2),
+                                         static_cast<const double*>(target), n,
+                                         margin);
+        case DType::Float32:
+            return margin_rank_sum_typed(static_cast<const float*>(input1),
+                                         static_cast<const float*>(input2),
+                                         static_cast<const float*>(target), n,
+                                         margin);
+        default:
+            TP_THROW(TypeError, "margin_ranking_loss: unsupported dtype");
+    }
+}
+
+void margin_rank_into_impl(const void* input1, const void* input2,
+                           const void* target, void* out, int64_t n,
+                           double margin, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            margin_rank_into_typed(static_cast<const double*>(input1),
+                                   static_cast<const double*>(input2),
+                                   static_cast<const double*>(target),
+                                   static_cast<double*>(out), n, margin);
+            break;
+        case DType::Float32:
+            margin_rank_into_typed(static_cast<const float*>(input1),
+                                   static_cast<const float*>(input2),
+                                   static_cast<const float*>(target),
+                                   static_cast<float*>(out), n, margin);
+            break;
+        default:
+            TP_THROW(TypeError, "margin_ranking_loss: unsupported dtype");
+    }
+}
+
+void margin_rank_grad_impl(const void* grad_output, const void* input1,
+                           const void* input2, const void* target, void* out1,
+                           void* out2, int64_t n, double margin, double scale,
+                           int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            margin_rank_grad_typed(static_cast<const double*>(grad_output),
+                                   static_cast<const double*>(input1),
+                                   static_cast<const double*>(input2),
+                                   static_cast<const double*>(target),
+                                   static_cast<double*>(out1),
+                                   static_cast<double*>(out2), n, margin,
+                                   scale);
+            break;
+        case DType::Float32:
+            margin_rank_grad_typed(static_cast<const float*>(grad_output),
+                                   static_cast<const float*>(input1),
+                                   static_cast<const float*>(input2),
+                                   static_cast<const float*>(target),
+                                   static_cast<float*>(out1),
+                                   static_cast<float*>(out2), n, margin,
+                                   scale);
+            break;
+        default:
+            TP_THROW(TypeError, "margin_ranking_loss backward: unsupported dtype");
+    }
+}
+
+double cosine_rows_impl(const void* x1, const void* x2, const void* target,
+                        void* out, int64_t rows, int64_t width, double margin,
+                        int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return cosine_rows_typed(static_cast<const double*>(x1),
+                                     static_cast<const double*>(x2),
+                                     static_cast<const double*>(target),
+                                     static_cast<double*>(out), rows, width,
+                                     margin);
+        case DType::Float32:
+            return cosine_rows_typed(static_cast<const float*>(x1),
+                                     static_cast<const float*>(x2),
+                                     static_cast<const float*>(target),
+                                     static_cast<float*>(out), rows, width,
+                                     margin);
+        default:
+            TP_THROW(TypeError, "cosine_embedding_loss: unsupported dtype");
+    }
+}
+
+void cosine_grad_impl(const void* grad_output, const void* x1, const void* x2,
+                      const void* target, void* out1, void* out2, int64_t rows,
+                      int64_t width, double margin, double scale, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            cosine_grad_typed(static_cast<const double*>(grad_output),
+                              static_cast<const double*>(x1),
+                              static_cast<const double*>(x2),
+                              static_cast<const double*>(target),
+                              static_cast<double*>(out1),
+                              static_cast<double*>(out2), rows, width, margin,
+                              scale);
+            break;
+        case DType::Float32:
+            cosine_grad_typed(static_cast<const float*>(grad_output),
+                              static_cast<const float*>(x1),
+                              static_cast<const float*>(x2),
+                              static_cast<const float*>(target),
+                              static_cast<float*>(out1),
+                              static_cast<float*>(out2), rows, width, margin,
+                              scale);
+            break;
+        default:
+            TP_THROW(TypeError, "cosine_embedding_loss backward: unsupported dtype");
+    }
+}
+
 double kl_sum_impl(const void* input, const void* target, int64_t n,
                   int log_target, int dtype) {
     switch (static_cast<DType>(dtype)) {
@@ -1438,6 +1956,14 @@ REGISTER_DISPATCH(softmargin_grad_stub, &softmargin_grad_impl);
 REGISTER_DISPATCH(poisson_sum_stub, &poisson_sum_impl);
 REGISTER_DISPATCH(poisson_into_stub, &poisson_into_impl);
 REGISTER_DISPATCH(poisson_grad_stub, &poisson_grad_impl);
+REGISTER_DISPATCH(hinge_sum_stub, &hinge_sum_impl);
+REGISTER_DISPATCH(hinge_into_stub, &hinge_into_impl);
+REGISTER_DISPATCH(hinge_grad_stub, &hinge_grad_impl);
+REGISTER_DISPATCH(margin_rank_sum_stub, &margin_rank_sum_impl);
+REGISTER_DISPATCH(margin_rank_into_stub, &margin_rank_into_impl);
+REGISTER_DISPATCH(margin_rank_grad_stub, &margin_rank_grad_impl);
+REGISTER_DISPATCH(cosine_rows_stub, &cosine_rows_impl);
+REGISTER_DISPATCH(cosine_grad_stub, &cosine_grad_impl);
 REGISTER_DISPATCH(bce_logits_rows_stub, &bce_logits_rows_impl);
 REGISTER_DISPATCH(multilabel_rows_stub, &multilabel_rows_impl);
 REGISTER_DISPATCH(triplet_rows_stub, &triplet_rows_impl);
@@ -1464,6 +1990,14 @@ ALSO_REGISTER_AVX512_DISPATCH(softmargin_grad_stub, &softmargin_grad_impl);
 ALSO_REGISTER_AVX512_DISPATCH(poisson_sum_stub, &poisson_sum_impl);
 ALSO_REGISTER_AVX512_DISPATCH(poisson_into_stub, &poisson_into_impl);
 ALSO_REGISTER_AVX512_DISPATCH(poisson_grad_stub, &poisson_grad_impl);
+ALSO_REGISTER_AVX512_DISPATCH(hinge_sum_stub, &hinge_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(hinge_into_stub, &hinge_into_impl);
+ALSO_REGISTER_AVX512_DISPATCH(hinge_grad_stub, &hinge_grad_impl);
+ALSO_REGISTER_AVX512_DISPATCH(margin_rank_sum_stub, &margin_rank_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(margin_rank_into_stub, &margin_rank_into_impl);
+ALSO_REGISTER_AVX512_DISPATCH(margin_rank_grad_stub, &margin_rank_grad_impl);
+ALSO_REGISTER_AVX512_DISPATCH(cosine_rows_stub, &cosine_rows_impl);
+ALSO_REGISTER_AVX512_DISPATCH(cosine_grad_stub, &cosine_grad_impl);
 ALSO_REGISTER_AVX512_DISPATCH(bce_logits_rows_stub, &bce_logits_rows_impl);
 ALSO_REGISTER_AVX512_DISPATCH(multilabel_rows_stub, &multilabel_rows_impl);
 ALSO_REGISTER_AVX512_DISPATCH(triplet_rows_stub, &triplet_rows_impl);

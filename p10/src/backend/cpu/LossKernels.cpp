@@ -42,6 +42,14 @@ DEFINE_DISPATCH(softmargin_grad_stub);
 DEFINE_DISPATCH(poisson_sum_stub);
 DEFINE_DISPATCH(poisson_into_stub);
 DEFINE_DISPATCH(poisson_grad_stub);
+DEFINE_DISPATCH(hinge_sum_stub);
+DEFINE_DISPATCH(hinge_into_stub);
+DEFINE_DISPATCH(hinge_grad_stub);
+DEFINE_DISPATCH(margin_rank_sum_stub);
+DEFINE_DISPATCH(margin_rank_into_stub);
+DEFINE_DISPATCH(margin_rank_grad_stub);
+DEFINE_DISPATCH(cosine_rows_stub);
+DEFINE_DISPATCH(cosine_grad_stub);
 DEFINE_DISPATCH(multilabel_rows_stub);
 DEFINE_DISPATCH(triplet_rows_stub);
 
@@ -690,23 +698,97 @@ Tensor binary_cross_entropy_backward_cpu(const Tensor& grad_output, const Tensor
     return scale_grad(g, reduction, input.numel());
 }
 
+// max(0, margin - (x1 - x2) t), read once per operand and folded in the same
+// walk; the mean shares the fold by the element count.
 Tensor margin_ranking_loss_kernel(const Tensor& input1, const Tensor& input2,
                                   const Tensor& target, double margin, int64_t reduction) {
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    if (fused_float(input1, input2) && target.dtype() == input1.dtype() &&
+        same_layout(input2, target)) {
+        const int64_t n = input1.numel();
+        const DType dt = input1.dtype();
+        const Device& dev = input1.device();
+        const int dtype = static_cast<int>(dt);
+        if (reduction == 0) {
+            Tensor out(static_cast<std::vector<int64_t>>(input1.sizes()), dt, dev);
+            margin_rank_into_stub(DeviceType::CPU, input1.data_ptr(),
+                                  input2.data_ptr(), target.data_ptr(),
+                                  out.data_ptr(), n, margin, dtype);
+            return out;
+        }
+        const double total = margin_rank_sum_stub(DeviceType::CPU,
+                                                  input1.data_ptr(),
+                                                  input2.data_ptr(),
+                                                  target.data_ptr(), n,
+                                                  margin, dtype);
+        if (reduction == 1)
+            return Tensor::full({}, Scalar(total / static_cast<double>(n)), dt, dev);
+        return Tensor::full({}, Scalar(total), dt, dev);
+    }
     Tensor loss = clamp_min_shim(-(input1 - input2) * target + margin, Scalar(0.0));
     return loss_reduce(loss, reduction);
 }
 
+// The active mask is whether the margin expression stays positive; the first
+// operand receives -(active t) times the incoming gradient and the second its
+// negation, shared by the element count when the forward averaged.
 std::tuple<Tensor, Tensor> margin_ranking_loss_backward_kernel(
         const Tensor& grad_output, const Tensor& input1, const Tensor& input2,
         const Tensor& target, double margin, int64_t reduction) {
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    const int64_t n = input1.numel();
+    const bool fused =
+        fused_float(input1, input2) && target.dtype() == input1.dtype() &&
+        same_layout(input2, target) && grad_output.dtype() == input1.dtype() &&
+        same_layout(grad_output, input1) && grad_output.numel() == n;
+    if (fused) {
+        const DType dt = input1.dtype();
+        const int dtype = static_cast<int>(dt);
+        const double scale =
+            reduction == 1 ? 1.0 / static_cast<double>(n) : 1.0;
+        Tensor out1(static_cast<std::vector<int64_t>>(input1.sizes()), dt,
+                    input1.device());
+        Tensor out2(static_cast<std::vector<int64_t>>(input2.sizes()), dt,
+                    input2.device());
+        margin_rank_grad_stub(DeviceType::CPU, grad_output.data_ptr(),
+                              input1.data_ptr(), input2.data_ptr(),
+                              target.data_ptr(), out1.data_ptr(),
+                              out2.data_ptr(), n, margin, scale, dtype);
+        return std::make_tuple(out1, out2);
+    }
     Tensor active = ((-(input1 - input2) * target + margin).gt(0.0)).to(input1.dtype());
     Tensor g = -active * target * grad_output;
-    g = scale_grad(g, reduction, input1.numel());
+    g = scale_grad(g, reduction, n);
     return std::make_tuple(g, -g);
 }
 
+// x when the target lane is 1, max(0, margin - x) when it is -1, and their
+// sum for any other lane; read once per operand and folded in the same walk.
 Tensor hinge_embedding_loss_kernel(const Tensor& input, const Tensor& target,
                                    double margin, int64_t reduction) {
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    if (fused_float(input, target)) {
+        const int64_t n = input.numel();
+        const DType dt = input.dtype();
+        const Device& dev = input.device();
+        const int dtype = static_cast<int>(dt);
+        if (reduction == 0) {
+            Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt, dev);
+            hinge_into_stub(DeviceType::CPU, input.data_ptr(),
+                            target.data_ptr(), out.data_ptr(), n, margin,
+                            dtype);
+            return out;
+        }
+        const double total = hinge_sum_stub(DeviceType::CPU, input.data_ptr(),
+                                            target.data_ptr(), n, margin,
+                                            dtype);
+        if (reduction == 1)
+            return Tensor::full({}, Scalar(total / static_cast<double>(n)), dt, dev);
+        return Tensor::full({}, Scalar(total), dt, dev);
+    }
     //                        + where(t != -1, x, 0)
     Tensor z = zeros_like_shim(input);
     Tensor margin_part = Tensor::where(target.ne(1),
@@ -715,17 +797,36 @@ Tensor hinge_embedding_loss_kernel(const Tensor& input, const Tensor& target,
     return loss_reduce(margin_part + self_part, reduction);
 }
 
+//   y == 1          -> 1
+//   y == -1         -> (margin - x > 0) ? -1 : 0
+//   otherwise       -> 1 + ((margin - x > 0) ? -1 : 0)
+// The slope is folded into the fused walk with the reduction's scale.
 Tensor hinge_embedding_loss_backward_kernel(const Tensor& grad_output, const Tensor& input,
                                             const Tensor& target, double margin, int64_t reduction) {
-    //   y == 1          -> 1
-    //   y == -1         -> (margin - x > 0) ? -1 : 0
-    //   otherwise       -> 1 + ((margin - x > 0) ? -1 : 0)
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    const int64_t n = input.numel();
+    const bool fused =
+        fused_float(input, target) && grad_output.dtype() == input.dtype() &&
+        same_layout(grad_output, input) && grad_output.numel() == n;
+    if (fused) {
+        const DType dt = input.dtype();
+        const int dtype = static_cast<int>(dt);
+        const double scale =
+            reduction == 1 ? 1.0 / static_cast<double>(n) : 1.0;
+        Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt,
+                   input.device());
+        hinge_grad_stub(DeviceType::CPU, grad_output.data_ptr(),
+                        input.data_ptr(), target.data_ptr(), out.data_ptr(),
+                        n, margin, scale, dtype);
+        return out;
+    }
     Tensor ones = Tensor::ones_like(input);
     Tensor active = ((margin - input).gt(Scalar(0.0))).to(input.dtype());
     Tensor g = Tensor::where(target.eq(1), ones,
                Tensor::where(target.eq(-1), -active, ones - active));
     g = g * grad_output;
-    return scale_grad(g, reduction, input.numel());
+    return scale_grad(g, reduction, n);
 }
 
 // log(1 + exp(-target*input)), read once per operand and folded in the same
@@ -781,8 +882,37 @@ Tensor soft_margin_loss_backward_kernel(const Tensor& grad_output, const Tensor&
     return scale_grad(g, reduction, n);
 }
 
+// One row's cosine is accumulated in a single walk over the row: the squared
+// norms and the dot product share their loads, and the row answer is the
+// target's branch on the cosine.
 Tensor cosine_embedding_loss_kernel(const Tensor& x1, const Tensor& x2,
                                     const Tensor& target, double margin, int64_t reduction) {
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    const bool fused =
+        fused_float(x1, x2) && target.dtype() == x1.dtype() &&
+        target.numel() == x1.size(0) && target.is_contiguous();
+    if (fused) {
+        const int64_t rows = x1.size(0);
+        const int64_t width = x1.size(1);
+        const DType dt = x1.dtype();
+        const Device& dev = x1.device();
+        const int dtype = static_cast<int>(dt);
+        if (reduction == 0) {
+            Tensor out({rows}, dt, dev);
+            cosine_rows_stub(DeviceType::CPU, x1.data_ptr(), x2.data_ptr(),
+                             target.data_ptr(), out.data_ptr(), rows, width,
+                             margin, dtype);
+            return out;
+        }
+        const double total = cosine_rows_stub(DeviceType::CPU, x1.data_ptr(),
+                                              x2.data_ptr(), target.data_ptr(),
+                                              nullptr, rows, width, margin,
+                                              dtype);
+        if (reduction == 1)
+            return Tensor::full({}, Scalar(total / static_cast<double>(rows)), dt, dev);
+        return Tensor::full({}, Scalar(total), dt, dev);
+    }
     Tensor n1 = x1.pow(2).sum(std::vector<int64_t>{1});
     Tensor n2 = x2.pow(2).sum(std::vector<int64_t>{1});
     Tensor d = (n1 * n2).sqrt();
@@ -797,9 +927,34 @@ Tensor cosine_embedding_loss_kernel(const Tensor& x1, const Tensor& x2,
     return loss_reduce(loss, reduction);
 }
 
+// The row's loss slope times the incoming gradient scales both input planes;
+// the fused walk folds the mean's 1/rows into the same row slope.
 std::tuple<Tensor, Tensor> cosine_embedding_loss_backward_kernel(
         const Tensor& grad_output, const Tensor& x1, const Tensor& x2,
         const Tensor& target, double margin, int64_t reduction) {
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    const int64_t rows = x1.size(0);
+    const bool fused =
+        fused_float(x1, x2) && target.dtype() == x1.dtype() &&
+        target.numel() == rows && target.is_contiguous() &&
+        grad_output.dtype() == x1.dtype() && grad_output.numel() == rows &&
+        grad_output.is_contiguous();
+    if (fused) {
+        const int64_t width = x1.size(1);
+        const DType dt = x1.dtype();
+        const int dtype = static_cast<int>(dt);
+        const double scale =
+            reduction == 1 ? 1.0 / static_cast<double>(rows) : 1.0;
+        Tensor out1(static_cast<std::vector<int64_t>>(x1.sizes()), dt,
+                    x1.device());
+        Tensor out2(static_cast<std::vector<int64_t>>(x2.sizes()), dt,
+                    x2.device());
+        cosine_grad_stub(DeviceType::CPU, grad_output.data_ptr(), x1.data_ptr(),
+                         x2.data_ptr(), target.data_ptr(), out1.data_ptr(),
+                         out2.data_ptr(), rows, width, margin, scale, dtype);
+        return std::make_tuple(out1, out2);
+    }
     Tensor n1 = x1.pow(2).sum(std::vector<int64_t>{1});
     Tensor n2 = x2.pow(2).sum(std::vector<int64_t>{1});
     Tensor d = clamp_min_shim((n1 * n2).sqrt(), Scalar(1e-12));
