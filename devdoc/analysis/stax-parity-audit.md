@@ -27,6 +27,7 @@
 | P1 | 切分与合并互为逆运算时两个算子都不必留下，此前只有点名 `split_cat` 表才处理 | 能力缺失，已核实 | 已补（§4.2） |
 | P1 | 前端无字节码帧求值/图中断/恢复，Python 副作用只发生一次 | 架构差异，已复现 | 未修（架构选择） |
 | P1 | `dynamic_shapes` 只接受 bool，无自动 dynamic、无 `Dim`、`mark_static` 为空操作 | 能力缺失，已核实 | 已修复（§3.2、§13） |
+| P0 | 捕获时读到的非张量全局/闭包/模块属性改变后仍复用旧程序，结果陈旧 | 正确性 bug，已复现 | 已修复（§3.3、§13） |
 | P1 | 无 AOTInductor 部署包、无 cudagraph trees、无 oneDNN/MKLDNN/quantized/freezing/CPU GEMM 模板 | 子系统缺失，静态确认 | 未修 |
 | P1 | 设备只注册 cpu/cuda；MPS/XPU/MTIA/ROCm 无代码生成 | 设备覆盖缺口，静态确认 | 未修 |
 | P1 | 整图 cache、分布式 overlap、bucketing 未接线 | 运行时能力缺口，静态确认 | 未修 |
@@ -36,7 +37,7 @@
 `pytest test/stax` 实测（修复前）：**1568 passed, 2 failed, 1 skipped**（1571 项，约 2 分 4 秒）。
 其中一个失败是确定性的 P0 正确性 bug；另一个是容差/顺序相关的偶发（单独运行通过）。
 
-`pytest test/stax -q` 实测（本轮修复后）：**1615 passed, 1 skipped**（1 分 01 秒），
+`pytest test/stax -q` 实测（本轮修复后）：**1624 passed, 1 skipped**（1 分 03 秒），
 `pytest test/fx test/test_public_surface.py`：**247 passed**，
 `pytest test/higher_order_ops test/export`：**128 passed**。
 原先那两个失败都已不再是失败：确定性那个随 §2.1 修好；偶发那个是 bf16 容差写死 `2e-4` 造成的，
@@ -243,7 +244,11 @@ for _ in range(3):
 ### 3.3 守卫覆盖面
 
 - 已覆盖：张量类型、形状/秩、dtype、device、requires_grad、stride、容器内容、Python 标量、梯度模式、模块身份/训练态/子模块绑定、分支结果。
-- 未覆盖：非张量全局变量/闭包/模块属性（只提升张量类自由变量）、别名/重复输入（同 storage 的两个参数被当作独立输入）、张量数据（数据门之外）。
+- 已覆盖：捕获会读到的非张量全局、闭包单元与模块属性。取值按内容精确比较（浮点按十六进制，容器按类型与元素），
+  可变容器与可调用对象按对象身份比较；自身被代码写回的名字不计（它的值是该次调用的结果而非输入）。
+  模块经闭包/全局/子模块/方法/辅助方法到达的，都会被枚举。
+- 未覆盖：可变容器的**原地**修改（绑定到另一个对象仍会重捕，`list.append` 一类不会）、
+  别名/重复输入（同 storage 的两个参数被当作独立输入）、张量数据（数据门之外）。
 - 守卫导出/调试：只有 `_tensorplay_last_recompile_reasons` 与 `TP_LOG_RECOMPILES`，没有可执行的 guard 导出。
 
 ### 3.4 AOT autograd
@@ -655,6 +660,7 @@ pytest test/stax -q -p no:randomly
 | `6240f4f1` `test(compiler)` | 新增 `test/stax/test_stax_dynamic_shapes.py`（18 项）；`sin(x)+1` 近零点改用与其余用例一致的绝对容差，消除一 ulp 差异造成的偶发失败 |
 | `9566deaf` `fix(compiler)` | 捕获守卫补声明上下界与“每个引用同一符号的轴尺寸相等”；派生维样例尺寸必须可由关系产生并与根维的样例尺寸一致；`mark_static` 轴在样例校验前从声明策略中移除 |
 | `393b01a5` `test(compiler)` | 补派生维不可达尺寸（首调与已捕获后）、根维/派生维样例不一致、声明上界在后续调用生效；导出侧补前两项 |
+| `269cc3eb` `fix(compiler)` | 非张量全局/闭包/模块属性进入特化键：不可变标量与元组按精确内容、可变容器与可调用对象按身份；枚举范围扩到子模块与模块运行代码可达的方法；代码自身写回的名字不计 |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
