@@ -773,7 +773,12 @@ inline ReduceConfig make_reduce_config(const TensorIterator& iter) {
         const int64_t values_per_thread_elems =
             (config.num_inputs + config.step_input * config.input_vec_size - 1) /
             (config.step_input * config.input_vec_size);
-        if (values_per_thread_elems >= 256) {
+        // The split pays off as soon as one round of the per-thread loop holds
+        // more than a couple of vectors: a single CTA leaves every SM but one
+        // idle, while the clamp below still keeps at least 16 elements per
+        // thread so the staging traffic stays a small multiple of the output
+        // size.  Only shorter reductions keep the single-CTA shape.
+        if (values_per_thread_elems >= 64) {
             int device = -1;
             checkCuda(cudaGetDevice(&device), "cudaGetDevice");
             // Geometry comes from the per-device cache below: querying
