@@ -10,6 +10,9 @@
 
 #include <cuda_runtime.h>
 
+#include <thrust/device_ptr.h>
+#include <thrust/iterator/transform_iterator.h>
+
 #include <cassert>
 #include <algorithm>
 #include <cstdint>
@@ -182,6 +185,15 @@ inline void run_masked_scatter_iter(TensorIteratorBase& iter,
     });
 }
 
+// The rank of a set mask entry among the set entries ahead of it is what the
+// scan answers; counting a bool as one reads the mask where it sits, so the
+// pass does not have to stage a wider copy of it first.
+struct mask_entry_weight {
+    __host__ __device__ int64_t operator()(bool value) const {
+        return value ? int64_t(1) : int64_t(0);
+    }
+};
+
 __global__ void masked_scatter_size_check(
     const int64_t* source_offsets, const bool* mask, int64_t last,
     int64_t source_size) {
@@ -337,28 +349,23 @@ void masked_scatter_into_cuda(const Tensor& self, const Tensor& mask,
     if (n == 0) return;
     TP_CHECK(n <= static_cast<int64_t>(std::numeric_limits<int>::max()),
              "masked_scatter: input is too large for device scan");
-    Tensor mask_flat = m_full.reshape({n});
-    Tensor flags = Tensor::empty({n}, DType::Int64, self.device());
     Tensor source_offsets = Tensor::empty({n}, DType::Int64, self.device());
-    TensorIterator flag_iter = TensorIteratorConfig()
-        .resize_outputs(false)
-        .check_all_same_dtype(false)
-        .add_output(flags)
-        .add_const_input(mask_flat)
-        .build();
-    gpu_kernel(flag_iter, [] __host__ __device__(bool value) -> int64_t {
-        return value ? int64_t(1) : int64_t(0);
-    });
     const cudaStream_t stream = getCurrentCUDAStream().stream();
+    using mask_iter_t = thrust::transform_iterator<
+        mask_entry_weight, thrust::device_ptr<const bool>>;
+    mask_iter_t mask_ranks(
+        thrust::device_pointer_cast(
+            static_cast<const bool*>(m_full.data_ptr<bool>())),
+        mask_entry_weight{});
     size_t scan_bytes = 0;
     CUDA_CHECK(cub::DeviceScan::ExclusiveSum(
-        nullptr, scan_bytes, flags.data_ptr<int64_t>(),
+        nullptr, scan_bytes, mask_ranks,
         source_offsets.data_ptr<int64_t>(), static_cast<int>(n), stream));
     Tensor scan_storage = Tensor::empty(
         {static_cast<int64_t>(scan_bytes == 0 ? 1 : scan_bytes)},
         DType::UInt8, self.device());
     CUDA_CHECK(cub::DeviceScan::ExclusiveSum(
-        scan_storage.data_ptr(), scan_bytes, flags.data_ptr<int64_t>(),
+        scan_storage.data_ptr(), scan_bytes, mask_ranks,
         source_offsets.data_ptr<int64_t>(), static_cast<int>(n), stream));
     masked_scatter_size_check<<<1, 1, 0, stream>>>(
         source_offsets.data_ptr<int64_t>(), m_full.data_ptr<bool>(), n - 1,
