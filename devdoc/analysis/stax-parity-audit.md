@@ -40,9 +40,11 @@
 | P2 | `export(strict=...)` 接受两种取值后 `del` 掉，docstring 自称两模式一致 | 静默失效，已核实 | 已拒绝（§8.4、§13） |
 | P0 | 捕获时读到的非张量全局/闭包/模块属性改变后仍复用旧程序，结果陈旧 | 正确性 bug，已复现 | 已修复（§3.3、§13） |
 | P1 | AOT 的 `memory_budget` 与 `keep_inference_input_mutations` 接收后丢弃 | 静默失效，已核实 | 已修复（§3.4、§13） |
-| P1 | 无 AOTInductor 部署包、无 cudagraph trees、无 oneDNN/MKLDNN/quantized/freezing/CPU GEMM 模板 | 子系统缺失，静态确认 | 未修 |
+| P1 | 无 AOTInductor 部署包、无 cudagraph trees、无 oneDNN/MKLDNN/quantized/freezing | 子系统缺失，静态确认 | 未修 |
+| P1 | 无 CPU GEMM 模板；`config.cpp.max_autotune_gemm_backends` 里的 "CPP" 无人消费 | 能力缺失，静态确认 | 已实现 `CppGemmTemplate`（f32/bf16/f16，静态 M/N/K，不预打包权重） |
 | P1 | 设备只注册 cpu/cuda；MPS/XPU/MTIA/ROCm 无代码生成 | 设备覆盖缺口，静态确认 | 未修 |
-| P1 | 整图 cache、分布式 overlap、bucketing 未接线 | 运行时能力缺口，静态确认 | 未修 |
+| P1 | 分布式 overlap、bucketing 未接线 | 运行时能力缺口，静态确认 | 未修 |
+| P1 | 工件缓存只存打印好的 wrapper，且要等降级、调度、打印都做完才发现命中 | 能力缺失，静态确认 | 已实现整图缓存：键在降级之前定下，命中即跳过降级/调度/打印/构建（§8.1、§13） |
 | P2 | 多处死 import 会在特定路径抛 `ImportError` | 移植残留，已核实路径 | 已清理 |
 | P2 | 移植模块读取的设置名在本模块不存在，特定机器/配置上才走到就 `AttributeError`；`tp_configs` 这个隔离键形式也会撞上同一缺口 | 静默缺陷，静态确认 | 已修复（§8.5、§13） |
 | P2 | 配置面数字过期（190 项 / 1,793 行） | 一致性问题 | 已更新为实测 195 项 / 1,894 行（§1） |
@@ -50,9 +52,8 @@
 `pytest test/stax` 实测（修复前）：**1568 passed, 2 failed, 1 skipped**（1571 项，约 2 分 4 秒）。
 其中一个失败是确定性的 P0 正确性 bug；另一个是容差/顺序相关的偶发（单独运行通过）。
 
-`pytest test/stax -q` 实测（本轮修复后）：**1645 passed, 1 skipped**，
-`pytest test/fx test/test_public_surface.py`：**247 passed**，
-`pytest test/higher_order_ops test/export`：**128 passed**。
+`pytest test/stax -q` 实测（本轮修复后）：**1755 passed, 1 skipped**，
+`pytest test/fx test/test_public_surface.py test/higher_order_ops test/export`：**376 passed**。
 原先那两个失败都已不再是失败：确定性那个随 §2.1 修好；偶发那个是 bf16 容差写死 `2e-4` 造成的，
 现在按 dtype 的机器精度取容差。
 
@@ -484,11 +485,11 @@ cpp_wrapper=use_cuda_codegen,
 | cudagraph trees | 只有 per-region flat manager，`max_entries=8`；dynamic/训练/原地修改直接 skip（`cudagraphs.py:206,776-777,784`） | 树式复用、跨重编译内存池、多树 replay |
 | oneDNN/MKLDNN | 无 `mkldnn_ir.py` / `mkldnn_lowerings.py`；`is_mkldnn_conv` 引用的 pass 不存在（`graph_lowering.py:472-473`） | CPU conv/linear 融合、channels-last、prepack |
 | 量化 | 无 `quantized_lowerings.py`；int4 仅 fallback；无 WOQ concat_linear | int8/fp8/mixed GEMM、量化 pattern |
-| CPU GEMM 模板 | 无 `CppGemmTemplate` / `CppBmmTemplate` / `CppGroupedGemmTemplate`；`config.cpp.max_autotune_gemm_backends` 里的 "CPP" 无人消费 | CPU 分块 GEMM、micro-gemm 变体（AVX512/AMX/Brgemm） |
+| CPU GEMM 模板 | 有 `CppGemmTemplate`（`codegen/cpp_gemm_template.py`）：AVX2/AVX512 的 micro-gemm（f32/bf16/f16）、线程/缓存分块、偏置与可折叠 epilogue 融进 store；不预打包权重、不做 int8/woq/AMX/Brgemm，动态 M 明确拒绝 | CPU 分块 GEMM、micro-gemm 变体（AVX512/AMX/Brgemm） |
 | freezing | `freezing_utils.py` 存在，但 `enter_freezing()` 无调用者；无 `freezing.py` | 推理参数冻结 + prepack |
 | jagged/nested | 仅 library-call fallback | nested tensor 原生 lowering |
 | ROCm/XPU/MPS/MTIA | 设备只注册 cpu/cuda（`codegen/common.py:741-753`）；无对应 codegen 目录 | 各自 codegen 与 device op overrides |
-| 整图 FX cache | 只有 kernel/wrapper/autotune cache；无 `FxGraphCache` / `FxGraphPickler` / `CacheabilityValidator` | 跨进程复用整张编译图 |
+| 整图 FX cache | `graph_artifact_cache` 缓存整个区域工件：键含捕获程序、每个样例输入、模块状态、全部设置、包版本与工具链，在降级之前定下，命中即跳过降级/调度/打印/构建；符号形状区域不入缓存 | 跨进程复用整张编译图（`FxGraphCache`） |
 | 分布式 overlap | `_CollectiveKernel` 从不构造；bucketing pass 无调用者；`reorder_for_compute_comm_overlap` 默认关 | collective lowering、overlap 调度、bucketing、FSDP/DDP 融合 |
 | profiler / fuzzer / bisector | 无 | 编译诊断与算子覆盖 fuzz |
 
@@ -524,9 +525,9 @@ cpp_wrapper=use_cuda_codegen,
 
 ### 8.1 缓存
 
-- `graph_artifact_cache` 只缓存“打印好的 wrapper”，且键遗漏非张量输入（见 2.1）。
+- `graph_artifact_cache` 缓存整个区域的工件：键在降级之前定下（捕获程序、每个样例输入、模块状态、全部设置、包版本、编译器与系统指纹），命中即跳过降级/调度/打印/构建；符号形状的区域不入缓存。
 - `kernel_cache.cache_key` 键为 backend/entry/options/source，**不含工具链版本或 ISA**。
-- `codecache.py` 1,237 行 vs 上游 5,548 行，无整图 FX cache。
+- `codecache.py` 仍只做 kernel/wrapper 级缓存与编译；整图复用由 `graph_artifact_cache` 负责。
 - 捕获缓存 `_core/region_cache.py` 默认关闭（需 `TP_CAPTURE_CACHE=1`）。
 - `remote_cache.py` 定义了 `RemoteFxGraphCache` / `RemoteAOTAutogradCache`，但只有 autotune 路径调用 `create_cache`。
 - 无 TTL / 容量上限；缓存可无限增长。
@@ -543,7 +544,9 @@ cpp_wrapper=use_cuda_codegen,
 ```
 pytest test/stax -q
 # 修复前：1568 passed, 2 failed, 1 skipped
-# 修复后：1645 passed, 1 skipped
+# 本轮修复后：1755 passed, 1 skipped
+pytest test/fx test/test_public_surface.py test/higher_order_ops test/export -q
+# 376 passed
 ```
 
 修复前的两个失败：
@@ -565,6 +568,8 @@ pytest test/stax -q
   foreach 按源/目标 dtype 与形状分组并用 `-1` 分隔、单组返回 `None`、未提示的符号尺寸报错；
   split scan 把每个归约块键抬到下限、程序维键不动。
 - 配置面此前无测试，本轮补 `test/stax/test_stax_config_surface.py`（12 项，见 §8.5）；
+- 整图缓存补 `test/stax/test_stax_graph_cache.py`（7 项）：键随程序/输入/模块状态/设置/包版本变化、命中时不降级、符号形状不入缓存；
+- CPU 分块乘积补 `test/stax/test_stax_cpu_gemm_template.py`（12 项）：`mm`/`addmm`（行偏置与二维偏置）落成模板 kernel 且与 eager 一致、尾块形状、bf16/f16、其它类型不提供、不说话的后端列表不提供、两种 `mm`/`addmm` 拼写都指向同一 lowering、外部 kernel 名接受目标缓冲、边界符号的尺寸提示、读名不触发 store；
 - 无 fuzzer / `test_operators`。
 
 ### 8.4 文档声明 vs 实际
@@ -646,10 +651,11 @@ pytest test/stax -q
 1. ~~自动 dynamic + `dynamic_shapes=Dim` + `mark_static` / `disallow_in_graph` 真正生效。~~
    已完成（§3.2、§13）：自动 dynamic 只在“仅尺寸变化”的守卫失配上触发；`dynamic_shapes` 支持映射/位置/装饰器三种写法与 `Dim` 约束；`mark_static` 在编译前与捕获中都生效；`disallow_in_graph` 整段拒绝而不再静默吸收。
 2. ~~补 §4.3 里仍缺的 pass（`reorder_for_locality`、`remove_assert_ops`、`split_cat` 接线等）。~~ 已完成（`remove_profiler_ops` 除外，本仓库无对应算子）。
-3. CPU GEMM 模板 + micro-gemm 变体；oneDNN/MKLDNN；quantized lowering。
+3. ~~CPU GEMM 模板 + micro-gemm 变体~~ 已完成（§6、§13）：`CppGemmTemplate` + AVX2/AVX512 micro-gemm
+   （f32/bf16/f16），预打包权重、int8/woq/AMX/Brgemm 与动态 M 明确不做；oneDNN/MKLDNN、quantized lowering 仍缺。
 4. AOTInductor 部署包；cudagraph trees。
 5. 设备 codegen（MPS/XPU/ROCm）或明确拒绝。
-6. 整图 cache；分布式 collective lowering/overlap。
+6. ~~整图 cache~~ 已完成（§8.1、§13）；分布式 collective lowering/overlap 仍缺。
 
 ### P2（清理与一致性）
 
@@ -799,6 +805,15 @@ pytest test/stax -q -p no:randomly
 | `b9d3a36b` `fix(frontend)` | `export(strict=...)` 不再接受两种取值后丢弃：只有“记录一次执行”这一条捕获，`strict=False` 是它，`strict=True` 明确拒绝并说明没有第二条路；非 bool 报 `TypeError` |
 | `c94f9159` `fix(compiler)` | 区域名不转发给后端（前端自己写在调用对象与诊断里），`check_backend_kwargs` 不再把 `name` 当区域关键字；Stax 入口删掉被丢弃的 `name` 参数与 `_lower_stax_region` 上四个不读的参数；相关用例改为断言新契约 |
 | `1e4ad231` `docs(compiler)` | 改写 `export` / `unused` / `overload_method` 的文档为“脚本化侧标记、不改变捕获”；`substitute_in_graph` 的两个标记不再存进记录，折叠提示写明“捕获本就如此”；新增 `test/stax/test_stax_annotations.py`（6 项） |
+| `1c55d7e5` `docs(compiler)` | 审计报告补“注解只影响脚本化侧、`substitute_in_graph` 的两个标记不再入库” |
+| `77bd3888` `docs(compiler)` | 审计报告补 `export(strict=...)` 的拒绝（§8.4、§0、§13） |
+| `d92d739a` `feat(compiler)` | 整图缓存：`graph_artifact_cache` 重写为区域级工件（键含程序、样例输入、模块状态、全部设置、包版本、编译器与系统指纹），命中即跳过降级/调度/打印/构建；符号形状不入缓存；新增 `test/stax/test_stax_graph_cache.py`（7 项） |
+| `92e5785f` `fix(compiler)` | `ComputedBuffer` 的读名/读数直接问 body，不再为了知道读什么而执行 store |
+| `181cd820` `fix(compiler)` | 外部调用不再被要求自己定布局：只填缓冲的调用对元素顺序无所谓，有要求的调用自己覆写 |
+| `8b844fa6` `fix(compiler)` | 尺寸提示覆盖所有剩余自由符号（含 kernel 自造的循环符号），除零时回退而不是报错 |
+| `d880ca6d` `fix(compiler)` | 外部 kernel 以“能接目标缓冲”的形式（操作包）注册；被测量的是程序会写的那次调用 |
+| `a148dfee` `fix(compiler)` | 交给外部调用的值先 realize 再查 stride-1，未落地的值不再被判为无 stride |
+| `a35c7bea` `feat(compiler)` | CPU 分块乘积模板：`CppGemmTemplate` + AVX2/AVX512 micro-gemm（f32/bf16/f16）、线程/缓存分块、偏置与可折叠 epilogue 融进 store；`mm`/`addmm` 的 `.default` 拼写一并指向调优 lowering；框架 kernel 作为候选需两条设置一致；新增 `test/stax/test_stax_cpu_gemm_template.py`（12 项） |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
