@@ -1344,6 +1344,34 @@ def _preserve_input_values(*values: Any) -> Any:
                     tensor.copy_(value)
 
 
+def _shape_spec_for_examples(
+    spec: dict[str, Any], samples: dict[str, Any]
+) -> dict[str, Any]:
+    """Drop the axes a caller marked static before the capture started.
+
+    A mark overrides the declared policy for its axis, so an entry naming
+    that axis is not a constraint the examples have to satisfy.
+    """
+
+    filtered: dict[str, Any] = {}
+    for name, entry in spec.items():
+        value = samples.get(name)
+        marked = set(getattr(value, "_tensorplay_static_dims", ()))
+        if not marked or entry is None:
+            filtered[name] = entry
+            continue
+        if isinstance(entry, dict):
+            filtered[name] = {
+                axis: dim for axis, dim in entry.items() if axis not in marked
+            }
+        else:
+            filtered[name] = tuple(
+                None if axis in marked else dim
+                for axis, dim in enumerate(entry)
+            )
+    return filtered
+
+
 def _compile_region(
     model: Callable[..., Any],
     compiler_fn: CompilerFn,
@@ -1379,7 +1407,9 @@ def _compile_region(
                                 "dynamic_shapes needs a program whose argument "
                                 "names can be read"
                             )
-                        check_dynamic_shapes(samples, shape_spec)
+                        check_dynamic_shapes(
+                            samples, _shape_spec_for_examples(shape_spec, samples)
+                        )
                     if (backend_kwargs or {}).get("dynamic") is True and getattr(
                         compiler_fn, "supports_symbolic_shapes", False
                     ):

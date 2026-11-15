@@ -34,6 +34,27 @@ def build_capture_guard(module):
         replacement = sympy.Symbol(f"capture_{len(replacements)}")
         replacements[symbol] = replacement
         assignments.append(f"    {replacement} = (args[{positions[name]}].size()[{axis}] - {offset}) // {scale}")
+        # The declaration also bounds the symbol and ties every site that
+        # reads it to one exact size.  Without these checks a declared max
+        # (or an even-size relation such as ``2 * Dim("half")``) would be
+        # ignored by a region whose first example happened to satisfy it.
+        spec = dims.symbols[symbol].spec
+        lower = getattr(spec, "min", None)
+        upper = getattr(spec, "max", None)
+        if lower:
+            checks.append(f"{replacement} >= {lower}")
+        if upper is not None:
+            checks.append(f"{replacement} <= {upper}")
+        for site_name, axes in dims.sites.items():
+            if site_name not in positions:
+                continue
+            for site_axis, (expression, _example) in axes.items():
+                if symbol not in expression.free_symbols:
+                    continue
+                checks.append(
+                    f"args[{positions[site_name]}].size()[{site_axis}] == "
+                    f"({printer.doprint(expression.xreplace(replacements))})"
+                )
     for guard in dims.guards:
         expression = guard.fact.xreplace(replacements)
         if expression.free_symbols - set(replacements.values()):

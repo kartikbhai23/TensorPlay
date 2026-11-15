@@ -678,10 +678,29 @@ def check_dynamic_shapes(combined_args: Any, dynamic_shapes: Any) -> None:
     """Validate a dimension specification against the example inputs.
 
     ``combined_args`` maps argument names to values; ``dynamic_shapes`` uses
-    the same shape, with one dimension entry per input it mentions.
+    the same shape, with one dimension entry per input it mentions.  Entries
+    are checked one by one, then the whole specification is solved: a name
+    used at several axes declares those axes equal, so example sizes that
+    disagree, or two definitions of one name that cannot both hold, are
+    reported before the region is captured.
     """
 
     _check_dynamic_shapes(combined_args, dynamic_shapes)
+    constraints = _process_dynamic_shapes(combined_args, dynamic_shapes)
+    if not constraints:
+        return
+    from .dim_constraints import DimConstraints, attach_observed_sizes
+
+    solver = DimConstraints()
+    for constraint, observed in attach_observed_sizes(
+        constraints, combined_args, dynamic_shapes
+    ):
+        solver.add(constraint, observed)
+    if not solver.solve():
+        raise ValueError(
+            "dynamic_shapes is inconsistent with the example inputs:\n"
+            + solver.pretty_print()
+        )
 
 
 def _process_dynamic_shapes(

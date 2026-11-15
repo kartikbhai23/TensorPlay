@@ -158,6 +158,36 @@ class DimConstraints:
                         None,
                     )
                 )
+        for name, relation in self._relations.items():
+            observed = self._observed.get(name)
+            if observed is None:
+                continue
+            # A derived axis only admits sizes the relation can produce: the
+            # example must be ``scale * root + offset`` for an integer root.
+            delta = int(observed) - relation.offset
+            if relation.scale <= 0 or delta % relation.scale:
+                self._violations.append(
+                    _Violation(
+                        f"example size {int(observed)} of dimension {name!r} is not "
+                        f"of the form {relation.render()}",
+                        name,
+                        None,
+                    )
+                )
+                continue
+            root_observed = self._observed.get(relation.root)
+            if root_observed is not None:
+                implied = relation.scale * root_observed + relation.offset
+                if implied != int(observed):
+                    self._violations.append(
+                        _Violation(
+                            f"dimension {name!r} is {relation.render()}, but the "
+                            f"example sizes give {implied} for the root "
+                            f"{relation.root!r}",
+                            name,
+                            None,
+                        )
+                    )
         for name, bound in self._ranges.items():
             relation = self._relations.get(name)
             if relation is None:
