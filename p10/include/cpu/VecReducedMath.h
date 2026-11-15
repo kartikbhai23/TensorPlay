@@ -210,7 +210,8 @@ inline void store_bf16_16(uint16_t* p, __m256 lo, __m256 hi) {
 }
 
 // One answer crossed to the half layout by the hardware conversion, for a
-// walk whose step answers a single element.
+// walk whose step answers a single element; the software conversion it
+// replaces is a branchy normalisation.
 __attribute__((target("avx2,f16c"), noinline))
 inline uint16_t narrow_one_hw(float value) {
     return static_cast<uint16_t>(_mm_extract_epi16(
@@ -218,6 +219,11 @@ inline uint16_t narrow_one_hw(float value) {
                      _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC),
         0));
 }
+
+// One element crossed into single precision the same way, for a walk outside
+// a target region.
+__attribute__((target("avx2,f16c"), noinline))
+inline float widen_one(uint16_t bits) { return _cvtsh_ss(bits); }
 
 // Sixteen answers landed by one store, given in the two-answer form that the
 // widening above hands back.  The packing takes four words from each register
@@ -239,12 +245,14 @@ inline bool f16c_available() { return false; }
 
 #endif  // TP_VECREDUCED_X86
 
+#if !defined(TP_VECREDUCED_X86)
 // One element, crossing in software.  The tail of a walk -- the elements
 // that do not fill a step -- is answered this way.
 inline float widen_one(uint16_t bits) {
     return static_cast<float>(
         tensorplay::Half(bits, tensorplay::Half::from_bits()));
 }
+#endif
 
 inline uint16_t narrow_one(float value) {
     return tensorplay::Half(value).x;
