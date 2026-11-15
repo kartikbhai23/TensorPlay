@@ -4857,14 +4857,78 @@ inline ctype short_row_horizontal(const Vectorized<ctype>& acc, const ctype* dat
     return best;
 }
 
+// The lanes of a value that hold a not-a-number, one bit per lane.
+#if defined(CPU_CAPABILITY_AVX2)
+inline int nan_lanes(const Vectorized<float>& value) {
+    return _mm256_movemask_ps(_mm256_cmp_ps(value, value, _CMP_UNORD_Q));
+}
+
+inline int nan_lanes(const Vectorized<double>& value) {
+    return _mm256_movemask_pd(_mm256_cmp_pd(value, value, _CMP_UNORD_Q));
+}
+#else
+template <typename ctype>
+inline int nan_lanes(const Vectorized<ctype>& value) {
+    constexpr int64_t lanes = Vectorized<ctype>::size();
+    ctype held[lanes];
+    value.store(held);
+    int mask = 0;
+    for (int64_t k = 0; k < lanes; ++k) {
+        if (!(held[k] == held[k])) mask |= 1 << k;
+    }
+    return mask;
+}
+#endif
+
+// A run shorter than one step still reads a whole step per row: the lanes past
+// the run are replaced by the identity, so a row's compare cannot see the next
+// row's values.  Only the tensor's own last row needs a padded copy to read,
+// and a row holding a not-a-number takes the exact walk.
 template <typename ctype, bool WantMax>
-inline void fold_short_rows(const ctype* data, int64_t run, int64_t begin,
-                            int64_t end, ctype* out) {
+inline void fold_step_rows(const ctype* data, int64_t run, int64_t begin,
+                           int64_t end, ctype* out, int64_t last_row) {
     using Vec = Vectorized<ctype>;
     constexpr int64_t lanes = Vec::size();
     const Vec identity(extrema_identity<ctype>(WantMax));
+    alignas(64) unsigned char bits[lanes * sizeof(ctype)];
+    std::memset(bits, 0, sizeof(bits));
+    std::memset(bits, 0xFF, static_cast<size_t>(run) * sizeof(ctype));
+    const Vec keep = Vec::loadu(reinterpret_cast<const ctype*>(bits));
+    for (int64_t r = begin; r < end; ++r) {
+        const ctype* p = data + r * run;
+        Vec value;
+        if (r == last_row) {
+            alignas(64) ctype pad[lanes];
+            for (int64_t k = 0; k < run; ++k) pad[k] = p[k];
+            for (int64_t k = run; k < lanes; ++k) {
+                pad[k] = extrema_identity<ctype>(WantMax);
+            }
+            value = Vec::loadu(pad);
+        } else {
+            value = Vec::loadu(p);
+        }
+        if (nan_lanes(value) != 0) {
+            out[r] = WantMax ? fold_run_extremum_short<ctype, true>(p, run)
+                             : fold_run_extremum_short<ctype, false>(p, run);
+            continue;
+        }
+        const Vec masked = Vec::blendv(identity, value, keep);
+        out[r] = WantMax ? masked.reduce_max() : masked.reduce_min();
+    }
+}
+
+template <typename ctype, bool WantMax>
+inline void fold_short_rows(const ctype* data, int64_t run, int64_t begin,
+                            int64_t end, ctype* out, int64_t last_row) {
+    using Vec = Vectorized<ctype>;
+    constexpr int64_t lanes = Vec::size();
+    if (run < lanes) {
+        fold_step_rows<ctype, WantMax>(data, run, begin, end, out, last_row);
+        return;
+    }
+    const Vec identity(extrema_identity<ctype>(WantMax));
     int64_t r = begin;
-    for (; r + 4 <= end && run >= lanes; r += 4) {
+    for (; r + 4 <= end; r += 4) {
         const ctype* p0 = data + (r + 0) * run;
         const ctype* p1 = data + (r + 1) * run;
         const ctype* p2 = data + (r + 2) * run;
@@ -4972,9 +5036,11 @@ bool fold_trailing_extrema(Tensor& result, const Tensor& self, int64_t ndim,
         auto fold_rows = [&](int64_t begin, int64_t end) {
             if (short_run) {
                 if (maximum_value) {
-                    fold_short_rows<ctype, true>(data, run, begin, end, out);
+                    fold_short_rows<ctype, true>(data, run, begin, end, out,
+                                                 rows - 1);
                 } else {
-                    fold_short_rows<ctype, false>(data, run, begin, end, out);
+                    fold_short_rows<ctype, false>(data, run, begin, end, out,
+                                                  rows - 1);
                 }
                 return;
             }
