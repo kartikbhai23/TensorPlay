@@ -33,6 +33,15 @@ DEFINE_DISPATCH(l1_grad_stub);
 DEFINE_DISPATCH(bce_logits_rows_stub);
 DEFINE_DISPATCH(huber_sum_stub);
 DEFINE_DISPATCH(huber_into_stub);
+DEFINE_DISPATCH(smooth_l1_sum_stub);
+DEFINE_DISPATCH(smooth_l1_into_stub);
+DEFINE_DISPATCH(smooth_l1_grad_stub);
+DEFINE_DISPATCH(softmargin_sum_stub);
+DEFINE_DISPATCH(softmargin_into_stub);
+DEFINE_DISPATCH(softmargin_grad_stub);
+DEFINE_DISPATCH(poisson_sum_stub);
+DEFINE_DISPATCH(poisson_into_stub);
+DEFINE_DISPATCH(poisson_grad_stub);
 DEFINE_DISPATCH(multilabel_rows_stub);
 DEFINE_DISPATCH(triplet_rows_stub);
 
@@ -438,11 +447,34 @@ Tensor l1_loss_backward_kernel(const Tensor& grad_output, const Tensor& input,
 
 // z = |x - t|; z < beta ? 0.5 z^2 / beta : z - 0.5 beta. The switch is strict,
 // so the quadratic branch holds no lane when the width is nothing and every
-// lane answers the deviation itself.
+// lane answers the deviation itself.  The fused walk reads both operands once
+// and never builds the deviation plane.
 Tensor smooth_l1_loss_cpu(const Tensor& input, const Tensor& target,
                           int64_t reduction, double beta) {
     if (beta < 0)
         TP_THROW(ValueError, "smooth_l1_loss does not support negative values for beta.");
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    if (fused_float(input, target)) {
+        const int64_t n = input.numel();
+        const DType dt = input.dtype();
+        const Device& dev = input.device();
+        const int dtype = static_cast<int>(dt);
+        if (reduction == 0) {
+            Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt, dev);
+            smooth_l1_into_stub(DeviceType::CPU, input.data_ptr(),
+                                target.data_ptr(), out.data_ptr(), n, beta,
+                                dtype);
+            return out;
+        }
+        const double total = smooth_l1_sum_stub(DeviceType::CPU,
+                                                input.data_ptr(),
+                                                target.data_ptr(), n, beta,
+                                                dtype);
+        if (reduction == 1)
+            return Tensor::full({}, Scalar(total / static_cast<double>(n)), dt, dev);
+        return Tensor::full({}, Scalar(total), dt, dev);
+    }
     Tensor diff = input - target;
     Tensor absd = diff.abs();
     Tensor loss = Tensor::where(absd.lt(Scalar(beta)), diff * diff * (0.5 / beta),
@@ -458,6 +490,24 @@ Tensor smooth_l1_loss_backward_cpu(const Tensor& grad_output, const Tensor& inpu
                                    const Tensor& target, int64_t reduction, double beta) {
     if (beta < 0)
         TP_THROW(ValueError, "smooth_l1_loss does not support negative values for beta.");
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    const int64_t n = input.numel();
+    const bool fused =
+        fused_float(input, target) && grad_output.dtype() == input.dtype() &&
+        same_layout(grad_output, input) && grad_output.numel() == n;
+    if (fused) {
+        const DType dt = input.dtype();
+        const int dtype = static_cast<int>(dt);
+        const double scale =
+            reduction == 1 ? 1.0 / static_cast<double>(n) : 1.0;
+        Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt,
+                   input.device());
+        smooth_l1_grad_stub(DeviceType::CPU, grad_output.data_ptr(),
+                            input.data_ptr(), target.data_ptr(), out.data_ptr(),
+                            n, beta, scale, dtype);
+        return out;
+    }
     Tensor diff = input - target;
     Tensor slope = Tensor::where(
         diff.le(Scalar(-beta)), Scalar(-1.0),
@@ -678,17 +728,57 @@ Tensor hinge_embedding_loss_backward_kernel(const Tensor& grad_output, const Ten
     return scale_grad(g, reduction, input.numel());
 }
 
+// log(1 + exp(-target*input)), read once per operand and folded in the same
+// walk; the mean shares the fold by the element count.
 Tensor soft_margin_loss_kernel(const Tensor& input, const Tensor& target, int64_t reduction) {
-    // log(1 + exp(-target*input))
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    if (fused_float(input, target)) {
+        const int64_t n = input.numel();
+        const DType dt = input.dtype();
+        const Device& dev = input.device();
+        const int dtype = static_cast<int>(dt);
+        if (reduction == 0) {
+            Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt, dev);
+            softmargin_into_stub(DeviceType::CPU, input.data_ptr(),
+                                 target.data_ptr(), out.data_ptr(), n, dtype);
+            return out;
+        }
+        const double total = softmargin_sum_stub(DeviceType::CPU,
+                                                 input.data_ptr(),
+                                                 target.data_ptr(), n, dtype);
+        if (reduction == 1)
+            return Tensor::full({}, Scalar(total / static_cast<double>(n)), dt, dev);
+        return Tensor::full({}, Scalar(total), dt, dev);
+    }
     Tensor loss = ((input * target) * -1.0).exp().add(1.0).log();
     return loss_reduce(loss, reduction);
 }
 
+// d/dx log(1 + exp(-t x)) = -t * sigmoid(-t x), carried by the incoming
+// gradient and shared by the element count when the forward averaged.
 Tensor soft_margin_loss_backward_kernel(const Tensor& grad_output, const Tensor& input,
                                         const Tensor& target, int64_t reduction) {
-    // d/dx log(1 + exp(-t x)) = -t * sigmoid(-t x)
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    const int64_t n = input.numel();
+    const bool fused =
+        fused_float(input, target) && grad_output.dtype() == input.dtype() &&
+        same_layout(grad_output, input) && grad_output.numel() == n;
+    if (fused) {
+        const DType dt = input.dtype();
+        const int dtype = static_cast<int>(dt);
+        const double scale =
+            reduction == 1 ? 1.0 / static_cast<double>(n) : 1.0;
+        Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt,
+                   input.device());
+        softmargin_grad_stub(DeviceType::CPU, grad_output.data_ptr(),
+                             input.data_ptr(), target.data_ptr(),
+                             out.data_ptr(), n, scale, dtype);
+        return out;
+    }
     Tensor g = -target * ((input * target) * -1.0).sigmoid() * grad_output;
-    return scale_grad(g, reduction, input.numel());
+    return scale_grad(g, reduction, n);
 }
 
 Tensor cosine_embedding_loss_kernel(const Tensor& x1, const Tensor& x2,
@@ -731,8 +821,33 @@ std::tuple<Tensor, Tensor> cosine_embedding_loss_backward_kernel(
     return std::make_tuple(g1, g2);
 }
 
+// exp(x) - t x (log_input) or x - t log(x + eps), plus the Stirling term when
+// full; both operand spaces are read once and folded in the same walk.
 Tensor poisson_nll_loss_kernel(const Tensor& input, const Tensor& target,
                                bool log_input, bool full, double eps, int64_t reduction) {
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    if (fused_float(input, target)) {
+        const int64_t n = input.numel();
+        const DType dt = input.dtype();
+        const Device& dev = input.device();
+        const int dtype = static_cast<int>(dt);
+        if (reduction == 0) {
+            Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt, dev);
+            poisson_into_stub(DeviceType::CPU, input.data_ptr(),
+                              target.data_ptr(), out.data_ptr(), n,
+                              log_input ? 1 : 0, full ? 1 : 0, eps, dtype);
+            return out;
+        }
+        const double total = poisson_sum_stub(DeviceType::CPU,
+                                              input.data_ptr(),
+                                              target.data_ptr(), n,
+                                              log_input ? 1 : 0,
+                                              full ? 1 : 0, eps, dtype);
+        if (reduction == 1)
+            return Tensor::full({}, Scalar(total / static_cast<double>(n)), dt, dev);
+        return Tensor::full({}, Scalar(total), dt, dev);
+    }
     Tensor loss;
     if (log_input) {
         loss = input.exp() - target * input;
@@ -752,9 +867,30 @@ Tensor poisson_nll_loss_kernel(const Tensor& input, const Tensor& target,
     return loss_reduce(loss, reduction);
 }
 
+// d/dx is exp(x) - t (log_input) or 1 - t / (x + eps); the Stirling term does
+// not depend on x, so `full` never reaches the gradient.
 Tensor poisson_nll_loss_backward_kernel(const Tensor& grad_output, const Tensor& input,
                                         const Tensor& target, bool log_input, bool full,
                                         double eps, int64_t reduction) {
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    (void)full;
+    const int64_t n = input.numel();
+    const bool fused =
+        fused_float(input, target) && grad_output.dtype() == input.dtype() &&
+        same_layout(grad_output, input) && grad_output.numel() == n;
+    if (fused) {
+        const DType dt = input.dtype();
+        const int dtype = static_cast<int>(dt);
+        const double scale =
+            reduction == 1 ? 1.0 / static_cast<double>(n) : 1.0;
+        Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt,
+                   input.device());
+        poisson_grad_stub(DeviceType::CPU, grad_output.data_ptr(),
+                          input.data_ptr(), target.data_ptr(), out.data_ptr(),
+                          n, log_input ? 1 : 0, eps, scale, dtype);
+        return out;
+    }
     Tensor g;
     if (log_input) {
         g = input.exp() - target;
@@ -762,7 +898,7 @@ Tensor poisson_nll_loss_backward_kernel(const Tensor& grad_output, const Tensor&
         g = 1.0 - target / (input + eps);
     }
     g = g * grad_output;
-    return scale_grad(g, reduction, input.numel());
+    return scale_grad(g, reduction, n);
 }
 
 // ---------------------------------------------------------------------------

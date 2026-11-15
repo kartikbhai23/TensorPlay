@@ -1,7 +1,8 @@
-// Tier-compiled forward walks for the losses: binary cross entropy, binary
-// cross entropy over logits, huber, multilabel soft margin and triplet margin.  Each CPU
-// capability tier compiles its own copy of this file (see TP_CPU_KERNEL_SRCS
-// in p10/CMakeLists.txt) and registers the slots declared in
+// Tier-compiled forward and backward walks for the losses: binary cross
+// entropy, binary cross entropy over logits, huber, smooth l1, soft margin,
+// poisson, mse, l1, kl divergence, multilabel soft margin and triplet margin.
+// Each CPU capability tier compiles its own copy of this file (see
+// TP_CPU_KERNEL_SRCS in p10/CMakeLists.txt) and registers the slots declared in
 // cpu/LossVecKernels.h; DispatchStub picks the widest copy at run time.
 //
 // The folds read the operand buffers as they are, so no widened copy of an
@@ -86,6 +87,298 @@ void huber_into_typed(const T* input, const T* target, T* out, int64_t n,
                             out[i] = az <= d
                                          ? z * z * static_cast<T>(0.5)
                                          : d * (az - d * static_cast<T>(0.5));
+                        }
+                        return 0.0;
+                    });
+}
+
+// z = x - t; the quadratic branch holds only the lanes strictly inside the
+// width, so a zero width answers the deviation itself and never divides.
+template <typename T>
+double smooth_l1_sum_typed(const T* input, const T* target, int64_t n,
+                           double beta) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const T b = static_cast<T>(beta);
+    const Vec bv(b);
+    const Vec half(static_cast<T>(0.5));
+    return parallel_ranges(n, kElementwiseUnit,
+                           [&](int64_t begin, int64_t end) -> double {
+        Vec acc(static_cast<T>(0));
+        int64_t i = begin;
+        for (; i + W <= end; i += W) {
+            const Vec z = Vec::loadu(input + i) - Vec::loadu(target + i);
+            const Vec az = z.abs();
+            const Vec quad = z * z * (half / bv);
+            const Vec linear = az - bv * half;
+            acc = acc + Vec::blendv(linear, quad, az < bv);
+        }
+        double total = static_cast<double>(acc.reduce_add());
+        for (; i < end; ++i) {
+            const T z = input[i] - target[i];
+            const T az = z < static_cast<T>(0) ? -z : z;
+            total += static_cast<double>(
+                az < b ? z * z * static_cast<T>(0.5) / b
+                       : az - b * static_cast<T>(0.5));
+        }
+        return total;
+    });
+}
+
+template <typename T>
+void smooth_l1_into_typed(const T* input, const T* target, T* out, int64_t n,
+                          double beta) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const T b = static_cast<T>(beta);
+    const Vec bv(b);
+    const Vec half(static_cast<T>(0.5));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+        int64_t i = begin;
+        for (; i + W <= end; i += W) {
+            const Vec z = Vec::loadu(input + i) - Vec::loadu(target + i);
+            const Vec az = z.abs();
+            const Vec quad = z * z * (half / bv);
+            const Vec linear = az - bv * half;
+            Vec::blendv(linear, quad, az < bv).store(out + i);
+        }
+        for (; i < end; ++i) {
+            const T z = input[i] - target[i];
+            const T az = z < static_cast<T>(0) ? -z : z;
+            out[i] = az < b ? z * z * static_cast<T>(0.5) / b
+                            : az - b * static_cast<T>(0.5);
+        }
+        return 0.0;
+    });
+}
+
+// The slope is a three-way test on the signed deviation; the two outer tests
+// are reached before the division, so a lane sitting on the width answers the
+// full slope and a zero width never divides.
+template <typename T>
+void smooth_l1_grad_typed(const T* grad_output, const T* input, const T* target,
+                          T* out, int64_t n, double beta, double scale) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const T b = static_cast<T>(beta);
+    const Vec bv(b);
+    const Vec one(static_cast<T>(1));
+    const Vec neg_one(static_cast<T>(-1));
+    const Vec slope(static_cast<T>(scale));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+        int64_t i = begin;
+        for (; i + W <= end; i += W) {
+            const Vec z = Vec::loadu(input + i) - Vec::loadu(target + i);
+            const Vec inner = Vec::blendv(z / bv, one, z >= bv);
+            const Vec side = Vec::blendv(inner, neg_one, z <= -bv);
+            (slope * side * Vec::loadu(grad_output + i)).store(out + i);
+        }
+        for (; i < end; ++i) {
+            const T z = input[i] - target[i];
+            const T side = z <= -b ? static_cast<T>(-1)
+                                   : (z >= b ? static_cast<T>(1)
+                                             : z / b);
+            out[i] = side * static_cast<T>(scale) * grad_output[i];
+        }
+        return 0.0;
+    });
+}
+
+// log(1 + exp(-y)) with y = t x, built as max(-y, 0) + log1p(exp(-|y|)) so a
+// large negative product cannot overflow the exponential.
+template <typename T>
+double softmargin_sum_typed(const T* input, const T* target, int64_t n) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    return parallel_ranges(n, kElementwiseUnit,
+                           [&](int64_t begin, int64_t end) -> double {
+        Vec acc(static_cast<T>(0));
+        int64_t i = begin;
+        for (; i + W <= end; i += W) {
+            const Vec y = Vec::loadu(input + i) * Vec::loadu(target + i);
+            const Vec tail = (-y.abs()).exp().log1p();
+            acc = acc + vec::maximum(-y, zero) + tail;
+        }
+        double total = static_cast<double>(acc.reduce_add());
+        for (; i < end; ++i) {
+            const double y = static_cast<double>(input[i]) *
+                             static_cast<double>(target[i]);
+            total += std::max(-y, 0.0) + std::log1p(std::exp(-std::fabs(y)));
+        }
+        return total;
+    });
+}
+
+template <typename T>
+void softmargin_into_typed(const T* input, const T* target, T* out, int64_t n) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+        int64_t i = begin;
+        for (; i + W <= end; i += W) {
+            const Vec y = Vec::loadu(input + i) * Vec::loadu(target + i);
+            const Vec tail = (-y.abs()).exp().log1p();
+            (vec::maximum(-y, zero) + tail).store(out + i);
+        }
+        for (; i < end; ++i) {
+            const double y = static_cast<double>(input[i]) *
+                             static_cast<double>(target[i]);
+            out[i] = static_cast<T>(std::max(-y, 0.0) +
+                                    std::log1p(std::exp(-std::fabs(y))));
+        }
+        return 0.0;
+    });
+}
+
+// d/dx = -t * sigmoid(-t x) = -t / (1 + exp(t x)); the denominator grows with
+// the product, so the exponential cannot overflow the reciprocal.
+template <typename T>
+void softmargin_grad_typed(const T* grad_output, const T* input, const T* target,
+                           T* out, int64_t n, double scale) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec one(static_cast<T>(1));
+    const Vec slope(static_cast<T>(scale));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+        int64_t i = begin;
+        for (; i + W <= end; i += W) {
+            const Vec t = Vec::loadu(target + i);
+            const Vec y = Vec::loadu(input + i) * t;
+            const Vec sig = one / (one + y.exp());
+            (slope * (-t * sig) * Vec::loadu(grad_output + i)).store(out + i);
+        }
+        for (; i < end; ++i) {
+            const double t = static_cast<double>(target[i]);
+            const double y = static_cast<double>(input[i]) * t;
+            const double sig = 1.0 / (1.0 + std::exp(y));
+            out[i] = static_cast<T>(scale) * (-t * sig) * grad_output[i];
+        }
+        return 0.0;
+    });
+}
+
+// exp(x) - t x (log_input) or x - t log(x + eps), plus the Stirling term
+// t log t - t + 0.5 log(2 pi t) that only exists for targets above one.
+template <typename T>
+T poisson_lane(const T x, const T t, bool log_input, bool full, double eps) {
+    T loss = log_input ? static_cast<T>(std::exp(x)) - t * x
+                       : x - t * static_cast<T>(std::log(
+                             x + static_cast<T>(eps)));
+    if (full && t > static_cast<T>(1)) {
+        loss += t * static_cast<T>(std::log(t)) - t +
+                static_cast<T>(0.5) * static_cast<T>(
+                    std::log(static_cast<T>(2.0 * M_PI) * t));
+    }
+    return loss;
+}
+
+template <typename T>
+double poisson_sum_typed(const T* input, const T* target, int64_t n,
+                         bool log_input, bool full, double eps) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    const Vec one(static_cast<T>(1));
+    const Vec half(static_cast<T>(0.5));
+    const Vec two_pi(static_cast<T>(2.0 * M_PI));
+    const Vec epsv(static_cast<T>(eps));
+    return parallel_ranges(n, kElementwiseUnit,
+                           [&](int64_t begin, int64_t end) -> double {
+        Vec acc(static_cast<T>(0));
+        int64_t i = begin;
+        for (; i + W <= end; i += W) {
+            const Vec x = Vec::loadu(input + i);
+            const Vec t = Vec::loadu(target + i);
+            Vec loss = log_input ? x.exp() - t * x
+                                 : x - t * (x + epsv).log();
+            if (full) {
+                const Vec ts = Vec::blendv(one, t, t > one);
+                const Vec stirling =
+                    t * ts.log() - t + (ts * two_pi).log() * half;
+                loss = loss + Vec::blendv(zero, stirling, t > one);
+            }
+            acc = acc + loss;
+        }
+        double total = static_cast<double>(acc.reduce_add());
+        for (; i < end; ++i) {
+            total += static_cast<double>(
+                poisson_lane(input[i], target[i], log_input, full, eps));
+        }
+        return total;
+    });
+}
+
+template <typename T>
+void poisson_into_typed(const T* input, const T* target, T* out, int64_t n,
+                        bool log_input, bool full, double eps) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    const Vec one(static_cast<T>(1));
+    const Vec half(static_cast<T>(0.5));
+    const Vec two_pi(static_cast<T>(2.0 * M_PI));
+    const Vec epsv(static_cast<T>(eps));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec x = Vec::loadu(input + i);
+                            const Vec t = Vec::loadu(target + i);
+                            Vec loss = log_input ? x.exp() - t * x
+                                                 : x - t * (x + epsv).log();
+                            if (full) {
+                                const Vec ts = Vec::blendv(one, t, t > one);
+                                const Vec stirling =
+                                    t * ts.log() - t +
+                                    (ts * two_pi).log() * half;
+                                loss = loss +
+                                       Vec::blendv(zero, stirling, t > one);
+                            }
+                            loss.store(out + i);
+                        }
+                        for (; i < end; ++i) {
+                            out[i] = poisson_lane(input[i], target[i],
+                                                  log_input, full, eps);
+                        }
+                        return 0.0;
+                    });
+}
+
+// d/dx is exp(x) - t (log_input) or 1 - t / (x + eps); the Stirling term is
+// constant in x, so `full` does not reach the gradient.
+template <typename T>
+void poisson_grad_typed(const T* grad_output, const T* input, const T* target,
+                        T* out, int64_t n, bool log_input, double eps,
+                        double scale) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec one(static_cast<T>(1));
+    const Vec slope(static_cast<T>(scale));
+    const Vec epsv(static_cast<T>(eps));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec x = Vec::loadu(input + i);
+                            const Vec t = Vec::loadu(target + i);
+                            const Vec lane = log_input ? x.exp() - t
+                                                       : one - t / (x + epsv);
+                            (slope * lane * Vec::loadu(grad_output + i))
+                                .store(out + i);
+                        }
+                        for (; i < end; ++i) {
+                            const double x = static_cast<double>(input[i]);
+                            const double t = static_cast<double>(target[i]);
+                            const double lane = log_input ? std::exp(x) - t
+                                                          : 1.0 - t / (x + eps);
+                            out[i] = static_cast<T>(scale) * lane *
+                                     grad_output[i];
                         }
                         return 0.0;
                     });
@@ -723,6 +1016,174 @@ double huber_sum_impl(const void* input, const void* target, int64_t n,
     }
 }
 
+double smooth_l1_sum_impl(const void* input, const void* target, int64_t n,
+                          double beta, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return smooth_l1_sum_typed(static_cast<const double*>(input),
+                                       static_cast<const double*>(target),
+                                       n, beta);
+        case DType::Float32:
+            return smooth_l1_sum_typed(static_cast<const float*>(input),
+                                       static_cast<const float*>(target),
+                                       n, beta);
+        default:
+            TP_THROW(TypeError, "smooth_l1_loss: unsupported dtype");
+    }
+}
+
+void smooth_l1_into_impl(const void* input, const void* target, void* out,
+                         int64_t n, double beta, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            smooth_l1_into_typed(static_cast<const double*>(input),
+                                 static_cast<const double*>(target),
+                                 static_cast<double*>(out), n, beta);
+            break;
+        case DType::Float32:
+            smooth_l1_into_typed(static_cast<const float*>(input),
+                                 static_cast<const float*>(target),
+                                 static_cast<float*>(out), n, beta);
+            break;
+        default:
+            TP_THROW(TypeError, "smooth_l1_loss: unsupported dtype");
+    }
+}
+
+void smooth_l1_grad_impl(const void* grad_output, const void* input,
+                         const void* target, void* out, int64_t n,
+                         double beta, double scale, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            smooth_l1_grad_typed(static_cast<const double*>(grad_output),
+                                 static_cast<const double*>(input),
+                                 static_cast<const double*>(target),
+                                 static_cast<double*>(out), n, beta, scale);
+            break;
+        case DType::Float32:
+            smooth_l1_grad_typed(static_cast<const float*>(grad_output),
+                                 static_cast<const float*>(input),
+                                 static_cast<const float*>(target),
+                                 static_cast<float*>(out), n, beta, scale);
+            break;
+        default:
+            TP_THROW(TypeError, "smooth_l1_loss backward: unsupported dtype");
+    }
+}
+
+double softmargin_sum_impl(const void* input, const void* target, int64_t n,
+                           int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return softmargin_sum_typed(static_cast<const double*>(input),
+                                        static_cast<const double*>(target), n);
+        case DType::Float32:
+            return softmargin_sum_typed(static_cast<const float*>(input),
+                                        static_cast<const float*>(target), n);
+        default:
+            TP_THROW(TypeError, "soft_margin_loss: unsupported dtype");
+    }
+}
+
+void softmargin_into_impl(const void* input, const void* target, void* out,
+                          int64_t n, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            softmargin_into_typed(static_cast<const double*>(input),
+                                  static_cast<const double*>(target),
+                                  static_cast<double*>(out), n);
+            break;
+        case DType::Float32:
+            softmargin_into_typed(static_cast<const float*>(input),
+                                  static_cast<const float*>(target),
+                                  static_cast<float*>(out), n);
+            break;
+        default:
+            TP_THROW(TypeError, "soft_margin_loss: unsupported dtype");
+    }
+}
+
+void softmargin_grad_impl(const void* grad_output, const void* input,
+                          const void* target, void* out, int64_t n,
+                          double scale, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            softmargin_grad_typed(static_cast<const double*>(grad_output),
+                                  static_cast<const double*>(input),
+                                  static_cast<const double*>(target),
+                                  static_cast<double*>(out), n, scale);
+            break;
+        case DType::Float32:
+            softmargin_grad_typed(static_cast<const float*>(grad_output),
+                                  static_cast<const float*>(input),
+                                  static_cast<const float*>(target),
+                                  static_cast<float*>(out), n, scale);
+            break;
+        default:
+            TP_THROW(TypeError, "soft_margin_loss backward: unsupported dtype");
+    }
+}
+
+double poisson_sum_impl(const void* input, const void* target, int64_t n,
+                        int log_input, int full, double eps, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return poisson_sum_typed(static_cast<const double*>(input),
+                                     static_cast<const double*>(target), n,
+                                     log_input != 0, full != 0, eps);
+        case DType::Float32:
+            return poisson_sum_typed(static_cast<const float*>(input),
+                                     static_cast<const float*>(target), n,
+                                     log_input != 0, full != 0, eps);
+        default:
+            TP_THROW(TypeError, "poisson_nll_loss: unsupported dtype");
+    }
+}
+
+void poisson_into_impl(const void* input, const void* target, void* out,
+                       int64_t n, int log_input, int full, double eps,
+                       int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            poisson_into_typed(static_cast<const double*>(input),
+                               static_cast<const double*>(target),
+                               static_cast<double*>(out), n, log_input != 0,
+                               full != 0, eps);
+            break;
+        case DType::Float32:
+            poisson_into_typed(static_cast<const float*>(input),
+                               static_cast<const float*>(target),
+                               static_cast<float*>(out), n, log_input != 0,
+                               full != 0, eps);
+            break;
+        default:
+            TP_THROW(TypeError, "poisson_nll_loss: unsupported dtype");
+    }
+}
+
+void poisson_grad_impl(const void* grad_output, const void* input,
+                       const void* target, void* out, int64_t n,
+                       int log_input, double eps, double scale, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            poisson_grad_typed(static_cast<const double*>(grad_output),
+                               static_cast<const double*>(input),
+                               static_cast<const double*>(target),
+                               static_cast<double*>(out), n, log_input != 0,
+                               eps, scale);
+            break;
+        case DType::Float32:
+            poisson_grad_typed(static_cast<const float*>(grad_output),
+                               static_cast<const float*>(input),
+                               static_cast<const float*>(target),
+                               static_cast<float*>(out), n, log_input != 0,
+                               eps, scale);
+            break;
+        default:
+            TP_THROW(TypeError, "poisson_nll_loss backward: unsupported dtype");
+    }
+}
+
 double kl_sum_impl(const void* input, const void* target, int64_t n,
                   int log_target, int dtype) {
     switch (static_cast<DType>(dtype)) {
@@ -968,6 +1429,15 @@ REGISTER_DISPATCH(l1_into_stub, &l1_into_impl);
 REGISTER_DISPATCH(l1_grad_stub, &l1_grad_impl);
 REGISTER_DISPATCH(huber_into_stub, &huber_into_impl);
 REGISTER_DISPATCH(huber_sum_stub, &huber_sum_impl);
+REGISTER_DISPATCH(smooth_l1_sum_stub, &smooth_l1_sum_impl);
+REGISTER_DISPATCH(smooth_l1_into_stub, &smooth_l1_into_impl);
+REGISTER_DISPATCH(smooth_l1_grad_stub, &smooth_l1_grad_impl);
+REGISTER_DISPATCH(softmargin_sum_stub, &softmargin_sum_impl);
+REGISTER_DISPATCH(softmargin_into_stub, &softmargin_into_impl);
+REGISTER_DISPATCH(softmargin_grad_stub, &softmargin_grad_impl);
+REGISTER_DISPATCH(poisson_sum_stub, &poisson_sum_impl);
+REGISTER_DISPATCH(poisson_into_stub, &poisson_into_impl);
+REGISTER_DISPATCH(poisson_grad_stub, &poisson_grad_impl);
 REGISTER_DISPATCH(bce_logits_rows_stub, &bce_logits_rows_impl);
 REGISTER_DISPATCH(multilabel_rows_stub, &multilabel_rows_impl);
 REGISTER_DISPATCH(triplet_rows_stub, &triplet_rows_impl);
@@ -985,6 +1455,15 @@ ALSO_REGISTER_AVX512_DISPATCH(l1_into_stub, &l1_into_impl);
 ALSO_REGISTER_AVX512_DISPATCH(l1_grad_stub, &l1_grad_impl);
 ALSO_REGISTER_AVX512_DISPATCH(huber_into_stub, &huber_into_impl);
 ALSO_REGISTER_AVX512_DISPATCH(huber_sum_stub, &huber_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(smooth_l1_sum_stub, &smooth_l1_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(smooth_l1_into_stub, &smooth_l1_into_impl);
+ALSO_REGISTER_AVX512_DISPATCH(smooth_l1_grad_stub, &smooth_l1_grad_impl);
+ALSO_REGISTER_AVX512_DISPATCH(softmargin_sum_stub, &softmargin_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(softmargin_into_stub, &softmargin_into_impl);
+ALSO_REGISTER_AVX512_DISPATCH(softmargin_grad_stub, &softmargin_grad_impl);
+ALSO_REGISTER_AVX512_DISPATCH(poisson_sum_stub, &poisson_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(poisson_into_stub, &poisson_into_impl);
+ALSO_REGISTER_AVX512_DISPATCH(poisson_grad_stub, &poisson_grad_impl);
 ALSO_REGISTER_AVX512_DISPATCH(bce_logits_rows_stub, &bce_logits_rows_impl);
 ALSO_REGISTER_AVX512_DISPATCH(multilabel_rows_stub, &multilabel_rows_impl);
 ALSO_REGISTER_AVX512_DISPATCH(triplet_rows_stub, &triplet_rows_impl);
