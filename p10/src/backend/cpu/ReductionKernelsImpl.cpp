@@ -3994,7 +3994,171 @@ inline ctype fold_run_extremum(const ctype* data, int64_t n) {
     return best;
 }
 
-// A single trailing dimension of a dense tensor is one contiguous run per row,
+// A short run folds the same way without the second chain: the compare that
+// owns the pair also reports when either operand is a not-a-number, and that
+// answer is put back into the lane, so a run holding one reaches the exact
+// walk from the fold itself.
+template <bool WantMax>
+inline Vectorized<float> extremum_vec_nan(const Vectorized<float>& acc,
+                                          const Vectorized<float>& value) {
+#if defined(CPU_CAPABILITY_AVX512)
+    return _mm512_or_ps(WantMax ? _mm512_max_ps(acc, value)
+                                : _mm512_min_ps(acc, value),
+                        _mm512_cmp_ps_mask(acc, value, _CMP_UNORD_Q) == 0
+                            ? _mm512_setzero_ps()
+                            : _mm512_set1_ps(std::numeric_limits<float>::quiet_NaN()));
+#elif defined(CPU_CAPABILITY_AVX2)
+    return _mm256_or_ps(WantMax ? _mm256_max_ps(acc, value)
+                                : _mm256_min_ps(acc, value),
+                        _mm256_cmp_ps(acc, value, _CMP_UNORD_Q));
+#else
+    return WantMax ? maximum(acc, value) : minimum(acc, value);
+#endif
+}
+
+template <bool WantMax, typename ctype>
+inline Vectorized<ctype> extremum_vec_nan(const Vectorized<ctype>& acc,
+                                          const Vectorized<ctype>& value) {
+    return WantMax ? maximum(acc, value) : minimum(acc, value);
+}
+
+template <bool WantMax>
+inline Vectorized<double> extremum_vec_nan(const Vectorized<double>& acc,
+                                           const Vectorized<double>& value) {
+#if defined(CPU_CAPABILITY_AVX512)
+    return _mm512_or_pd(WantMax ? _mm512_max_pd(acc, value)
+                                : _mm512_min_pd(acc, value),
+                        _mm512_cmp_pd_mask(acc, value, _CMP_UNORD_Q) == 0
+                            ? _mm512_setzero_pd()
+                            : _mm512_set1_pd(std::numeric_limits<double>::quiet_NaN()));
+#elif defined(CPU_CAPABILITY_AVX2)
+    return _mm256_or_pd(WantMax ? _mm256_max_pd(acc, value)
+                                : _mm256_min_pd(acc, value),
+                        _mm256_cmp_pd(acc, value, _CMP_UNORD_Q));
+#else
+    return WantMax ? maximum(acc, value) : minimum(acc, value);
+#endif
+}
+
+// A run no longer than a few hundred elements folds through four chains that
+// each carry the not-a-number report along with the compare: the wide ladder
+// above spends a second chain on every load, which a short run cannot pay for,
+// while one chain alone would wait on the latency of its own compare.
+template <typename ctype, bool WantMax>
+inline ctype fold_run_extremum_short(const ctype* data, int64_t n) {
+    using Vec = Vectorized<ctype>;
+    constexpr int64_t lanes = Vec::size();
+    Vec acc[4];
+    for (auto& a : acc) a = Vec(extrema_identity<ctype>(WantMax));
+    int64_t i = 0;
+    for (; i + 4 * lanes <= n; i += 4 * lanes) {
+        for (int j = 0; j < 4; ++j) {
+            acc[j] = extremum_vec_nan<WantMax>(acc[j],
+                                               Vec::loadu(data + i + j * lanes));
+        }
+    }
+    for (; i + lanes <= n; i += lanes) {
+        acc[0] = extremum_vec_nan<WantMax>(acc[0], Vec::loadu(data + i));
+    }
+    Vec merged = acc[0];
+    for (int j = 1; j < 4; ++j) merged = extremum_vec_nan<WantMax>(merged, acc[j]);
+    ctype values[lanes];
+    merged.store(values);
+    ctype best = values[0];
+    for (int64_t k = 1; k < lanes; ++k) {
+        const ctype value = values[k];
+        if (!(value == value)) return fold_run_exact<ctype, WantMax>(data, n);
+        best = WantMax ? (best < value ? value : best)
+                       : (value < best ? value : best);
+    }
+    for (; i < n; ++i) {
+        const ctype value = data[i];
+        if (!(value == value)) return fold_run_exact<ctype, WantMax>(data, n);
+        best = WantMax ? (best < value ? value : best)
+                       : (value < best ? value : best);
+    }
+    if (!(best == best)) return fold_run_exact<ctype, WantMax>(data, n);
+    return best;
+}
+
+// Four rows folded at once: each row keeps its own chain over the columns, so
+// a short row's chain is never the only work in flight.  The lanes of each
+// chain carry the not-a-number report the same way the single-row fold does.
+template <typename ctype, bool WantMax>
+inline ctype short_row_horizontal(const Vectorized<ctype>& acc, const ctype* data,
+                                  int64_t from, int64_t n) {
+    constexpr int64_t lanes = Vectorized<ctype>::size();
+    ctype values[lanes];
+    acc.store(values);
+    if (!(values[0] == values[0])) return fold_run_exact<ctype, WantMax>(data, n);
+    ctype best = values[0];
+    for (int64_t k = 1; k < lanes; ++k) {
+        const ctype value = values[k];
+        if (!(value == value)) return fold_run_exact<ctype, WantMax>(data, n);
+        best = WantMax ? (best < value ? value : best)
+                       : (value < best ? value : best);
+    }
+    for (int64_t i = from; i < n; ++i) {
+        const ctype value = data[i];
+        if (!(value == value)) return fold_run_exact<ctype, WantMax>(data, n);
+        best = WantMax ? (best < value ? value : best)
+                       : (value < best ? value : best);
+    }
+    if (!(best == best)) return fold_run_exact<ctype, WantMax>(data, n);
+    return best;
+}
+
+template <typename ctype, bool WantMax>
+inline void fold_short_rows(const ctype* data, int64_t run, int64_t begin,
+                            int64_t end, ctype* out) {
+    using Vec = Vectorized<ctype>;
+    constexpr int64_t lanes = Vec::size();
+    const Vec identity(extrema_identity<ctype>(WantMax));
+    int64_t r = begin;
+    for (; r + 4 <= end && run >= lanes; r += 4) {
+        const ctype* p0 = data + (r + 0) * run;
+        const ctype* p1 = data + (r + 1) * run;
+        const ctype* p2 = data + (r + 2) * run;
+        const ctype* p3 = data + (r + 3) * run;
+        // Two accumulators per row, named rather than indexed: an array of
+        // vectors in this loop is spilled to the stack and read back.
+        Vec a0 = identity, a1 = identity, a2 = identity, a3 = identity;
+        Vec b0 = identity, b1 = identity, b2 = identity, b3 = identity;
+        int64_t i = 0;
+        for (; i + 2 * lanes <= run; i += 2 * lanes) {
+            a0 = extremum_vec_nan<WantMax>(a0, Vec::loadu(p0 + i));
+            a1 = extremum_vec_nan<WantMax>(a1, Vec::loadu(p1 + i));
+            a2 = extremum_vec_nan<WantMax>(a2, Vec::loadu(p2 + i));
+            a3 = extremum_vec_nan<WantMax>(a3, Vec::loadu(p3 + i));
+            b0 = extremum_vec_nan<WantMax>(b0, Vec::loadu(p0 + i + lanes));
+            b1 = extremum_vec_nan<WantMax>(b1, Vec::loadu(p1 + i + lanes));
+            b2 = extremum_vec_nan<WantMax>(b2, Vec::loadu(p2 + i + lanes));
+            b3 = extremum_vec_nan<WantMax>(b3, Vec::loadu(p3 + i + lanes));
+        }
+        if (i + lanes <= run) {
+            a0 = extremum_vec_nan<WantMax>(a0, Vec::loadu(p0 + i));
+            a1 = extremum_vec_nan<WantMax>(a1, Vec::loadu(p1 + i));
+            a2 = extremum_vec_nan<WantMax>(a2, Vec::loadu(p2 + i));
+            a3 = extremum_vec_nan<WantMax>(a3, Vec::loadu(p3 + i));
+            i += lanes;
+        }
+        out[r + 0] = short_row_horizontal<ctype, WantMax>(
+            extremum_vec_nan<WantMax>(a0, b0), p0, i, run);
+        out[r + 1] = short_row_horizontal<ctype, WantMax>(
+            extremum_vec_nan<WantMax>(a1, b1), p1, i, run);
+        out[r + 2] = short_row_horizontal<ctype, WantMax>(
+            extremum_vec_nan<WantMax>(a2, b2), p2, i, run);
+        out[r + 3] = short_row_horizontal<ctype, WantMax>(
+            extremum_vec_nan<WantMax>(a3, b3), p3, i, run);
+    }
+    for (; r < end; ++r) {
+        out[r] = WantMax
+            ? fold_run_extremum_short<ctype, true>(data + r * run, run)
+            : fold_run_extremum_short<ctype, false>(data + r * run, run);
+    }
+}
+
+// A single trailing dimension of a dense tensor is one contiguous run per row,// A single trailing dimension of a dense tensor is one contiguous run per row,
 // so the rows can go straight to the pool and skip the reduction iterator with
 // its identity fill and its per-element stride machinery.  Answers agree with
 // the iterator because both fold the same run with the same compare.
@@ -4011,20 +4175,76 @@ bool fold_trailing_extrema(Tensor& result, const Tensor& self, int64_t ndim,
 
     const ctype* data = self.data_ptr<ctype>();
     ctype* out = result.data_ptr<ctype>();
-    auto fold_rows = [&](int64_t begin, int64_t end) {
-        for (int64_t r = begin; r < end; ++r) {
-            out[r] = maximum_value
-                ? fold_run_extremum<ctype, true>(data + r * run, run)
-                : fold_run_extremum<ctype, false>(data + r * run, run);
+    constexpr bool kReduced = std::is_same_v<ctype, tensorplay::Half> ||
+                              std::is_same_v<ctype, tensorplay::BFloat16>;
+    constexpr bool kReal = std::is_same_v<ctype, float> ||
+                           std::is_same_v<ctype, double>;
+    if constexpr (kReduced) {
+#if defined(__x86_64__)
+        // A reduced width folds the wide extremes row by row and reads the
+        // answer back from the layout, which is the element the flat fold
+        // would keep.
+        // A short run pays for the per-row walk, so the fold there is done
+        // wide and the holder read back; a long run streams better through
+        // the flat fold the caller falls back to.
+        if (run < 8 || run > 512 ||
+            !tensorplay::cpu::vecreduced::f16c_available()) {
+            return false;
         }
-    };
-    if (self.numel() < GRAIN_SIZE || get_num_threads() == 1 ||
-        in_parallel_region()) {
-        fold_rows(0, rows);
+        constexpr bool kBFloat = std::is_same_v<ctype, tensorplay::BFloat16>;
+        const uint16_t* bits = reinterpret_cast<const uint16_t*>(data);
+        uint16_t* obits = reinterpret_cast<uint16_t*>(out);
+        auto fold_bits = [&](int64_t begin, int64_t end) {
+            for (int64_t r = begin; r < end; ++r) {
+                int64_t holder = 0;
+                if (maximum_value) {
+                    reduced_row_extremum<true, kBFloat>(bits + r * run, run,
+                                                        obits + r, &holder);
+                } else {
+                    reduced_row_extremum<false, kBFloat>(bits + r * run, run,
+                                                         obits + r, &holder);
+                }
+            }
+        };
+        if (self.numel() < GRAIN_SIZE || get_num_threads() == 1 ||
+            in_parallel_region()) {
+            fold_bits(0, rows);
+        } else {
+            parallel_for(0, rows, 1, fold_bits);
+        }
+        return true;
+#else
+        return false;
+#endif
+    } else if constexpr (kReal) {
+        // A short run folds four rows at once so no row waits on its own
+        // chain alone; a long run streams better through the wide ladder.
+        const bool short_run = run <= 512;
+        auto fold_rows = [&](int64_t begin, int64_t end) {
+            if (short_run) {
+                if (maximum_value) {
+                    fold_short_rows<ctype, true>(data, run, begin, end, out);
+                } else {
+                    fold_short_rows<ctype, false>(data, run, begin, end, out);
+                }
+                return;
+            }
+            for (int64_t r = begin; r < end; ++r) {
+                out[r] = maximum_value
+                    ? fold_run_extremum<ctype, true>(data + r * run, run)
+                    : fold_run_extremum<ctype, false>(data + r * run, run);
+            }
+        };
+        if (self.numel() < GRAIN_SIZE || get_num_threads() == 1 ||
+            in_parallel_region()) {
+            fold_rows(0, rows);
+        } else {
+            parallel_for(0, rows, 1, fold_rows);
+        }
+        return true;
     } else {
-        parallel_for(0, rows, 1, fold_rows);
+        return false;
     }
-    return true;
 }
 
 // Every dimension of a dense tensor reduced away leaves one contiguous run over
@@ -4369,6 +4589,13 @@ Tensor extrema_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& d
     TensorIterator iter = TensorIterator::reduce_op(viewed, self);
 #define TP_EXTREMA_CASE(ctype, name) \
     case DType::name: \
+        if constexpr (std::is_same_v<ctype, tensorplay::Half> || \
+                      std::is_same_v<ctype, tensorplay::BFloat16>) { \
+            if (fold_trailing_extrema<ctype>(result, self, ndim, resolved, \
+                                             maximum_value)) { \
+                return result; \
+            } \
+        } \
         if constexpr (std::is_same_v<ctype, float> || \
                       std::is_same_v<ctype, double>) { \
             if (fold_trailing_extrema<ctype>(result, self, ndim, resolved, \
