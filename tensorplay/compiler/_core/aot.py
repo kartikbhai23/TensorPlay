@@ -398,15 +398,23 @@ def _write_destination(node: Node) -> Optional[Node]:
     return dest if isinstance(dest, Node) else None
 
 
-def _forward_writes(fwd_nodes: List[Node]) -> List[Node]:
-    """The forward operations held for what they write rather than return.
+def _forward_effects(fwd_nodes: List[Node]) -> List[Node]:
+    """The forward operations held for what they do rather than what they return.
 
     A write's own result is usually read by nothing: it is held so that the
     value it names -- the program's buffer, an input handed in by the caller --
-    holds the updated contents once the forward runs.
+    holds the updated contents once the forward runs.  A call that marks a
+    stretch of the program for the profiler is held for the same reason: it
+    computes nothing, but what it does happens only if it runs, and nothing
+    downstream of it reads a value that would carry it along.
     """
 
-    return [n for n in fwd_nodes if _write_destination(n) is not None]
+    return [
+        n
+        for n in fwd_nodes
+        if n.op in ("call_function", "call_method")
+        and n.is_impure(impure_random=False)
+    ]
 
 
 def _backward_reach(bwd_nodes: List[Node], bwd_out_args: List[Any], stop: set) -> set:
@@ -544,7 +552,7 @@ def partition_default(
     # value.
     snapshots = _snapshot_inputs_read_after_write(
         joint,
-        _forward_writes(fwd_nodes),
+        _forward_effects(fwd_nodes),
         _backward_reach(
             bwd_nodes,
             bwd_out_args,
@@ -1156,7 +1164,7 @@ def partition_min_cut(
     # write, which nothing reads but the program after the call.  An input it
     # writes and the backward reads, directly or through a value it computes
     # again, is read through a copy taken before the write and kept.
-    writes = _forward_writes(fwd_nodes)
+    writes = _forward_effects(fwd_nodes)
     snapshots = _snapshot_inputs_read_after_write(
         joint, writes, _backward_reach(bwd_nodes, bwd_out_args, saved_set)
     )
