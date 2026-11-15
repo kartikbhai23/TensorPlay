@@ -263,10 +263,14 @@ def _optimization_hint_base(
     if realized is not None:
         return int(realized)
     current = _sub_unbacked_exprs(shape_env, original)
+    # Whatever is still symbolic is a symbol nothing pins to a value: an
+    # unbacked extent, or an index a kernel made up for the loops it writes.
+    # A hint is a size to write code for, not a claim about the program, so
+    # each such symbol stands in with the fallback -- narrowed by anything the
+    # environment or the runtime asserts prove about it -- and the expression
+    # is then a number.
     substitutions: dict[sympy.Symbol, int] = {}
     for symbol in current.free_symbols:
-        if not getattr(shape_env, "is_unbacked_symint", lambda _: str(symbol).startswith("u"))(symbol):
-            continue
         lower, upper = _hint_bounds_from_runtime_asserts(shape_env, symbol)
         value = fallback
         ranges = getattr(shape_env, "var_to_range", {}).get(symbol)
@@ -280,7 +284,14 @@ def _optimization_hint_base(
         if upper is not None:
             value = min(value, upper)
         substitutions[symbol] = value
-    realized = _maybe_realize_expr(current.xreplace(substitutions), fallback)
+    try:
+        hinted = _sympy_subs(current, substitutions)
+    except ZeroDivisionError:
+        # A symbol used as a divisor cannot stand in for a value that makes the
+        # expression divide by zero, and the expression cannot be read at all
+        # without one: the fallback is the answer rather than an error.
+        return fallback
+    realized = _maybe_realize_expr(hinted, fallback)
     if realized is None:
         raise RuntimeError(f"failed to produce a size hint for {expr}")
     return int(realized)
