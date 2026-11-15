@@ -978,6 +978,202 @@ inline std::optional<Tensor> try_product_leading_reduced(
     return out;
 }
 
+// A slice of columns multiplied row after row in the slice's own width; four
+// rows are folded among themselves first, which is what keeps the chain of
+// multiplies on one column from being the loop's critical path.
+template <typename T>
+inline void multiply_rows_real(const T* TP_RESTRICT x, int64_t rows,
+                               int64_t cols, T* TP_RESTRICT acc) {
+    int64_t r = 0;
+    for (; r + 4 <= rows; r += 4) {
+        const T* TP_RESTRICT r0 = x + r * cols;
+        const T* TP_RESTRICT r1 = r0 + cols;
+        const T* TP_RESTRICT r2 = r1 + cols;
+        const T* TP_RESTRICT r3 = r2 + cols;
+        for (int64_t j = 0; j < cols; ++j) {
+            acc[j] *= ((r0[j] * r1[j]) * (r2[j] * r3[j]));
+        }
+    }
+    for (; r < rows; ++r) {
+        const T* TP_RESTRICT row = x + r * cols;
+        for (int64_t j = 0; j < cols; ++j) acc[j] *= row[j];
+    }
+}
+
+// A reduced axis under an outer block: every block multiplies its own rows into
+// its own column totals, so the blocks are what the team splits, every element
+// is read exactly once, and no block waits on another's totals.
+template <typename T>
+inline void product_blocks_real(const Tensor& input, Tensor& out, int64_t outer,
+                                int64_t red, int64_t cols) {
+    const T* in = input.data_ptr<T>();
+    T* op = out.data_ptr<T>();
+    const int64_t grain = std::max<int64_t>(
+        1, GRAIN_SIZE / std::max<int64_t>(red * cols, 1));
+    parallel_for(0, outer, grain, [&](int64_t b, int64_t e) {
+        std::vector<T> acc(static_cast<size_t>(cols));
+        for (int64_t o = b; o < e; ++o) {
+            const T* TP_RESTRICT block = in + o * red * cols;
+            T* TP_RESTRICT dst = op + o * cols;
+            if (red == 1) {
+                std::memcpy(dst, block, static_cast<size_t>(cols) * sizeof(T));
+                continue;
+            }
+            std::fill(acc.begin(), acc.end(), T(1));
+            multiply_rows_real<T>(block, red, cols, acc.data());
+            std::memcpy(dst, acc.data(),
+                        static_cast<size_t>(cols) * sizeof(T));
+        }
+    });
+}
+
+// The scaling a half-precision band carries applied to its totals, with the
+// columns whose answer the width cannot tell from zero taken out first: a
+// scaling step on such a column would produce a value below the smallest a
+// float holds, and that step costs far more than the ones above it, while the
+// answer is a zero either way.  The bound is the largest magnitude that rounds
+// to zero in the packed width.
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+void rescale_totals_half(__m256& a, __m256i& shiftv) {
+    const __m256i wide =
+        _mm256_cmpgt_epi32(shiftv, _mm256_set1_epi32(128));
+    const __m256i bound = _mm256_slli_epi32(
+        _mm256_add_epi32(shiftv, _mm256_set1_epi32(102)), 23);
+    const __m256 magnitude =
+        _mm256_andnot_ps(_mm256_set1_ps(-0.f), a);
+    __m256 vanish = _mm256_cmp_ps(magnitude, _mm256_castsi256_ps(bound),
+                                  _CMP_LE_OQ);
+    vanish = _mm256_or_ps(vanish, _mm256_castsi256_ps(wide));
+    a = _mm256_andnot_ps(vanish, a);
+    rescale_totals(a, shiftv);
+}
+
+// One group of eight-column bands of a block, multiplied out in registers and
+// answered once.  Four bands run side by side so that the multiplies of one
+// band are not what the loop waits on.
+template <bool BFloat, int64_t NB>
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+void product_band_group(const uint16_t* first, int64_t red, int64_t cols,
+                        uint16_t* dst) {
+    using tensorplay::cpu::vecreduced::lay_f16_8;
+    using tensorplay::cpu::vecreduced::store_bf16_8;
+    __m256 acc[NB];
+    __m256i shift[NB];
+    if (red >= 16) {
+        // A long column of factors decays below the range a float carries
+        // without full precision, and every multiply made there costs far more
+        // than a normal one.  Sixteen rows are multiplied among themselves
+        // first, which leaves a group's own product in the normal range, and
+        // the running total is held there by an exact power of two.
+        for (int64_t k = 0; k < NB; ++k) {
+            acc[k] = fold_rows_hw<BFloat, 16>(first + 8 * k, cols);
+            shift[k] = _mm256_setzero_si256();
+        }
+        int64_t r = 16;
+        for (; r + 16 <= red; r += 16) {
+            for (int64_t k = 0; k < NB; ++k) {
+                acc[k] = _mm256_mul_ps(
+                    acc[k], fold_rows_hw<BFloat, 16>(first + 8 * k + r * cols,
+                                                     cols));
+                keep_totals_in_range(acc[k], shift[k]);
+            }
+        }
+        for (; r < red; ++r) {
+            for (int64_t k = 0; k < NB; ++k) {
+                acc[k] = _mm256_mul_ps(
+                    acc[k],
+                    widen_row8<BFloat>(first + 8 * k + r * cols));
+                keep_totals_in_range(acc[k], shift[k]);
+            }
+        }
+        for (int64_t k = 0; k < NB; ++k) {
+            if constexpr (BFloat) {
+                rescale_totals(acc[k], shift[k]);
+            } else {
+                rescale_totals_half(acc[k], shift[k]);
+            }
+        }
+    } else {
+        // A short run cannot decay far enough for the range to matter, so the
+        // rows are multiplied in order with nothing else on the path.
+        for (int64_t k = 0; k < NB; ++k) {
+            acc[k] = widen_row8<BFloat>(first + 8 * k);
+        }
+        for (int64_t r = 1; r < red; ++r) {
+            for (int64_t k = 0; k < NB; ++k) {
+                acc[k] = _mm256_mul_ps(
+                    acc[k],
+                    widen_row8<BFloat>(first + 8 * k + r * cols));
+            }
+        }
+    }
+    for (int64_t k = 0; k < NB; ++k) {
+        if constexpr (BFloat) {
+            store_bf16_8(dst + 8 * k, acc[k]);
+        } else {
+            lay_f16_8<false>(dst + 8 * k, acc[k]);
+        }
+    }
+}
+
+// A run of rows too short to pay for a widened total walked in memory: each
+// band of eight columns keeps its product in a register over the whole run and
+// answers once, so the rows are read exactly once, no identity is laid down
+// first, and nothing but the answer passes through memory.
+template <bool BFloat>
+__attribute__((target("avx2,fma,f16c"), noinline))
+void product_short_packed_hw(const uint16_t* in, uint16_t* out, int64_t outer,
+                             int64_t red, int64_t inner) {
+    for (int64_t o = 0; o < outer; ++o) {
+        const uint16_t* base = in + o * red * inner;
+        uint16_t* dst = out + o * inner;
+        int64_t b = 0;
+        for (; b + 32 <= inner; b += 32) {
+            product_band_group<BFloat, 4>(base + b, red, inner, dst + b);
+        }
+        for (; b + 8 <= inner; b += 8) {
+            product_band_group<BFloat, 1>(base + b, red, inner, dst + b);
+        }
+        // The columns past the last whole band are answered one at a time; a
+        // slice that is a whole number of bands, which is the common case,
+        // never enters this walk.
+        for (int64_t c = b; c < inner; ++c) {
+            float value = BFloat
+                ? tensorplay::cpu::vecreduced::widen_bf16_one(base[c])
+                : tensorplay::cpu::vecreduced::widen_one(base[c]);
+            for (int64_t r = 1; r < red; ++r) {
+                value *= BFloat
+                    ? tensorplay::cpu::vecreduced::widen_bf16_one(
+                          base[r * inner + c])
+                    : tensorplay::cpu::vecreduced::widen_one(
+                          base[r * inner + c]);
+            }
+            dst[c] = BFloat
+                ? tensorplay::cpu::vecreduced::narrow_bf16_one(value)
+                : tensorplay::cpu::vecreduced::narrow_one_hw(value);
+        }
+    }
+}
+
+// The same over every block of the outer axis, split among the workers the way
+// the block walk above splits.
+template <bool BFloat>
+inline void product_short_rows_packed(const Tensor& input, Tensor& out,
+                                      int64_t outer, int64_t red,
+                                      int64_t cols) {
+    using Packed = std::conditional_t<BFloat, tensorplay::BFloat16,
+                                       tensorplay::Half>;
+    const uint16_t* in =
+        reinterpret_cast<const uint16_t*>(input.data_ptr<Packed>());
+    uint16_t* op = reinterpret_cast<uint16_t*>(out.data_ptr<Packed>());
+    const int64_t grain = std::max<int64_t>(
+        1, GRAIN_SIZE / std::max<int64_t>(red * cols, 1));
+    parallel_for(0, outer, grain, [&](int64_t b, int64_t e) {
+        product_short_packed_hw<BFloat>(in + b * red * cols, op + b * cols,
+                                        e - b, red, cols);
+    });
+}
+
 // The last axis of a packed tensor, one row of lanes at a time.
 inline std::optional<Tensor> try_sum_lastdim_reduced(
         const Tensor& input, const std::vector<int64_t>& out_shape) {
@@ -7569,53 +7765,78 @@ inline T product_row(const T* x, int64_t n) {
     return value;
 }
 
-// A middle-axis product whose inner run fits the register budget, over the real
-// widths: every band of the run is carried across the reduced rows, so a row
-// costs one multiply per band instead of one per element.  A band that runs
-// past the run reads what follows it in the buffer and writes only its own
-// lanes back; the tensor's own last row reads through a padded copy.
+// A narrow middle slice of a real width multiplied a few bands of columns at a
+// time: the totals stay in registers over the whole run and four rows are
+// multiplied among themselves first, so the chain of multiplies on one band is
+// never what the loop waits on, and a column of small factors crosses the range
+// where a multiply costs far more than a normal one a group of rows at a time.
+// Columns past the last whole band are answered one at a time, so a slice that
+// is not a whole number of bands costs a handful of multiplies and no masking.
 template <typename T, int64_t NB>
-inline void product_narrow_real(const T* in, T* out, int64_t outer,
-                                int64_t red, int64_t inner) {
+inline void product_band_tree_real(const T* in, T* out, int64_t outer,
+                                  int64_t red, int64_t inner) {
     using Vec = Vectorized<T>;
     constexpr int64_t W = Vec::size();
-    const int64_t keep = inner - (NB - 1) * W;
-    auto load = [](const T* p, int64_t lanes, bool pad) {
-        if (!pad) return Vec::loadu(p);
-        alignas(64) T copy[W];
-        std::memcpy(copy, p, static_cast<size_t>(lanes) * sizeof(T));
-        for (int64_t k = lanes; k < W; ++k) copy[k] = T(1);
-        return Vec::loadu(copy);
+    auto fold_rows = [](const T* p, int64_t cols) {
+        return (Vec::loadu(p) * Vec::loadu(p + cols)) *
+               (Vec::loadu(p + 2 * cols) * Vec::loadu(p + 3 * cols));
     };
     for (int64_t o = 0; o < outer; ++o) {
         const T* base = in + o * red * inner;
         T* dst = out + o * inner;
-        const bool last_block = o == outer - 1;
-        Vec acc[NB];
-        for (int64_t b = 0; b < NB; ++b) {
-            const bool pad = last_block && red == 1 && b == NB - 1 && keep < W;
-            acc[b] = load(base + b * W, keep, pad);
-        }
-        for (int64_t r = 1; r < red; ++r) {
-            const T* row = base + r * inner;
-            const bool last_row = last_block && r == red - 1;
+        int64_t j = 0;
+        for (; j + NB * W <= inner; j += NB * W) {
+            Vec acc[NB];
             for (int64_t b = 0; b < NB; ++b) {
-                const bool pad = last_row && b == NB - 1 && keep < W;
-                acc[b] = acc[b] * load(row + b * W, keep, pad);
+                acc[b] = Vec::loadu(base + j + b * W);
+            }
+            int64_t r = 1;
+            for (; r + 4 <= red; r += 4) {
+                const T* rows = base + r * inner + j;
+                for (int64_t b = 0; b < NB; ++b) {
+                    acc[b] = acc[b] * fold_rows(rows + b * W, inner);
+                }
+            }
+            for (; r < red; ++r) {
+                const T* row = base + r * inner + j;
+                for (int64_t b = 0; b < NB; ++b) {
+                    acc[b] = acc[b] * Vec::loadu(row + b * W);
+                }
+            }
+            for (int64_t b = 0; b < NB; ++b) {
+                acc[b].store(dst + j + b * W);
             }
         }
-        for (int64_t b = 0; b < NB; ++b) {
-            const int64_t lanes = b == NB - 1 ? keep : W;
-            if (lanes >= W) {
-                acc[b].store(dst + b * W);
-            } else {
-                alignas(64) T held[W];
-                acc[b].store(held);
-                std::memcpy(dst + b * W, held,
-                            static_cast<size_t>(lanes) * sizeof(T));
+        for (; j + W <= inner; j += W) {
+            Vec acc = Vec::loadu(base + j);
+            int64_t r = 1;
+            for (; r + 4 <= red; r += 4) {
+                acc = acc * fold_rows(base + r * inner + j, inner);
             }
+            for (; r < red; ++r) {
+                acc = acc * Vec::loadu(base + r * inner + j);
+            }
+            acc.store(dst + j);
+        }
+        for (; j < inner; ++j) {
+            T value = base[j];
+            for (int64_t r = 1; r < red; ++r) value *= base[r * inner + j];
+            dst[j] = value;
         }
     }
+}
+
+// The same over every block of the outer axis, split among the workers.
+template <typename T>
+inline void product_band_tree_rows(const T* in, T* out, int64_t outer,
+                                   int64_t red, int64_t inner) {
+    constexpr int64_t NB = 4;
+    const int64_t grain = std::max<int64_t>(
+        1, GRAIN_SIZE / std::max<int64_t>(red * inner, 1));
+    parallel_for(0, outer, grain, [&](int64_t b, int64_t e) {
+        product_band_tree_real<T, NB>(in + b * red * inner, out + b * inner,
+                                      e - b, red, inner);
+    });
 }
 
 #if defined(__x86_64__)
@@ -7716,30 +7937,24 @@ inline bool product_narrow_dim(const Tensor& input, Tensor& out, int64_t outer,
     }
     const DType dt = input.dtype();
     if (dt == DType::Float32) {
-        if (inner > 32) return false;
-        const int64_t bands = (inner + 7) / 8;
-        const float* in = input.data_ptr<float>();
-        float* op = out.data_ptr<float>();
-        switch (bands) {
-            case 1: product_narrow_real<float, 1>(in, op, outer, red, inner); return true;
-            case 2: product_narrow_real<float, 2>(in, op, outer, red, inner); return true;
-            case 3: product_narrow_real<float, 3>(in, op, outer, red, inner); return true;
-            case 4: product_narrow_real<float, 4>(in, op, outer, red, inner); return true;
-            default: return false;
+        // Eight bands of a single-precision run stay in the register file; a
+        // wider slice is walked a block of columns at a time by the caller.
+        if (inner > 8 * static_cast<int64_t>(Vectorized<float>::size())) {
+            return false;
         }
+        product_band_tree_rows<float>(input.data_ptr<float>(),
+                                      out.data_ptr<float>(), outer, red,
+                                      inner);
+        return true;
     }
     if (dt == DType::Float64) {
-        if (inner > 16) return false;
-        const int64_t bands = (inner + 3) / 4;
-        const double* in = input.data_ptr<double>();
-        double* op = out.data_ptr<double>();
-        switch (bands) {
-            case 1: product_narrow_real<double, 1>(in, op, outer, red, inner); return true;
-            case 2: product_narrow_real<double, 2>(in, op, outer, red, inner); return true;
-            case 3: product_narrow_real<double, 3>(in, op, outer, red, inner); return true;
-            case 4: product_narrow_real<double, 4>(in, op, outer, red, inner); return true;
-            default: return false;
+        if (inner > 8 * static_cast<int64_t>(Vectorized<double>::size())) {
+            return false;
         }
+        product_band_tree_rows<double>(input.data_ptr<double>(),
+                                       out.data_ptr<double>(), outer, red,
+                                       inner);
+        return true;
     }
 #if defined(__x86_64__)
     if (dt != DType::Float16 && dt != DType::BFloat16) return false;
@@ -7835,6 +8050,44 @@ Tensor prod_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims
             return out;
         }
 #endif
+        // A reduced axis under an outer block, wider than a band: each block
+        // multiplies its rows into its own column totals, where the iterator
+        // would walk the reduced axis one output element at a time.
+        if (input.dtype() == out_dtype && dim > 0 && dim + 1 < input.dim()) {
+            const DType dt = input.dtype();
+            if (dt == DType::Float32 &&
+                inner > 8 * static_cast<int64_t>(Vectorized<float>::size())) {
+                product_blocks_real<float>(input, out, outer, d_size, inner);
+                return out;
+            }
+            if (dt == DType::Float64 &&
+                inner > 8 * static_cast<int64_t>(Vectorized<double>::size())) {
+                product_blocks_real<double>(input, out, outer, d_size, inner);
+                return out;
+            }
+#if defined(__x86_64__)
+            // Over a packed width the block walk pays a widening for every
+            // factor it multiplies, so a run of rows long enough for the
+            // reduction iterator is left to it, which widens the same way but
+            // streams the blocks.  A run short enough to fall below the
+            // iterator's threshold is answered one value at a time in the
+            // packed width instead, where a widening per multiply costs more
+            // than a whole band; the block walk carries the totals widened and
+            // answers it in one multiply per factor.
+            if ((dt == DType::Float16 || dt == DType::BFloat16) && inner > 32) {
+                if (dt == DType::BFloat16) {
+                    product_short_rows_packed<true>(input, out, outer, d_size,
+                                                    inner);
+                    return out;
+                }
+                if (tensorplay::cpu::vecreduced::f16c_available()) {
+                    product_short_rows_packed<false>(input, out, outer, d_size,
+                                                     inner);
+                    return out;
+                }
+            }
+#endif
+        }
         // A trailing run is one contiguous stream per answer: it multiplies
         // where it lies instead of through the reduction iterator, which pays
         // its own setup for every row of a short answer.
