@@ -218,6 +218,13 @@ public:
             cudaThreadExchangeStreamCaptureMode(&previous_mode);
         }
         if (error != cudaSuccess) {
+            if (error != cudaErrorMemoryAllocation) {
+                // Any other failure -- a device-side assert that poisoned the
+                // context, an invalid context after a fork -- leaves memory
+                // untouched, so it is reported as itself rather than as a
+                // shortage of it.
+                checkCuda(error, "cudaMalloc");
+            }
             size_t free_bytes = 0;
             size_t total_bytes = 0;
             (void)cudaMemGetInfo(&free_bytes, &total_bytes);
