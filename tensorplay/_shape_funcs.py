@@ -3,16 +3,15 @@
 Complements the codegen-generated ``tensorplay/functional.py``. These
 composites are expressed over existing primitives (reshape/permute/
 cat/stack/mm/narrow/expand), so autograd flows through them wherever the
-underlying ops are differentiable. ``broadcast_tensors`` carries an
-explicit backward (ExpandBackward equivalent) because raw ``expand``
-views are not yet recorded by the autograd codegen.
+underlying ops are differentiable. ``broadcast_tensors`` delegates to the
+native op, which returns zero-stride expanded views of its inputs.
 """
 
 import tensorplay
 import tensorplay._C as _C
 from tensorplay._C import DType
 from tensorplay.graph import capture_call as _capture_call
-from tensorplay.autograd.function import Function
+from tensorplay.graph import capturing as _capturing
 
 __all__ = [
     "broadcast_shapes",
@@ -34,28 +33,6 @@ __all__ = [
     "meshgrid",
     "unravel_index",
 ]
-
-
-class _BroadcastTo(Function):
-    """``expand`` with an ExpandBackward-style backward."""
-
-    @staticmethod
-    def forward(ctx, input, shape):
-        ctx.input_shape = tuple(input.size())
-        return input.expand(list(shape))
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        shape = ctx.input_shape
-        extra = grad_output.dim() - len(shape)
-        dims = list(range(max(0, extra)))
-        for i, s in enumerate(shape):
-            if s == 1:
-                dims.append(extra + i)
-        if dims:
-            grad_output = grad_output.sum(dims, keepdim=True)
-        grad_output = grad_output.reshape(list(shape))
-        return (grad_output,) + (None,) * (len(ctx.needs_input_grad) - 1)
 
 
 def broadcast_shapes(*shapes):
@@ -90,9 +67,10 @@ def broadcast_shapes(*shapes):
 
 def broadcast_tensors(*tensors):
     """Broadcasts the given tensors to a common shape."""
-    _captured = _capture_call(broadcast_tensors, tensors, {})
-    if _captured is not None:
-        return _captured
+    if _capturing():
+        _captured = _capture_call(broadcast_tensors, tensors, {})
+        if _captured is not None:
+            return _captured
     if not tensors:
         return []
     for t in tensors:
@@ -100,8 +78,7 @@ def broadcast_tensors(*tensors):
             raise TypeError(
                 f"broadcast_tensors(): expected Tensor arguments, got {type(t).__name__}"
             )
-    shape = broadcast_shapes(*(tuple(t.size()) for t in tensors))
-    return [_BroadcastTo.apply(t, shape) for t in tensors]
+    return _C.broadcast_tensors(tensors)
 
 
 def atleast_1d(*tensors):
