@@ -20,6 +20,7 @@ from tensorplay.testing._internal.reference import (assert_reference_close,
                                                    reference_devices)
 
 OPS = ("mse_loss", "l1_loss")
+KL_MODES = (False, True)
 REDUCTIONS = {"none": 0, "mean": 1, "sum": 2}
 SHAPES = [(4, 5), (7,), (2, 3, 4)]
 DTYPES = (torch.float32, torch.float64)
@@ -123,6 +124,69 @@ class TestGeneralWalk(unittest.TestCase):
                     assert_reference_close(
                         leaf.grad, ref_grad,
                         msg=f"{op} strided grad ({dev})")
+
+
+class TestDivergenceWalk(unittest.TestCase):
+    """The divergence folds both target spaces in one pass as well."""
+
+    def _positive_pair(self, shape, dtype, seed):
+        generator = torch.Generator().manual_seed(seed)
+        x = torch.randn(*shape, dtype=dtype, generator=generator)
+        target = torch.rand(*shape, dtype=dtype, generator=generator)
+        target.reshape(-1)[::3] = 0.0
+        return x, target
+
+    def test_forward(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for shape in SHAPES + [(0, 3)]:
+                    for log_target in KL_MODES:
+                        ref_x, ref_t = self._positive_pair(shape, dtype, 11)
+                        if log_target and ref_t.numel():
+                            ref_t = torch.log(ref_t)
+                        for name, reduction in REDUCTIONS.items():
+                            expected = torch_F.kl_div(
+                                ref_x, ref_t, reduction=name,
+                                log_target=log_target)
+                            got = tp.kl_div(
+                                from_reference(ref_x, dev),
+                                from_reference(ref_t, dev),
+                                reduction=reduction, log_target=log_target)
+                            self.assertEqual(tuple(got.shape),
+                                             tuple(expected.shape))
+                            if not got.numel():
+                                continue
+                            assert_reference_close(
+                                got, expected,
+                                msg=f"kl_div {shape} {dtype} {name} "
+                                    f"log_target={log_target} ({dev})")
+
+    def test_gradient(self):
+        for dev in reference_devices():
+            for dtype in DTYPES:
+                for log_target in KL_MODES:
+                    ref_x, ref_t = self._positive_pair((4, 5), dtype, 13)
+                    if log_target:
+                        ref_t = torch.log(ref_t)
+                    for name, reduction in REDUCTIONS.items():
+                        ref_leaf = ref_x.clone().requires_grad_(True)
+                        ref_out = torch_F.kl_div(
+                            ref_leaf, ref_t, reduction=name,
+                            log_target=log_target)
+                        seed = (torch.randn(ref_out.shape, dtype=dtype)
+                                if name == "none"
+                                else torch.ones((), dtype=dtype))
+                        ref_grad = torch.autograd.grad(
+                            ref_out, ref_leaf, grad_outputs=seed)[0]
+                        leaf = from_reference(ref_x, dev, requires_grad=True)
+                        out = tp.kl_div(leaf, from_reference(ref_t, dev),
+                                        reduction=reduction,
+                                        log_target=log_target)
+                        out.backward(from_reference(seed, dev))
+                        assert_reference_close(
+                            leaf.grad, ref_grad,
+                            msg=f"kl_div grad {dtype} {name} "
+                                f"log_target={log_target} ({dev})")
 
 
 class TestEmptyPlane(unittest.TestCase):

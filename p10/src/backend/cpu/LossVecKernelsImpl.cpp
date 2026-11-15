@@ -243,6 +243,114 @@ void l1_grad_typed(const T* grad_output, const T* input, const T* target,
                     });
 }
 
+// t log t - t x, with a zero target contributing nothing; or exp(t) (t - x)
+// when the target already sits in log space.
+template <typename T>
+T kl_lane(const T& x, const T& t, bool log_target) {
+    if (log_target) {
+        return static_cast<T>(std::exp(t) * (t - x));
+    }
+    if (t == static_cast<T>(0)) return static_cast<T>(0);
+    return t * static_cast<T>(std::log(t)) - t * x;
+}
+
+template <typename T>
+double kl_sum_typed(const T* input, const T* target, int64_t n,
+                    bool log_target) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    return parallel_ranges(n, kElementwiseUnit,
+                           [&](int64_t begin, int64_t end) -> double {
+                               Vec acc(static_cast<T>(0));
+                               int64_t i = begin;
+                               for (; i + W <= end; i += W) {
+                                   const Vec x = Vec::loadu(input + i);
+                                   const Vec t = Vec::loadu(target + i);
+                                   if (log_target) {
+                                       acc = acc + t.exp() * (t - x);
+                                   } else {
+                                       const Vec lane = t * t.log() - t * x;
+                                       acc = acc + Vec::blendv(zero, lane,
+                                                               t != zero);
+                                   }
+                               }
+                               double total =
+                                   static_cast<double>(acc.reduce_add());
+                               for (; i < end; ++i) {
+                                   total += static_cast<double>(kl_lane(
+                                       input[i], target[i], log_target));
+                               }
+                               return total;
+                           });
+}
+
+template <typename T>
+void kl_into_typed(const T* input, const T* target, T* out, int64_t n,
+                   bool log_target) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec x = Vec::loadu(input + i);
+                            const Vec t = Vec::loadu(target + i);
+                            if (log_target) {
+                                (t.exp() * (t - x)).store(out + i);
+                            } else {
+                                const Vec lane = t * t.log() - t * x;
+                                Vec::blendv(zero, lane, t != zero)
+                                    .store(out + i);
+                            }
+                        }
+                        for (; i < end; ++i) {
+                            out[i] = kl_lane(input[i], target[i], log_target);
+                        }
+                        return 0.0;
+                    });
+}
+
+// d/dinput is the negated target (probability space, zero lanes contributing
+// nothing) or the negated exponent (log space), moved by the incoming gradient
+// and by the slope the reduction divides with.
+template <typename T>
+void kl_grad_typed(const T* grad_output, const T* input, const T* target,
+                   T* out, int64_t n, bool log_target, double scale) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    const Vec slope(static_cast<T>(scale));
+    parallel_ranges(n, kElementwiseUnit,
+                    [&](int64_t begin, int64_t end) -> double {
+                        int64_t i = begin;
+                        for (; i + W <= end; i += W) {
+                            const Vec t = Vec::loadu(target + i);
+                            const Vec g = Vec::loadu(grad_output + i);
+                            Vec lane;
+                            if (log_target) {
+                                lane = -t.exp() * g;
+                            } else {
+                                lane = -t * g;
+                                lane = Vec::blendv(zero, lane, t != zero);
+                            }
+                            (slope * lane).store(out + i);
+                        }
+                        for (; i < end; ++i) {
+                            const T t = target[i];
+                            const T lane = log_target
+                                               ? static_cast<T>(-std::exp(t) *
+                                                                grad_output[i])
+                                               : (t == static_cast<T>(0)
+                                                      ? static_cast<T>(0)
+                                                      : -t * grad_output[i]);
+                            out[i] = static_cast<T>(scale) * lane;
+                        }
+                        return 0.0;
+                    });
+}
+
 // log x and log(1 - x), both floored at -100, in the operand width.
 template <typename T>
 double bce_sum_typed(const T* input, const T* target, int64_t n,
@@ -615,6 +723,63 @@ double huber_sum_impl(const void* input, const void* target, int64_t n,
     }
 }
 
+double kl_sum_impl(const void* input, const void* target, int64_t n,
+                  int log_target, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return kl_sum_typed(static_cast<const double*>(input),
+                                static_cast<const double*>(target), n,
+                                log_target != 0);
+        case DType::Float32:
+            return kl_sum_typed(static_cast<const float*>(input),
+                                static_cast<const float*>(target), n,
+                                log_target != 0);
+        default:
+            TP_THROW(TypeError, "kl_div: unsupported dtype");
+    }
+}
+
+void kl_into_impl(const void* input, const void* target, void* out, int64_t n,
+                  int log_target, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            kl_into_typed(static_cast<const double*>(input),
+                          static_cast<const double*>(target),
+                          static_cast<double*>(out), n, log_target != 0);
+            break;
+        case DType::Float32:
+            kl_into_typed(static_cast<const float*>(input),
+                          static_cast<const float*>(target),
+                          static_cast<float*>(out), n, log_target != 0);
+            break;
+        default:
+            TP_THROW(TypeError, "kl_div: unsupported dtype");
+    }
+}
+
+void kl_grad_impl(const void* grad_output, const void* input,
+                  const void* target, void* out, int64_t n, int log_target,
+                  double scale, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            kl_grad_typed(static_cast<const double*>(grad_output),
+                          static_cast<const double*>(input),
+                          static_cast<const double*>(target),
+                          static_cast<double*>(out), n, log_target != 0,
+                          scale);
+            break;
+        case DType::Float32:
+            kl_grad_typed(static_cast<const float*>(grad_output),
+                          static_cast<const float*>(input),
+                          static_cast<const float*>(target),
+                          static_cast<float*>(out), n, log_target != 0,
+                          scale);
+            break;
+        default:
+            TP_THROW(TypeError, "kl_div backward: unsupported dtype");
+    }
+}
+
 double mse_sum_impl(const void* input, const void* target, int64_t n,
                    int dtype) {
     switch (static_cast<DType>(dtype)) {
@@ -792,6 +957,9 @@ double triplet_rows_impl(const void* anchor, const void* positive,
 #ifndef CPU_CAPABILITY_AVX512
 REGISTER_DISPATCH(bce_sum_stub, &bce_sum_impl);
 REGISTER_DISPATCH(bce_into_stub, &bce_into_impl);
+REGISTER_DISPATCH(kl_sum_stub, &kl_sum_impl);
+REGISTER_DISPATCH(kl_into_stub, &kl_into_impl);
+REGISTER_DISPATCH(kl_grad_stub, &kl_grad_impl);
 REGISTER_DISPATCH(mse_sum_stub, &mse_sum_impl);
 REGISTER_DISPATCH(mse_into_stub, &mse_into_impl);
 REGISTER_DISPATCH(mse_grad_stub, &mse_grad_impl);
@@ -806,6 +974,9 @@ REGISTER_DISPATCH(triplet_rows_stub, &triplet_rows_impl);
 #else
 ALSO_REGISTER_AVX512_DISPATCH(bce_sum_stub, &bce_sum_impl);
 ALSO_REGISTER_AVX512_DISPATCH(bce_into_stub, &bce_into_impl);
+ALSO_REGISTER_AVX512_DISPATCH(kl_sum_stub, &kl_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(kl_into_stub, &kl_into_impl);
+ALSO_REGISTER_AVX512_DISPATCH(kl_grad_stub, &kl_grad_impl);
 ALSO_REGISTER_AVX512_DISPATCH(mse_sum_stub, &mse_sum_impl);
 ALSO_REGISTER_AVX512_DISPATCH(mse_into_stub, &mse_into_impl);
 ALSO_REGISTER_AVX512_DISPATCH(mse_grad_stub, &mse_grad_impl);

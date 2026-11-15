@@ -21,6 +21,9 @@ namespace ops = tensorplay::tpx::ops;
 // The tier-compiled walks live in LossVecKernelsImpl.cpp.
 DEFINE_DISPATCH(bce_sum_stub);
 DEFINE_DISPATCH(bce_into_stub);
+DEFINE_DISPATCH(kl_sum_stub);
+DEFINE_DISPATCH(kl_into_stub);
+DEFINE_DISPATCH(kl_grad_stub);
 DEFINE_DISPATCH(mse_sum_stub);
 DEFINE_DISPATCH(mse_into_stub);
 DEFINE_DISPATCH(mse_grad_stub);
@@ -501,8 +504,31 @@ Tensor huber_loss_backward_cpu(const Tensor& grad_output, const Tensor& input,
     return scale_grad(g, reduction, input.numel());
 }
 
+// t log t - t x (or exp(t) (t - x) when the target sits in log space), read
+// once per operand and folded in the same walk; a zero target contributes
+// nothing.  The mean shares the fold by the element count.
 Tensor kl_div_kernel(const Tensor& input, const Tensor& target,
                      int64_t reduction, bool log_target) {
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    if (fused_float(input, target)) {
+        const int64_t n = input.numel();
+        const DType dt = input.dtype();
+        const Device& dev = input.device();
+        const int dtype = static_cast<int>(dt);
+        const int lt = log_target ? 1 : 0;
+        if (reduction == 0) {
+            Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt, dev);
+            kl_into_stub(DeviceType::CPU, input.data_ptr(), target.data_ptr(),
+                         out.data_ptr(), n, lt, dtype);
+            return out;
+        }
+        const double total = kl_sum_stub(DeviceType::CPU, input.data_ptr(),
+                                         target.data_ptr(), n, lt, dtype);
+        if (reduction == 1)
+            return Tensor::full({}, Scalar(total / static_cast<double>(n)), dt, dev);
+        return Tensor::full({}, Scalar(total), dt, dev);
+    }
     Tensor loss;
     if (!log_target) {
         Tensor nz = target.ne(0).to(input.dtype());
@@ -514,8 +540,29 @@ Tensor kl_div_kernel(const Tensor& input, const Tensor& target,
     return loss_reduce(loss, reduction);
 }
 
+// d/dinput is the negated target (probability space) or its negated exponent
+// (log space), carried by the incoming gradient and shared by the count a mean
+// divided with.
 Tensor kl_div_backward_kernel(const Tensor& grad_output, const Tensor& input,
                               const Tensor& target, int64_t reduction, bool log_target) {
+    if (reduction != 0 && reduction != 1 && reduction != 2)
+        TP_THROW(ValueError, "Invalid reduction mode");
+    const int64_t n = input.numel();
+    const bool fused =
+        fused_float(input, target) && grad_output.dtype() == input.dtype() &&
+        same_layout(grad_output, input) && grad_output.numel() == n;
+    if (fused) {
+        const DType dt = input.dtype();
+        const int dtype = static_cast<int>(dt);
+        const double scale =
+            reduction == 1 ? 1.0 / static_cast<double>(n) : 1.0;
+        Tensor out(static_cast<std::vector<int64_t>>(input.sizes()), dt,
+                   input.device());
+        kl_grad_stub(DeviceType::CPU, grad_output.data_ptr(), input.data_ptr(),
+                     target.data_ptr(), out.data_ptr(), n,
+                     log_target ? 1 : 0, scale, dtype);
+        return out;
+    }
     Tensor g;
     if (!log_target) {
         Tensor nz = target.ne(0).to(input.dtype());
@@ -523,7 +570,7 @@ Tensor kl_div_backward_kernel(const Tensor& grad_output, const Tensor& input,
     } else {
         g = -(target.exp()) * grad_output;
     }
-    return scale_grad(g, reduction, input.numel());
+    return scale_grad(g, reduction, n);
 }
 
 // per-element loss is (t-1)*max(log(1-x),-100) - t*max(log(x),-100), then

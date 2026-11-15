@@ -60,6 +60,23 @@ using l1_grad_fn = void (*)(const void* grad_output, const void* input,
                             const void* target, void* out, int64_t n,
                             double scale, int dtype);
 
+// kl_div: t log t - t x with a zero lane contributing nothing, or, when the
+// target already sits in log space, exp(t) (t - x).  The sum walk folds the
+// lanes and the into walk stores them.
+using kl_sum_fn = double (*)(const void* input, const void* target, int64_t n,
+                             int log_target, int dtype);
+
+using kl_into_fn = void (*)(const void* input, const void* target, void* out,
+                            int64_t n, int log_target, int dtype);
+
+// The gradient the divergence answers with respect to the input: the negated
+// target when it sits in probability space (zero lanes contribute nothing), or
+// the negated exponent in log space; carried by the incoming gradient and by
+// the slope a mean divides with.
+using kl_grad_fn = void (*)(const void* grad_output, const void* input,
+                            const void* target, void* out, int64_t n,
+                            int log_target, double scale, int dtype);
+
 // huber_loss: z = |x - t|; z <= delta ? 0.5 z^2 : delta (z - 0.5 delta).
 using huber_sum_fn = double (*)(const void* input, const void* target,
                                 int64_t n, double delta, int dtype);
@@ -107,6 +124,9 @@ DECLARE_DISPATCH(mse_grad_fn, mse_grad_stub)
 DECLARE_DISPATCH(l1_sum_fn, l1_sum_stub)
 DECLARE_DISPATCH(l1_into_fn, l1_into_stub)
 DECLARE_DISPATCH(l1_grad_fn, l1_grad_stub)
+DECLARE_DISPATCH(kl_sum_fn, kl_sum_stub)
+DECLARE_DISPATCH(kl_into_fn, kl_into_stub)
+DECLARE_DISPATCH(kl_grad_fn, kl_grad_stub)
 DECLARE_DISPATCH(huber_into_fn, huber_into_stub)
 DECLARE_DISPATCH(huber_sum_fn, huber_sum_stub)
 DECLARE_DISPATCH(bce_logits_rows_fn, bce_logits_rows_stub)
