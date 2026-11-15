@@ -584,10 +584,11 @@ inline __m256 v_exp_f32_fast(__m256 x) {
 
 // erf on float lanes.  Coefficients live in cpu/vec/ErfPoly.h so the vector
 // class and this kernel evaluate the same function.
-// Fast selects the range-restricted exp for the decay term; the caller then
-// guarantees |x| <= 9.3, which keeps -x*x above the point where exp stops
-// returning a normal float.
-template <bool Fast>
+// The decay term is exp(-x*x), which is already far below the rounding of one
+// by the time |x| passes 9.3.  Capping its argument at the floor of the short
+// chain therefore changes no result the polynomial could produce, and lets
+// that chain serve the whole range: the cap keeps the exponent field in range
+// where an unclamped argument would wrap it.
 __attribute__((target("avx2,fma"), always_inline))
 inline __m256 v_erf_f32_impl(__m256 x) {
     const __m256 sign_bit = _mm256_set1_ps(-0.0f);
@@ -605,27 +606,18 @@ inline __m256 v_erf_f32_impl(__m256 x) {
     p = _mm256_fmadd_ps(p, t, _mm256_set1_ps(-0.284496736f));
     p = _mm256_fmadd_ps(p, t, _mm256_set1_ps(0.254829592f));
     p = _mm256_mul_ps(p, t);
-    // exp(-x*x) decays to zero, so the tail saturates at one without any
-    // explicit clamp; the sign is restored at the end.
+    // exp(-x*x) decays to zero, so the tail saturates at one; the sign is
+    // restored at the end.
     const __m256 arg = _mm256_xor_ps(sign_bit, _mm256_mul_ps(x, x));
-    __m256 decay;
-    if constexpr (Fast) {
-        decay = v_exp_f32_fast(arg);
-    } else {
-        decay = v_exp_f32(arg);
-    }
+    const __m256 decay = v_exp_f32_fast(
+        _mm256_max_ps(_mm256_set1_ps(-87.33654475055310f), arg));
     const __m256 r = _mm256_sub_ps(one, _mm256_mul_ps(p, decay));
     return _mm256_or_ps(_mm256_and_ps(sign_bit, x), r);
 }
 
 __attribute__((target("avx2,fma"), always_inline))
 inline __m256 v_erf_f32(__m256 x) {
-    return v_erf_f32_impl<false>(x);
-}
-
-__attribute__((target("avx2,fma"), always_inline))
-inline __m256 v_erf_f32_fast(__m256 x) {
-    return v_erf_f32_impl<true>(x);
+    return v_erf_f32_impl(x);
 }
 
 // erfc on float lanes.  The tail form erfc(x) = Q(t) * t * exp(-x*x) with
@@ -874,15 +866,12 @@ inline __m256 v_softplus_f32(__m256 beta, __m256 threshold, __m256 x) {
 // both shapes emit identical code.
 __attribute__((target("avx2,fma"), always_inline))
 inline __m256 v_sigmoid_f32(__m256 x, __m256 one, __m256 signbit) {
-    // rcp+NR instead of divps.  Division corners reproduced: den==inf
-    // (x <= -88.7, exp overflowed) must yield +0 like 1/inf, and a NaN
-    // denominator must stay NaN -- hence the two mask repairs.
-    __m256 den = _mm256_add_ps(one, v_exp_f32(_mm256_xor_ps(x, signbit)));
-    __m256 r = v_rcp_nr_ps(den);
-    __m256 not_inf = _mm256_cmp_ps(den, _mm256_set1_ps(INFINITY), _CMP_NEQ_OQ);
-    __m256 zeroed = _mm256_and_ps(not_inf, r);
-    __m256 is_nan = _mm256_cmp_ps(den, den, _CMP_UNORD_Q);
-    return _mm256_blendv_ps(zeroed, r, is_nan);
+    // One divide instead of a reciprocal plus two Newton steps: the divide
+    // reproduces every corner on its own -- den==inf (x at or below -88.7,
+    // exp overflowed) gives +0 like 1/inf, and a NaN denominator stays NaN --
+    // so the repair masks drop out too.
+    const __m256 den = _mm256_add_ps(one, v_exp_f32(_mm256_xor_ps(x, signbit)));
+    return _mm256_div_ps(one, den);
 }
 
 // Sigmoid for blocks whose lanes are all inside [-87, 87].  Negating a lane
@@ -896,22 +885,11 @@ inline __m256 v_sigmoid_f32_fast(__m256 x, __m256 one, __m256 signbit) {
     return v_rcp_nr_ps(den);
 }
 
-template <bool Fast>
-__attribute__((target("avx2,fma"), always_inline))
-inline __m256 v_gelu_none_f32_impl(__m256 x, __m256 one) {
-    const __m256 kAlpha = _mm256_set1_ps(static_cast<float>(0.70710678118654752440));
-    __m256 cdf = _mm256_add_ps(one, v_erf_f32_impl<Fast>(_mm256_mul_ps(kAlpha, x)));
-    return _mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(0.5f), x), cdf);
-}
-
 __attribute__((target("avx2,fma"), always_inline))
 inline __m256 v_gelu_none_f32(__m256 x, __m256 one) {
-    return v_gelu_none_f32_impl<false>(x, one);
-}
-
-__attribute__((target("avx2,fma"), always_inline))
-inline __m256 v_gelu_none_f32_fast(__m256 x, __m256 one) {
-    return v_gelu_none_f32_impl<true>(x, one);
+    const __m256 kAlpha = _mm256_set1_ps(static_cast<float>(0.70710678118654752440));
+    __m256 cdf = _mm256_add_ps(one, v_erf_f32_impl(_mm256_mul_ps(kAlpha, x)));
+    return _mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(0.5f), x), cdf);
 }
 
 __attribute__((target("avx2,fma"), always_inline))
@@ -922,6 +900,22 @@ inline __m256 v_gelu_tanh_f32(__m256 x, __m256 one) {
     __m256 inner = _mm256_mul_ps(kBeta, _mm256_add_ps(x, _mm256_mul_ps(kKappa, x_cube)));
     __m256 cdf = _mm256_add_ps(one, tensorplay::tpsleef::tanh(inner));
     return _mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(0.5f), x), cdf);
+}
+
+// acosh from the library kernel, repaired where the kernel's own formula
+// leaves the float range.  That formula needs sqrt(x*x - 1); for
+// x > 1.8e19 the square overflows and the kernel reports inf where the
+// answer is about log(2x).  Above the same bound the discarded -1 sits far
+// below the spacing of x, so log(x) + log(2) is the value to within a couple
+// of ulp, and the repair is a single logarithm on the lanes that need it.
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256 v_acosh_f32x8(__m256 x) {
+    const __m256 r = tensorplay::tpsleef::acosh(x);
+    const __m256 big = _mm256_cmp_ps(x, _mm256_set1_ps(1.8446744e19f), _CMP_GE_OQ);
+    if (_mm256_movemask_ps(big) == 0) return r;
+    const __m256 fixed = _mm256_add_ps(tensorplay::tpsleef::log(x),
+                                       _mm256_set1_ps(0.69314718055994530942f));
+    return _mm256_blendv_ps(r, fixed, big);
 }
 
 // Applies op to one AVX2 float vector.  Always-inline: only ever folded into
@@ -966,7 +960,7 @@ inline __m256 apply_f32(VOp op, VParams prm, __m256 x) {
         case VOp::Cosh: return tensorplay::tpsleef::cosh(x);
         case VOp::Tanh: return tensorplay::tpsleef::tanh(x);
         case VOp::Asinh: return tensorplay::tpsleef::asinh(x);
-        case VOp::Acosh: return tensorplay::tpsleef::acosh(x);
+        case VOp::Acosh: return v_acosh_f32x8(x);
         case VOp::Atanh: return tensorplay::tpsleef::atanh(x);
         case VOp::Erf: return v_erf_f32(x);
         case VOp::Erfc: return tensorplay::tpsleef::erfc(x);
@@ -978,11 +972,10 @@ inline __m256 apply_f32(VOp op, VParams prm, __m256 x) {
         case VOp::GeluTanh:
             return v_gelu_tanh_f32(x, one);
         case VOp::Silu: {
-            // x * rcp_nr(den) matches x/den bit-for-bit in every corner here:
-            // den==inf makes the NR chain NaN exactly like -inf/+inf division,
-            // and finite dens get a float-exact reciprocal.
+            // One divide: x/den already answers every corner, with no
+            // reciprocal chain to repair (den==inf yields +0, NaN stays NaN).
             __m256 den = _mm256_add_ps(one, v_exp_f32(_mm256_xor_ps(x, signbit)));
-            return _mm256_mul_ps(x, v_rcp_nr_ps(den));
+            return _mm256_div_ps(x, den);
         }
         case VOp::Mish: {
             // Uses the scalar expression: log((1 + exp(x))) * tanh(...) — plain
@@ -1240,7 +1233,7 @@ static void f32_chunk_avx2(VOp op, VParams prm, const float* src, float* dst, in
             break;
         case VOp::Sigmoid: {
             // Blocks inside [-87, 87] cannot make the denominator overflow or
-            // turn NaN, so they take the form without the corner repairs.
+            // turn NaN, so they take the short exp chain.
             const __m256 sig_lo = _mm256_set1_ps(-87.0f);
             const __m256 sig_hi = _mm256_set1_ps(87.0f);
             for (; i + 32 <= n; i += 32) {
@@ -1276,40 +1269,11 @@ static void f32_chunk_avx2(VOp op, VParams prm, const float* src, float* dst, in
             }
             break;
         }
-        case VOp::GeluNone: {
-            // The erf inside scales by 1/sqrt(2), so |x| <= 13 is what keeps
-            // its decay argument above the short chain's floor.
-            const __m256 limit = _mm256_set1_ps(13.0f);
-            for (; i + 32 <= n; i += 32) {
-                __m256 x0 = _mm256_loadu_ps(s + i);
-                __m256 x1 = _mm256_loadu_ps(s + i + 8);
-                __m256 x2 = _mm256_loadu_ps(s + i + 16);
-                __m256 x3 = _mm256_loadu_ps(s + i + 24);
-                __m256 bad = _mm256_or_ps(
-                    _mm256_or_ps(
-                        _mm256_cmp_ps(_mm256_andnot_ps(signbit, x0), limit, _CMP_NLE_UQ),
-                        _mm256_cmp_ps(_mm256_andnot_ps(signbit, x1), limit, _CMP_NLE_UQ)),
-                    _mm256_or_ps(
-                        _mm256_cmp_ps(_mm256_andnot_ps(signbit, x2), limit, _CMP_NLE_UQ),
-                        _mm256_cmp_ps(_mm256_andnot_ps(signbit, x3), limit, _CMP_NLE_UQ)));
-                if (_mm256_movemask_ps(bad) == 0) {
-                    _mm256_storeu_ps(d + i, v_gelu_none_f32_fast(x0, one));
-                    _mm256_storeu_ps(d + i + 8, v_gelu_none_f32_fast(x1, one));
-                    _mm256_storeu_ps(d + i + 16, v_gelu_none_f32_fast(x2, one));
-                    _mm256_storeu_ps(d + i + 24, v_gelu_none_f32_fast(x3, one));
-                } else {
-                    _mm256_storeu_ps(d + i, v_gelu_none_f32(x0, one));
-                    _mm256_storeu_ps(d + i + 8, v_gelu_none_f32(x1, one));
-                    _mm256_storeu_ps(d + i + 16, v_gelu_none_f32(x2, one));
-                    _mm256_storeu_ps(d + i + 24, v_gelu_none_f32(x3, one));
-                }
-            }
-            for (; i + 8 <= n; i += 8) {
-                __m256 x = _mm256_loadu_ps(s + i);
-                _mm256_storeu_ps(d + i, v_gelu_none_f32(x, one));
-            }
+        case VOp::GeluNone:
+            // The erf's decay term is capped at its own floor, so no block
+            // has to fall back to a longer chain and the range test is gone.
+            TP_F32_SIMPLE_LOOP_8(v_gelu_none_f32(x, one));
             break;
-        }
         case VOp::GeluTanh:
             TP_F32_SIMPLE_LOOP_8(v_gelu_tanh_f32(x, one));
             break;
@@ -1403,39 +1367,9 @@ static void f32_chunk_avx2(VOp op, VParams prm, const float* src, float* dst, in
         case VOp::Atan:
             TP_F32_SIMPLE_LOOP_8(v_atan_f32(x));
             break;
-        case VOp::Erf: {
-            // |x| <= 9 keeps -x*x inside the range where the short exp chain
-            // is valid; past it erf has saturated and the guarded form runs.
-            const __m256 limit = _mm256_set1_ps(9.0f);
-            for (; i + 32 <= n; i += 32) {
-                __m256 x0 = _mm256_loadu_ps(s + i);
-                __m256 x1 = _mm256_loadu_ps(s + i + 8);
-                __m256 x2 = _mm256_loadu_ps(s + i + 16);
-                __m256 x3 = _mm256_loadu_ps(s + i + 24);
-                __m256 bad = _mm256_or_ps(
-                    _mm256_or_ps(
-                        _mm256_cmp_ps(_mm256_andnot_ps(signbit, x0), limit, _CMP_NLE_UQ),
-                        _mm256_cmp_ps(_mm256_andnot_ps(signbit, x1), limit, _CMP_NLE_UQ)),
-                    _mm256_or_ps(
-                        _mm256_cmp_ps(_mm256_andnot_ps(signbit, x2), limit, _CMP_NLE_UQ),
-                        _mm256_cmp_ps(_mm256_andnot_ps(signbit, x3), limit, _CMP_NLE_UQ)));
-                if (_mm256_movemask_ps(bad) == 0) {
-                    _mm256_storeu_ps(d + i, v_erf_f32_fast(x0));
-                    _mm256_storeu_ps(d + i + 8, v_erf_f32_fast(x1));
-                    _mm256_storeu_ps(d + i + 16, v_erf_f32_fast(x2));
-                    _mm256_storeu_ps(d + i + 24, v_erf_f32_fast(x3));
-                } else {
-                    _mm256_storeu_ps(d + i, v_erf_f32(x0));
-                    _mm256_storeu_ps(d + i + 8, v_erf_f32(x1));
-                    _mm256_storeu_ps(d + i + 16, v_erf_f32(x2));
-                    _mm256_storeu_ps(d + i + 24, v_erf_f32(x3));
-                }
-            }
-            for (; i + 8 <= n; i += 8) {
-                _mm256_storeu_ps(d + i, v_erf_f32(_mm256_loadu_ps(s + i)));
-            }
+        case VOp::Erf:
+            TP_F32_SIMPLE_LOOP_8(v_erf_f32(x));
             break;
-        }
         case VOp::Erfc: {
             // |x| <= 9 keeps -x*x above the short exp chain's floor.
             const __m256 limit = _mm256_set1_ps(9.0f);
@@ -1469,8 +1403,8 @@ static void f32_chunk_avx2(VOp op, VParams prm, const float* src, float* dst, in
             break;
         }
         case VOp::Silu:
-            TP_F32_SIMPLE_LOOP_8(_mm256_mul_ps(
-                x, v_rcp_nr_ps(_mm256_add_ps(one, v_exp_f32(_mm256_xor_ps(x, signbit))))));
+            TP_F32_SIMPLE_LOOP_8(_mm256_div_ps(
+                x, _mm256_add_ps(one, v_exp_f32(_mm256_xor_ps(x, signbit)))));
             break;
         case VOp::Selu: {
             const __m256 lambda = _mm256_set1_ps(static_cast<float>(1.0507009873554804934193349852946));
@@ -2233,6 +2167,55 @@ static void f64_chunk_avx2(VOp op, VParams prm, const double* src, double* dst, 
         }                                                                  \
     }
 
+// Sign-only maps work on the encoding itself: one 256-bit register holds
+// sixteen lanes, so half the load/store traffic and none of the convert
+// pair the widen-compute-narrow walk pays.
+#define TP_HALF_RAW16(EXPR, OFF)                                           \
+    {                                                                      \
+        __m256i x = _mm256_loadu_si256(                                    \
+            reinterpret_cast<const __m256i*>(src + (OFF)));                \
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (OFF)),       \
+                            (EXPR));                                       \
+    }
+
+#define TP_HALF_BITS16(EXPR)                                               \
+    {                                                                      \
+        for (; i + 64 <= n; i += 64) {                                     \
+            TP_HALF_RAW16(EXPR, i)                                         \
+            TP_HALF_RAW16(EXPR, i + 16)                                    \
+            TP_HALF_RAW16(EXPR, i + 32)                                    \
+            TP_HALF_RAW16(EXPR, i + 48)                                    \
+        }                                                                  \
+        for (; i + 16 <= n; i += 16) {                                     \
+            TP_HALF_RAW16(EXPR, i)                                         \
+        }                                                                  \
+    }
+
+// One formula per op lives in apply_f32; calling it with a constant op folds
+// its dispatch away, so neither the whole switch nor the register pressure of
+// its widest case reaches the element loop.  The transcendentals and the
+// composites built on them take this route; the one-instruction maps are
+// cheaper left in the shared loop, where a duplicated case costs more than
+// the dispatch it would remove.
+#define TP_HALF_CONST_OP(OP)                                               \
+    case VOp::OP:                                                          \
+        TP_HALF_CHUNK_8(apply_f32(VOp::OP, prm, x))                        \
+        break;
+
+// The maps without their own case keep one loop, in its own function: the
+// shared dispatch then sits in a small body instead of inside the switch
+// below, where the register pressure of every other case reaches it.
+__attribute__((target("avx2,fma,f16c"), noinline))
+static void half_generic_walk(VOp op, VParams prm, const uint16_t* src,
+                              uint16_t* dst, int64_t n) {
+    int64_t i = 0;
+    TP_HALF_CHUNK_8(apply_f32(op, prm, x))
+    for (; i < n; ++i) {
+        float xf = _cvtsh_ss(src[i]);
+        dst[i] = _cvtss_sh(scalar_apply(op, prm, xf), _MM_FROUND_TO_NEAREST_INT);
+    }
+}
+
 __attribute__((target("avx2,fma,f16c"), noinline))
 static void half_chunk_avx2(VOp op, VParams prm, const uint16_t* src, uint16_t* dst, int64_t b, int64_t e) {
     src += b;
@@ -2243,6 +2226,13 @@ static void half_chunk_avx2(VOp op, VParams prm, const uint16_t* src, uint16_t* 
         // Cheap maps carry their own case so the dispatch stays outside the
         // walk: a generic per-step call would put the whole op switch, with
         // its register-pressure spill, inside the loop body.
+        case VOp::Abs:
+            TP_HALF_BITS16(_mm256_and_si256(x, _mm256_set1_epi16(0x7fff)));
+            break;
+        case VOp::Neg:
+            TP_HALF_BITS16(_mm256_xor_si256(
+                x, _mm256_set1_epi16(static_cast<short>(0x8000))));
+            break;
         case VOp::Reciprocal:
             TP_HALF_CHUNK_8(_mm256_div_ps(_mm256_set1_ps(1.0f), x))
             break;
@@ -2308,12 +2298,45 @@ static void half_chunk_avx2(VOp op, VParams prm, const uint16_t* src, uint16_t* 
             TP_HALF_CHUNK_8(v_softplus_f32(beta, threshold, x))
             break;
         }
+        // Transcendentals and the composites built on them: these are the
+        // loops whose polynomial chains lose the most to a spilled switch.
+        TP_HALF_CONST_OP(Exp)
+        TP_HALF_CONST_OP(Expm1)
+        TP_HALF_CONST_OP(Log)
+        TP_HALF_CONST_OP(Log2)
+        TP_HALF_CONST_OP(Log10)
+        TP_HALF_CONST_OP(Log1p)
+        TP_HALF_CONST_OP(Sin)
+        TP_HALF_CONST_OP(Cos)
+        TP_HALF_CONST_OP(Tan)
+        TP_HALF_CONST_OP(Asin)
+        TP_HALF_CONST_OP(Acos)
+        TP_HALF_CONST_OP(Atan)
+        TP_HALF_CONST_OP(Sinh)
+        TP_HALF_CONST_OP(Cosh)
+        TP_HALF_CONST_OP(Tanh)
+        TP_HALF_CONST_OP(Asinh)
+        TP_HALF_CONST_OP(Acosh)
+        TP_HALF_CONST_OP(Atanh)
+        TP_HALF_CONST_OP(Erf)
+        TP_HALF_CONST_OP(Erfc)
+        TP_HALF_CONST_OP(Lgamma)
+        TP_HALF_CONST_OP(Sigmoid)
+        TP_HALF_CONST_OP(GeluNone)
+        TP_HALF_CONST_OP(GeluTanh)
+        TP_HALF_CONST_OP(Silu)
+        TP_HALF_CONST_OP(Mish)
+        TP_HALF_CONST_OP(Selu)
         default:
-            TP_HALF_CHUNK_8(apply_f32(op, prm, x))
+            half_generic_walk(op, prm, src, dst, n);
+            i = n;
             break;
     }
 #undef TP_HALF_STEP
 #undef TP_HALF_CHUNK_8
+#undef TP_HALF_RAW16
+#undef TP_HALF_BITS16
+#undef TP_HALF_CONST_OP
     for (; i < n; ++i) {
         float xf = _cvtsh_ss(src[i]);
         dst[i] = _cvtss_sh(scalar_apply(op, prm, xf), _MM_FROUND_TO_NEAREST_INT);
@@ -2453,20 +2476,27 @@ inline __m512 apply16_f32(VOp op, VParams prm, __m512 x) {
         case VOp::Cosh: return tensorplay::tpsleef::cosh(x);
         case VOp::Tanh: return tensorplay::tpsleef::tanh(x);
         case VOp::Asinh: return tensorplay::tpsleef::asinh(x);
-        case VOp::Acosh: return tensorplay::tpsleef::acosh(x);
+        case VOp::Acosh: {
+            // Same repair as the 256-bit helper: the library's formula
+            // squares x, which overflows for inputs past 1.8e19.
+            const __m512 r = tensorplay::tpsleef::acosh(x);
+            const __mmask16 big =
+                _mm512_cmp_ps_mask(x, _mm512_set1_ps(1.8446744e19f), _CMP_GE_OQ);
+            if (!big) return r;
+            const __m512 fixed =
+                _mm512_add_ps(tensorplay::tpsleef::log(x),
+                              _mm512_set1_ps(0.69314718055994530942f));
+            return _mm512_mask_blend_ps(big, r, fixed);
+        }
         case VOp::Atanh: return tensorplay::tpsleef::atanh(x);
         case VOp::Erf: return v_erf_f32_512(x);
         case VOp::Erfc: return tensorplay::tpsleef::erfc(x);
         case VOp::Lgamma: return tensorplay::tpsleef::lgamma(x);
-        case VOp::Sigmoid: {
-            // rcp14+NR instead of divps; see the 256-bit Sigmoid note for the
-            // inf/NaN corner repairs.
-            __m512 den = _mm512_add_ps(one, tensorplay::tpsleef::exp(_mm512_xor_ps(x, signbit)));
-            __m512 r = v_rcp_nr_ps(den);
-            __m512 zeroed = _mm512_maskz_mov_ps(
-                _mm512_cmp_ps_mask(den, _mm512_set1_ps(INFINITY), _CMP_NEQ_OQ), r);
-            return _mm512_mask_mov_ps(zeroed, _mm512_cmp_ps_mask(den, den, _CMP_UNORD_Q), r);
-        }
+        case VOp::Sigmoid:
+            // One divide answers the corners on its own; see the 256-bit note.
+            return _mm512_div_ps(
+                one, _mm512_add_ps(
+                         one, tensorplay::tpsleef::exp(_mm512_xor_ps(x, signbit))));
         case VOp::GeluNone: {
             const __m512 kAlpha = _mm512_set1_ps(0.7071067811865476f);
             const __m512 cdf =
@@ -2898,10 +2928,10 @@ static void f64_chunk_avx512(VOp op, VParams prm, const double* src, double* dst
     for (; i < n; ++i) d[i] = scalar_apply(op, prm, s[i]);
 }
 
-// Same one-branch-per-chunk split as the Half loop: only the ops that read
-// runtime parameters need it, the rest keep the generic body.
-// Two vectors in flight per step: the widen, the arithmetic and the narrow
-// form one long chain per vector, and one 32-byte store covers both.
+// Same shape as the Half walk.  Two vectors are in flight per step instead of
+// four: the rounding sequence that narrows bfloat16 uses more of the same
+// ports than the Half narrowing does, so a third and fourth stream spill and
+// cost more than they hide.  One 32-byte store then covers both vectors.
 //
 // The round-to-nearest-even narrowing of one eight-lane vector.  A NaN that
 // reaches the rounding add can carry a mantissa that overflows into the
@@ -2962,6 +2992,50 @@ inline void bf16_store8_avx2(uint16_t* d, __m256i r) {
         }                                                                 \
     }
 
+// Sign-only maps on the encoding, as in the Half walk: sixteen lanes per
+// register and no convert pair.
+#define TP_BF16_RAW16(EXPR, OFF)                                           \
+    {                                                                      \
+        __m256i x = _mm256_loadu_si256(                                    \
+            reinterpret_cast<const __m256i*>(src + (OFF)));                \
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (OFF)),       \
+                            (EXPR));                                       \
+    }
+
+#define TP_BF16_BITS16(EXPR)                                               \
+    {                                                                      \
+        for (; i + 64 <= n; i += 64) {                                     \
+            TP_BF16_RAW16(EXPR, i)                                         \
+            TP_BF16_RAW16(EXPR, i + 16)                                    \
+            TP_BF16_RAW16(EXPR, i + 32)                                    \
+            TP_BF16_RAW16(EXPR, i + 48)                                    \
+        }                                                                  \
+        for (; i + 16 <= n; i += 16) {                                     \
+            TP_BF16_RAW16(EXPR, i)                                         \
+        }                                                                  \
+    }
+
+// Same shape as the Half walk: a constant op folds apply_f32's dispatch away.
+#define TP_BF16_CONST_OP(OP)                                               \
+    case VOp::OP:                                                          \
+        TP_BF16_CHUNK_8(apply_f32(VOp::OP, prm, x))                        \
+        break;
+
+// Same split as the Half walk: the shared dispatch gets its own loop.
+__attribute__((target("avx2,fma"), noinline))
+static void bf16_generic_walk(VOp op, VParams prm, const uint16_t* src,
+                              uint16_t* dst, int64_t n) {
+    int64_t i = 0;
+    TP_BF16_CHUNK_8(apply_f32(op, prm, x))
+    for (; i < n; ++i) {
+        uint32_t bits = static_cast<uint32_t>(src[i]) << 16;
+        float xf;
+        std::memcpy(&xf, &bits, 4);
+        float yf = scalar_apply(op, prm, xf);
+        dst[i] = tensorplay::detail::float_to_bfloat16_bits(yf);
+    }
+}
+
 __attribute__((target("avx2,fma"), noinline))
 static void bf16_chunk_avx2(VOp op, VParams prm, const uint16_t* src, uint16_t* dst, int64_t b, int64_t e) {
     src += b;
@@ -2970,6 +3044,13 @@ static void bf16_chunk_avx2(VOp op, VParams prm, const uint16_t* src, uint16_t* 
     int64_t i = 0;
     switch (op) {
         // Same reason as the Half walk: keep the op switch out of the body.
+        case VOp::Abs:
+            TP_BF16_BITS16(_mm256_and_si256(x, _mm256_set1_epi16(0x7fff)));
+            break;
+        case VOp::Neg:
+            TP_BF16_BITS16(_mm256_xor_si256(
+                x, _mm256_set1_epi16(static_cast<short>(0x8000))));
+            break;
         case VOp::Reciprocal:
             TP_BF16_CHUNK_8(_mm256_div_ps(_mm256_set1_ps(1.0f), x))
             break;
@@ -3035,12 +3116,45 @@ static void bf16_chunk_avx2(VOp op, VParams prm, const uint16_t* src, uint16_t* 
             TP_BF16_CHUNK_8(v_softplus_f32(beta, threshold, x))
             break;
         }
+        // Transcendentals and the composites built on them: these are the
+        // loops whose polynomial chains lose the most to a spilled switch.
+        TP_BF16_CONST_OP(Exp)
+        TP_BF16_CONST_OP(Expm1)
+        TP_BF16_CONST_OP(Log)
+        TP_BF16_CONST_OP(Log2)
+        TP_BF16_CONST_OP(Log10)
+        TP_BF16_CONST_OP(Log1p)
+        TP_BF16_CONST_OP(Sin)
+        TP_BF16_CONST_OP(Cos)
+        TP_BF16_CONST_OP(Tan)
+        TP_BF16_CONST_OP(Asin)
+        TP_BF16_CONST_OP(Acos)
+        TP_BF16_CONST_OP(Atan)
+        TP_BF16_CONST_OP(Sinh)
+        TP_BF16_CONST_OP(Cosh)
+        TP_BF16_CONST_OP(Tanh)
+        TP_BF16_CONST_OP(Asinh)
+        TP_BF16_CONST_OP(Acosh)
+        TP_BF16_CONST_OP(Atanh)
+        TP_BF16_CONST_OP(Erf)
+        TP_BF16_CONST_OP(Erfc)
+        TP_BF16_CONST_OP(Lgamma)
+        TP_BF16_CONST_OP(Sigmoid)
+        TP_BF16_CONST_OP(GeluNone)
+        TP_BF16_CONST_OP(GeluTanh)
+        TP_BF16_CONST_OP(Silu)
+        TP_BF16_CONST_OP(Mish)
+        TP_BF16_CONST_OP(Selu)
         default:
-            TP_BF16_CHUNK_8(apply_f32(op, prm, x))
+            bf16_generic_walk(op, prm, src, dst, n);
+            i = n;
             break;
     }
 #undef TP_BF16_STEP
 #undef TP_BF16_CHUNK_8
+#undef TP_BF16_RAW16
+#undef TP_BF16_BITS16
+#undef TP_BF16_CONST_OP
     for (; i < n; ++i) {
         uint32_t bits = static_cast<uint32_t>(src[i]) << 16;
         float xf;
@@ -3156,7 +3270,6 @@ using Vml64Entry = void (*)(const int, const double[], double[], const long long
 inline Vml32Entry vml32_entry(VOp op) {
     switch (op) {
         case VOp::Exp:   return vmsExp;
-        case VOp::Exp2:  return vmsExp2;
         case VOp::Expm1: return vmsExpm1;
         case VOp::Sin:   return vmsSin;
         case VOp::Cos:   return vmsCos;
@@ -3165,7 +3278,6 @@ inline Vml32Entry vml32_entry(VOp op) {
         case VOp::Sinh:  return vmsSinh;
         case VOp::Cosh:  return vmsCosh;
         case VOp::Asinh: return vmsAsinh;
-        case VOp::Acosh: return vmsAcosh;
         case VOp::Erf:   return vmsErf;
         case VOp::Erfc:  return vmsErfc;
         case VOp::ErfInv: return vmsErfInv;
@@ -3677,16 +3789,48 @@ inline bool vec_ready() {
 // cannot drift from the kernels below.
 inline bool reduced_chunk_ready(VOp op) {
     switch (op) {
+        // Sign-only maps and the parameterised activations, all written out
+        // as their own case.
+        case VOp::Abs:
+        case VOp::Neg:
         case VOp::Reciprocal:
-        case VOp::Exp2:
-        case VOp::Sinc:
-        case VOp::Hardtanh:
+        case VOp::Elu:
+        case VOp::Softplus:
         case VOp::LeakyRelu:
+        case VOp::Hardtanh:
         case VOp::Softshrink:
         case VOp::Threshold:
         case VOp::Hardshrink:
-        case VOp::Elu:
-        case VOp::Softplus:
+        // libm-family maps and the composites built on them.
+        case VOp::Exp:
+        case VOp::Exp2:
+        case VOp::Expm1:
+        case VOp::Log:
+        case VOp::Log2:
+        case VOp::Log10:
+        case VOp::Log1p:
+        case VOp::Sin:
+        case VOp::Cos:
+        case VOp::Tan:
+        case VOp::Asin:
+        case VOp::Acos:
+        case VOp::Atan:
+        case VOp::Sinh:
+        case VOp::Cosh:
+        case VOp::Tanh:
+        case VOp::Asinh:
+        case VOp::Acosh:
+        case VOp::Atanh:
+        case VOp::Erf:
+        case VOp::Erfc:
+        case VOp::Lgamma:
+        case VOp::Sinc:
+        case VOp::Sigmoid:
+        case VOp::GeluNone:
+        case VOp::GeluTanh:
+        case VOp::Silu:
+        case VOp::Mish:
+        case VOp::Selu:
             return true;
         default:
             return false;
