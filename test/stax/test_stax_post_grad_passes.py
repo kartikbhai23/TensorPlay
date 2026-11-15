@@ -105,26 +105,74 @@ def test_the_reciprocal_of_a_square_root_is_written_once():
     assert result.tolist() == [[0.5, 0.25]]
 
 
-def test_a_split_rebuilt_by_a_cat_collapses_when_asked_for():
-    def fn(x):
-        left, right = x.split([2, 2], dim=1)
-        return tp.cat([left, right], dim=1)
-
-    result, seen = _compiled_order(
-        fn,
-        tp.arange(8).reshape(2, 4),
-        post_grad_fusion_options={"split_cat_tp_pass": {"threshold_to_cat": 1}},
-    )
-
-    assert tp.ops.tp.split.sizes not in seen[-1]
-    assert result.tolist() == [[0, 1, 2, 3], [4, 5, 6, 7]]
-
-
-def test_a_split_rebuilt_by_a_cat_is_left_alone_unless_asked_for():
+def test_a_split_rebuilt_by_a_cat_collapses_without_being_asked_for():
     def fn(x):
         left, right = x.split([2, 2], dim=1)
         return tp.cat([left, right], dim=1) + 0
 
+    result, seen = _compiled_order(fn, tp.arange(8).reshape(2, 4))
+
+    assert tp.ops.tp.cat.default not in seen[-1]
+    assert tp.ops.tp.split.sizes not in seen[-1]
+    assert result.tolist() == [[0, 1, 2, 3], [4, 5, 6, 7]]
+
+
+def test_a_split_given_sizes_rebuilt_by_a_cat_collapses():
+    def fn(x):
+        left, right = tp.split_with_sizes(x, [2, 2], 1)
+        return tp.cat([left, right], dim=1)
+
+    result, seen = _compiled_order(fn, tp.arange(8).reshape(2, 4))
+
+    assert tp.ops.tp.split_with_sizes.default not in seen[-1]
+    assert tp.ops.tp.cat.default not in seen[-1]
+    assert result.tolist() == [[0, 1, 2, 3], [4, 5, 6, 7]]
+
+
+def test_a_cat_of_the_pieces_in_another_order_is_left_alone():
+    def fn(x):
+        left, right = x.split([2, 2], dim=1)
+        return tp.cat([right, left], dim=1) + 0
+
+    result, seen = _compiled_order(fn, tp.arange(8).reshape(2, 4))
+
+    assert tp.ops.tp.cat.default in seen[-1]
+    assert tp.ops.tp.split.sizes in seen[-1]
+    assert result.tolist() == [[2, 3, 0, 1], [6, 7, 4, 5]]
+
+
+def test_a_partial_rebuild_of_a_split_still_needs_the_threshold_pass():
+    def fn(x):
+        left, right = x.split([2, 2], dim=1)
+        return tp.cat([left], dim=1) + right
+
     _, seen = _compiled_order(fn, tp.arange(8).reshape(2, 4))
 
+    assert tp.ops.tp.split.sizes in seen[-1]
+
+
+def test_a_split_of_a_cat_hands_back_the_pieces():
+    def fn(x, y):
+        joined = tp.cat([x, y], dim=1)
+        left, right = joined.split([2, 2], dim=1)
+        return left * 2 + right
+
+    result, seen = _compiled_order(
+        fn, tp.arange(4).reshape(2, 2), tp.ones(2, 2)
+    )
+
+    assert tp.ops.tp.cat.default not in seen[-1]
+    assert tp.ops.tp.split.sizes not in seen[-1]
+    assert result.tolist() == [[1.0, 3.0], [5.0, 7.0]]
+
+
+def test_a_split_of_a_cat_that_cuts_elsewhere_is_left_alone():
+    def fn(x, y):
+        joined = tp.cat([x, y], dim=1)
+        left, right = joined.split([1, 3], dim=1)
+        return left * 2 + right
+
+    _, seen = _compiled_order(fn, tp.arange(4).reshape(2, 2), tp.ones(2, 2))
+
+    assert tp.ops.tp.cat.default in seen[-1]
     assert tp.ops.tp.split.sizes in seen[-1]

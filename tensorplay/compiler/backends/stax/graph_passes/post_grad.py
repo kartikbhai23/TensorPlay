@@ -14,9 +14,11 @@ from ..pattern_matcher import (
     CallFunction,
     Ignored,
     KeywordArg,
+    ListOf,
     Match,
     MULTIPLE,
     PatternMatcherPass,
+    get_arg_value,
     get_mutation_region_id,
     register_graph_pattern,
     register_lowering_pattern as _register_lowering_pattern,
@@ -289,6 +291,143 @@ def reciprocal_sqrt_to_rsqrt(match: Match, value):
         return tp_ops.rsqrt.default(argument)
 
     match.replace_by_example(replacement, [value])
+
+
+#: The two ways a value is cut into pieces of given sizes: one takes the sizes
+#: as a list, the other takes them by name.
+_SPLIT_TARGETS = (tp_ops.split.sizes, tp_ops.split_with_sizes.default)
+
+
+def _split_and_cat(match: Match) -> tuple[Node | None, Node | None]:
+    """The one split and the one cat a match found, or ``(None, None)``."""
+
+    splits = [node for node in match.nodes if node.target in _SPLIT_TARGETS]
+    cats = [node for node in match.nodes if node.target is tp_ops.cat.default]
+    if len(splits) != 1 or len(cats) != 1:
+        return None, None
+    return splits[0], cats[0]
+
+
+def _is_split_rejoined_by_cat(match: Match) -> bool:
+    """Whether a cat puts back every piece of a split, in the original order.
+
+    Joining pieces that were just cut from one value gives the value back, so
+    the pair is a copy that the program does not need.  Only a cat of every
+    piece along the same dimension, in the order the pieces were cut, says that.
+    """
+
+    split_node, cat_node = _split_and_cat(match)
+    if split_node is None or cat_node is None:
+        return False
+    if get_arg_value(split_node, 2, "dim") != get_arg_value(cat_node, 1, "dim"):
+        return False
+    sizes = get_arg_value(split_node, 1, "split_sizes")
+    if not isinstance(sizes, (list, tuple)) or not sizes:
+        return False
+    pieces = get_arg_value(cat_node, 0)
+    if not isinstance(pieces, (list, tuple)) or len(pieces) != len(sizes):
+        return False
+    indices = [get_arg_value(piece, 1) for piece in pieces]
+    if any(index is None for index in indices):
+        return False
+    return indices == list(range(len(sizes)))
+
+
+@register_graph_pattern(
+    CallFunction(
+        tp_ops.cat.default,
+        ListOf(
+            CallFunction(
+                operator.getitem,
+                CallFunction(
+                    [tp_ops.split.sizes, tp_ops.split_with_sizes.default],
+                    KeywordArg("source"),
+                    Ignored(),
+                    Ignored(),
+                    _users=MULTIPLE,
+                ),
+                Ignored(),
+            ),
+        ),
+        Ignored(),
+    ),
+    extra_check=_is_split_rejoined_by_cat,
+    pass_dict=pass_patterns[2],
+)
+def split_rejoined_by_cat(match: Match, source):
+    """Drop a split whose every piece is joined back in the same order."""
+
+    node = match.output_node()
+    node.replace_all_uses_with(source)
+    for matched in reversed(match.nodes):
+        if not matched.users:
+            match.graph.erase_node(matched)
+
+
+def _is_cat_split_back_to_pieces(match: Match) -> bool:
+    """Whether a split cuts a cat exactly at the joins between its pieces.
+
+    Cutting a joined value at the sizes of the pieces it was joined from gives
+    those pieces back, so the join and the cut can both be dropped.  The cut
+    has to be along the joining dimension, and each piece has to be exactly the
+    size of the cut that reads it.
+    """
+
+    split_node, cat_node = _split_and_cat(match)
+    if split_node is None or cat_node is None:
+        return False
+    dim = get_arg_value(split_node, 2, "dim")
+    if dim != get_arg_value(cat_node, 1, "dim"):
+        return False
+    sizes = get_arg_value(split_node, 1, "split_sizes")
+    pieces = get_arg_value(cat_node, 0)
+    if not isinstance(sizes, (list, tuple)) or not isinstance(pieces, (list, tuple)):
+        return False
+    if not sizes or len(sizes) != len(pieces):
+        return False
+    for piece, size in zip(pieces, sizes):
+        if not isinstance(size, int) or not isinstance(dim, int):
+            return False
+        value = piece.meta.get("val")
+        if value is None or not statically_known_true(sym_eq(value.size(dim), size)):
+            return False
+    # What reads the pieces of the cut has to be the cut itself, so that each
+    # reader can be handed the piece it asked for.
+    for user in split_node.users:
+        if user.target is not operator.getitem:
+            return False
+        index = get_arg_value(user, 1)
+        if not isinstance(index, int) or index < 0 or index >= len(pieces):
+            return False
+    return True
+
+
+@register_graph_pattern(
+    CallFunction(
+        [tp_ops.split.sizes, tp_ops.split_with_sizes.default],
+        CallFunction(
+            tp_ops.cat.default,
+            KeywordArg("cat_input"),
+            KeywordArg("cat_dim"),
+            _users=MULTIPLE,
+        ),
+        KeywordArg("sizes"),
+        KeywordArg("dim"),
+    ),
+    extra_check=_is_cat_split_back_to_pieces,
+    pass_dict=pass_patterns[2],
+)
+def cat_split_back_to_pieces(match: Match, cat_input, cat_dim, sizes, dim):
+    """Hand each reader of a cut the piece of the join it asked for."""
+
+    split_node = match.output_node()
+    graph = match.graph
+    for user in list(split_node.users):
+        user.replace_all_uses_with(cat_input[get_arg_value(user, 1)])
+        graph.erase_node(user)
+    for matched in reversed(match.nodes):
+        if not matched.users:
+            graph.erase_node(matched)
 
 
 def remove_profiler_ops(graph: Graph) -> None:
