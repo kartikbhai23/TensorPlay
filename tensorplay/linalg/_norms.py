@@ -33,90 +33,30 @@ def _normalize_dims(dim, ndim, expected=None):
     return result
 
 
-def _restore_matrix_axes(value, remaining, matrix_dims, ndim):
-    current_positions = {dim: index for index, dim in enumerate(remaining)}
-    offset = len(remaining)
-    current_positions[matrix_dims[0]] = offset
-    current_positions[matrix_dims[1]] = offset + 1
-    order = [current_positions[dim] for dim in range(ndim)]
-    return value.permute(order)
-
-
 def vector_norm(x, ord=2, dim=None, keepdim=False):
     """vector_norm(x, ord=2, dim=None, keepdim=False) -> Tensor
 
     ``dim=None`` norms the whole tensor: the input is flattened first, and
     ``keepdim`` then restores the reduced axes as ones.
     """
-    inf = float("inf")
-    reduce_all = dim is None
-    ndim = x.dim()
-    work = x.reshape([-1]) if reduce_all else x
-    axes = [0] if reduce_all else _normalize_dims(dim, ndim)
-    # Reducing from the last axis toward the first keeps the remaining axis
-    # numbers stable when keepdim is false.
-    axes = sorted(axes, reverse=True)
-    inner_keepdim = keepdim and not reduce_all
-    magnitude = work.abs()
-    if ord == 0:
-        result = (magnitude != 0).to(magnitude.dtype)
-        for axis in axes:
-            result = result.sum(dim=axis, keepdim=inner_keepdim)
-    elif ord == inf:
-        result = magnitude
-        for axis in axes:
-            result = result.max(dim=axis, keepdim=inner_keepdim).values
-    elif ord == -inf:
-        result = magnitude
-        for axis in axes:
-            result = result.min(dim=axis, keepdim=inner_keepdim).values
-    else:
-        if isinstance(ord, str) or ord == 0:
-            raise ValueError(f"linalg.vector_norm: invalid ord {ord!r}")
-        result = magnitude.pow(ord)
-        for axis in axes:
-            result = result.sum(dim=axis, keepdim=inner_keepdim)
-        result = result.pow(1.0 / ord)
-    if reduce_all and keepdim:
-        result = result.reshape([1] * ndim)
-    return result
+    # The reduction kernel folds the order into the same pass: one stream over
+    # the whole buffer for the two-norm, one accumulator per reduced vector for
+    # the rest, instead of a magnitude pass, a power pass and a sum pass.
+    return tensorplay.linalg_vector_norm(x, ord, dim, keepdim)
 
 
 def matrix_norm(A, ord="fro", dim=(-2, -1), keepdim=False):
     """matrix_norm(A, ord='fro', dim=(-2, -1), keepdim=False) -> Tensor"""
     check_floating(A, "matrix_norm")
-    inf = float("inf")
-    ndim = A.dim()
-    matrix_dims = _normalize_dims(dim, ndim, expected=2)
-    remaining = [axis for axis in range(ndim) if axis not in matrix_dims]
-    moved = A.permute(remaining + matrix_dims).contiguous()
-    batch_shape = list(moved.shape[:-2])
-
-    def finish(value):
-        if keepdim:
-            value = value.reshape(batch_shape + [1, 1])
-            return _restore_matrix_axes(value, remaining, matrix_dims, ndim)
-        return value
-
-    magnitude = moved.abs()
-    if ord in ("fro", "frob"):
-        return finish(magnitude.pow(2).sum(dim=[-2, -1]).sqrt())
-    if ord == "nuc":
-        return finish(svdvals(moved).sum(dim=-1))
-    if ord == inf:
-        return finish(magnitude.sum(dim=-1).max(dim=-1).values)
-    if ord == -inf:
-        return finish(magnitude.sum(dim=-1).min(dim=-1).values)
-    if ord == 1:
-        return finish(magnitude.sum(dim=-2).max(dim=-1).values)
-    if ord == -1:
-        return finish(magnitude.sum(dim=-2).min(dim=-1).values)
-    if ord == 2 or ord == -2:
-        singular_values = svdvals(moved)
-        value = singular_values.max(dim=-1).values if ord == 2 \
-            else singular_values.min(dim=-1).values
-        return finish(value)
-    raise RuntimeError(f"linalg.matrix_norm: invalid ord {ord!r}")
+    matrix_dims = _normalize_dims(dim, A.dim(), expected=2)
+    if isinstance(ord, str) and ord == "frob":
+        ord = "fro"
+    if not isinstance(ord, str) and ord not in (1, -1, 2, -2, float("inf"), float("-inf")):
+        raise RuntimeError(f"linalg.matrix_norm: invalid ord {ord!r}")
+    # The kernel folds the order into one pass per reduced axis: a single
+    # stream of squares for the Frobenius norm instead of an absolute-value
+    # pass, a squaring pass and a summing pass.
+    return tensorplay.linalg_matrix_norm(A, ord, matrix_dims, keepdim)
 
 
 def norm(input, ord=None, dim=None, keepdim=False):

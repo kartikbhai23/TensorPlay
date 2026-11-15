@@ -381,19 +381,71 @@ Tensor norm_dim_kernel_impl(const Tensor& self,
                             double p, bool keepdim) {
     if (dims.empty()) return norm_kernel_impl(self, p);
 
-    // An L2 norm that folds only the trailing dimension of a contiguous real
-    // block is one independent stream per row: each row walks the wide
-    // sum-of-squares pass and takes a single square root, while the iterator
-    // path reaches only a fraction of that rate.
+    // Reducing every dimension of a packed tensor is one pass over the whole
+    // buffer, which the full-reduction form already answers as a single
+    // stream; walking it one reduced dimension at a time reaches a fraction
+    // of that rate.
+    if (self.numel() > 0 && self.is_contiguous() && self.dim() > 1 &&
+        static_cast<int64_t>(dims.size()) == self.dim()) {
+        bool covers_all = true;
+        std::vector<bool> seen(static_cast<size_t>(self.dim()), false);
+        for (int64_t d : dims) {
+            const int64_t v = d < 0 ? d + self.dim() : d;
+            if (v < 0 || v >= self.dim() || seen[static_cast<size_t>(v)]) {
+                covers_all = false;
+                break;
+            }
+            seen[static_cast<size_t>(v)] = true;
+        }
+        if (covers_all) {
+            Tensor result = norm_kernel_impl(self, p);
+            if (keepdim) {
+                result = result.reshape(
+                    std::vector<int64_t>(static_cast<size_t>(self.dim()), 1));
+            }
+            return result;
+        }
+    }
+
+    // An L2 norm that folds a trailing block of a contiguous real tensor is
+    // one independent stream per row: each row walks the wide sum-of-squares
+    // pass and takes a single square root, while a pass per reduced dimension
+    // reaches only a fraction of that rate.
     const int64_t nd = self.dim();
     if (p == 2.0 && self.is_contiguous() && self.numel() > 0 && nd >= 1 &&
-        dims.size() == 1 &&
+        !dims.empty() &&
         (self.dtype() == DType::Float32 || self.dtype() == DType::Float64)) {
-        int64_t d = dims[0];
-        if (d < 0) d += nd;
-        if (d == nd - 1) {
-            const int64_t row = self.size(nd - 1);
-            const int64_t outer = self.numel() / row;
+        int64_t first = nd;
+        bool trailing = true;
+        for (int64_t d : dims) {
+            const int64_t v = d < 0 ? d + nd : d;
+            if (v < 0 || v >= nd) {
+                trailing = false;
+                break;
+            }
+            first = std::min(first, v);
+        }
+        if (trailing) {
+            // The reduced axes must be exactly the trailing block, each one
+            // named once; a gap would fold more elements than were asked for.
+            if (static_cast<int64_t>(dims.size()) != nd - first) {
+                trailing = false;
+            } else {
+                std::vector<bool> seen(static_cast<size_t>(nd), false);
+                for (int64_t d : dims) {
+                    const int64_t v = d < 0 ? d + nd : d;
+                    if (v < first || seen[static_cast<size_t>(v)]) {
+                        trailing = false;
+                        break;
+                    }
+                    seen[static_cast<size_t>(v)] = true;
+                }
+            }
+        }
+        if (trailing) {
+            int64_t row = 1;
+            for (int64_t d = first; d < nd; ++d) row *= self.size(d);
+            const int64_t outer = row > 0 ? self.numel() / row : 0;
             const int64_t row_grain =
                 std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(row, 1));
             Tensor out = Tensor::empty(compute_reduction_shape(self, dims, keepdim),
