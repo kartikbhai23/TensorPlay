@@ -5348,6 +5348,64 @@ inline void fold_step_rows(const ctype* data, int64_t run, int64_t begin,
     }
 }
 
+#if defined(CPU_CAPABILITY_AVX2)
+// Four rows of a short run answered together: each value is folded to its own
+// halves, the four are transposed so that one row's lanes meet in one lane, and
+// the four answers leave as one store.  A row's remaining lanes are read with
+// the lanes past the run already replaced by the identity, so no scalar walk
+// over the lanes is needed.
+template <bool WantMax>
+inline void store_four_float(const Vectorized<float>& u0,
+                             const Vectorized<float>& u1,
+                             const Vectorized<float>& u2,
+                             const Vectorized<float>& u3, float* out) {
+    auto pair = [](const __m256& a, const __m256& b) {
+        return WantMax ? _mm256_max_ps(a, b) : _mm256_min_ps(a, b);
+    };
+    const __m256 long0 = pair(u0, _mm256_permute2f128_ps(u0, u0, 0x1));
+    const __m256 long1 = pair(u1, _mm256_permute2f128_ps(u1, u1, 0x1));
+    const __m256 long2 = pair(u2, _mm256_permute2f128_ps(u2, u2, 0x1));
+    const __m256 long3 = pair(u3, _mm256_permute2f128_ps(u3, u3, 0x1));
+    const __m128 h0 = _mm256_castps256_ps128(long0);
+    const __m128 h1 = _mm256_castps256_ps128(long1);
+    const __m128 h2 = _mm256_castps256_ps128(long2);
+    const __m128 h3 = _mm256_castps256_ps128(long3);
+    auto pair_half = [](const __m128& a, const __m128& b) {
+        return WantMax ? _mm_max_ps(a, b) : _mm_min_ps(a, b);
+    };
+    const __m128 lo01 = _mm_unpacklo_ps(h0, h1);
+    const __m128 hi01 = _mm_unpackhi_ps(h0, h1);
+    const __m128 lo23 = _mm_unpacklo_ps(h2, h3);
+    const __m128 hi23 = _mm_unpackhi_ps(h2, h3);
+    const __m128 s0 = _mm_movelh_ps(lo01, lo23);
+    const __m128 s1 = _mm_movehl_ps(lo23, lo01);
+    const __m128 s2 = _mm_movelh_ps(hi01, hi23);
+    const __m128 s3 = _mm_movehl_ps(hi23, hi01);
+    _mm_storeu_ps(out, pair_half(pair_half(s0, s1), pair_half(s2, s3)));
+}
+
+template <bool WantMax>
+inline void store_four_double(const Vectorized<double>& u0,
+                              const Vectorized<double>& u1,
+                              const Vectorized<double>& u2,
+                              const Vectorized<double>& u3, double* out) {
+    auto pair = [](const __m256d& a, const __m256d& b) {
+        return WantMax ? _mm256_max_pd(a, b) : _mm256_min_pd(a, b);
+    };
+    const __m256d long0 = pair(u0, _mm256_permute2f128_pd(u0, u0, 0x1));
+    const __m256d long1 = pair(u1, _mm256_permute2f128_pd(u1, u1, 0x1));
+    const __m256d long2 = pair(u2, _mm256_permute2f128_pd(u2, u2, 0x1));
+    const __m256d long3 = pair(u3, _mm256_permute2f128_pd(u3, u3, 0x1));
+    const __m256d s0 = _mm256_permute2f128_pd(
+        _mm256_unpacklo_pd(long0, long1), _mm256_unpacklo_pd(long2, long3),
+        0x20);
+    const __m256d s1 = _mm256_permute2f128_pd(
+        _mm256_unpackhi_pd(long0, long1), _mm256_unpackhi_pd(long2, long3),
+        0x20);
+    _mm256_storeu_pd(out, pair(s0, s1));
+}
+#endif
+
 template <typename ctype, bool WantMax>
 inline void fold_short_rows(const ctype* data, int64_t run, int64_t begin,
                             int64_t end, ctype* out, int64_t last_row) {
@@ -5358,6 +5416,26 @@ inline void fold_short_rows(const ctype* data, int64_t run, int64_t begin,
         return;
     }
     const Vec identity(extrema_identity<ctype>(WantMax));
+    // The lanes of a row that its run does not fill are replaced by the
+    // identity: only the tensor's own last row needs a copy to read, and every
+    // other row would otherwise read the next row's values.
+    const int64_t tail = run - (run / lanes) * lanes;
+    alignas(64) unsigned char tail_bits[lanes * sizeof(ctype)];
+    std::memset(tail_bits, 0, sizeof(tail_bits));
+    std::memset(tail_bits, 0xFF, static_cast<size_t>(tail) * sizeof(ctype));
+    const Vec tail_keep =
+        Vec::loadu(reinterpret_cast<const ctype*>(tail_bits));
+    const int64_t tail_at = run - tail;
+    auto load_tail = [&](const ctype* p, bool pad) {
+        if (!pad) return Vec::blendv(identity, Vec::loadu(p + tail_at),
+                                     tail_keep);
+        alignas(64) ctype copy[lanes];
+        for (int64_t k = 0; k < tail; ++k) copy[k] = p[tail_at + k];
+        for (int64_t k = tail; k < lanes; ++k) {
+            copy[k] = static_cast<ctype>(extrema_identity<ctype>(WantMax));
+        }
+        return Vec::loadu(copy);
+    };
     int64_t r = begin;
     for (; r + 4 <= end; r += 4) {
         const ctype* p0 = data + (r + 0) * run;
@@ -5384,21 +5462,50 @@ inline void fold_short_rows(const ctype* data, int64_t run, int64_t begin,
             a1 = extremum_vec_nan<WantMax>(a1, Vec::loadu(p1 + i));
             a2 = extremum_vec_nan<WantMax>(a2, Vec::loadu(p2 + i));
             a3 = extremum_vec_nan<WantMax>(a3, Vec::loadu(p3 + i));
-            i += lanes;
         }
-        out[r + 0] = short_row_horizontal<ctype, WantMax>(
-            extremum_vec_nan<WantMax>(a0, b0), p0, i, run);
-        out[r + 1] = short_row_horizontal<ctype, WantMax>(
-            extremum_vec_nan<WantMax>(a1, b1), p1, i, run);
-        out[r + 2] = short_row_horizontal<ctype, WantMax>(
-            extremum_vec_nan<WantMax>(a2, b2), p2, i, run);
-        out[r + 3] = short_row_horizontal<ctype, WantMax>(
-            extremum_vec_nan<WantMax>(a3, b3), p3, i, run);
+        Vec v0 = extremum_vec_nan<WantMax>(a0, b0);
+        Vec v1 = extremum_vec_nan<WantMax>(a1, b1);
+        Vec v2 = extremum_vec_nan<WantMax>(a2, b2);
+        Vec v3 = extremum_vec_nan<WantMax>(a3, b3);
+        if (tail > 0) {
+            v0 = extremum_vec_nan<WantMax>(v0, load_tail(p0, r + 0 == last_row));
+            v1 = extremum_vec_nan<WantMax>(v1, load_tail(p1, r + 1 == last_row));
+            v2 = extremum_vec_nan<WantMax>(v2, load_tail(p2, r + 2 == last_row));
+            v3 = extremum_vec_nan<WantMax>(v3, load_tail(p3, r + 3 == last_row));
+        }
+#if defined(CPU_CAPABILITY_AVX2)
+        if constexpr (std::is_same_v<ctype, float> ||
+                      std::is_same_v<ctype, double>) {
+            if ((nan_lanes(v0) | nan_lanes(v1) | nan_lanes(v2) | nan_lanes(v3)) ==
+                0) {
+                if constexpr (std::is_same_v<ctype, float>) {
+                    store_four_float<WantMax>(v0, v1, v2, v3, out + r);
+                } else {
+                    store_four_double<WantMax>(v0, v1, v2, v3, out + r);
+                }
+                continue;
+            }
+        }
+#endif
+        out[r + 0] = short_row_horizontal<ctype, WantMax>(v0, p0, run, run);
+        out[r + 1] = short_row_horizontal<ctype, WantMax>(v1, p1, run, run);
+        out[r + 2] = short_row_horizontal<ctype, WantMax>(v2, p2, run, run);
+        out[r + 3] = short_row_horizontal<ctype, WantMax>(v3, p3, run, run);
     }
     for (; r < end; ++r) {
-        out[r] = WantMax
-            ? fold_run_extremum_short<ctype, true>(data + r * run, run)
-            : fold_run_extremum_short<ctype, false>(data + r * run, run);
+        const ctype* p = data + r * run;
+        Vec a = identity, b = identity;
+        int64_t i = 0;
+        for (; i + 2 * lanes <= run; i += 2 * lanes) {
+            a = extremum_vec_nan<WantMax>(a, Vec::loadu(p + i));
+            b = extremum_vec_nan<WantMax>(b, Vec::loadu(p + i + lanes));
+        }
+        if (i + lanes <= run) {
+            a = extremum_vec_nan<WantMax>(a, Vec::loadu(p + i));
+        }
+        Vec v = extremum_vec_nan<WantMax>(a, b);
+        if (tail > 0) v = extremum_vec_nan<WantMax>(v, load_tail(p, r == last_row));
+        out[r] = short_row_horizontal<ctype, WantMax>(v, p, run, run);
     }
 }
 
