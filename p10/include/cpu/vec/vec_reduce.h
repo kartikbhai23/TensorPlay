@@ -327,6 +327,33 @@ inline T sum_of_squares(const T* x, int64_t begin, int64_t end) {
   return s;
 }
 
+// Streams the sum of magnitudes over x[begin, end) through four independent
+// accumulators and one horizontal fold.
+template <typename T>
+inline T sum_of_abs(const T* x, int64_t begin, int64_t end) {
+  using Vec = Vectorized<T>;
+  constexpr int64_t W = static_cast<int64_t>(Vec::size());
+  const int64_t n = end - begin;
+  if (n < 4 * W) {
+    T s = T(0);
+    for (int64_t i = begin; i < end; ++i) s += std::abs(x[i]);
+    return s;
+  }
+  Vec a0(T(0)), a1(T(0)), a2(T(0)), a3(T(0));
+  int64_t i = begin;
+  for (; i + 4 * W <= end; i += 4 * W) {
+    a0 = a0 + Vec::loadu(x + i).abs();
+    a1 = a1 + Vec::loadu(x + i + W).abs();
+    a2 = a2 + Vec::loadu(x + i + 2 * W).abs();
+    a3 = a3 + Vec::loadu(x + i + 3 * W).abs();
+  }
+  Vec tail = (a0 + a1) + (a2 + a3);
+  for (; i + W <= end; i += W) tail = tail + Vec::loadu(x + i).abs();
+  T s = tail.reduce_add();
+  for (; i < end; ++i) s += std::abs(x[i]);
+  return s;
+}
+
 // Folds one contiguous row down to (extremum, first index carrying it).  A
 // NaN wins immediately and reports its own position; equal candidates keep
 // the earliest position.  Float rows carry 32-bit lane indices and double

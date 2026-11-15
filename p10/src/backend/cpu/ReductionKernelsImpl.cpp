@@ -310,6 +310,53 @@ float sumsq_bf16_chunk(const uint16_t* x, int64_t b, int64_t e) {
     return s;
 }
 
+// The magnitudes of a contiguous reduced-width buffer summed in single
+// precision, four chains of lanes in flight.
+template <bool BFloat>
+__attribute__((target("avx2,fma,f16c"), noinline))
+float sum_abs_reduced_chunk(const uint16_t* x, int64_t b, int64_t e) {
+    const __m256 sign = _mm256_set1_ps(-0.0f);
+    __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
+    __m256 a2 = _mm256_setzero_ps(), a3 = _mm256_setzero_ps();
+    int64_t i = b;
+    for (; i + 32 <= e; i += 32) {
+        const __m256 v0 = BFloat
+            ? tensorplay::cpu::vecreduced::widen_bf16_8(x + i)
+            : tensorplay::cpu::vecreduced::widen8(x + i);
+        const __m256 v1 = BFloat
+            ? tensorplay::cpu::vecreduced::widen_bf16_8(x + i + 8)
+            : tensorplay::cpu::vecreduced::widen8(x + i + 8);
+        const __m256 v2 = BFloat
+            ? tensorplay::cpu::vecreduced::widen_bf16_8(x + i + 16)
+            : tensorplay::cpu::vecreduced::widen8(x + i + 16);
+        const __m256 v3 = BFloat
+            ? tensorplay::cpu::vecreduced::widen_bf16_8(x + i + 24)
+            : tensorplay::cpu::vecreduced::widen8(x + i + 24);
+        a0 = _mm256_add_ps(a0, _mm256_andnot_ps(sign, v0));
+        a1 = _mm256_add_ps(a1, _mm256_andnot_ps(sign, v1));
+        a2 = _mm256_add_ps(a2, _mm256_andnot_ps(sign, v2));
+        a3 = _mm256_add_ps(a3, _mm256_andnot_ps(sign, v3));
+    }
+    __m256 acc = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+    for (; i + 8 <= e; i += 8) {
+        const __m256 v = BFloat
+            ? tensorplay::cpu::vecreduced::widen_bf16_8(x + i)
+            : tensorplay::cpu::vecreduced::widen8(x + i);
+        acc = _mm256_add_ps(acc, _mm256_andnot_ps(sign, v));
+    }
+    alignas(32) float lanes[8];
+    _mm256_store_ps(lanes, acc);
+    float s = ((lanes[0] + lanes[1]) + (lanes[2] + lanes[3])) +
+              ((lanes[4] + lanes[5]) + (lanes[6] + lanes[7]));
+    for (; i < e; ++i) {
+        const float v = BFloat
+            ? tensorplay::cpu::vecreduced::widen_bf16_one(x[i])
+            : tensorplay::cpu::vecreduced::widen_one(x[i]);
+        s += std::abs(v);
+    }
+    return s;
+}
+
 // The squares of a contiguous reduced-width buffer, one slot per worker.
 inline bool normsq_reduced(const void* xv, int64_t n, DType dt, int64_t nslots,
                            double* out) {
@@ -421,7 +468,7 @@ inline bool reduced_sum_takes(DType dt) {
 }
 
 // How a thin row of packed values folds down to its one answer.
-enum class ThinRowFold { Sum, Product, TwoNorm };
+enum class ThinRowFold { Sum, AbsSum, Product, TwoNorm };
 
 // A last axis narrower than one step: a whole block of rows is widened into a
 // float scratch at once, so the crossings are a streaming walk rather than a
@@ -458,8 +505,10 @@ void fold_thin_rows(const uint16_t* in, int64_t rows, int64_t run,
             for (int64_t k = 0; k < run; ++k) {
                 value = Fold == ThinRowFold::Product
                     ? value * rp[k]
-                    : Fold == ThinRowFold::TwoNorm ? value + rp[k] * rp[k]
-                                                   : value + rp[k];
+                    : Fold == ThinRowFold::TwoNorm
+                        ? value + rp[k] * rp[k]
+                        : Fold == ThinRowFold::AbsSum ? value + std::abs(rp[k])
+                                                      : value + rp[k];
             }
             const float answer =
                 Fold == ThinRowFold::TwoNorm ? std::sqrt(value) : value;
@@ -1320,8 +1369,8 @@ Tensor norm_dim_kernel_impl(const Tensor& self,
         self.dtype() == DType::BFloat16 ||
         (self.dtype() == DType::Float16 &&
          tensorplay::cpu::vecreduced::f16c_available());
-    if (p == 2.0 && self.is_contiguous() && self.numel() > 0 && nd >= 1 &&
-        !dims.empty() &&
+    if ((p == 1.0 || p == 2.0) && self.is_contiguous() && self.numel() > 0 &&
+        nd >= 1 && !dims.empty() &&
         (self.dtype() == DType::Float32 || self.dtype() == DType::Float64 ||
          reduced_fast)) {
         int64_t first = nd;
@@ -1369,15 +1418,23 @@ Tensor norm_dim_kernel_impl(const Tensor& self,
                     out.data_ptr<tensorplay::Half>());
                 if (row < 16) {
                     parallel_for(0, outer, row_grain, [&](int64_t b, int64_t e) {
-                        fold_thin_rows<false, ThinRowFold::TwoNorm>(
-                            in + b * row, e - b, row, op + b);
+                        if (p == 2.0) {
+                            fold_thin_rows<false, ThinRowFold::TwoNorm>(
+                                in + b * row, e - b, row, op + b);
+                        } else {
+                            fold_thin_rows<false, ThinRowFold::AbsSum>(
+                                in + b * row, e - b, row, op + b);
+                        }
                     });
                     return out;
                 }
                 parallel_for(0, outer, row_grain, [&](int64_t b, int64_t e) {
-                    for (int64_t r = b; r < e; ++r)
-                        op[r] = tensorplay::cpu::vecreduced::narrow_one_hw(
-                            std::sqrt(sumsq_f16_chunk(in + r * row, 0, row)));
+                    for (int64_t r = b; r < e; ++r) {
+                        const float value = p == 2.0
+                            ? std::sqrt(sumsq_f16_chunk(in + r * row, 0, row))
+                            : sum_abs_reduced_chunk<false>(in + r * row, 0, row);
+                        op[r] = tensorplay::cpu::vecreduced::narrow_one_hw(value);
+                    }
                 });
                 return out;
             }
@@ -1388,15 +1445,23 @@ Tensor norm_dim_kernel_impl(const Tensor& self,
                     out.data_ptr<tensorplay::BFloat16>());
                 if (row < 16) {
                     parallel_for(0, outer, row_grain, [&](int64_t b, int64_t e) {
-                        fold_thin_rows<true, ThinRowFold::TwoNorm>(
-                            in + b * row, e - b, row, op + b);
+                        if (p == 2.0) {
+                            fold_thin_rows<true, ThinRowFold::TwoNorm>(
+                                in + b * row, e - b, row, op + b);
+                        } else {
+                            fold_thin_rows<true, ThinRowFold::AbsSum>(
+                                in + b * row, e - b, row, op + b);
+                        }
                     });
                     return out;
                 }
                 parallel_for(0, outer, row_grain, [&](int64_t b, int64_t e) {
-                    for (int64_t r = b; r < e; ++r)
-                        op[r] = tensorplay::cpu::vecreduced::narrow_bf16_one(
-                            std::sqrt(sumsq_bf16_chunk(in + r * row, 0, row)));
+                    for (int64_t r = b; r < e; ++r) {
+                        const float value = p == 2.0
+                            ? std::sqrt(sumsq_bf16_chunk(in + r * row, 0, row))
+                            : sum_abs_reduced_chunk<true>(in + r * row, 0, row);
+                        op[r] = tensorplay::cpu::vecreduced::narrow_bf16_one(value);
+                    }
                 });
                 return out;
             }
@@ -1405,15 +1470,21 @@ Tensor norm_dim_kernel_impl(const Tensor& self,
                 const float* in = self.data_ptr<float>();
                 float* op = out.data_ptr<float>();
                 parallel_for(0, outer, row_grain, [&](int64_t b, int64_t e) {
-                    for (int64_t r = b; r < e; ++r)
-                        op[r] = std::sqrt(vec::sum_of_squares(in + r * row, 0, row));
+                    for (int64_t r = b; r < e; ++r) {
+                        op[r] = p == 2.0
+                            ? std::sqrt(vec::sum_of_squares(in + r * row, 0, row))
+                            : vec::sum_of_abs(in + r * row, 0, row);
+                    }
                 });
             } else {
                 const double* in = self.data_ptr<double>();
                 double* op = out.data_ptr<double>();
                 parallel_for(0, outer, row_grain, [&](int64_t b, int64_t e) {
-                    for (int64_t r = b; r < e; ++r)
-                        op[r] = std::sqrt(vec::sum_of_squares(in + r * row, 0, row));
+                    for (int64_t r = b; r < e; ++r) {
+                        op[r] = p == 2.0
+                            ? std::sqrt(vec::sum_of_squares(in + r * row, 0, row))
+                            : vec::sum_of_abs(in + r * row, 0, row);
+                    }
                 });
             }
             return out;
