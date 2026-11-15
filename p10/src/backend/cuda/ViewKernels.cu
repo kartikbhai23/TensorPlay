@@ -48,6 +48,52 @@ inline int64_t checked_shape_add(int64_t lhs, int64_t rhs, const char* op) {
     return lhs + rhs;
 }
 
+struct StackPointers {
+    const void* inputs[32];
+};
+
+template <typename T>
+__global__ void stack_last_small_kernel(StackPointers pointers, T* out,
+                                        int64_t total, int count) {
+    int64_t index = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index < total) {
+        const T* input = static_cast<const T*>(pointers.inputs[index % count]);
+        out[index] = input[index / count];
+    }
+}
+
+bool stack_last_small(const std::vector<Tensor>& tensors, int64_t dim,
+                      const std::vector<int64_t>& shape, Tensor& out) {
+    const Tensor& first = tensors[0];
+    if (dim != first.dim() || tensors.size() < 9 || tensors.size() > 32 ||
+        first.numel() == 0 || first.numel() > 4096 || first.is_sparse() ||
+        isComplexType(first.dtype()) || isQuantizedType(first.dtype())) return false;
+    const auto itemsize = first.itemsize();
+    if (itemsize != 1 && itemsize != 2 && itemsize != 4 && itemsize != 8) return false;
+    StackPointers pointers{};
+    for (size_t i = 0; i < tensors.size(); ++i) {
+        const Tensor& t = tensors[i];
+        if (!t.defined() || t.device() != first.device() || t.dtype() != first.dtype() ||
+            t.is_sparse() || !t.is_contiguous()) return false;
+        pointers.inputs[i] = t.data_ptr();
+    }
+    std::vector<int64_t> out_shape = shape;
+    out_shape.push_back(static_cast<int64_t>(tensors.size()));
+    out = Tensor::empty(out_shape, first.dtype(), first.device());
+    const int count = static_cast<int>(tensors.size());
+    const int64_t total = first.numel() * count;
+    const unsigned blocks = static_cast<unsigned>((total + 255) / 256);
+    const auto stream = getCurrentCUDAStream().stream();
+    switch (itemsize) {
+        case 1: stack_last_small_kernel<uint8_t><<<blocks, 256, 0, stream>>>(pointers, static_cast<uint8_t*>(out.data_ptr()), total, count); break;
+        case 2: stack_last_small_kernel<uint16_t><<<blocks, 256, 0, stream>>>(pointers, static_cast<uint16_t*>(out.data_ptr()), total, count); break;
+        case 4: stack_last_small_kernel<uint32_t><<<blocks, 256, 0, stream>>>(pointers, static_cast<uint32_t*>(out.data_ptr()), total, count); break;
+        case 8: stack_last_small_kernel<uint64_t><<<blocks, 256, 0, stream>>>(pointers, static_cast<uint64_t*>(out.data_ptr()), total, count); break;
+    }
+    checkCuda(cudaGetLastError(), "stack: copy");
+    return true;
+}
+
 bool stack_scalar_fast_path(const std::vector<Tensor>& tensors, Tensor& out) {
     if (tensors.empty() || tensors.front().dim() != 0 ||
         tensors.front().is_sparse() || !tensors.front().is_contiguous() ||
@@ -1171,6 +1217,15 @@ Tensor stack_kernel_cuda(const std::vector<Tensor>& tensors, int64_t dim) {
                      join_detail::fmt_sizes(entry_shape), " at entry 0 and ",
                      join_detail::fmt_sizes(sh), " at entry ", i);
         }
+    }
+
+    Tensor small_result;
+    if (stack_last_small(tensors, dim, entry_shape, small_result)) return small_result;
+
+    if (dim < ndim && !tensors[0].is_sparse()) {
+        std::vector<int64_t> result_shape = entry_shape;
+        result_shape.insert(result_shape.begin() + dim, static_cast<int64_t>(tensors.size()));
+        return cat_kernel_cuda(tensors, dim).view(result_shape);
     }
 
     std::vector<Tensor> unsqueezed;
