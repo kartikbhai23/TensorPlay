@@ -4595,6 +4595,66 @@ Tensor sum_kernel_impl(const Tensor& self, DType dtype) {
     return acc_dtype == out_dtype ? out : out.to(out_dtype);
 }
 
+// A tensor that lies dense in memory in an order other than the one its shape
+// gives -- a transpose, a permuted view -- is the same buffer read in another
+// order.  The axes are put in the order their strides give, which is the dense
+// order, the reduced axes are named there, and the answer is taken back to the
+// order that was asked for.  The walk then runs on a dense tensor, where every
+// fold below asks to be, instead of one element at a time through the strides.
+// The reduced axes are kept while the walk runs and dropped afterwards, so the
+// shape bookkeeping is one permutation of the answer either way.
+template <typename Run>
+inline std::optional<Tensor> review_permuted_reduction(
+        const Tensor& self, const std::vector<int64_t>& dims, bool keepdim,
+        Run&& run) {
+    const int64_t ndim = self.dim();
+    if (ndim < 2 || self.is_contiguous()) return std::nullopt;
+    if (self.numel() == 0) return std::nullopt;
+    const std::vector<int64_t> stride =
+        static_cast<std::vector<int64_t>>(self.strides());
+    std::vector<int64_t> order(static_cast<size_t>(ndim));
+    for (int64_t i = 0; i < ndim; ++i) {
+        order[static_cast<size_t>(i)] = i;
+    }
+    std::stable_sort(order.begin(), order.end(),
+                     [&](int64_t a, int64_t b) { return stride[a] > stride[b]; });
+    Tensor dense = self.permute(order);
+    if (!dense.is_contiguous()) return std::nullopt;
+
+    std::vector<int64_t> place(static_cast<size_t>(ndim), 0);
+    for (int64_t k = 0; k < ndim; ++k) {
+        place[static_cast<size_t>(order[static_cast<size_t>(k)])] = k;
+    }
+    std::vector<bool> reduced(static_cast<size_t>(ndim), false);
+    std::vector<int64_t> dense_dims;
+    for (int64_t d : dims) {
+        int64_t rank = d < 0 ? d + ndim : d;
+        if (rank < 0 || rank >= ndim || reduced[static_cast<size_t>(rank)]) {
+            return std::nullopt;
+        }
+        reduced[static_cast<size_t>(rank)] = true;
+        dense_dims.push_back(place[static_cast<size_t>(rank)]);
+    }
+    if (dense_dims.empty()) return std::nullopt;
+
+    Tensor held = run(dense, dense_dims);
+    std::vector<int64_t> back_order(static_cast<size_t>(ndim), 0);
+    for (int64_t k = 0; k < ndim; ++k) {
+        back_order[static_cast<size_t>(order[static_cast<size_t>(k)])] = k;
+    }
+    Tensor back = held.permute(back_order);
+    if (!keepdim) {
+        std::vector<int64_t> shape;
+        for (int64_t i = 0; i < ndim; ++i) {
+            if (!reduced[static_cast<size_t>(i)]) {
+                shape.push_back(self.size(i));
+            }
+        }
+        back = back.reshape(shape);
+    }
+    return back.contiguous();
+}
+
 Tensor sum_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims, bool keepdim, DType dtype) {
     DType out_dtype = dtype;
     if (out_dtype == DType::Undefined) {
@@ -4606,6 +4666,14 @@ Tensor sum_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims,
 
     if (dims.empty()) {
         return sum_kernel_impl(self, dtype);
+    }
+
+    if (std::optional<Tensor> permuted = review_permuted_reduction(
+            self, dims, keepdim,
+            [&](const Tensor& dense, const std::vector<int64_t>& dense_dims) {
+                return sum_dim_kernel_impl(dense, dense_dims, true, dtype);
+            })) {
+        return std::move(*permuted);
     }
 
     if (self.dim() == 0) {
@@ -7135,6 +7203,15 @@ bool fold_narrow_extrema(Tensor& result, const Tensor& self, int64_t ndim,
 
 Tensor extrema_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims,
                               bool keepdim, bool maximum_value) {
+    if (std::optional<Tensor> permuted = review_permuted_reduction(
+            self, dims, keepdim,
+            [&](const Tensor& dense, const std::vector<int64_t>& dense_dims) {
+                return extrema_dim_kernel_impl(dense, dense_dims, true,
+                                               maximum_value);
+            })) {
+        return std::move(*permuted);
+    }
+
     const int64_t ndim = self.dim();
     std::vector<bool> mask(ndim, false);
     std::vector<int64_t> resolved;
@@ -7984,6 +8061,14 @@ inline bool product_narrow_dim(const Tensor& input, Tensor& out, int64_t outer,
 }
 
 Tensor prod_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims, bool keepdim, DType dtype) {
+    if (std::optional<Tensor> permuted = review_permuted_reduction(
+            self, dims, keepdim,
+            [&](const Tensor& dense, const std::vector<int64_t>& dense_dims) {
+                return prod_dim_kernel_impl(dense, dense_dims, true, dtype);
+            })) {
+        return std::move(*permuted);
+    }
+
     DType out_dtype = dtype;
     if (out_dtype == DType::Undefined) {
          out_dtype = self.dtype();
