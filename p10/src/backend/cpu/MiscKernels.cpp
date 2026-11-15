@@ -752,13 +752,13 @@ std::tuple<Tensor, Tensor> native_feature_dropout_cpu(const Tensor& input, doubl
         static_cast<std::vector<int64_t>>(input.shape());
     for (int64_t d = 2; d < input.dim(); ++d) mask_shape[d] = 1;
     Tensor mask = bernoulli_mask(input, mask_shape, 1.0 - p);
-    Tensor out = input.mul(mask).div(1.0 - p);
+    Tensor out = input.mul(mask.to(input.dtype())).div(1.0 - p);
     return {std::move(out), std::move(mask)};
 }
 
 Tensor feature_dropout_backward_cpu(const Tensor& grad, const Tensor& mask,
                                     double p) {
-    return grad.mul(mask).div(1.0 - p);
+    return grad.mul(mask.to(grad.dtype())).div(1.0 - p);
 }
 
 

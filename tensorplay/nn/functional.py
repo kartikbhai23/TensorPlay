@@ -361,17 +361,11 @@ def dropout2d(input, p=0.5, training=True, inplace=False):
     if p == 1:
         result = _C.zeros_like(input)
         return input.copy_(result) if inplace else result
-         
-    shape = list(input.shape)
-    shape[2:] = [1] * (input.dim() - 2)
-    
-    mask = (_C.rand(shape, device=input.device) > p).to(input.dtype)
-    scale = 1.0 / (1.0 - p)
-    
+
+    result, _mask = _C.native_feature_dropout(input, p)
     if inplace:
-        return input.mul_(mask).mul_(scale)
-    else:
-        return input * mask * scale
+        return input.copy_(result)
+    return result
 
 def dropout3d(input, p=0.5, training=True, inplace=False):
     return dropout2d(input, p, training, inplace)
@@ -1966,18 +1960,11 @@ def dropout1d(
     is_batched = inp_dim == 3
     x = input if is_batched else input.unsqueeze(0)
 
-    mask_shape = list(x.shape)
-    mask_shape[2:] = [1] * (x.dim() - 2)
-    mask = (_C.rand(mask_shape, device=x.device) > p).to(x.dtype)
-    scale = 1.0 / (1.0 - p)
-
-    if inplace:
-        result = x.mul_(mask).mul_(scale)
-    else:
-        result = x * mask * scale
-
+    result, _mask = _C.native_feature_dropout(x, p)
     if not is_batched:
         result = result.squeeze(0)
+    if inplace:
+        return input.copy_(result)
     return result
 
 

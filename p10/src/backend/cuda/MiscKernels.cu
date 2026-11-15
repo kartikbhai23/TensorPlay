@@ -824,9 +824,9 @@ Tensor native_dropout_double_backward_cuda(const Tensor& ggI, const Tensor& grad
 
 
 // ---------------------------------------------------------------------------
-// Alpha / feature dropout (CUDA) — same dispatcher-composite shape as the
-// CPU side: bernoulli_ noise via the registered RNG kernel, affine math via
-// dispatched mul/add. bernoulli_/mul/div redispatch to their CUDA kernels.
+// Alpha / feature dropout (CUDA). Bernoulli noise comes from the registered
+// RNG kernel. Feature dropout applies the small channel mask in one fused
+// pass; alpha dropout stays a dispatcher composite (mul/add redispatch).
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -846,6 +846,108 @@ Tensor bernoulli_mask_cuda(const Tensor& input,
                                 input.device());
     noise.bernoulli_(keep_prob, std::nullopt);
     return noise;
+}
+
+// Channel-mask apply: every (n, c) plane holds one weight that the `inner`
+// trailing elements share, so the walk touches each input element once and
+// writes one output element. The mask is small and stays resident in cache.
+template <typename scalar_t, typename acc_t>
+__global__ void feature_dropout_apply_kernel(int64_t n, int64_t inner,
+                                             acc_t scale, const scalar_t* in,
+                                             const float* mask, scalar_t* out) {
+    const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const int64_t total = static_cast<int64_t>(blockDim.x) * gridDim.x;
+    for (int64_t i = idx; i < n; i += total) {
+        const acc_t w = static_cast<acc_t>(mask[i / inner]) * scale;
+        out[i] = static_cast<scalar_t>(static_cast<acc_t>(in[i]) * w);
+    }
+}
+
+// 4-wide path: `inner` must be a multiple of 4 so a group shares one weight.
+__global__ void feature_dropout_apply_kernel_vec4(int64_t nvec,
+                                                  int64_t inner_vec, float scale,
+                                                  const float4* in,
+                                                  const float* mask,
+                                                  float4* out) {
+    const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const int64_t total = static_cast<int64_t>(blockDim.x) * gridDim.x;
+    for (int64_t i = idx; i < nvec; i += total) {
+        const float w = mask[i / inner_vec] * scale;
+        float4 v = in[i];
+        v.x *= w;
+        v.y *= w;
+        v.z *= w;
+        v.w *= w;
+        out[i] = v;
+    }
+}
+
+// Fused out = in * mask[broadcast over trailing dims] * scale. Returns an
+// unset tensor when the layout or dtype cannot take the fused path; callers
+// then fall back to the broadcast composite.
+std::optional<Tensor> feature_dropout_apply(const Tensor& input,
+                                            const Tensor& mask, double scale) {
+    const int64_t n = input.numel();
+    const int64_t mask_numel = mask.numel();
+    if (!input.is_contiguous() || !mask.is_contiguous() ||
+        mask.dtype() != DType::Float32 || mask_numel == 0 ||
+        n % mask_numel != 0) {
+        return std::nullopt;
+    }
+    const DType dtype = input.dtype();
+    if (dtype != DType::Float32 && dtype != DType::Float64 &&
+        dtype != DType::Float16 && dtype != DType::BFloat16) {
+        return std::nullopt;
+    }
+    Tensor out(static_cast<std::vector<int64_t>>(input.shape()), dtype,
+               input.device());
+    if (n == 0) return out;
+    const int64_t inner = n / mask_numel;
+    dim3 block(kDropoutBlockSize);
+    auto check = [] {
+        cudaError_t error = cudaGetLastError();
+        if (error != cudaSuccess) {
+            TP_THROW(RuntimeError,
+                     std::string("CUDA Error: ") + cudaGetErrorString(error));
+        }
+    };
+
+    if (dtype == DType::Float32 && inner % 4 == 0 &&
+        (reinterpret_cast<uintptr_t>(input.data_ptr()) & 0xf) == 0) {
+        const int64_t nvec = n / 4;
+        dim3 grid(static_cast<uint32_t>(std::min<int64_t>(
+            (nvec + kDropoutBlockSize - 1) / kDropoutBlockSize,
+            std::numeric_limits<uint32_t>::max())));
+        feature_dropout_apply_kernel_vec4<<<grid, block, 0,
+                                            getCurrentCUDAStream().stream()>>>(
+            nvec, inner / 4, static_cast<float>(scale),
+            reinterpret_cast<const float4*>(input.data_ptr()),
+            mask.data_ptr<float>(), reinterpret_cast<float4*>(out.data_ptr()));
+        check();
+        return out;
+    }
+
+    dim3 grid(static_cast<uint32_t>(std::min<int64_t>(
+        (n + kDropoutBlockSize - 1) / kDropoutBlockSize,
+        std::numeric_limits<uint32_t>::max())));
+    auto launch = [&](auto type_tag, auto acc_tag) {
+        using scalar_t = decltype(type_tag);
+        using acc_t = decltype(acc_tag);
+        feature_dropout_apply_kernel<scalar_t, acc_t>
+            <<<grid, block, 0, getCurrentCUDAStream().stream()>>>(
+                n, inner, static_cast<acc_t>(scale),
+                input.data_ptr<scalar_t>(), mask.data_ptr<float>(),
+                out.data_ptr<scalar_t>());
+        check();
+    };
+    switch (dtype) {
+        case DType::Float32: launch(0.0f, 0.0f); break;
+        case DType::Float64: launch(0.0, 0.0); break;
+        case DType::Float16: launch(Half(0.0f), 0.0f); break;
+        case DType::BFloat16: launch(BFloat16(0.0f), 0.0f); break;
+        default: break;
+    }
+    return out;
 }
 
 } // anonymous namespace
@@ -878,14 +980,31 @@ std::tuple<Tensor, Tensor> native_feature_dropout_cuda(const Tensor& input, doub
     std::vector<int64_t> mask_shape =
         static_cast<std::vector<int64_t>>(input.shape());
     for (int64_t d = 2; d < input.dim(); ++d) mask_shape[d] = 1;
+    // No spatial dimension survives the mask, so every element is its own
+    // channel: the fully fused dropout draws, applies and saves the mask in
+    // one pass.
+    int64_t mask_numel = 1;
+    for (int64_t s : mask_shape) mask_numel *= s;
+    if (mask_numel == input.numel()) {
+        return native_dropout_cuda(input, p, std::nullopt);
+    }
     Tensor mask = bernoulli_mask_cuda(input, mask_shape, 1.0 - p);
-    Tensor out = input.mul(mask).div(1.0 - p);
+    if (auto fused = feature_dropout_apply(input, mask, 1.0 / (1.0 - p))) {
+        return {std::move(*fused), std::move(mask)};
+    }
+    Tensor out = input.mul(mask.to(input.dtype())).div(1.0 - p);
     return {std::move(out), std::move(mask)};
 }
 
 Tensor feature_dropout_backward_cuda(const Tensor& grad, const Tensor& mask,
                                      double p) {
-    return grad.mul(mask).div(1.0 - p);
+    if (mask.dtype() == DType::Bool) {
+        return native_dropout_backward_cuda(grad, mask, 1.0 / (1.0 - p));
+    }
+    if (auto fused = feature_dropout_apply(grad, mask, 1.0 / (1.0 - p))) {
+        return std::move(*fused);
+    }
+    return grad.mul(mask.to(grad.dtype())).div(1.0 - p);
 }
 
 
