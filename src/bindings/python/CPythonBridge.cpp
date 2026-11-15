@@ -1720,6 +1720,11 @@ bool seq_item_is_number(PyObject* o) {
 // For INT_LIST / FLOAT_LIST, a bare scalar folds to a singleton list;
 // otherwise tuple/list and tensorplay._C.Size containers are accepted.
 bool check_list(PyObject* obj, bool integral) {
+    // A tensor is not a list of numbers: it would be walked element by
+    // element, and each element read back from the device one round trip at a
+    // time.  A schema that wants a tensor spells the parameter as `Tensor`,
+    // which the overload above it already covers.
+    if (obj_is_tensor(obj)) return false;
     bool single = integral ? PyIndex_Check(obj) != 0 : seq_item_is_number(obj);
     if (single) return true;
     if (!PySequence_Check(obj)) return false;
