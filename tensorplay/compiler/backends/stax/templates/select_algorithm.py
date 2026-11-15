@@ -764,8 +764,15 @@ class ExternKernelChoice:
         name = name or getattr(kernel, "__name__", None)
         if not callable(kernel):
             raise AssertionError("an extern choice has to wrap something callable")
+        # The name a generated wrapper calls is the operation's packet rather
+        # than the plain function of the same name, because the call a wrapper
+        # writes may name where the result goes and only the packet answers
+        # that: `mm(a, b, out=c)` is a call of the form of `mm` that writes
+        # into `c`.  The plain function is what is measured, since it is the
+        # call a program writes.
+        bound = getattr(op_overload, "overloadpacket", None) or kernel
         existing = getattr(extern_kernels, name, None)
-        if existing is not None and existing is not kernel:
+        if existing is not None and existing is not bound:
             raise AssertionError(f"duplicate extern kernel: {name}")
         self.kernel = kernel
         self.name = name
@@ -776,7 +783,7 @@ class ExternKernelChoice:
         #: could be guessed wrong.
         self.cpp_kernel_name = cpp_kernel
         self.has_out_variant = has_out_variant
-        setattr(extern_kernels, name, kernel)
+        setattr(extern_kernels, name, bound)
         self.op_overload = op_overload
         self.use_fallback_kernel = use_fallback_kernel
         self.kernel_creator = kernel_creator
