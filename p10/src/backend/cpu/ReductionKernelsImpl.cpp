@@ -687,24 +687,91 @@ inline std::optional<Tensor> try_product_lastdim_reduced(
     return out;
 }
 
+// One step of eight packed values widened into single precision.  It is a free
+// function so that a caller keeping its own target attribute can reach it.
+template <bool BFloat>
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+__m256 widen_row8(const uint16_t* p) {
+    using tensorplay::cpu::vecreduced::widen8;
+    using tensorplay::cpu::vecreduced::widen_bf16_8;
+    return BFloat ? widen_bf16_8(p) : widen8(p);
+}
+
+// The product of a small group of rows, one band of eight columns at a time,
+// folded as a balanced tree.  A total that runs through a long column of
+// factors passes through the range a float cannot hold without losing
+// precision, and every multiply inside that range costs far more than a normal
+// one; folding a group first keeps the group's own products in the normal range
+// so the total crosses the range a group at a time.
+template <bool BFloat, int64_t Group>
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+__m256 fold_rows_hw(const uint16_t* p, int64_t cols) {
+    if constexpr (Group == 4) {
+        return _mm256_mul_ps(
+            _mm256_mul_ps(widen_row8<BFloat>(p), widen_row8<BFloat>(p + cols)),
+            _mm256_mul_ps(widen_row8<BFloat>(p + 2 * cols),
+                          widen_row8<BFloat>(p + 3 * cols)));
+    } else {
+        return _mm256_mul_ps(fold_rows_hw<BFloat, Group / 2>(p, cols),
+                             fold_rows_hw<BFloat, Group / 2>(
+                                 p + (Group / 2) * cols, cols));
+    }
+}
+
 // The leading axis of a packed tensor, multiplied a whole row into per-worker
 // column totals.
 template <bool BFloat>
 __attribute__((target("avx2,fma,f16c"), noinline))
 void multiply_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
                            int64_t cols, float* acc) {
-    for (int64_t r = begin; r < end; ++r) {
-        const uint16_t* rp = x + r * cols;
+    // A block of rows folds into the column totals while four bands of eight
+    // columns stay in registers, so the totals are read and written once per
+    // block rather than once per row.  Sixteen rows at a time are multiplied
+    // among themselves first and that product then folded into the total: over
+    // a long column of factors the running total must pass through the range
+    // a float carries without full precision, and each multiply made there
+    // costs far more than a normal one.  A tree leaves the group's own
+    // products in the normal range, so the total crosses that range a group of
+    // rows at a time, while a wider group would no longer pay for itself.
+    constexpr int64_t kFold = 16;
+    const int64_t rows = end - begin;
+    int64_t block = std::max<int64_t>(
+        kFold, 24576 / std::max<int64_t>(cols, 1));
+    block = std::min<int64_t>(block, rows);
+    for (int64_t r0 = begin; r0 < end; r0 += block) {
+        const int64_t r1 = std::min(end, r0 + block);
         int64_t c = 0;
-        for (; c + 8 <= cols; c += 8) {
-            const __m256 v = BFloat
-                ? tensorplay::cpu::vecreduced::widen_bf16_8(rp + c)
-                : tensorplay::cpu::vecreduced::widen8(rp + c);
-            _mm256_storeu_ps(acc + c, _mm256_mul_ps(_mm256_loadu_ps(acc + c), v));
+        for (; c + 32 <= cols; c += 32) {
+            __m256 a[4];
+            for (int64_t k = 0; k < 4; ++k) {
+                a[k] = _mm256_loadu_ps(acc + c + 8 * k);
+            }
+            int64_t r = r0;
+            for (; r + kFold <= r1; r += kFold) {
+                for (int64_t k = 0; k < 4; ++k) {
+                    const uint16_t* rp = x + r * cols + c + 8 * k;
+                    a[k] = _mm256_mul_ps(a[k], fold_rows_hw<BFloat, kFold>(rp, cols));
+                }
+            }
+            for (; r < r1; ++r) {
+                const uint16_t* rp = x + r * cols + c;
+                for (int64_t k = 0; k < 4; ++k) {
+                    a[k] = _mm256_mul_ps(a[k], widen_row8<BFloat>(rp + 8 * k));
+                }
+            }
+            for (int64_t k = 0; k < 4; ++k) {
+                _mm256_storeu_ps(acc + c + 8 * k, a[k]);
+            }
         }
         for (; c < cols; ++c) {
-            acc[c] *= BFloat ? tensorplay::cpu::vecreduced::widen_bf16_one(rp[c])
-                             : tensorplay::cpu::vecreduced::widen_one(rp[c]);
+            float value = acc[c];
+            for (int64_t r = r0; r < r1; ++r) {
+                const uint16_t bits = x[r * cols + c];
+                value *= BFloat
+                    ? tensorplay::cpu::vecreduced::widen_bf16_one(bits)
+                    : tensorplay::cpu::vecreduced::widen_one(bits);
+            }
+            acc[c] = value;
         }
     }
 }
@@ -1072,16 +1139,6 @@ inline void norm_totals_real_impl(const T* in, T* out, int64_t outer,
 // folds the square of each element and takes one square root of the totals; a
 // sum folds the element itself.  The walk is a free function so that its
 // target carries into the work a parallel task runs.
-// One step of eight packed values widened into single precision.  It is a free
-// function so that a caller keeping its own target attribute can reach it.
-template <bool BFloat>
-__attribute__((target("avx2,fma,f16c"), always_inline)) inline
-__m256 widen_row8(const uint16_t* p) {
-    using tensorplay::cpu::vecreduced::widen8;
-    using tensorplay::cpu::vecreduced::widen_bf16_8;
-    return BFloat ? widen_bf16_8(p) : widen8(p);
-}
-
 template <TotalMode Mode>
 __attribute__((target("avx2,fma,f16c"), always_inline)) inline
 __m256 fold_total_step8(const __m256& q) {
