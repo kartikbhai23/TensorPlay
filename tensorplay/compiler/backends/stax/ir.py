@@ -3808,13 +3808,15 @@ class ComputedBuffer(OperationBuffer):
         return None
 
     def num_reads(self) -> int:
-        return sum(1 for _ in self.get_reads())
+        # The body counts what it reads as it is written, which is both the
+        # same answer and cheaper than walking the positions it reads at.
+        return self.data.num_reads()
 
     def get_reads(self) -> OrderedSet:
-        return self.get_read_writes().reads
+        return self.data.get_reads()
 
     def get_read_names(self) -> OrderedSet:
-        return OrderedSet(dep.name for dep in self.get_reads())
+        return self.data.get_read_names()
 
     def get_read_writes(self) -> "dependencies.ReadWrites":
         if not isinstance(self.data, (Reduction, Scan, Sort, Pointwise)):
