@@ -186,6 +186,77 @@ __global__ void median_select_dim_kernel(
 }
 
 
+// The median and its position out of a slice that is already ordered: the two
+// NaN runs bound the values in between, so one binary search on each end sizes
+// them without a counting pass, and the middle value is a single read.
+template <typename T>
+__global__ void median_dim_pick_sorted_kernel(
+        int64_t n_slices, int64_t d_size, int64_t inner, const T* sorted,
+        T* values, int64_t* indices, bool ignore_nan) {
+    const int64_t si = static_cast<int64_t>(blockIdx.x);
+    if (si >= n_slices) return;
+    const int64_t base = (si / inner) * d_size * inner + (si % inner);
+    int64_t head = 0;
+    int64_t hi = d_size;
+    while (head < hi) {
+        const int64_t mid = head + (hi - head) / 2;
+        if (reduce_value_is_nan(sorted[base + mid * inner])) {
+            head = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    int64_t tail = head;
+    hi = d_size;
+    while (tail < hi) {
+        const int64_t mid = tail + (hi - tail) / 2;
+        if (reduce_value_is_nan(sorted[base + mid * inner])) {
+            hi = mid;
+        } else {
+            tail = mid + 1;
+        }
+    }
+    const int64_t valid = tail - head;
+    T value = reduce_empty_value<T>();
+    int64_t first_index = d_size;
+    if (ignore_nan) {
+        // A slice of nothing but NaNs has no position to point at.
+        if (valid == 0) {
+            first_index = 0;
+        } else {
+            value = sorted[base + (head + (valid - 1) / 2) * inner];
+        }
+    } else if (valid != d_size) {
+        // A NaN outranks every number, so a slice holding one has a NaN median.
+    } else {
+        value = sorted[base + ((d_size - 1) / 2) * inner];
+    }
+    values[si] = value;
+    indices[si] = first_index;
+}
+
+// Smallest position holding the selected value, scanned by a grid-wide walk so
+// that a long slice is spread over the whole device instead of one block.
+template <typename T>
+__global__ void median_dim_first_match_kernel(
+        int64_t n_slices, int64_t d_size, int64_t inner, const T* input,
+        const T* values, int64_t* indices) {
+    const int64_t si = static_cast<int64_t>(blockIdx.y);
+    if (si >= n_slices) return;
+    const T selected = values[si];
+    const int64_t base = (si / inner) * d_size * inner + (si % inner);
+    const int64_t stride =
+        static_cast<int64_t>(blockDim.x) * static_cast<int64_t>(gridDim.x);
+    unsigned long long* slot =
+        reinterpret_cast<unsigned long long*>(indices + si);
+    for (int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         i < d_size; i += stride) {
+        if (same_ordered_value(input[base + i * inner], selected)) {
+            atomicMin(slot, static_cast<unsigned long long>(i));
+        }
+    }
+}
+
 template <typename T, typename index_t>
 __global__ void kthvalue_select_kernel(
         index_t n_slices, index_t d_size, index_t inner, index_t k,
@@ -943,6 +1014,79 @@ Tensor nanmedian_cuda(const Tensor& self) {
 }
 
 
+namespace {
+
+// A single block walks a slice once per radix digit, so one long slice leaves
+// the device idle with one multiprocessor doing all the work.  Past this
+// length, ordering the values with the multi-block radix sort and reading the
+// middle out of the result is the cheaper way to the same answer; shorter
+// slices, and several slices at once, keep the selector, which serves them in
+// parallel and costs less than a whole ordering.
+constexpr int64_t kMedianDimSortLength = int64_t{1} << 17;
+
+template <typename T>
+void median_dim_sorted_path_launch(const Tensor& input, int64_t d_size,
+                                   int64_t inner, int64_t slices,
+                                   const Tensor& sorted, Tensor& values,
+                                   Tensor& indices, bool ignore_nan) {
+    auto stream = getCurrentCUDAStream().stream();
+    median_dim_pick_sorted_kernel<T><<<dim3(static_cast<unsigned>(slices)), 1,
+                                       0, stream>>>(
+        slices, d_size, inner, sorted.data_ptr<T>(),
+        values.data_ptr<T>(), indices.data_ptr<int64_t>(), ignore_nan);
+    const int64_t blocks = std::max<int64_t>(
+        1, std::min<int64_t>((d_size + kThreads - 1) / kThreads,
+                             static_cast<int64_t>(4096)));
+    median_dim_first_match_kernel<T><<<
+        dim3(static_cast<unsigned>(blocks), static_cast<unsigned>(slices)),
+        kThreads, 0, stream>>>(
+        slices, d_size, inner, input.data_ptr<T>(), values.data_ptr<T>(),
+        indices.data_ptr<int64_t>());
+}
+
+// Runs the sorted path when the shape calls for it; reports whether it did.
+bool median_dim_sorted_path(const Tensor& input, int64_t dim, int64_t d_size,
+                            int64_t inner, int64_t slices, bool ignore_nan,
+                            Tensor& values, Tensor& indices) {
+    if (d_size < kMedianDimSortLength || slices > 1) {
+        return false;
+    }
+    // The radix sort counts its input in 32 bits, so a buffer that does not fit
+    // in a signed 32-bit count keeps the selector, which has a 64-bit form.
+    if (input.numel() >
+        static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+        return false;
+    }
+    Tensor sorted = sort_values_only_cuda(input, dim);
+    switch (input.dtype()) {
+#define TP_MEDIAN_DIM_SORT_CASE(ctype, name_)                                \
+    case DType::name_:                                                       \
+        median_dim_sorted_path_launch<ctype>(input, d_size, inner, slices,    \
+                                             sorted, values, indices,        \
+                                             ignore_nan);                    \
+        break;
+        TP_MEDIAN_DIM_SORT_CASE(Half, Float16)
+        TP_MEDIAN_DIM_SORT_CASE(BFloat16, BFloat16)
+        TP_MEDIAN_DIM_SORT_CASE(float, Float32)
+        TP_MEDIAN_DIM_SORT_CASE(double, Float64)
+        TP_MEDIAN_DIM_SORT_CASE(uint8_t, UInt8)
+        TP_MEDIAN_DIM_SORT_CASE(int8_t, Int8)
+        TP_MEDIAN_DIM_SORT_CASE(int16_t, Int16)
+        TP_MEDIAN_DIM_SORT_CASE(int32_t, Int32)
+        TP_MEDIAN_DIM_SORT_CASE(int64_t, Int64)
+        TP_MEDIAN_DIM_SORT_CASE(uint16_t, UInt16)
+        TP_MEDIAN_DIM_SORT_CASE(uint32_t, UInt32)
+        TP_MEDIAN_DIM_SORT_CASE(uint64_t, UInt64)
+#undef TP_MEDIAN_DIM_SORT_CASE
+        default: return false;
+    }
+    CUDA_CHECK(cudaGetLastError());
+    return true;
+}
+
+}  // namespace
+
+
 std::tuple<Tensor, Tensor> nanmedian_dim_cuda(const Tensor& self, int64_t dim,
                                               bool keepdim) {
     const int64_t nd = self.dim();
@@ -969,6 +1113,10 @@ std::tuple<Tensor, Tensor> nanmedian_dim_cuda(const Tensor& self, int64_t dim,
     const int64_t slices = outer * inner;
     if (slices == 0) return {values, indices};
     auto stream = getCurrentCUDAStream().stream();
+    if (median_dim_sorted_path(input, dim, d_size, inner, slices, true, values,
+                               indices)) {
+        return {values, indices};
+    }
     const bool sel32 = input.numel() <=
         static_cast<int64_t>(std::numeric_limits<int32_t>::max());
 #define TP_NANMEDIAN_DIM_CASE(ctype, name_) \
@@ -1275,6 +1423,10 @@ std::tuple<Tensor, Tensor> median_dim_cuda(const Tensor& self, int64_t dim,
     outer_inner(shape_of(input), dim, outer, inner);
     const int64_t slices = outer * inner;
     auto stream = getCurrentCUDAStream().stream();
+    if (median_dim_sorted_path(input, dim, d_size, inner, slices, false, values,
+                               indices)) {
+        return {values, indices};
+    }
     const bool sel32 = input.numel() <=
         static_cast<int64_t>(std::numeric_limits<int32_t>::max());
 #define TP_MEDIAN_DIM_CASE(ctype, name_) \
