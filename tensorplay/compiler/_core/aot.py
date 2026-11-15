@@ -163,70 +163,77 @@ class _JointBuilder:
         )
 
 
-def _rule_mul(b: _JointBuilder, node: Node, go: Node) -> Dict[Any, Node]:
+# A rule answers with contributions in order, one entry per use of a value.
+# A value that fills both operands of one operation is one node used twice,
+# so it receives two contributions; a mapping keyed by the value would keep
+# only the last of them and halve the gradient.
+_GradContribution = Tuple[Any, Node]
+
+
+def _rule_mul(b: _JointBuilder, node: Node, go: Node) -> List[_GradContribution]:
     a_node, b_node = node.args[0], node.args[1]
-    return {
-        a_node: b.reduce_for(b.bwd("call_function", operator.mul, (go, b_node)), node, a_node),
-        b_node: b.reduce_for(b.bwd("call_function", operator.mul, (go, a_node)), node, b_node),
-    }
+    return [
+        (a_node, b.reduce_for(b.bwd("call_function", operator.mul, (go, b_node)), node, a_node)),
+        (b_node, b.reduce_for(b.bwd("call_function", operator.mul, (go, a_node)), node, b_node)),
+    ]
 
 
-def _rule_add(b: _JointBuilder, node: Node, go: Node) -> Dict[Any, Node]:
+def _rule_add(b: _JointBuilder, node: Node, go: Node) -> List[_GradContribution]:
     a_node, b_node = node.args[0], node.args[1]
-    return {
-        a_node: b.reduce_for(go, node, a_node),
-        b_node: b.reduce_for(go, node, b_node),
-    }
+    return [
+        (a_node, b.reduce_for(go, node, a_node)),
+        (b_node, b.reduce_for(go, node, b_node)),
+    ]
 
 
-def _rule_sub(b: _JointBuilder, node: Node, go: Node) -> Dict[Any, Node]:
+def _rule_sub(b: _JointBuilder, node: Node, go: Node) -> List[_GradContribution]:
     a_node, b_node = node.args[0], node.args[1]
     neg = b.bwd("call_function", operator.neg, (go,))
-    return {
-        a_node: b.reduce_for(go, node, a_node),
-        b_node: b.reduce_for(neg, node, b_node),
-    }
+    return [
+        (a_node, b.reduce_for(go, node, a_node)),
+        (b_node, b.reduce_for(neg, node, b_node)),
+    ]
 
 
-def _rule_truediv(b: _JointBuilder, node: Node, go: Node) -> Dict[Any, Node]:
+def _rule_truediv(b: _JointBuilder, node: Node, go: Node) -> List[_GradContribution]:
     a_node, b_node = node.args[0], node.args[1]
     neg_go = b.bwd("call_function", operator.neg, (go,))
     num = b.bwd("call_function", operator.mul, (neg_go, a_node))
     denom = b.bwd("call_function", operator.mul, (b_node, b_node))
     db = b.bwd("call_function", operator.truediv, (num, denom))
     da = b.bwd("call_function", operator.truediv, (go, b_node))
-    return {
-        a_node: b.reduce_for(da, node, a_node),
-        b_node: b.reduce_for(db, node, b_node),
-    }
+    return [
+        (a_node, b.reduce_for(da, node, a_node)),
+        (b_node, b.reduce_for(db, node, b_node)),
+    ]
 
 
-def _rule_neg(b: _JointBuilder, node: Node, go: Node) -> Dict[Any, Node]:
-    return {node.args[0]: b.bwd("call_function", operator.neg, (go,))}
+def _rule_neg(b: _JointBuilder, node: Node, go: Node) -> List[_GradContribution]:
+    return [(node.args[0], b.bwd("call_function", operator.neg, (go,)))]
 
 
-def _rule_index_select(b: _JointBuilder, node: Node, go: Node) -> Dict[Any, Node]:
+def _rule_index_select(b: _JointBuilder, node: Node, go: Node) -> List[_GradContribution]:
     self_node, dim, index = node.args
     zeros = b.bwd("call_function", _zeros_like, (self_node,))
     grad = b.bwd(
         "call_function", _index_add_op(), (zeros, dim, index, go)
     )
-    return {self_node: b.reduce_for(grad, node, self_node)}
+    return [(self_node, b.reduce_for(grad, node, self_node))]
 
 
-def _rule_gather(b: _JointBuilder, node: Node, go: Node) -> Dict[Any, Node]:
+def _rule_gather(b: _JointBuilder, node: Node, go: Node) -> List[_GradContribution]:
     self_node, dim, index = node.args[:3]
     zeros = b.bwd("call_function", _zeros_like, (self_node,))
     grad = b.bwd(
         "call_function", _scatter_add_op(), (zeros, dim, index, go)
     )
-    return {self_node: b.reduce_for(grad, node, self_node)}
+    return [(self_node, b.reduce_for(grad, node, self_node))]
 
 
 def _method_rule(formula: Callable[[_JointBuilder, Node, Node], Node]):
-    def rule(b: _JointBuilder, node: Node, go: Node) -> Dict[Any, Node]:
+    def rule(b: _JointBuilder, node: Node, go: Node) -> List[_GradContribution]:
         inner = node.args[0]
-        return {inner: formula(b, go, inner)}
+        return [(inner, formula(b, go, inner))]
 
     return rule
 
@@ -1313,7 +1320,7 @@ def build_aot(
             raise AOTError(
                 f"no derivative registered for {node.op}[{getattr(node.target, '__name__', node.target)}]"
             )
-        for input_value, contribution in rule(builder, node, go).items():
+        for input_value, contribution in rule(builder, node, go):
             if isinstance(input_value, Node):
                 adjoint.setdefault(input_value, []).append(contribution)
 

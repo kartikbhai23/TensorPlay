@@ -54,6 +54,43 @@ def test_mul_relu_sum_gradients(policy, partitioner):
     _assert_grads_match_eager(fn, [x, w], policy, partitioner=partitioner)
 
 
+@pytest.mark.parametrize("partitioner", ["default", "min_cut"])
+@pytest.mark.parametrize(
+    "formula",
+    [
+        lambda x: (x * x).sum(),
+        lambda x: ((x * x) * x).sum(),
+        lambda x: (x + x).sum(),
+        lambda x: (x - x).sum(),
+        lambda x: (x * x).sum() + (x * x).sum(),
+        lambda x: x.mul(x).sum(),
+        lambda x: (x.sin() * x.sin()).sum(),
+    ],
+    ids=[
+        "square",
+        "cube",
+        "add_twice",
+        "sub_twice",
+        "two_branches",
+        "method",
+        "shared_result",
+    ],
+)
+def test_a_value_used_twice_receives_both_contributions(formula, partitioner):
+    """One node can fill both operands, and each role contributes a term.
+
+    The derivative of ``x * x`` is ``2x``, not ``x``: the reverse sweep has to
+    accumulate the term from each operand even though both name the same
+    value.  A sweep keyed by the value keeps only one term, which halves the
+    gradient, so this covers every rule with two operands plus the branch
+    case where two paths reach the same node.
+    """
+
+    _assert_grads_match_eager(
+        formula, [tp.randn(4)], "save_needed", partitioner=partitioner
+    )
+
+
 @pytest.mark.parametrize("policy", ["save_needed", "recompute_all"])
 @pytest.mark.parametrize("partitioner", ["default", "min_cut"])
 def test_broadcast_scalar_param_gradient_reduces(policy, partitioner):
