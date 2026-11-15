@@ -3209,6 +3209,154 @@ TP_LOG_SOFTMAX_ROW_REDUCED(bf16, "avx2,fma",
                            tensorplay::cpu::vecreduced::narrow_bf16_one)
 #undef TP_LOG_SOFTMAX_ROW_REDUCED
 
+// The normalizing row of a reduced width: the exponentials are read from the
+// layout the elements came in and kept in single precision in a row-sized
+// scratch, so the answer is narrowed once after the whole row is weighed
+// against its total.  The row itself is read once for the max, once for the
+// exponentials, and written once.
+#define TP_SOFTMAX_ROW_REDUCED(fn, tgt, load8, store8, widen1, narrow1)        \
+__attribute__((target(tgt)))                                                    \
+inline void row_softmax_reduced_##fn(const uint16_t* x, uint16_t* out,          \
+                                     int64_t n) {                               \
+    static thread_local std::vector<float> scratch;                             \
+    scratch.resize(static_cast<size_t>(n));                                     \
+    float* held = scratch.data();                                               \
+    __m256 vmax = load8(x);                                                     \
+    int64_t i = 8;                                                              \
+    for (; i + 8 <= n; i += 8)                                                  \
+        vmax = _mm256_max_ps(vmax, load8(x + i));                               \
+    alignas(32) float lanes[8];                                                 \
+    _mm256_store_ps(lanes, vmax);                                               \
+    float m = lanes[0];                                                         \
+    for (int k = 1; k < 8; ++k) m = std::max(m, lanes[k]);                      \
+    for (; i < n; ++i) m = std::max(m, widen1(x[i]));                           \
+    const __m256 vm = _mm256_set1_ps(m);                                        \
+    __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();                  \
+    __m256 a2 = _mm256_setzero_ps(), a3 = _mm256_setzero_ps();                  \
+    int64_t j = 0;                                                              \
+    for (; j + 32 <= n; j += 32) {                                              \
+        const __m256 e0 = tensorplay::tpsleef::exp(                             \
+            _mm256_sub_ps(load8(x + j), vm));                                   \
+        const __m256 e1 = tensorplay::tpsleef::exp(                             \
+            _mm256_sub_ps(load8(x + j + 8), vm));                               \
+        const __m256 e2 = tensorplay::tpsleef::exp(                             \
+            _mm256_sub_ps(load8(x + j + 16), vm));                              \
+        const __m256 e3 = tensorplay::tpsleef::exp(                             \
+            _mm256_sub_ps(load8(x + j + 24), vm));                              \
+        _mm256_storeu_ps(held + j, e0);                                         \
+        _mm256_storeu_ps(held + j + 8, e1);                                     \
+        _mm256_storeu_ps(held + j + 16, e2);                                    \
+        _mm256_storeu_ps(held + j + 24, e3);                                    \
+        a0 = _mm256_add_ps(a0, e0);                                             \
+        a1 = _mm256_add_ps(a1, e1);                                             \
+        a2 = _mm256_add_ps(a2, e2);                                             \
+        a3 = _mm256_add_ps(a3, e3);                                             \
+    }                                                                           \
+    __m256 acc = _mm256_add_ps(_mm256_add_ps(a0, a1),                           \
+                               _mm256_add_ps(a2, a3));                          \
+    for (; j + 8 <= n; j += 8) {                                                \
+        const __m256 v = tensorplay::tpsleef::exp(                              \
+            _mm256_sub_ps(load8(x + j), vm));                                   \
+        _mm256_storeu_ps(held + j, v);                                          \
+        acc = _mm256_add_ps(acc, v);                                            \
+    }                                                                           \
+    _mm256_store_ps(lanes, acc);                                                \
+    float s = ((lanes[0] + lanes[1]) + (lanes[2] + lanes[3])) +                 \
+              ((lanes[4] + lanes[5]) + (lanes[6] + lanes[7]));                  \
+    for (; j < n; ++j) {                                                        \
+        const float v = std::exp(widen1(x[j]) - m);                             \
+        held[j] = v;                                                            \
+        s += v;                                                                 \
+    }                                                                           \
+    const __m256 vinv = _mm256_set1_ps(1.0f / s);                               \
+    int64_t k = 0;                                                              \
+    for (; k + 8 <= n; k += 8)                                                  \
+        store8(out + k, _mm256_mul_ps(_mm256_loadu_ps(held + k), vinv));        \
+    for (; k < n; ++k) out[k] = narrow1(held[k] * (1.0f / s));                  \
+}
+
+TP_SOFTMAX_ROW_REDUCED(f16, "avx2,fma,f16c",
+                       tensorplay::cpu::vecreduced::widen8,
+                       tensorplay::cpu::vecreduced::lay_f16_8<false>,
+                       tensorplay::cpu::vecreduced::widen_one,
+                       tensorplay::cpu::vecreduced::narrow_one)
+TP_SOFTMAX_ROW_REDUCED(bf16, "avx2,fma",
+                       tensorplay::cpu::vecreduced::widen_bf16_8,
+                       tensorplay::cpu::vecreduced::store_bf16_8,
+                       tensorplay::cpu::vecreduced::widen_bf16_one,
+                       tensorplay::cpu::vecreduced::narrow_bf16_one)
+#undef TP_SOFTMAX_ROW_REDUCED
+
+// A block of packed columns of a reduced width: the values sharing a row are
+// contiguous, so a step down the scanned axis widens one vector per eight
+// columns and each lane keeps its own running total.  Four vectors are taken
+// at a time where the trailing block is wide enough, so a step reads whole
+// cache lines instead of a corner of each.  The exponentials of the
+// normalizing form stay in single precision in a block-sized scratch, so the
+// answer is narrowed once the whole column has been weighed.
+#define TP_SOFTMAX_COLS_REDUCED(fn, tgt, load8, store8)                         \
+template <bool LogMode, int V>                                                  \
+__attribute__((target(tgt)))                                                    \
+inline void col_softmax_reduced_##fn(const uint16_t* x, uint16_t* out,          \
+                                     int64_t d_size, int64_t inner) {           \
+    if constexpr (!LogMode) {                                                   \
+        static thread_local std::vector<float> scratch;                         \
+        scratch.resize(static_cast<size_t>(d_size) * (8 * V));                  \
+        float* held = scratch.data();                                           \
+        __m256 vmax[V];                                                         \
+        for (int k = 0; k < V; ++k) vmax[k] = load8(x + 8 * k);                 \
+        for (int64_t j = 1; j < d_size; ++j)                                    \
+            for (int k = 0; k < V; ++k)                                         \
+                vmax[k] = _mm256_max_ps(vmax[k],                                 \
+                                        load8(x + j * inner + 8 * k));          \
+        __m256 acc[V];                                                          \
+        for (int k = 0; k < V; ++k) acc[k] = _mm256_setzero_ps();               \
+        for (int64_t j = 0; j < d_size; ++j) {                                  \
+            for (int k = 0; k < V; ++k) {                                       \
+                const __m256 v = tensorplay::tpsleef::exp(                      \
+                    _mm256_sub_ps(load8(x + j * inner + 8 * k), vmax[k]));      \
+                _mm256_storeu_ps(held + (j * V + k) * 8, v);                    \
+                acc[k] = _mm256_add_ps(acc[k], v);                              \
+            }                                                                   \
+        }                                                                       \
+        for (int k = 0; k < V; ++k) {                                           \
+            const __m256 vinv =                                                 \
+                _mm256_div_ps(_mm256_set1_ps(1.0f), acc[k]);                    \
+            for (int64_t j = 0; j < d_size; ++j)                                \
+                store8(out + j * inner + 8 * k,                                 \
+                       _mm256_mul_ps(                                           \
+                           _mm256_loadu_ps(held + (j * V + k) * 8), vinv));     \
+        }                                                                       \
+        return;                                                                 \
+    }                                                                           \
+    __m256 vmax[V];                                                             \
+    for (int k = 0; k < V; ++k) vmax[k] = load8(x + 8 * k);                     \
+    for (int64_t j = 1; j < d_size; ++j)                                        \
+        for (int k = 0; k < V; ++k)                                             \
+            vmax[k] = _mm256_max_ps(vmax[k], load8(x + j * inner + 8 * k));     \
+    __m256 acc[V];                                                              \
+    for (int k = 0; k < V; ++k) acc[k] = _mm256_setzero_ps();                   \
+    for (int64_t j = 0; j < d_size; ++j)                                        \
+        for (int k = 0; k < V; ++k)                                             \
+            acc[k] = _mm256_add_ps(acc[k], tensorplay::tpsleef::exp(            \
+                _mm256_sub_ps(load8(x + j * inner + 8 * k), vmax[k])));         \
+    __m256 vl[V];                                                               \
+    for (int k = 0; k < V; ++k)                                                 \
+        vl[k] = _mm256_add_ps(vmax[k], tensorplay::tpsleef::log(acc[k]));       \
+    for (int64_t j = 0; j < d_size; ++j)                                        \
+        for (int k = 0; k < V; ++k)                                             \
+            store8(out + j * inner + 8 * k,                                     \
+                   _mm256_sub_ps(load8(x + j * inner + 8 * k), vl[k]));         \
+}
+
+TP_SOFTMAX_COLS_REDUCED(f16, "avx2,fma,f16c",
+                        tensorplay::cpu::vecreduced::widen8,
+                        tensorplay::cpu::vecreduced::lay_f16_8<false>)
+TP_SOFTMAX_COLS_REDUCED(bf16, "avx2,fma",
+                        tensorplay::cpu::vecreduced::widen_bf16_8,
+                        tensorplay::cpu::vecreduced::store_bf16_8)
+#undef TP_SOFTMAX_COLS_REDUCED
+
 #endif  // __x86_64__
 
 }  // namespace softmax_row
@@ -3372,9 +3520,137 @@ static DType softmax_answer_dtype(DType self_dtype, DType asked) {
     return out_dtype;
 }
 
+#if defined(__x86_64__)
+// A packed input takes the reduced-width walk, which reads the elements in
+// their own layout instead of passing over a single-precision copy first.  A
+// normalization unit on the last axis walks rows; one that leaves eight
+// packed columns per row walks a block of eight columns down the axis.  The
+// logarithmic form keeps the shifted answer in single precision until it is
+// written; the normalizing form keeps the exponentials there and writes the
+// weighted answer.
+template <bool LogMode>
+static Tensor softmax_reduced_impl(const Tensor& self, int64_t dim,
+                                   DType out_dtype) {
+    const int64_t nd = self.dim();
+    if (nd == 0 || !self.is_contiguous() || self.numel() == 0) return Tensor();
+    const int64_t d = dim < 0 ? dim + nd : dim;
+    if (d < 0 || d >= nd || self.size(d) < 8) return Tensor();
+    const bool half_width = out_dtype == DType::Float16;
+    if (half_width) {
+        if (!vecunary::avx2_available() ||
+            !tensorplay::cpu::vecreduced::f16c_available()) {
+            return Tensor();
+        }
+    } else if (out_dtype != DType::BFloat16 || !vecunary::avx2_available()) {
+        return Tensor();
+    }
+    int64_t inner = 1;
+    for (int64_t i = d + 1; i < nd; ++i) inner *= self.size(i);
+    if (d != nd - 1 && inner < 8) return Tensor();
+    const int64_t size = self.size(d);
+    const int64_t outer = self.numel() / (size * inner);
+    Tensor result = Tensor::empty(
+        static_cast<std::vector<int64_t>>(self.shape()), out_dtype,
+        self.device());
+    const uint16_t* in = half_width
+        ? reinterpret_cast<const uint16_t*>(self.data_ptr<tensorplay::Half>())
+        : reinterpret_cast<const uint16_t*>(
+              self.data_ptr<tensorplay::BFloat16>());
+    uint16_t* out = half_width
+        ? reinterpret_cast<uint16_t*>(result.data_ptr<tensorplay::Half>())
+        : reinterpret_cast<uint16_t*>(
+              result.data_ptr<tensorplay::BFloat16>());
+    if (d == nd - 1) {
+        parallel_for(0, outer, 1, [&](int64_t b, int64_t e) {
+            for (int64_t r = b; r < e; ++r) {
+                if constexpr (LogMode) {
+                    if (half_width) {
+                        softmax_row::row_log_reduced_f16(in + r * size,
+                                                         out + r * size, size);
+                    } else {
+                        softmax_row::row_log_reduced_bf16(in + r * size,
+                                                          out + r * size, size);
+                    }
+                } else {
+                    if (half_width) {
+                        softmax_row::row_softmax_reduced_f16(in + r * size,
+                                                             out + r * size, size);
+                    } else {
+                        softmax_row::row_softmax_reduced_bf16(in + r * size,
+                                                              out + r * size, size);
+                    }
+                }
+            }
+        });
+        return result;
+    }
+    // Blocks of packed columns, one block per unit of work.  A trailing block
+    // wide enough for four vectors is walked four vectors at a time; a row
+    // whose column count is not a multiple of the block leaves a remainder
+    // that is still answered a vector at a time, by a later step covering the
+    // last block, which writes the same answer the block before it wrote.
+    const int v = inner >= 32 ? 4 : 1;
+    const int64_t width = 8 * v;
+    const int64_t full_blocks = inner / width;
+    parallel_for(0, outer * full_blocks, 1, [&](int64_t b, int64_t e) {
+        for (int64_t flat = b; flat < e; ++flat) {
+            const int64_t o = flat / full_blocks;
+            const int64_t c0 = (flat - o * full_blocks) * width;
+            const int64_t base = o * size * inner + c0;
+            if (half_width) {
+                if (v == 4) {
+                    softmax_row::col_softmax_reduced_f16<LogMode, 4>(
+                        in + base, out + base, size, inner);
+                } else {
+                    softmax_row::col_softmax_reduced_f16<LogMode, 1>(
+                        in + base, out + base, size, inner);
+                }
+            } else {
+                if (v == 4) {
+                    softmax_row::col_softmax_reduced_bf16<LogMode, 4>(
+                        in + base, out + base, size, inner);
+                } else {
+                    softmax_row::col_softmax_reduced_bf16<LogMode, 1>(
+                        in + base, out + base, size, inner);
+                }
+            }
+        }
+    });
+    if (full_blocks * width < inner) {
+        parallel_for(0, outer, 1, [&](int64_t b, int64_t e) {
+            for (int64_t o = b; o < e; ++o) {
+                const int64_t base = o * size * inner + (inner - width);
+                if (half_width) {
+                    if (v == 4) {
+                        softmax_row::col_softmax_reduced_f16<LogMode, 4>(
+                            in + base, out + base, size, inner);
+                    } else {
+                        softmax_row::col_softmax_reduced_f16<LogMode, 1>(
+                            in + base, out + base, size, inner);
+                    }
+                } else {
+                    if (v == 4) {
+                        softmax_row::col_softmax_reduced_bf16<LogMode, 4>(
+                            in + base, out + base, size, inner);
+                    } else {
+                        softmax_row::col_softmax_reduced_bf16<LogMode, 1>(
+                            in + base, out + base, size, inner);
+                    }
+                }
+            }
+        });
+    }
+    return result;
+}
+#endif
+
 Tensor softmax_kernel(const Tensor& self, int64_t dim, DType dtype) {
     const DType out_dtype = softmax_answer_dtype(self.dtype(), dtype);
     if (isReducedFloatingType(out_dtype)) {
+#if defined(__x86_64__)
+        Tensor fast = softmax_reduced_impl<false>(self, dim, out_dtype);
+        if (fast.defined()) return fast;
+#endif
         return softmax_fused_kernel_impl<false>(self, dim, DType::Float32).to(out_dtype);
     }
     return softmax_fused_kernel_impl<false>(self, dim, out_dtype);
@@ -3384,44 +3660,8 @@ Tensor log_softmax_kernel(const Tensor& self, int64_t dim, DType dtype) {
     const DType out_dtype = softmax_answer_dtype(self.dtype(), dtype);
     if (isReducedFloatingType(out_dtype)) {
 #if defined(__x86_64__)
-        // A packed input whose normalization unit is the last axis takes the
-        // reduced-width row walk: one read for the max, one for the sum and
-        // one that writes the shifted answer narrowed.
-        const int64_t d = dim < 0 ? dim + self.dim() : dim;
-        if (self.dim() > 0 && self.is_contiguous() && d == self.dim() - 1 &&
-            self.size(d) >= 32) {
-            const int64_t size = self.size(d);
-            const int64_t rows = self.numel() / size;
-            Tensor result = Tensor::empty(
-                static_cast<std::vector<int64_t>>(self.shape()), out_dtype,
-                self.device());
-            if (out_dtype == DType::Float16 &&
-                vecunary::avx2_available() &&
-                tensorplay::cpu::vecreduced::f16c_available()) {
-                const uint16_t* in = reinterpret_cast<const uint16_t*>(
-                    self.data_ptr<tensorplay::Half>());
-                uint16_t* out = reinterpret_cast<uint16_t*>(
-                    result.data_ptr<tensorplay::Half>());
-                parallel_for(0, rows, 1, [&](int64_t b, int64_t e) {
-                    for (int64_t r = b; r < e; ++r)
-                        softmax_row::row_log_reduced_f16(in + r * size,
-                                                         out + r * size, size);
-                });
-                return result;
-            }
-            if (out_dtype == DType::BFloat16 && vecunary::avx2_available()) {
-                const uint16_t* in = reinterpret_cast<const uint16_t*>(
-                    self.data_ptr<tensorplay::BFloat16>());
-                uint16_t* out = reinterpret_cast<uint16_t*>(
-                    result.data_ptr<tensorplay::BFloat16>());
-                parallel_for(0, rows, 1, [&](int64_t b, int64_t e) {
-                    for (int64_t r = b; r < e; ++r)
-                        softmax_row::row_log_reduced_bf16(in + r * size,
-                                                          out + r * size, size);
-                });
-                return result;
-            }
-        }
+        Tensor fast = softmax_reduced_impl<true>(self, dim, out_dtype);
+        if (fast.defined()) return fast;
 #endif
         return softmax_fused_kernel_impl<true>(self, dim, DType::Float32).to(out_dtype);
     }

@@ -2734,6 +2734,33 @@ Tensor cumsum_backward_cpu(const Tensor& grad, int64_t dim) {
 // corresponding flag is false.
 namespace {
 
+// The ordering key of a sixteen-bit layout: the sign bit lifts every positive
+// value above every negative one, a negative value complements its remaining
+// bits, and a negative zero takes the positive zero key so the two count as
+// one value.
+template <uint32_t InfBits>
+inline uint32_t u16_order_key(uint16_t bits) {
+    const uint32_t sign = static_cast<uint32_t>(bits >> 15);
+    const uint32_t key =
+        (static_cast<uint32_t>(bits) ^ (0x8000u | (0u - sign))) & 0xFFFFu;
+    return bits == 0x8000u ? 0x8000u : key;
+}
+
+// A pair of reduced-width values in ascending order, settled by one integer
+// compare: a value comparison would cross into single precision on every
+// pair.  Every not-a-number pattern sorts after every number and before no
+// other not-a-number, which is the order the value comparison gives.
+template <uint32_t InfBits>
+struct U16OrderLess {
+    bool operator()(uint16_t a, uint16_t b) const {
+        const bool na = (a & 0x7FFFu) > InfBits;
+        const bool nb = (b & 0x7FFFu) > InfBits;
+        if (na != nb) return nb;
+        if (na) return false;
+        return u16_order_key<InfBits>(a) < u16_order_key<InfBits>(b);
+    }
+};
+
 template <typename scalar_t>
 std::tuple<Tensor, Tensor, Tensor> unique_flat_cpu_template(
         const Tensor& self, bool return_inverse, bool return_counts) {
@@ -2818,24 +2845,33 @@ std::tuple<Tensor, Tensor, Tensor> unique_flat_cpu_template(
     if (!return_inverse) {
         Tensor sorted = input.clone();
         scalar_t* sorted_data = sorted.data_ptr<scalar_t>();
-        bool has_nan = false;
-        if constexpr (std::is_floating_point_v<scalar_t> ||
-                      std::is_same_v<scalar_t, Half> ||
+        if constexpr (std::is_same_v<scalar_t, Half> ||
                       std::is_same_v<scalar_t, BFloat16>) {
-            has_nan = std::any_of(sorted_data, sorted_data + numel,
-                                  [](scalar_t v) { return sort_is_nan(v); });
-        }
-        if (has_nan) {
-            // NaNs sort after every other value and never equal each other,
-            // so each one stays a group of its own.
-            std::sort(sorted_data, sorted_data + numel, [](scalar_t a, scalar_t b) {
-                const bool na = sort_is_nan(a), nb = sort_is_nan(b);
-                if (na != nb) return nb;
-                if (na) return false;
-                return a < b;
-            });
+            // The two reduced widths order through their own layout: the whole
+            // comparison is one integer compare, and a not-a-number pattern
+            // needs no separate pass.
+            constexpr uint32_t kInfBits =
+                std::is_same_v<scalar_t, Half> ? 0x7C00u : 0x7F80u;
+            auto* bits = reinterpret_cast<uint16_t*>(sorted_data);
+            std::sort(bits, bits + numel, U16OrderLess<kInfBits>{});
         } else {
-            std::sort(sorted_data, sorted_data + numel);
+            bool has_nan = false;
+            if constexpr (std::is_floating_point_v<scalar_t>) {
+                has_nan = std::any_of(sorted_data, sorted_data + numel,
+                                      [](scalar_t v) { return sort_is_nan(v); });
+            }
+            if (has_nan) {
+                // NaNs sort after every other value and never equal each
+                // other, so each one stays a group of its own.
+                std::sort(sorted_data, sorted_data + numel, [](scalar_t a, scalar_t b) {
+                    const bool na = sort_is_nan(a), nb = sort_is_nan(b);
+                    if (na != nb) return nb;
+                    if (na) return false;
+                    return a < b;
+                });
+            } else {
+                std::sort(sorted_data, sorted_data + numel);
+            }
         }
         int64_t n_groups = 1;
         for (int64_t i = 1; i < numel; ++i) {
