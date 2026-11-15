@@ -34,6 +34,8 @@
 | P0 | `call_method` 形式的原地写不被算作写，min-cut 把 `buf.add_(1)` 丢掉，值与梯度都是写前的 | 正确性 bug，已复现 | 已修复（§3.4、§13） |
 | P2 | `tp.compile(name=...)` 传给每个后端后无人读取，区域标识没有任何作用 | 静默失效，已核实 | 已修复（§5、§13） |
 | P2 | `tp.compile(isolate_recompiles=...)` 一路传递并存在调用对象上，从无读者；两种取值结果相同 | 静默失效，已核实 | 已拒绝（§5、§13） |
+| P1 | `write_are_deterministic_algorithms_enabled` 的读者存在、写者缺失，要求确定性算术时归约仍可能选到自由排序的配置 | 正确性相关，已核实 | 已修复（§8.5、§13） |
+| P2 | `use_launch_metadata_schema` 设置了也没用，启动器仍按对象上可读的字段探测 | 静默失效，已核实 | 已修复（§8.5、§13） |
 | P0 | 捕获时读到的非张量全局/闭包/模块属性改变后仍复用旧程序，结果陈旧 | 正确性 bug，已复现 | 已修复（§3.3、§13） |
 | P1 | AOT 的 `memory_budget` 与 `keep_inference_input_mutations` 接收后丢弃 | 静默失效，已核实 | 已修复（§3.4、§13） |
 | P1 | 无 AOTInductor 部署包、无 cudagraph trees、无 oneDNN/MKLDNN/quantized/freezing/CPU GEMM 模板 | 子系统缺失，静态确认 | 未修 |
@@ -599,6 +601,17 @@ pytest test/stax -q
 
 快照 293 项，含私有名 298 项，均可 `json.dumps`。
 
+反方向的核对（定义在 `config.py`、却没有任何读者）又发现三个“设置了也没用”的项：
+
+| 设置 | 症状 | 处理 |
+| --- | --- | --- |
+| `write_are_deterministic_algorithms_enabled` | 默认开，声称把“本次运行要求确定性算术”写进启动记录；而 `filter_reduction_configs_for_determinism` 读的正是这个键，却没有任何生产者写入，于是即使要求了确定性，归约仍可能选到自由排序的配置 | 在 `tp_meta_common` 中按设置写入 `are_deterministic_algorithms_enabled` |
+| `use_launch_metadata_schema` | 默认开，声称按“说明字段含义的表”读启动参数，而不是按编译对象身上恰好可读的字段；启动器仍在 `hasattr` 探测 `num_warps` / `shared` | 表存在且设置为开时，`num_warps` / `shared_mem` 取自 `binary.launch_metadata_schema`；无表或表缺该字段时仍按原路径探测 |
+| `combo_kernel_allow_mixed_sizes` | 常量 `1`，无读者 | 保留：上游同样只定义不读，且本仓库的组合内核分组根本不按尺寸分组（按设备/流/内存池切块），凭空加“禁止混合尺寸”会是自行发明的语义 |
+
+顺带说明 `is_fbcode()`：本仓库它是恒定 `False`，因此快照/缓存键里不写它不会带来跨构建差异；
+上游把它写进自动调优缓存键是为区分内部与外部构建，本实现没有这种区分。
+
 ## 9. 算子与分解覆盖
 
 - `operator_coverage.py` 设计是好的（显式声明 LOWERED/TEMPLATE/LIBRARY_CALL/NOT_COVERED，并有测试），但：
@@ -774,6 +787,7 @@ pytest test/stax -q -p no:randomly
 | `479e3158` `fix(compiler)` | 前向闭包保留所有确有效果的调用（不止写值）；训练区域在重写与切分之间不再丢掉 profiler span |
 | `0c49b8aa` `fix(compiler)` | 移除 `isolate_recompiles`：它被传递、被存下、无人读取；本前端本就按区域独立保存特化，跨调用共享条目不存在，两种取值都明确拒绝 |
 | `413894de` `fix(compiler)` | `name` 从“传给后端即被丢弃”变为真正的调试元数据：调用对象上保留、用于重编译警告与两条上限错误的区域名、校验为字符串、不进入任何键 |
+| `7f69aa3c` `fix(compiler)` | 确定性算术开关写进启动记录（归约配置过滤读的就是这个键）；`use_launch_metadata_schema` 让 `num_warps`/`shared_mem` 取自二进制自述表，缺表或缺字段时回退探测；新增 `test/stax/test_stax_launch_metadata.py`（5 项） |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
