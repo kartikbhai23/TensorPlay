@@ -2240,6 +2240,9 @@ static void half_chunk_avx2(VOp op, VParams prm, const uint16_t* src, uint16_t* 
     int64_t n = e - b;
     int64_t i = 0;
     switch (op) {
+        case VOp::Sinc:
+            TP_HALF_CHUNK_8(v_sinc_f32x8(x))
+            break;
         case VOp::Hardtanh: {
             const __m256 lo = _mm256_set1_ps(static_cast<float>(prm.p0));
             const __m256 hi = _mm256_set1_ps(static_cast<float>(prm.p1));
@@ -2904,6 +2907,9 @@ static void f64_chunk_avx512(VOp op, VParams prm, const double* src, double* dst
             _mm256_srli_epi32(                                            \
                 _mm256_and_si256(u, _mm256_set1_epi32(0x10000u)), 16));   \
         __m256i r = _mm256_srli_epi32(_mm256_add_epi32(u, rounding), 16); \
+        r = _mm256_blendv_epi8(r, _mm256_set1_epi32(0x7FC0),            \
+                              _mm256_castps_si256(_mm256_cmp_ps(          \
+                                  y, y, _CMP_UNORD_Q)));                  \
         __m256i p = _mm256_shuffle_epi8(r, pack_pick);                    \
         _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + (OFF)),         \
                          _mm_unpacklo_epi64(_mm256_castsi256_si128(p),    \
@@ -2940,6 +2946,9 @@ static void bf16_chunk_avx2(VOp op, VParams prm, const uint16_t* src, uint16_t* 
     int64_t n = e - b;
     int64_t i = 0;
     switch (op) {
+        case VOp::Sinc:
+            TP_BF16_CHUNK_8(v_sinc_f32x8(x))
+            break;
         case VOp::Hardtanh: {
             const __m256 lo = _mm256_set1_ps(static_cast<float>(prm.p0));
             const __m256 hi = _mm256_set1_ps(static_cast<float>(prm.p1));
@@ -3007,9 +3016,7 @@ static void bf16_chunk_avx2(VOp op, VParams prm, const uint16_t* src, uint16_t* 
         float xf;
         std::memcpy(&xf, &bits, 4);
         float yf = scalar_apply(op, prm, xf);
-        std::memcpy(&bits, &yf, 4);
-        bits = bits + 0x7FFFu + ((bits >> 16) & 1u);
-        dst[i] = static_cast<uint16_t>(bits >> 16);
+        dst[i] = tensorplay::detail::float_to_bfloat16_bits(yf);
     }
 }
 
