@@ -36,8 +36,9 @@
 `pytest test/stax` 实测（修复前）：**1568 passed, 2 failed, 1 skipped**（1571 项，约 2 分 4 秒）。
 其中一个失败是确定性的 P0 正确性 bug；另一个是容差/顺序相关的偶发（单独运行通过）。
 
-`pytest test/stax -q` 实测（本轮修复后）：**1607 passed, 1 skipped**（1 分 03 秒），
-`pytest test/fx test/test_public_surface.py`：**247 passed**，`pytest test/higher_order_ops test/export`：**126 passed**。
+`pytest test/stax -q` 实测（本轮修复后）：**1615 passed, 1 skipped**（1 分 01 秒），
+`pytest test/fx test/test_public_surface.py`：**247 passed**，
+`pytest test/higher_order_ops test/export`：**128 passed**。
 原先那两个失败都已不再是失败：确定性那个随 §2.1 修好；偶发那个是 bf16 容差写死 `2e-4` 造成的，
 现在按 dtype 的机器精度取容差。
 
@@ -223,8 +224,11 @@ for _ in range(3):
 - ~~`tp.compile(dynamic_shapes=...)` 只接受 bool；`Dim` / 范围约束只存在于 `tensorplay.export`，未接到 `compile`。~~
   已修复：`dynamic_shapes` 接受按参数名的映射或按位置的序列，`Dim` / `Dim.AUTO` /
   `Dim.STATIC` / 静态 int 都生效；具名轴成符号，未具名轴保留样例尺寸并在运行前校验；
-  `min`/`max` 与静态尺寸在捕获前对样例校验；需要声明 `supports_symbolic_shapes`
-  的后端，否则在 `compile` 时明确报错。三维入口（映射、位置、装饰器）都有测试。
+  `min`/`max` 与静态尺寸在捕获前对样例校验；每次调用还校验声明上界、共享维上的
+  精确尺寸关系，以及派生维的 `size == scale*root + offset`，不满足就抛
+  `ValueError` / `RuntimeError`，不会复用按旧尺寸捕获的区域。需要声明
+  `supports_symbolic_shapes` 的后端，否则在 `compile` 时明确报错。三种写法
+  （映射、位置、装饰器）都有测试。
 - ~~无自动 dynamic：12 个不同 shape 调用 → 12 次后端编译。~~
   已修复：`config.automatic_dynamic_shapes`（默认开）在“仅张量尺寸变化导致守卫失配”
   时清空具体特化并以符号重捕一次；数据分支、梯度态、模块态、dtype/device/layout
@@ -649,6 +653,8 @@ pytest test/stax -q -p no:randomly
 | `979f5757` `feat(compiler)` | `tp.compile` 统一到记录感知的 facade；捕获根按模块全局与闭包包重建；`disallow_in_graph` 登记并由捕获适配器和 `create_proxy` 双重拒绝；`mark_static` 记录/校验轴并转发捕获内标记 |
 | `a828ff04` `feat(compiler)` | 新增 `_core/shape_policy.py`；`dynamic_shapes` 支持映射/位置/`Dim`/范围/静态 int；自动 dynamic（`config.automatic_dynamic_shapes`）；符号捕获按声明策略建符号并读钉住尺寸；导出 `check_dynamic_shapes` |
 | `6240f4f1` `test(compiler)` | 新增 `test/stax/test_stax_dynamic_shapes.py`（18 项）；`sin(x)+1` 近零点改用与其余用例一致的绝对容差，消除一 ulp 差异造成的偶发失败 |
+| `9566deaf` `fix(compiler)` | 捕获守卫补声明上下界与“每个引用同一符号的轴尺寸相等”；派生维样例尺寸必须可由关系产生并与根维的样例尺寸一致；`mark_static` 轴在样例校验前从声明策略中移除 |
+| `393b01a5` `test(compiler)` | 补派生维不可达尺寸（首调与已捕获后）、根维/派生维样例不一致、声明上界在后续调用生效；导出侧补前两项 |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
