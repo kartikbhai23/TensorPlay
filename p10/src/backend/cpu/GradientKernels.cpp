@@ -45,6 +45,25 @@ Tensor weight_along(const Tensor& w1d, int64_t d, int64_t ndim) {
 
 } // namespace
 
+Tensor gradient_uniform_axis(const Tensor& src, int64_t d, double hd,
+                             int64_t edge_order) {
+    const int64_t n = src.size(d);
+    if (n <= edge_order) {
+        TP_THROW(RuntimeError, "gradient expected each dimension size to be at least edge_order+1");
+    }
+    const Scalar h(hd), two_h(2.0 * hd);
+    const auto seg = [&](int64_t start) { return src.narrow(d, start, 1); };
+    Tensor gi = src.narrow(d, 2, n - 2).sub(src.narrow(d, 0, n - 2)).div(two_h);
+    if (edge_order == 1) {
+        Tensor gl = seg(1).sub(seg(0)).div(h);
+        Tensor gr = seg(n - 1).sub(seg(n - 2)).div(h);
+        return Tensor::cat({gl, gi, gr}, d);
+    }
+    Tensor gl = seg(1).mul(4).sub(seg(0).mul(3)).sub(seg(2)).div(two_h);
+    Tensor gr = seg(n - 1).mul(3).sub(seg(n - 2).mul(4)).add(seg(n - 3)).div(two_h);
+    return Tensor::cat({gl, gi, gr}, d);
+}
+
 // Derivative of `src` along axis `d`.  coord carries either the per-position
 // coordinates (numel == n) or the uniform step (numel == 1).
 Tensor gradient_axis(const Tensor& src, int64_t d, const Tensor& coord,
@@ -62,24 +81,7 @@ Tensor gradient_axis(const Tensor& src, int64_t d, const Tensor& coord,
     const auto seg = [&](int64_t start) { return src.narrow(d, start, 1); };
 
     if (c.numel() == 1) {
-        // Uniform spacing h (possibly different per axis).
-        const Scalar h = c.item();
-        const double hd = h.toDouble();
-        const Scalar two_h = Scalar(2.0 * hd);
-        // interior k = 1 .. n-2: (f[k+1]-f[k-1])/(2h)
-        Tensor gi = src.narrow(d, 2, n - 2).sub(src.narrow(d, 0, n - 2))
-                        .div(two_h);
-        if (edge_order == 1) {
-            Tensor gl = seg(1).sub(seg(0)).div(h);
-            Tensor gr = seg(n - 1).sub(seg(n - 2)).div(h);
-            return Tensor::cat({gl, gi, gr}, d);
-        }
-        // edge_order == 2 borders: (-3 f0 + 4 f1 - f2)/(2h),
-        //                          (3 a - 4 b + c)/(2h)
-        Tensor gl = seg(1).mul(4).sub(seg(0).mul(3)).sub(seg(2)).div(two_h);
-        Tensor gr = seg(n - 1).mul(3).sub(seg(n - 2).mul(4)).add(seg(n - 3))
-                        .div(two_h);
-        return Tensor::cat({gl, gi, gr}, d);
+        return gradient_uniform_axis(src, d, c.item().toDouble(), edge_order);
     }
 
     if (c.numel() != n) {
@@ -173,8 +175,8 @@ std::vector<Tensor> gradient_composite(const Tensor& self,
     for (size_t i = 0; i < axes.size(); ++i) {
         Tensor coord;
         if (spacing.empty()) {
-            // Unit step for every axis.
-            coord = Tensor::full({1}, 1, work.dtype(), work.device());
+            outs.push_back(gradient_uniform_axis(work, axes[i], 1.0, edge_order));
+            continue;
         } else if (spacing.size() == 1) {
             // A single spacing broadcasts across every requested axis
             coord = spacing[0];
