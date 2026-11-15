@@ -5247,6 +5247,129 @@ bool fold_whole_extrema(Tensor& result, const Tensor& self, int64_t ndim,
     return true;
 }
 
+// A compare that reports a not-a-number from either operand.
+template <bool WantMax>
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+__m256 extremum_step8(const __m256& a, const __m256& b) {
+    const __m256 pick = WantMax ? _mm256_max_ps(a, b) : _mm256_min_ps(a, b);
+    return _mm256_or_ps(pick, _mm256_cmp_ps(a, b, _CMP_UNORD_Q));
+}
+
+// One band of eight widened columns written back in the packed width.
+template <bool BFloat>
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+void store_band_hw(uint16_t* acc, int64_t j, const __m256& a) {
+    alignas(32) float lanes[8];
+    _mm256_store_ps(lanes, a);
+    for (int64_t k = 0; k < 8; ++k) {
+        acc[j + k] = BFloat
+            ? tensorplay::cpu::vecreduced::narrow_bf16_one(lanes[k])
+            : tensorplay::cpu::vecreduced::narrow_one_hw(lanes[k]);
+    }
+}
+
+// The same block fold over packed columns: each band of eight columns is
+// widened once per row and compared in single precision, so a compare covers
+// eight columns and the packed value is formed only when the band is stored.
+// A packed width compares to the same answer in single precision as in its own
+// width -- the widening is exact -- so the fold reports what the narrow compare
+// would.  Four bands run side by side so that the chain of compares on one band
+// is not what the loop waits on.
+template <bool BFloat, bool WantMax>
+__attribute__((target("avx2,fma,f16c"), noinline))
+void fold_leading_block_hw(const uint16_t* in, uint16_t* acc, int64_t cols,
+                           int64_t row_begin, int64_t n) {
+    const int64_t wide = cols & ~static_cast<int64_t>(7);
+    const uint16_t* seed = in + row_begin * cols;
+    int64_t j = 0;
+    for (; j + 32 <= wide; j += 32) {
+        __m256 a0 = widen_row8<BFloat>(seed + j);
+        __m256 a1 = widen_row8<BFloat>(seed + j + 8);
+        __m256 a2 = widen_row8<BFloat>(seed + j + 16);
+        __m256 a3 = widen_row8<BFloat>(seed + j + 24);
+        int64_t s = 1;
+        for (; s + 4 <= n; s += 4) {
+            const uint16_t* q0 = in + (row_begin + s + 0) * cols + j;
+            const uint16_t* q1 = in + (row_begin + s + 1) * cols + j;
+            const uint16_t* q2 = in + (row_begin + s + 2) * cols + j;
+            const uint16_t* q3 = in + (row_begin + s + 3) * cols + j;
+            const __m256 v00 = widen_row8<BFloat>(q0);
+            const __m256 v01 = widen_row8<BFloat>(q0 + 8);
+            const __m256 v02 = widen_row8<BFloat>(q0 + 16);
+            const __m256 v03 = widen_row8<BFloat>(q0 + 24);
+            const __m256 v10 = widen_row8<BFloat>(q1);
+            const __m256 v11 = widen_row8<BFloat>(q1 + 8);
+            const __m256 v12 = widen_row8<BFloat>(q1 + 16);
+            const __m256 v13 = widen_row8<BFloat>(q1 + 24);
+            const __m256 v20 = widen_row8<BFloat>(q2);
+            const __m256 v21 = widen_row8<BFloat>(q2 + 8);
+            const __m256 v22 = widen_row8<BFloat>(q2 + 16);
+            const __m256 v23 = widen_row8<BFloat>(q2 + 24);
+            const __m256 v30 = widen_row8<BFloat>(q3);
+            const __m256 v31 = widen_row8<BFloat>(q3 + 8);
+            const __m256 v32 = widen_row8<BFloat>(q3 + 16);
+            const __m256 v33 = widen_row8<BFloat>(q3 + 24);
+            a0 = extremum_step8<WantMax>(
+                a0, extremum_step8<WantMax>(extremum_step8<WantMax>(v00, v10),
+                                            extremum_step8<WantMax>(v20, v30)));
+            a1 = extremum_step8<WantMax>(
+                a1, extremum_step8<WantMax>(extremum_step8<WantMax>(v01, v11),
+                                            extremum_step8<WantMax>(v21, v31)));
+            a2 = extremum_step8<WantMax>(
+                a2, extremum_step8<WantMax>(extremum_step8<WantMax>(v02, v12),
+                                            extremum_step8<WantMax>(v22, v32)));
+            a3 = extremum_step8<WantMax>(
+                a3, extremum_step8<WantMax>(extremum_step8<WantMax>(v03, v13),
+                                            extremum_step8<WantMax>(v23, v33)));
+        }
+        for (; s < n; ++s) {
+            const uint16_t* q = in + (row_begin + s) * cols + j;
+            a0 = extremum_step8<WantMax>(a0, widen_row8<BFloat>(q));
+            a1 = extremum_step8<WantMax>(a1, widen_row8<BFloat>(q + 8));
+            a2 = extremum_step8<WantMax>(a2, widen_row8<BFloat>(q + 16));
+            a3 = extremum_step8<WantMax>(a3, widen_row8<BFloat>(q + 24));
+        }
+        store_band_hw<BFloat>(acc, j, a0);
+        store_band_hw<BFloat>(acc, j + 8, a1);
+        store_band_hw<BFloat>(acc, j + 16, a2);
+        store_band_hw<BFloat>(acc, j + 24, a3);
+    }
+    for (; j < wide; j += 8) {
+        __m256 a = widen_row8<BFloat>(seed + j);
+        int64_t s = 1;
+        for (; s + 4 <= n; s += 4) {
+            const uint16_t* q0 = in + (row_begin + s + 0) * cols + j;
+            const uint16_t* q1 = in + (row_begin + s + 1) * cols + j;
+            const uint16_t* q2 = in + (row_begin + s + 2) * cols + j;
+            const uint16_t* q3 = in + (row_begin + s + 3) * cols + j;
+            a = extremum_step8<WantMax>(
+                a, extremum_step8<WantMax>(
+                       extremum_step8<WantMax>(widen_row8<BFloat>(q0),
+                                               widen_row8<BFloat>(q1)),
+                       extremum_step8<WantMax>(widen_row8<BFloat>(q2),
+                                               widen_row8<BFloat>(q3))));
+        }
+        for (; s < n; ++s) {
+            a = extremum_step8<WantMax>(
+                a, widen_row8<BFloat>(in + (row_begin + s) * cols + j));
+        }
+        store_band_hw<BFloat>(acc, j, a);
+    }
+    if (wide < cols) {
+        using Packed = std::conditional_t<BFloat, tensorplay::BFloat16,
+                                          tensorplay::Half>;
+        const Packed* spelled = reinterpret_cast<const Packed*>(in);
+        for (int64_t c = wide; c < cols; ++c) {
+            Packed best = spelled[row_begin * cols + c];
+            for (int64_t s = 1; s < n; ++s) {
+                const Packed value = spelled[(row_begin + s) * cols + c];
+                best = WantMax ? nan_max(best, value) : nan_min(best, value);
+            }
+            reinterpret_cast<Packed*>(acc)[c] = best;
+        }
+    }
+}
+
 // One block of rows folded into a column slice held by the task that owns it.
 // The slice is read once and written once per group of four rows rather than per
 // row, which is what keeps the pass behind the input stream instead of behind
@@ -5258,6 +5381,16 @@ bool fold_whole_extrema(Tensor& result, const Tensor& self, int64_t ndim,
 template <typename ctype, bool WantMax>
 void fold_leading_block(const ctype* in, ctype* acc, int64_t cols,
                         int64_t row_begin, int64_t n) {
+#if defined(__x86_64__)
+    if constexpr (std::is_same_v<ctype, tensorplay::Half> ||
+                  std::is_same_v<ctype, tensorplay::BFloat16>) {
+        fold_leading_block_hw<std::is_same_v<ctype, tensorplay::BFloat16>,
+                              WantMax>(
+            reinterpret_cast<const uint16_t*>(in),
+            reinterpret_cast<uint16_t*>(acc), cols, row_begin, n);
+        return;
+    }
+#endif
     using Vec = Vectorized<ctype>;
     constexpr int64_t lanes = Vec::size();
     auto pair_of = [](const Vec& a, const Vec& b) {
@@ -5399,6 +5532,23 @@ bool fold_leading_extrema(Tensor& result, const Tensor& self, int64_t ndim,
                         in_parallel_region();
     const int64_t tasks = serial ? 1 : get_num_threads();
     const ctype* data = self.data_ptr<ctype>();
+#if defined(__x86_64__)
+    if constexpr (std::is_same_v<ctype, tensorplay::Half> ||
+                  std::is_same_v<ctype, tensorplay::BFloat16>) {
+        // One walker holds the packed columns widened in its registers over the
+        // whole row range, so no row count needs a staging slice and no answer
+        // is narrowed before it is final.
+        if (serial && cols * static_cast<int64_t>(sizeof(ctype)) <= 16384) {
+            ctype* out = result.data_ptr<ctype>();
+            if (maximum_value) {
+                fold_leading_block<ctype, true>(data, out, cols, 0, rows);
+            } else {
+                fold_leading_block<ctype, false>(data, out, cols, 0, rows);
+            }
+            return true;
+        }
+    }
+#endif
     if (rows < 32 * tasks) {
         // With rows too few to share out, the columns keep their totals in
         // registers over the whole row range and the bands are what the team
@@ -5431,6 +5581,18 @@ bool fold_leading_extrema(Tensor& result, const Tensor& self, int64_t ndim,
     // its stride for nothing.
     if (cols * static_cast<int64_t>(sizeof(ctype)) > 16384) return false;
 
+    ctype* out = result.data_ptr<ctype>();
+    if (tasks == 1) {
+        // One fold covers the whole row range, so its totals are the answer
+        // and need neither a staging buffer nor a copy out of one.
+        if (maximum_value) {
+            fold_leading_block<ctype, true>(data, out, cols, 0, rows);
+        } else {
+            fold_leading_block<ctype, false>(data, out, cols, 0, rows);
+        }
+        return true;
+    }
+
     const int64_t per = (rows + tasks - 1) / tasks;
     Tensor buffer = Tensor::empty({tasks * cols}, self.dtype(), self.device());
     ctype* slices = buffer.data_ptr<ctype>();
@@ -5452,7 +5614,6 @@ bool fold_leading_extrema(Tensor& result, const Tensor& self, int64_t ndim,
         });
     }
 
-    ctype* out = result.data_ptr<ctype>();
     parallel_for(0, cols, 256, [&](int64_t begin, int64_t end) {
         constexpr int64_t lanes = Vectorized<ctype>::size();
         int64_t j = begin;
@@ -5649,6 +5810,10 @@ Tensor extrema_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& d
                       std::is_same_v<ctype, tensorplay::BFloat16>) { \
             if (fold_trailing_extrema<ctype>(result, self, ndim, resolved, \
                                              maximum_value)) { \
+                return result; \
+            } \
+            if (fold_leading_extrema<ctype>(result, self, ndim, resolved, \
+                                            maximum_value)) { \
                 return result; \
             } \
         } \
