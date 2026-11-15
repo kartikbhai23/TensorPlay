@@ -21,6 +21,12 @@
 
 #include <cuda_runtime.h>
 
+// The rejection asserts below must survive an optimized build.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+#include <cassert>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -295,23 +301,20 @@ __global__ void huber_grad_kernel_t(int64_t n, const T* x, const T* t,
 // binary_cross_entropy elementwise kernels
 // ---------------------------------------------------------------------------
 
-// The forward folds the 0/1 domain probe into the element pass: each operand
-// has its own counter, so a valid call pays no extra read pass and a rejected
-// one still names every offending side.  A lane that is not a number answers
-// neither comparison and is counted as out of range.
+// The forward folds the 0/1 domain probe into the element pass and rejects a
+// bad operand from inside the kernel: a host-side count would cost a readback
+// and a synchronization on every call that is valid.  A lane that is not a
+// number answers neither comparison and is rejected as out of range.
 template <typename T>
 __global__ void bce_elem_kernel_t(int64_t n, const T* x, const T* t,
-                                  const T* w, bool has_w, T* o,
-                                  int64_t* bad) {
+                                  const T* w, bool has_w, T* o) {
     int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     int64_t st = static_cast<int64_t>(blockDim.x) * gridDim.x;
     for (; i < n; i += st) {
-        if (!(x[i] >= T(0) && x[i] <= T(1))) {
-            atomicAdd(reinterpret_cast<unsigned long long*>(bad), 1ull);
-        }
-        if (!(t[i] >= T(0) && t[i] <= T(1))) {
-            atomicAdd(reinterpret_cast<unsigned long long*>(bad + 1), 1ull);
-        }
+        assert(x[i] >= T(0) && x[i] <= T(1) &&
+               "all elements of input should be between 0 and 1");
+        assert(t[i] >= T(0) && t[i] <= T(1) &&
+               "all elements of target should be between 0 and 1");
         // (t-1) log(1-x) - t log(x), floored at -100 like the elementwise cap
         const T lx = ::fmax(::log(x[i]), T(-100.0));
         const T l1x = ::fmax(::log(T(1.0) - x[i]), T(-100.0));
@@ -918,34 +921,19 @@ Tensor binary_cross_entropy_cuda(const Tensor& input, const Tensor& target,
     Tensor elems = Tensor::empty(shape_of(pr.first), acc, input.device());
     const int64_t n = elems.numel();
     if (n) {
-        // One counter pair rides along with the element pass: it is initialized
-        // on the stream, read back once the pass retires, and decides whether a
-        // clean exception naming the offending side replaces the answer.
-        Tensor bad = Tensor::zeros({2}, DType::Int64, input.device());
         const auto stream = getCurrentCUDAStream().stream();
         if (acc == DType::Float64) {
             bce_elem_kernel_t<double><<<loss_grid(n), kThreads, 0, stream>>>(
                 n, pr.first.data_ptr<double>(), pr.second.data_ptr<double>(),
                 has_w ? w.data_ptr<double>() : nullptr, has_w,
-                elems.data_ptr<double>(), bad.data_ptr<int64_t>());
+                elems.data_ptr<double>());
         } else {
             bce_elem_kernel_t<float><<<loss_grid(n), kThreads, 0, stream>>>(
                 n, pr.first.data_ptr<float>(), pr.second.data_ptr<float>(),
                 has_w ? w.data_ptr<float>() : nullptr, has_w,
-                elems.data_ptr<float>(), bad.data_ptr<int64_t>());
+                elems.data_ptr<float>());
         }
         CUDA_CHECK(cudaGetLastError());
-        int64_t counts[2] = {0, 0};
-        CUDA_CHECK(cudaMemcpy(counts, bad.data_ptr<int64_t>(), sizeof(counts),
-                              cudaMemcpyDeviceToHost));
-        if (counts[0] > 0) {
-            TP_THROW(RuntimeError,
-                     "all elements of input should be between 0 and 1");
-        }
-        if (counts[1] > 0) {
-            TP_THROW(RuntimeError,
-                     "all elements of target should be between 0 and 1");
-        }
     }
     if (reduction == 0) return elems.to(input.dtype());
     return reduce_loss_elems(elems, reduction, n, input.dtype());

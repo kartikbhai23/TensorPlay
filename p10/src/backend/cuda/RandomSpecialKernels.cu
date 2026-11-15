@@ -17,6 +17,12 @@
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
 
+// The rejection asserts below must survive an optimized build.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+#include <cassert>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -63,8 +69,11 @@ __global__ void poisson_fill_impl(int64_t numel, PhiloxCudaState philox_args,
     if (idx >= numel) return;
     curandStatePhilox4_32_10_t state;
     curand_init(seed, idx, offset, &state);
-    out_data[idx] = static_cast<scalar_t>(
-        curand_poisson(&state, static_cast<double>(in_data[idx])));
+    const double lambda = static_cast<double>(in_data[idx]);
+    // Checked in the sampling pass: probing the rates from the host would cost
+    // a reduction and a synchronization for every call that is valid.
+    assert(lambda >= 0 && "invalid Poisson rate, expected rate to be non-negative");
+    out_data[idx] = static_cast<scalar_t>(curand_poisson(&state, lambda));
 }
 
 Tensor poisson_kernel_cuda(const Tensor& self, std::optional<Generator> generator) {
@@ -75,9 +84,6 @@ Tensor poisson_kernel_cuda(const Tensor& self, std::optional<Generator> generato
     int64_t n = self.numel();
     if (n == 0) return t;
     const Tensor input = self.is_contiguous() ? self : self.contiguous();
-    if (!input.ge(Scalar(0)).all().item<bool>()) {
-        TP_THROW(RuntimeError, "invalid Poisson rate, expected rate to be non-negative");
-    }
     const int threads = 256;
     const int blocks = static_cast<int>((n + threads - 1) / threads);
     // Each thread runs curand_poisson which consumes lambda-dependent counters;
