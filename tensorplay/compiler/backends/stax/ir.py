@@ -7441,10 +7441,12 @@ class ExternKernel(InputsKernel):
         """Settle the layout, in the way this particular call requires.
 
         A call that was written against a particular layout says so here, and a
-        call that places no requirement leaves the layout to be worked out.
+        call that places no requirement leaves the layout to be worked out --
+        which is the ordinary case, since a call that only fills a buffer is
+        indifferent to the order the buffer's elements lie in.
         """
 
-        raise NotImplementedError
+        return
 
     def fill_non_provided_args(self, kwargs: dict) -> None:
         """Put in the arguments the call was not given, at their declared defaults.
