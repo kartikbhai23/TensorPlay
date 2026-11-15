@@ -2866,13 +2866,15 @@ def ctc_loss(
         if isinstance(x, Tensor):
             return x.to(DType.int64).reshape(-1)
         if isinstance(x, int):
-            return tensorplay.full([N], x, dtype=DType.int64, device=log_probs.device)
-        return tensorplay.tensor(list(x), dtype=DType.int64, device=log_probs.device)
+            return tensorplay.full([N], x, dtype=DType.int64, device="cpu")
+        return tensorplay.tensor(list(x), dtype=DType.int64, device="cpu")
 
     in_lens = _as_len_tensor(input_lengths)
     tgt_lens = _as_len_tensor(target_lengths)
 
-    if targets.dim() == 1:
+    if targets.dim() == 1 and log_probs.device.type == "cuda":
+        targets2d = targets.to(DType.int64)
+    elif targets.dim() == 1:
         rows = []
         off = 0
         for n in range(N):
@@ -2917,7 +2919,7 @@ def _ctc_loss_impl(log_probs, targets2d, in_lens, tgt_lens, blank, reduction,
     if reduction == "sum":
         return nll.sum()
     # 'mean': divide each by its target length, then average
-    denom = tgt_lens.to(nll.dtype).clamp(min=1)
+    denom = tgt_lens.to(nll.dtype).to(nll.device).clamp(min=1)
     return (nll / denom).mean()
 
 
