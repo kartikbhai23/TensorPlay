@@ -9,6 +9,7 @@
 #include <Utils.h>
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -687,8 +688,12 @@ Tensor binary_cross_entropy_with_logits_kernel(
     const Tensor& self,
     const Tensor& target,
     const std::optional<Tensor>& weight_opt,
-    const std::optional<Tensor>& pos_weight_opt) {
+    const std::optional<Tensor>& pos_weight_opt,
+    int64_t reduction) {
   constexpr const char* kName = "binary_cross_entropy_with_logits";
+  TP_CHECK(
+      reduction >= 0 && reduction <= 2,
+      std::string("Vulkan ") + kName + ": invalid reduction mode");
   TP_CHECK(
       self.dtype() == DType::Float32 || self.dtype() == DType::Float16,
       std::string("Vulkan ") + kName +
@@ -697,8 +702,20 @@ Tensor binary_cross_entropy_with_logits_kernel(
   const bool has_pos_weight =
       pos_weight_opt.has_value() && pos_weight_opt->defined();
   if (self.numel() == 0) {
-    // Nothing was walked, so the average is the zero an empty count hands back.
-    return Tensor::zeros(std::vector<int64_t>{}, DType::Float32, self.device());
+    // Nothing was walked: the unreduced answer keeps the operand geometry, the
+    // sum answers zero, and the average has no value to answer.
+    if (reduction == 0) {
+      return Tensor::empty(
+          static_cast<std::vector<int64_t>>(self.sizes()), DType::Float32,
+          self.device());
+    }
+    if (reduction == 2) {
+      return Tensor::zeros(std::vector<int64_t>{}, DType::Float32, self.device());
+    }
+    return Tensor::full(
+        std::vector<int64_t>{},
+        Scalar(std::numeric_limits<double>::quiet_NaN()), DType::Float32,
+        self.device());
   }
 
   const Tensor x = loss_walk_operand(
@@ -728,8 +745,12 @@ Tensor binary_cross_entropy_with_logits_kernel(
                 ? *weight_opt
                 : weight_opt->to(vulkan_device())));
   }
-  // The average of a likelihood is answered at single precision.
-  return tpx::ops::mean(loss);
+  // The folded answers come off the widened walk, so they stay single
+  // precision; the unreduced answer keeps the operand width.
+  if (reduction == 0) return tpx::ops::to(loss, self.dtype());
+  return tpx::ops::to(reduction == 1 ? tpx::ops::mean(loss)
+                                    : tpx::ops::sum(loss),
+                      DType::Float32);
 }
 
 // A plane read onto the device and widened to the width a deviation walk keeps.

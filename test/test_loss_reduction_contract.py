@@ -2,8 +2,9 @@
 
 Each of these losses used to answer the mean whatever the caller wanted, so the
 native entry point could not express ``none`` (the per-element plane) or ``sum``.
-The checks below pin both halves of the contract: the value each reduction mode
-answers, and the gradient that flows back through the new entries.
+The checks below pin the value each reduction mode answers, the shape it answers
+in, the reduction a destination argument carries, and the gradient that flows
+back through the entries whose operands are differentiable.
 """
 import os
 import sys
@@ -29,6 +30,8 @@ EXTRAS = {
     "margin_ranking_loss": {"margin": 0.7},
     "hinge_embedding_loss": {"margin": 1.0},
     "cosine_embedding_loss": {"margin": 0.3},
+    "binary_cross_entropy_with_logits": {},
+    "multilabel_soft_margin_loss": {},
 }
 
 
@@ -60,6 +63,11 @@ def _torch_inputs(op, dtype, seed, **kwargs):
         return [torch.randn(4, 5, dtype=dtype),
                 torch.randn(4, 5, dtype=dtype),
                 torch.tensor([1.0, -1.0, 1.0, -1.0], dtype=dtype)]
+    if op == "binary_cross_entropy_with_logits":
+        return [torch.randn(4, 5, dtype=dtype), torch.rand(4, 5, dtype=dtype)]
+    if op == "multilabel_soft_margin_loss":
+        return [torch.randn(4, 5, dtype=dtype),
+                (torch.rand(4, 5, dtype=dtype) > 0.5).to(dtype)]
     return [torch.randn(4, 5, dtype=dtype), torch.randn(4, 5, dtype=dtype)]
 
 
@@ -109,6 +117,51 @@ class TestForwardReductions(unittest.TestCase):
             self._check("cosine_embedding_loss", dev, torch.float64,
                         **EXTRAS["cosine_embedding_loss"])
 
+    def test_binary_cross_entropy_with_logits(self):
+        for dev in reference_devices():
+            for dtype in (torch.float32, torch.float64):
+                self._check("binary_cross_entropy_with_logits", dev, dtype)
+
+    def test_binary_cross_entropy_with_logits_weighted(self):
+        """The optional weighting planes reach the elementwise walk."""
+        for dev in reference_devices():
+            ref_x, ref_t = _torch_inputs("binary_cross_entropy_with_logits",
+                                         torch.float64, 13)
+            extras = {"weight": torch.rand(4, 5, dtype=torch.float64) + 0.5,
+                      "pos_weight": torch.rand(5, dtype=torch.float64) + 0.5}
+            slots = [from_reference(t, dev)
+                     for t in (ref_x, ref_t, extras["weight"],
+                               extras["pos_weight"])]
+            for reduction in REDUCTIONS:
+                ref = torch_F.binary_cross_entropy_with_logits(
+                    ref_x, ref_t, weight=extras["weight"],
+                    pos_weight=extras["pos_weight"], reduction=reduction)
+                got = tp.binary_cross_entropy_with_logits(
+                    slots[0], slots[1], slots[2], slots[3],
+                    reduction=_reduction_enum(reduction))
+                assert_reference_close(
+                    got, ref, msg=f"bce_with_logits weighted {reduction} ({dev})")
+
+    def test_multilabel_soft_margin_loss(self):
+        for dev in reference_devices():
+            for dtype in (torch.float32, torch.float64):
+                self._check("multilabel_soft_margin_loss", dev, dtype)
+
+    def test_multilabel_soft_margin_loss_one_dimensional(self):
+        """A single row answers a scalar, and its mean and sum agree."""
+        for dev in reference_devices():
+            ref_slots = [torch.randn(5, dtype=torch.float64),
+                         torch.tensor([1.0, 0.0, 1.0, 1.0, 0.0],
+                                      dtype=torch.float64)]
+            slots = [from_reference(t, dev) for t in ref_slots]
+            for reduction in REDUCTIONS:
+                ref = torch_F.multilabel_soft_margin_loss(
+                    *ref_slots, reduction=reduction)
+                got = tp.multilabel_soft_margin_loss(
+                    *slots, reduction=_reduction_enum(reduction))
+                assert_reference_close(
+                    got, ref, msg=f"mlsm 1-D {reduction} ({dev})")
+
 
 class TestFunctionalReductions(unittest.TestCase):
     """The module path keeps taking its reduction by name."""
@@ -124,6 +177,11 @@ class TestFunctionalReductions(unittest.TestCase):
              torch_F.hinge_embedding_loss),
             ("cosine_embedding_loss", F.cosine_embedding_loss,
              torch_F.cosine_embedding_loss),
+            ("binary_cross_entropy_with_logits",
+             F.binary_cross_entropy_with_logits,
+             torch_F.binary_cross_entropy_with_logits),
+            ("multilabel_soft_margin_loss", F.multilabel_soft_margin_loss,
+             torch_F.multilabel_soft_margin_loss),
         )
         for dev in reference_devices():
             for op, tp_fn, ref_fn in pairs:
@@ -168,6 +226,27 @@ class TestGradient(unittest.TestCase):
                                                msg=f"grad {tag}")
 
 
+class TestOutDestination(unittest.TestCase):
+    """The destination form carries the reduction through to its answer."""
+
+    def test_out_reduction(self):
+        for dev in reference_devices():
+            ref_x, ref_t = _torch_inputs("binary_cross_entropy_with_logits",
+                                         torch.float64, 17)
+            slots = [from_reference(t, dev) for t in (ref_x, ref_t)]
+            for reduction in REDUCTIONS:
+                ref = torch_F.binary_cross_entropy_with_logits(
+                    ref_x, ref_t, reduction=reduction)
+                shape = (4, 5) if reduction == "none" else ()
+                dest = from_reference(torch.zeros(shape, dtype=torch.float64), dev)
+                got = tp.binary_cross_entropy_with_logits(
+                    *slots, reduction=_reduction_enum(reduction), out=dest)
+                assert_reference_close(
+                    got, ref, msg=f"bce_with_logits out {reduction} ({dev})")
+                assert_reference_close(
+                    dest, ref, msg=f"bce_with_logits dest {reduction} ({dev})")
+
+
 class TestMetaShapes(unittest.TestCase):
     def test_shapes(self):
         a = tp.empty((4, 5), device="meta")
@@ -183,6 +262,10 @@ class TestMetaShapes(unittest.TestCase):
         assert tuple(tp.margin_ranking_loss(a, b, b, reduction=2).shape) == ()
         assert tuple(tp.hinge_embedding_loss(a, b, reduction=0).shape) == (4, 5)
         assert tuple(tp.cosine_embedding_loss(a, b, t, reduction=0).shape) == (4,)
+        assert tuple(tp.binary_cross_entropy_with_logits(a, b).shape) == ()
+        assert tuple(tp.binary_cross_entropy_with_logits(a, b, reduction=0).shape) == (4, 5)
+        assert tuple(tp.multilabel_soft_margin_loss(a, b).shape) == ()
+        assert tuple(tp.multilabel_soft_margin_loss(a, b, reduction=0).shape) == (4,)
 
 
 class TestValidation(unittest.TestCase):
@@ -196,6 +279,10 @@ class TestValidation(unittest.TestCase):
                     tp.margin_ranking_loss(a, a, a, reduction=bad)
                 with self.assertRaises(ValueError):
                     tp.hinge_embedding_loss(a, a, reduction=bad)
+                with self.assertRaises(ValueError):
+                    tp.binary_cross_entropy_with_logits(a, a, reduction=bad)
+                with self.assertRaises(ValueError):
+                    tp.multilabel_soft_margin_loss(a, a, reduction=bad)
 
 
 if __name__ == "__main__":

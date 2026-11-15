@@ -445,20 +445,26 @@ void check_expandable_to(const Tensor& side,
     }
 }
 
-// These losses pair their two operands under one broadcast before reducing.
-Tensor multilabel_soft_margin_loss_scalar_kernel(const Tensor& input,
-                                                 const Tensor& target) {
+// The row length is the last axis, so the unreduced answer is the paired
+// geometry without that axis.
+Tensor multilabel_soft_margin_loss_kernel(const Tensor& input,
+                                          const Tensor& target,
+                                          int64_t reduction) {
+    check_reduction_mode(reduction, "multilabel_soft_margin_loss");
     check_all_meta(input, target);
-    broadcast2(input, target);
-    return empty_meta({}, scalar_loss_dtype(input.dtype()), input.device());
+    std::vector<int64_t> row_shape = broadcast2(input, target);
+    if (!row_shape.empty()) row_shape.pop_back();
+    return reduce_loss_meta(row_shape, scalar_loss_dtype(input.dtype()),
+                            input.device(), reduction);
 }
 
 // These losses expand their side operands onto the leading operand's
 // geometry, which is the validated step.
-Tensor binary_cross_entropy_with_logits_scalar_kernel(
+Tensor binary_cross_entropy_with_logits_kernel(
     const Tensor& self, const Tensor& target,
     const std::optional<Tensor>& weight,
-    const std::optional<Tensor>& pos_weight) {
+    const std::optional<Tensor>& pos_weight, int64_t reduction) {
+    check_reduction_mode(reduction, "binary_cross_entropy_with_logits");
     check_all_meta(self, target);
     check_expandable_to(target, shape_of(self),
                         "binary_cross_entropy_with_logits");
@@ -471,7 +477,8 @@ Tensor binary_cross_entropy_with_logits_scalar_kernel(
                                 "binary_cross_entropy_with_logits");
         }
     }
-    return empty_meta({}, scalar_loss_dtype(self.dtype()), self.device());
+    return reduce_loss_meta(shape_of(self), scalar_loss_dtype(self.dtype()),
+                            self.device(), reduction);
 }
 
 // The embedding losses read their row geometry straight off the leading
@@ -525,12 +532,10 @@ TENSORPLAY_LIBRARY_IMPL(Meta, MetaLoss) {
     m.impl("multi_margin_loss", multi_margin_loss_kernel);
     m.impl("multilabel_margin_loss_forward",
            multilabel_margin_loss_forward_kernel);
-    // The two remaining plain loss names carry no reduction argument and
-    // answer a scalar; the rest share the folded twins' shape rules.
     m.impl("multilabel_soft_margin_loss",
-           multilabel_soft_margin_loss_scalar_kernel);
+           multilabel_soft_margin_loss_kernel);
     m.impl("binary_cross_entropy_with_logits",
-           binary_cross_entropy_with_logits_scalar_kernel);
+           binary_cross_entropy_with_logits_kernel);
     m.impl("triplet_margin_loss", triplet_margin_loss_kernel);
     m.impl("l1_loss", l1_loss_kernel);
     m.impl("kl_div", kl_div_kernel);

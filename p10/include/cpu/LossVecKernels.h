@@ -1,15 +1,16 @@
 #pragma once
 
-// Tier-compiled (DEFAULT/AVX2/AVX512) folds for the mean-reduced losses.
+// Tier-compiled (DEFAULT/AVX2/AVX512) walks for the losses.
 // The implementations live in LossVecKernelsImpl.cpp, which is listed in
 // TP_CPU_KERNEL_SRCS so each CPU capability tier compiles its own vectorized
 // walk (see p10/CMakeLists.txt); the loss entry points in LossKernels.cpp and
 // ExtraLossKernels.cpp stay in the base tier and hand the ready-to-run
 // buffers to these stubs.
 //
-// Every stub folds contiguous same-dtype operands in the operand width and
-// answers the accumulated value as a double.  dtype is the DType enumerator
-// cast to int; only Float32 and Float64 are accepted.
+// Every stub walks contiguous same-dtype operands in the operand width and
+// answers the accumulated value as a double; the walks that also have an
+// unreduced form store the per-element or per-row answers into `out`.  dtype is
+// the DType enumerator cast to int; only Float32 and Float64 are accepted.
 
 #include "DispatchStub.h"
 #include <cstdint>
@@ -37,10 +38,24 @@ using huber_sum_fn = double (*)(const void* input, const void* target,
 using huber_into_fn = void (*)(const void* input, const void* target, void* out,
                                int64_t n, double delta, int dtype);
 
-// multilabel_soft_margin_loss: sum over all elements of
-// t log sigmoid(x) + (1 - t) log sigmoid(-x).
-using multilabel_sum_fn = double (*)(const void* input, const void* target,
-                                     int64_t n, int dtype);
+// binary_cross_entropy_with_logits: w [pw t sp(-x) + (1 - t) sp(x)] with
+// sp(y) = max(y, 0) + log1p(exp(-|y|)).  `weight` and `pos_weight` are null
+// when the caller carries neither.
+//
+// The return value is the sum over all elements.  When `out` is not null the
+// walk also stores every element answer there (same dtype as the operands), so
+// an unreduced call reads the elements back without a second walk.
+using bce_logits_rows_fn = double (*)(const void* input, const void* target,
+                                      const void* weight, const void* pos_weight,
+                                      void* out, int64_t n, int dtype);
+
+// multilabel_soft_margin_loss: row r answers
+// -[sum_c t log sigmoid(x) + (1 - t) log sigmoid(-x)] / width, where width is
+// the row length.  The return value is the sum over rows; when `out` is not
+// null the walk also stores every row answer there (same dtype as the operands).
+using multilabel_rows_fn = double (*)(const void* input, const void* target,
+                                      void* out, int64_t rows, int64_t width,
+                                      int dtype);
 
 // triplet_margin_loss: row r answers max(0, d(a, p) - d(a, n) + margin), where
 // d(u, v) is the order-p norm of (u - v + eps) along the row.  With `swap` the
@@ -59,7 +74,8 @@ DECLARE_DISPATCH(bce_sum_fn, bce_sum_stub)
 DECLARE_DISPATCH(bce_into_fn, bce_into_stub)
 DECLARE_DISPATCH(huber_into_fn, huber_into_stub)
 DECLARE_DISPATCH(huber_sum_fn, huber_sum_stub)
-DECLARE_DISPATCH(multilabel_sum_fn, multilabel_sum_stub)
+DECLARE_DISPATCH(bce_logits_rows_fn, bce_logits_rows_stub)
+DECLARE_DISPATCH(multilabel_rows_fn, multilabel_rows_stub)
 DECLARE_DISPATCH(triplet_rows_fn, triplet_rows_stub)
 
 } // namespace cpu

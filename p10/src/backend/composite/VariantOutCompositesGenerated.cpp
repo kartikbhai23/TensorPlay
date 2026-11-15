@@ -146,8 +146,8 @@ Tensor& out_wrap_bernoulli_float_out(const Tensor& self, double p, std::optional
     return out;
 }
 
-Tensor& out_wrap_binary_cross_entropy_with_logits_out(const Tensor& self, const Tensor& target, const std::optional<Tensor>& weight, const std::optional<Tensor>& pos_weight, Tensor& out) {
-    write_out(out, ops::binary_cross_entropy_with_logits(self, target, weight, pos_weight));
+Tensor& out_wrap_binary_cross_entropy_with_logits_out(const Tensor& self, const Tensor& target, const std::optional<Tensor>& weight, const std::optional<Tensor>& pos_weight, int64_t reduction, Tensor& out) {
+    write_out(out, ops::binary_cross_entropy_with_logits(self, target, weight, pos_weight, reduction));
     return out;
 }
 

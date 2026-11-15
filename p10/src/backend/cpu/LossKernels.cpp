@@ -18,12 +18,13 @@ namespace cpu {
 
 namespace ops = tensorplay::tpx::ops;
 
-// The tier-compiled folds live in LossVecKernelsImpl.cpp.
+// The tier-compiled walks live in LossVecKernelsImpl.cpp.
 DEFINE_DISPATCH(bce_sum_stub);
 DEFINE_DISPATCH(bce_into_stub);
+DEFINE_DISPATCH(bce_logits_rows_stub);
 DEFINE_DISPATCH(huber_sum_stub);
 DEFINE_DISPATCH(huber_into_stub);
-DEFINE_DISPATCH(multilabel_sum_stub);
+DEFINE_DISPATCH(multilabel_rows_stub);
 DEFINE_DISPATCH(triplet_rows_stub);
 
 template <typename scalar_t>

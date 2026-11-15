@@ -4825,7 +4825,7 @@
     CPU: binary_cross_entropy_backward_cpu
     CUDA: binary_cross_entropy_backward_cuda
 
-- func: binary_cross_entropy_with_logits(Tensor self, Tensor target, Tensor? weight=None, Tensor? pos_weight=None) -> Tensor
+- func: binary_cross_entropy_with_logits(Tensor self, Tensor target, Tensor? weight=None, Tensor? pos_weight=None, int reduction=1) -> Tensor
   device_check: NoCheck
   variants: function
   dispatch:
@@ -4897,7 +4897,7 @@
     CPU: multilabel_margin_loss_backward_cpu
     CUDA: multilabel_margin_loss_backward_cuda
 
-- func: multilabel_soft_margin_loss(Tensor input, Tensor target) -> Tensor
+- func: multilabel_soft_margin_loss(Tensor input, Tensor target, int reduction=1) -> Tensor
   variants: function
   dispatch:
     CPU: multilabel_soft_margin_loss_cpu
@@ -12015,7 +12015,7 @@
   variants: method
 - func: bernoulli.float_out(Tensor self, float p=0.5, *, Generator? generator=None, Tensor(a!) out) -> Tensor(a!)
   variants: method
-- func: binary_cross_entropy_with_logits.out(Tensor self, Tensor target, Tensor? weight=None, Tensor? pos_weight=None, *, Tensor(a!) out) -> Tensor(a!)
+- func: binary_cross_entropy_with_logits.out(Tensor self, Tensor target, Tensor? weight=None, Tensor? pos_weight=None, int reduction=1, *, Tensor(a!) out) -> Tensor(a!)
   variants: function
 - func: bincount.out(Tensor self, Tensor? weights=None, SymInt minlength=0, *, Tensor(a!) out) -> Tensor(a!)
   variants: function, method

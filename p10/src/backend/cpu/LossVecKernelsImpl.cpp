@@ -1,5 +1,5 @@
-// Tier-compiled forward folds for the mean-reduced losses: binary cross
-// entropy, huber, multilabel soft margin and triplet margin.  Each CPU
+// Tier-compiled forward walks for the losses: binary cross entropy, binary
+// cross entropy over logits, huber, multilabel soft margin and triplet margin.  Each CPU
 // capability tier compiles its own copy of this file (see TP_CPU_KERNEL_SRCS
 // in p10/CMakeLists.txt) and registers the slots declared in
 // cpu/LossVecKernels.h; DispatchStub picks the widest copy at run time.
@@ -211,10 +211,60 @@ void bce_into_typed(const T* input, const T* target, T* out, int64_t n,
     *bad_target = tg_bad.load(std::memory_order_relaxed);
 }
 
-// t log sigmoid(x) + (1 - t) log sigmoid(-x)
-//   = -(t max(-x, 0) + (1 - t) max(x, 0) + log1p(exp(-|x|))).
+// The loss one lane contributes, negated: t log sigmoid(x) + (1 - t)
+// log sigmoid(-x) = t max(-x, 0) + (1 - t) max(x, 0) + log1p(exp(-|x|)), and
+// the row answer is its negated sum divided by the row length.
 template <typename T>
-double multilabel_sum_typed(const T* input, const T* target, int64_t n) {
+T multilabel_lane(const T x, const T t) {
+    const double xv = static_cast<double>(x);
+    const double tv = static_cast<double>(t);
+    const double tail = std::log1p(std::exp(-std::fabs(xv)));
+    return static_cast<T>(tv * std::max(-xv, 0.0) +
+                          (1.0 - tv) * std::max(xv, 0.0) + tail);
+}
+
+// The row answer is the walk over the row divided by the row length, and the
+// rows are cut off the flat operands, so a row walk needs no second pass.
+template <typename T>
+double multilabel_rows_typed(const T* input, const T* target, T* out,
+                             int64_t rows, int64_t width) {
+    using Vec = vec::Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const Vec zero(static_cast<T>(0));
+    const Vec one(static_cast<T>(1));
+    if (width <= 0) return 0.0;
+    const T scale = static_cast<T>(1) / static_cast<T>(width);
+    return parallel_ranges(rows, width,
+                           [&](int64_t begin, int64_t end) -> double {
+        double total = 0.0;
+        for (int64_t r = begin; r < end; ++r) {
+            const T* row_in = input + r * width;
+            const T* row_tg = target + r * width;
+            Vec acc(static_cast<T>(0));
+            int64_t i = 0;
+            for (; i + W <= width; i += W) {
+                const Vec xv = Vec::loadu(row_in + i);
+                const Vec tv = Vec::loadu(row_tg + i);
+                const Vec tail = (-xv.abs()).exp().log1p();
+                const Vec positive = vec::maximum(xv, zero);
+                const Vec negative = vec::maximum(-xv, zero);
+                acc = acc + (tv * negative + (one - tv) * positive + tail);
+            }
+            T sum = acc.reduce_add();
+            for (; i < width; ++i) sum += multilabel_lane(row_in[i], row_tg[i]);
+            const T answer = sum * scale;
+            total += static_cast<double>(answer);
+            if (out) out[r] = answer;
+        }
+        return total;
+    });
+}
+
+// sp(y) = max(y, 0) + log1p(exp(-|y|)); the two softplus terms of one lane
+// share their tail, so the walk builds it once and keeps the positive parts.
+template <typename T>
+double bce_logits_rows_typed(const T* input, const T* target, const T* weight,
+                             const T* pos_weight, T* out, int64_t n) {
     using Vec = vec::Vectorized<T>;
     constexpr int64_t W = Vec::size();
     const Vec zero(static_cast<T>(0));
@@ -227,17 +277,27 @@ double multilabel_sum_typed(const T* input, const T* target, int64_t n) {
             const Vec xv = Vec::loadu(input + i);
             const Vec tv = Vec::loadu(target + i);
             const Vec tail = (-xv.abs()).exp().log1p();
-            const Vec positive = vec::maximum(xv, zero);
-            const Vec negative = vec::maximum(-xv, zero);
-            acc = acc - (tv * negative + (one - tv) * positive + tail);
+            const Vec sp_x = vec::maximum(xv, zero) + tail;
+            const Vec sp_neg_x = vec::maximum(-xv, zero) + tail;
+            const Vec positive = pos_weight ? Vec::loadu(pos_weight + i) : one;
+            Vec value = positive * tv * sp_neg_x + (one - tv) * sp_x;
+            if (weight) value = value * Vec::loadu(weight + i);
+            acc = acc + value;
+            if (out) value.store(out + i);
         }
         double total = static_cast<double>(acc.reduce_add());
         for (; i < end; ++i) {
             const double xv = static_cast<double>(input[i]);
             const double tv = static_cast<double>(target[i]);
             const double tail = std::log1p(std::exp(-std::fabs(xv)));
-            total += -(tv * std::max(-xv, 0.0) +
-                       (1.0 - tv) * std::max(xv, 0.0) + tail);
+            const double sp_x = std::max(xv, 0.0) + tail;
+            const double sp_neg_x = std::max(-xv, 0.0) + tail;
+            const double positive =
+                pos_weight ? static_cast<double>(pos_weight[i]) : 1.0;
+            double value = positive * tv * sp_neg_x + (1.0 - tv) * sp_x;
+            if (weight) value *= static_cast<double>(weight[i]);
+            total += value;
+            if (out) out[i] = static_cast<T>(value);
         }
         return total;
     });
@@ -403,17 +463,43 @@ double huber_sum_impl(const void* input, const void* target, int64_t n,
     }
 }
 
-double multilabel_sum_impl(const void* input, const void* target, int64_t n,
-                           int dtype) {
+double multilabel_rows_impl(const void* input, const void* target, void* out,
+                            int64_t rows, int64_t width, int dtype) {
     switch (static_cast<DType>(dtype)) {
         case DType::Float64:
-            return multilabel_sum_typed(static_cast<const double*>(input),
-                                        static_cast<const double*>(target), n);
+            return multilabel_rows_typed(static_cast<const double*>(input),
+                                         static_cast<const double*>(target),
+                                         static_cast<double*>(out), rows, width);
         case DType::Float32:
-            return multilabel_sum_typed(static_cast<const float*>(input),
-                                        static_cast<const float*>(target), n);
+            return multilabel_rows_typed(static_cast<const float*>(input),
+                                         static_cast<const float*>(target),
+                                         static_cast<float*>(out), rows, width);
         default:
             TP_THROW(TypeError, "multilabel_soft_margin_loss: unsupported dtype");
+    }
+}
+
+double bce_logits_rows_impl(const void* input, const void* target,
+                            const void* weight, const void* pos_weight,
+                            void* out, int64_t n, int dtype) {
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float64:
+            return bce_logits_rows_typed(
+                static_cast<const double*>(input),
+                static_cast<const double*>(target),
+                static_cast<const double*>(weight),
+                static_cast<const double*>(pos_weight),
+                static_cast<double*>(out), n);
+        case DType::Float32:
+            return bce_logits_rows_typed(
+                static_cast<const float*>(input),
+                static_cast<const float*>(target),
+                static_cast<const float*>(weight),
+                static_cast<const float*>(pos_weight),
+                static_cast<float*>(out), n);
+        default:
+            TP_THROW(TypeError,
+                     "binary_cross_entropy_with_logits: unsupported dtype");
     }
 }
 
@@ -450,14 +536,16 @@ REGISTER_DISPATCH(bce_sum_stub, &bce_sum_impl);
 REGISTER_DISPATCH(bce_into_stub, &bce_into_impl);
 REGISTER_DISPATCH(huber_into_stub, &huber_into_impl);
 REGISTER_DISPATCH(huber_sum_stub, &huber_sum_impl);
-REGISTER_DISPATCH(multilabel_sum_stub, &multilabel_sum_impl);
+REGISTER_DISPATCH(bce_logits_rows_stub, &bce_logits_rows_impl);
+REGISTER_DISPATCH(multilabel_rows_stub, &multilabel_rows_impl);
 REGISTER_DISPATCH(triplet_rows_stub, &triplet_rows_impl);
 #else
 ALSO_REGISTER_AVX512_DISPATCH(bce_sum_stub, &bce_sum_impl);
 ALSO_REGISTER_AVX512_DISPATCH(bce_into_stub, &bce_into_impl);
 ALSO_REGISTER_AVX512_DISPATCH(huber_into_stub, &huber_into_impl);
 ALSO_REGISTER_AVX512_DISPATCH(huber_sum_stub, &huber_sum_impl);
-ALSO_REGISTER_AVX512_DISPATCH(multilabel_sum_stub, &multilabel_sum_impl);
+ALSO_REGISTER_AVX512_DISPATCH(bce_logits_rows_stub, &bce_logits_rows_impl);
+ALSO_REGISTER_AVX512_DISPATCH(multilabel_rows_stub, &multilabel_rows_impl);
 ALSO_REGISTER_AVX512_DISPATCH(triplet_rows_stub, &triplet_rows_impl);
 #endif
 

@@ -38,13 +38,6 @@ inline std::vector<int64_t> shape_of(const Tensor& t) {
     return static_cast<std::vector<int64_t>>(t.shape());
 }
 
-Tensor mean_from_elems(const Tensor& elems, int64_t n, DType dt, const Device& dev) {
-    const DType out_dtype = dt == DType::Float64 ? DType::Float64 : DType::Float32;
-    if (n == 0) return Tensor::full({}, Scalar(0), out_dtype, dev);
-    Tensor result = elems.mean();
-    return result.dtype() == out_dtype ? result : result.to(out_dtype);
-}
-
 // Loss carry type: half/float accumulate in float, everything else in double.
 inline DType loss_carry_dtype(DType t) {
     return (t == DType::Float32 || t == DType::Float16 || t == DType::BFloat16)
@@ -103,7 +96,9 @@ __host__ __device__ inline float dspf(float y) {
 
 Tensor binary_cross_entropy_with_logits_cuda(const Tensor& self, const Tensor& target,
                                              const std::optional<Tensor>& weight_opt,
-                                             const std::optional<Tensor>& pos_weight_opt) {
+                                             const std::optional<Tensor>& pos_weight_opt,
+                                             int64_t reduction) {
+    tp_validate_reduction(reduction);
     Tensor weight = weight_opt.value_or(Tensor());
     Tensor pos_weight = pos_weight_opt.value_or(Tensor());
     const DType acc = loss_carry_dtype(self.dtype());
@@ -142,7 +137,12 @@ Tensor binary_cross_entropy_with_logits_cuda(const Tensor& self, const Tensor& t
         }
         CUDA_CHECK(cudaGetLastError());
     }
-    return mean_from_elems(elems, n, self.dtype(), self.device());
+    const DType out_dtype =
+        self.dtype() == DType::Float64 ? DType::Float64 : DType::Float32;
+    if (elems.dtype() != out_dtype) elems = elems.to(out_dtype);
+    if (reduction == 0) return elems;
+    // A mean over no elements carries the 0/0 it divides to.
+    return reduction == 1 ? elems.mean() : elems.sum();
 }
 
 Tensor triplet_margin_loss_cuda(const Tensor& anchor, const Tensor& positive,
@@ -176,11 +176,19 @@ Tensor triplet_margin_loss_cuda(const Tensor& anchor, const Tensor& positive,
     return tp_loss_reduce(loss.to(out_dtype), reduction);
 }
 
-Tensor multilabel_soft_margin_loss_cuda(const Tensor& input, const Tensor& target) {
+Tensor multilabel_soft_margin_loss_cuda(const Tensor& input, const Tensor& target,
+                                         int64_t reduction) {
+    tp_validate_reduction(reduction);
     Tensor positive = target * (-ops::log_sigmoid(input));
     Tensor negative = (Scalar(1) - target) * (-ops::log_sigmoid(-input));
-    Tensor row_loss = ops::mean(positive + negative, {1}, false);
-    return mean_from_elems(row_loss, row_loss.numel(), input.dtype(), input.device());
+    const int64_t class_dim = input.dim() - 1;
+    Tensor row_loss = ops::mean(positive + negative, {class_dim}, false);
+    const DType out_dtype =
+        input.dtype() == DType::Float64 ? DType::Float64 : DType::Float32;
+    if (row_loss.dtype() != out_dtype) row_loss = row_loss.to(out_dtype);
+    if (reduction == 0) return row_loss;
+    // The answer over an empty batch averages to nothing.
+    return reduction == 1 ? row_loss.mean() : row_loss.sum();
 }
 
 Tensor tp_l1_loss_cuda(const Tensor& input, const Tensor& target,

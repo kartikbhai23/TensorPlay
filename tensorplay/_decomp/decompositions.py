@@ -2164,7 +2164,7 @@ def binary_cross_entropy_backward(grad_output, self, target, weight=None, reduct
 
 
 @register_decomposition(ops.binary_cross_entropy_with_logits.default)
-def binary_cross_entropy_with_logits(self, target, weight=None, pos_weight=None):
+def binary_cross_entropy_with_logits(self, target, weight=None, pos_weight=None, reduction=1):
     if pos_weight is not None:
         log_weight = (pos_weight - 1) * target + 1
         loss = (1 - target) * self - log_weight * tp.nn.functional.logsigmoid(self)
@@ -2172,7 +2172,7 @@ def binary_cross_entropy_with_logits(self, target, weight=None, pos_weight=None)
         loss = (1 - target) * self - tp.nn.functional.logsigmoid(self)
     if weight is not None:
         loss = loss * weight
-    return loss.to(target.dtype).mean()
+    return _reduce(loss.to(target.dtype), reduction)
 
 
 @register_decomposition(ops.soft_margin_loss.default)

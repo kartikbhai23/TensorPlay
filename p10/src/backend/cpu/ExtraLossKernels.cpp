@@ -45,34 +45,93 @@ inline Tensor scalar_from(double v, DType dt, const Device& dev) {
 
 Tensor binary_cross_entropy_with_logits_cpu(const Tensor& self, const Tensor& target,
                                             const std::optional<Tensor>& weight_opt,
-                                            const std::optional<Tensor>& pos_weight_opt) {
-    // Stable form: l = w*(pw*t*softplus(-x) + (1-t)*softplus(x)) with
-    // softplus(y) = max(y,0) + log1p(exp(-|y|)).
+                                            const std::optional<Tensor>& pos_weight_opt,
+                                            int64_t reduction) {
+    if (reduction != 0 && reduction != 1 && reduction != 2) {
+        TP_THROW(ValueError, "Invalid reduction mode");
+    }
+    // Stable form: l = w*(pw*t*sp(-x) + (1-t)*sp(x)) with
+    // sp(y) = max(y, 0) + log1p(exp(-|y|)).
     Tensor weight = weight_opt.value_or(Tensor());
     Tensor pos_weight = pos_weight_opt.value_or(Tensor());
-    Tensor x = self.contiguous().to(DType::Float64);
-    Tensor t = target.contiguous().to(DType::Float64).expand(shape_of(x)).contiguous();
-    bool has_w = weight.defined() && weight.numel() > 0;
-    bool has_pw = pos_weight.defined() && pos_weight.numel() > 0;
-    Tensor w = has_w ? weight.to(DType::Float64).expand(shape_of(x)).contiguous()
-                     : Tensor::zeros({}, DType::Float64, Device(DeviceType::CPU));
-    Tensor pw = has_pw ? pos_weight.to(DType::Float64).expand(shape_of(x)).contiguous()
-                       : Tensor::zeros({}, DType::Float64, Device(DeviceType::CPU));
-    int64_t n = x.numel();
+    const bool has_w = weight.defined() && weight.numel() > 0;
+    const bool has_pw = pos_weight.defined() && pos_weight.numel() > 0;
+    const DType out_dt =
+        self.dtype() == DType::Float64 ? DType::Float64 : DType::Float32;
+    const Device& dev = self.device();
+
+    // The joined walk reads both operands where they lie, so only the two
+    // optional planes are widened and laid out for it.
+    if (fused_float(self, target)) {
+        const std::vector<int64_t> shape = shape_of(self);
+        const DType dt = self.dtype();
+        Tensor w_plane;
+        Tensor pw_plane;
+        const void* wp = nullptr;
+        const void* pwp = nullptr;
+        if (has_w) {
+            w_plane = weight.expand(shape).contiguous().to(dt);
+            wp = w_plane.data_ptr();
+        }
+        if (has_pw) {
+            pw_plane = pos_weight.expand(shape).contiguous().to(dt);
+            pwp = pw_plane.data_ptr();
+        }
+        const int64_t n = self.numel();
+        const int dtype = static_cast<int>(dt);
+        if (reduction == 0) {
+            Tensor out(shape, dt, dev);
+            bce_logits_rows_stub(DeviceType::CPU, self.data_ptr(),
+                                 target.data_ptr(), wp, pwp, out.data_ptr(), n,
+                                 dtype);
+            return out;
+        }
+        const double total =
+            bce_logits_rows_stub(DeviceType::CPU, self.data_ptr(),
+                                 target.data_ptr(), wp, pwp, nullptr, n, dtype);
+        // A mean over no elements carries the 0/0 it divides to.
+        return scalar_from(reduction == 1 ? total / static_cast<double>(n)
+                                          : total,
+                           out_dt, dev);
+    }
+
+    // Everything else is widened to double first, so a whole-number or
+    // mixed-precision pair still answers the same number.
+    std::vector<int64_t> shape = broadcast_shapes(shape_of(self), shape_of(target));
+    if (has_w) shape = broadcast_shapes(shape, shape_of(weight));
+    if (has_pw) shape = broadcast_shapes(shape, shape_of(pos_weight));
+    Tensor x = self.expand(shape).contiguous().to(DType::Float64);
+    Tensor t = target.expand(shape).contiguous().to(DType::Float64);
+    Tensor w_plane =
+        has_w ? weight.expand(shape).contiguous().to(DType::Float64) : Tensor();
+    Tensor pw_plane = has_pw
+                          ? pos_weight.expand(shape).contiguous().to(DType::Float64)
+                          : Tensor();
+    const int64_t n = x.numel();
     const double* xp = x.data_ptr<double>();
     const double* tp = t.data_ptr<double>();
-    const double* wp = has_w ? w.data_ptr<double>() : nullptr;
-    const double* pwp = has_pw ? pw.data_ptr<double>() : nullptr;
+    const double* wp = has_w ? w_plane.data_ptr<double>() : nullptr;
+    const double* pwp = has_pw ? pw_plane.data_ptr<double>() : nullptr;
+    Tensor values;
+    double* vp = nullptr;
+    if (reduction == 0) {
+        values = Tensor(shape, DType::Float64, dev);
+        vp = values.data_ptr<double>();
+    }
     double total = 0;
     for (int64_t i = 0; i < n; ++i) {
-        double xv = xp[i], tv = tp[i];
-        double wi = wp ? wp[i] : 1.0;
-        double pi = pwp ? pwp[i] : 1.0;
-        total += wi * (pi * tv * softplus(-xv) + (1.0 - tv) * softplus(xv));
+        const double xv = xp[i];
+        const double tv = tp[i];
+        const double wi = wp ? wp[i] : 1.0;
+        const double pi = pwp ? pwp[i] : 1.0;
+        const double value =
+            wi * (pi * tv * softplus(-xv) + (1.0 - tv) * softplus(xv));
+        if (vp) vp[i] = value;
+        total += value;
     }
-    double mean = n > 0 ? total / static_cast<double>(n) : 0.0;
-    DType out_dt = self.dtype() == DType::Float64 ? DType::Float64 : DType::Float32;
-    return Tensor::full({}, Scalar(mean), out_dt, self.device());
+    if (reduction == 0) return values.to(out_dt);
+    return scalar_from(reduction == 1 ? total / static_cast<double>(n) : total,
+                       out_dt, dev);
 }
 
 // Distances along the last axis for one row, read from the operand buffers.
@@ -190,33 +249,74 @@ Tensor triplet_margin_loss_cpu(const Tensor& anchor, const Tensor& positive,
     return scalar_from(total, anchor.dtype(), anchor.device());
 }
 
-Tensor multilabel_soft_margin_loss_cpu(const Tensor& input, const Tensor& target) {
+Tensor multilabel_soft_margin_loss_cpu(const Tensor& input,
+                                       const Tensor& target,
+                                       int64_t reduction) {
+    if (reduction != 0 && reduction != 1 && reduction != 2) {
+        TP_THROW(ValueError, "Invalid reduction mode");
+    }
+    const DType out_dt =
+        input.dtype() == DType::Float64 ? DType::Float64 : DType::Float32;
+    const Device& dev = input.device();
     if (fused_float(input, target) && input.dim() > 0 && input.size(-1) > 0) {
         const int64_t C = input.size(-1);
         const int64_t rows = input.numel() / C;
-        const double total = multilabel_sum_stub(
-            DeviceType::CPU, input.data_ptr(), target.data_ptr(), input.numel(),
-            static_cast<int>(input.dtype()));
-        return scalar_from(-total / static_cast<double>(C) /
-                               static_cast<double>(rows),
-                           input.dtype(), input.device());
+        const std::vector<int64_t> full = shape_of(input);
+        const std::vector<int64_t> row_shape(full.begin(), full.end() - 1);
+        const int dtype = static_cast<int>(input.dtype());
+        if (reduction == 0) {
+            Tensor out = rows > 0 ? Tensor::empty(row_shape, out_dt, dev)
+                                  : Tensor::zeros(row_shape, out_dt, dev);
+            if (rows > 0) {
+                multilabel_rows_stub(DeviceType::CPU, input.data_ptr(),
+                                     target.data_ptr(), out.data_ptr(), rows, C,
+                                     dtype);
+            }
+            return out;
+        }
+        const double total =
+            rows > 0 ? multilabel_rows_stub(DeviceType::CPU, input.data_ptr(),
+                                            target.data_ptr(), nullptr, rows, C,
+                                            dtype)
+                     : 0.0;
+        // The row answers are averages, so an empty batch averages to nothing.
+        if (reduction == 2) return scalar_from(total, out_dt, dev);
+        return scalar_from(rows > 0 ? total / static_cast<double>(rows)
+                                    : std::numeric_limits<double>::quiet_NaN(),
+                           out_dt, dev);
     }
     auto pr = bcast2(input, target);
-    Tensor x = pr.first, t = pr.second;
+    Tensor x = pr.first;
+    Tensor t = pr.second;
+    const std::vector<int64_t> full = shape_of(x);
     const int64_t C = x.dim() > 0 ? x.size(-1) : 0;
     const int64_t rows = C > 0 ? x.numel() / C : 0;
+    std::vector<int64_t> row_shape = full;
+    if (!row_shape.empty()) row_shape.pop_back();
     const double* xp = x.data_ptr<double>();
     const double* tp = t.data_ptr<double>();
+    std::vector<double> row_values(static_cast<size_t>(rows), 0.0);
     double total = 0;
     for (int64_t i = 0; i < rows; ++i) {
         double row = 0;
         for (int64_t c = 0; c < C; ++c) {
-            double xv = xp[i * C + c], tv = tp[i * C + c];
+            const double xv = xp[i * C + c];
+            const double tv = tp[i * C + c];
             row += tv * -softplus(-xv) + (1.0 - tv) * -softplus(xv);
         }
-        total += -row / C;
+        row_values[static_cast<size_t>(i)] = -row / static_cast<double>(C);
+        total += row_values[static_cast<size_t>(i)];
     }
-    return scalar_from(rows ? total / rows : 0.0, input.dtype(), input.device());
+    if (reduction == 0) {
+        Tensor rows_t = Tensor::tensor(row_values, DType::Float64, dev)
+                            .reshape(row_shape)
+                            .to(out_dt);
+        return rows_t;
+    }
+    if (reduction == 2) return scalar_from(total, out_dt, dev);
+    return scalar_from(rows > 0 ? total / static_cast<double>(rows)
+                                : std::numeric_limits<double>::quiet_NaN(),
+                       out_dt, dev);
 }
 
 TENSORPLAY_LIBRARY_IMPL(CPU, ExtraLosses) {
