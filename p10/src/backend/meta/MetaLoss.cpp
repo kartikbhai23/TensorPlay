@@ -512,6 +512,80 @@ Tensor triplet_margin_loss_kernel(const Tensor& anchor, const Tensor& positive,
                             anchor.device(), reduction);
 }
 
+// A single operand that has to be planned on the meta device.
+void check_meta_operand(const Tensor& t) {
+    if (!t.device().is_meta()) {
+        TP_THROW(DeviceMismatchError, "expected a meta tensor but got ",
+                 t.device().toString());
+    }
+}
+
+// Both logits gradients answer one operand's gradient over the geometry every
+// side operand broadcasts into; only the answer's width follows the operand the
+// gradient is taken with respect to.
+std::vector<int64_t> logits_grad_shape(const Tensor& grad_output,
+                                       const Tensor& self,
+                                       const Tensor& target,
+                                       const std::optional<Tensor>& weight,
+                                       const std::optional<Tensor>& pos_weight) {
+    check_meta_operand(grad_output);
+    std::vector<int64_t> shape =
+        broadcast_shapes(shape_of(self), shape_of(target));
+    for (const std::optional<Tensor>* side : {&weight, &pos_weight}) {
+        if (side->has_value() && (*side)->defined() && (*side)->numel() > 0) {
+            check_all_meta(self, **side);
+            shape = broadcast_shapes(shape, shape_of(**side));
+        }
+    }
+    return broadcast_shapes(shape, shape_of(grad_output));
+}
+
+Tensor binary_cross_entropy_with_logits_backward_kernel(
+    const Tensor& grad_output, const Tensor& self, const Tensor& target,
+    const std::optional<Tensor>& weight, const std::optional<Tensor>& pos_weight,
+    int64_t reduction) {
+    check_reduction_mode(reduction, "binary_cross_entropy_with_logits_backward");
+    check_all_meta(self, target);
+    return empty_meta(logits_grad_shape(grad_output, self, target, weight,
+                                        pos_weight),
+                      float_loss_dtype(self.dtype()), self.device());
+}
+
+Tensor binary_cross_entropy_with_logits_target_backward_kernel(
+    const Tensor& grad_output, const Tensor& self, const Tensor& target,
+    const std::optional<Tensor>& weight, const std::optional<Tensor>& pos_weight,
+    int64_t reduction) {
+    check_reduction_mode(reduction,
+                         "binary_cross_entropy_with_logits_target_backward");
+    check_all_meta(self, target);
+    return empty_meta(logits_grad_shape(grad_output, self, target, weight,
+                                        pos_weight),
+                      float_loss_dtype(target.dtype()), target.device());
+}
+
+// A row answer hands one gradient per lane, so the input gradient keeps the
+// paired geometry whatever the reduction did to the answer.
+Tensor multilabel_soft_margin_loss_backward_kernel(
+    const Tensor& grad_output, const Tensor& input, const Tensor& target,
+    int64_t reduction) {
+    check_reduction_mode(reduction, "multilabel_soft_margin_loss_backward");
+    check_all_meta(input, target);
+    check_meta_operand(grad_output);
+    return empty_meta(broadcast2(input, target),
+                      float_loss_dtype(input.dtype()), input.device());
+}
+
+Tensor multilabel_soft_margin_loss_target_backward_kernel(
+    const Tensor& grad_output, const Tensor& input, const Tensor& target,
+    int64_t reduction) {
+    check_reduction_mode(reduction,
+                         "multilabel_soft_margin_loss_target_backward");
+    check_all_meta(input, target);
+    check_meta_operand(grad_output);
+    return empty_meta(broadcast2(input, target),
+                      float_loss_dtype(target.dtype()), target.device());
+}
+
 } // anonymous namespace
 
 TENSORPLAY_LIBRARY_IMPL(Meta, MetaLoss) {
@@ -536,6 +610,14 @@ TENSORPLAY_LIBRARY_IMPL(Meta, MetaLoss) {
            multilabel_soft_margin_loss_kernel);
     m.impl("binary_cross_entropy_with_logits",
            binary_cross_entropy_with_logits_kernel);
+    m.impl("binary_cross_entropy_with_logits_backward",
+           binary_cross_entropy_with_logits_backward_kernel);
+    m.impl("binary_cross_entropy_with_logits_target_backward",
+           binary_cross_entropy_with_logits_target_backward_kernel);
+    m.impl("multilabel_soft_margin_loss_backward",
+           multilabel_soft_margin_loss_backward_kernel);
+    m.impl("multilabel_soft_margin_loss_target_backward",
+           multilabel_soft_margin_loss_target_backward_kernel);
     m.impl("triplet_margin_loss", triplet_margin_loss_kernel);
     m.impl("l1_loss", l1_loss_kernel);
     m.impl("kl_div", kl_div_kernel);

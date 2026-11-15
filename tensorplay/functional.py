@@ -6805,6 +6805,20 @@ def binary_cross_entropy_with_logits(input, target, weight=None, pos_weight=None
             return _captured
     return _C.binary_cross_entropy_with_logits(self=input, target=target, weight=weight, pos_weight=pos_weight, reduction=reduction)
 
+def binary_cross_entropy_with_logits_backward(grad_output, input, target, weight=None, pos_weight=None, reduction=1):
+    if _capturing():
+        _captured = _capture_call(binary_cross_entropy_with_logits_backward, (grad_output, input, target, weight, pos_weight, reduction), {})
+        if _captured is not None:
+            return _captured
+    return _C.binary_cross_entropy_with_logits_backward(grad_output, input, target, weight, pos_weight, reduction)
+
+def binary_cross_entropy_with_logits_target_backward(grad_output, input, target, weight=None, pos_weight=None, reduction=1):
+    if _capturing():
+        _captured = _capture_call(binary_cross_entropy_with_logits_target_backward, (grad_output, input, target, weight, pos_weight, reduction), {})
+        if _captured is not None:
+            return _captured
+    return _C.binary_cross_entropy_with_logits_target_backward(grad_output, input, target, weight, pos_weight, reduction)
+
 def poisson_nll_loss(input, target, log_input=True, full=False, eps=1e-08, reduction=1):
     if _capturing():
         _captured = _capture_call(poisson_nll_loss, (input, target, log_input, full, eps, reduction), {})
@@ -6917,6 +6931,20 @@ def multilabel_soft_margin_loss(input, target, reduction=1):
         if _captured is not None:
             return _captured
     return _C.multilabel_soft_margin_loss(input, target, reduction)
+
+def multilabel_soft_margin_loss_backward(grad_output, input, target, reduction=1):
+    if _capturing():
+        _captured = _capture_call(multilabel_soft_margin_loss_backward, (grad_output, input, target, reduction), {})
+        if _captured is not None:
+            return _captured
+    return _C.multilabel_soft_margin_loss_backward(grad_output, input, target, reduction)
+
+def multilabel_soft_margin_loss_target_backward(grad_output, input, target, reduction=1):
+    if _capturing():
+        _captured = _capture_call(multilabel_soft_margin_loss_target_backward, (grad_output, input, target, reduction), {})
+        if _captured is not None:
+            return _captured
+    return _C.multilabel_soft_margin_loss_target_backward(grad_output, input, target, reduction)
 
 def triplet_margin_loss(anchor, positive, negative, margin=1.0, p=2.0, eps=1e-06, swap=False, reduction=1):
     if _capturing():

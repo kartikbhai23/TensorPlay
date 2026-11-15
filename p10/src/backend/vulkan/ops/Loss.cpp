@@ -679,6 +679,12 @@ Tensor binary_cross_entropy_backward_kernel(
   return tpx::ops::to(gradient, self.dtype());
 }
 
+// A plane read onto the device and widened to the width a deviation walk keeps.
+Tensor loss_widened_operand(const Tensor& t) {
+  return loss_walk_operand(
+      t.device().is_vulkan() ? t : t.to(vulkan_device()));
+}
+
 // The loss a logit answers before it is pushed through a sigmoid:
 // (1-t) x - log_sigmoid(x) ((pos_weight - 1) t + 1), per-lane weighted and shared
 // by the count the walk covered.  Reading log_sigmoid rather than a sigmoid keeps
@@ -753,10 +759,95 @@ Tensor binary_cross_entropy_with_logits_kernel(
                       DType::Float32);
 }
 
-// A plane read onto the device and widened to the width a deviation walk keeps.
-Tensor loss_widened_operand(const Tensor& t) {
-  return loss_walk_operand(
-      t.device().is_vulkan() ? t : t.to(vulkan_device()));
+// The input gradient is the input's sigmoid shifted by the target, then moved
+// by the sign the target gives it: with a pos_weight the shift becomes
+// (pos_weight t + 1 - t) times the sigmoid, less pos_weight t.  The incoming
+// gradient carries the answer, the two weighting planes scale it per lane, and
+// an average shares it by the count it divided the loss with.
+Tensor binary_cross_entropy_with_logits_backward_kernel(
+    const Tensor& grad_output,
+    const Tensor& self,
+    const Tensor& target,
+    const std::optional<Tensor>& weight_opt,
+    const std::optional<Tensor>& pos_weight_opt,
+    int64_t reduction) {
+  constexpr const char* kName = "binary_cross_entropy_with_logits_backward";
+  TP_CHECK(
+      reduction >= 0 && reduction <= 2,
+      std::string("Vulkan ") + kName + ": invalid reduction mode");
+  TP_CHECK(
+      self.dtype() == DType::Float32 || self.dtype() == DType::Float16,
+      std::string("Vulkan ") + kName +
+          " supports Float32 and Float16 tensors only");
+  const bool has_weight = weight_opt.has_value() && weight_opt->defined();
+  const bool has_pos_weight =
+      pos_weight_opt.has_value() && pos_weight_opt->defined();
+  const Tensor x = loss_widened_operand(self);
+  const Tensor t = loss_widened_operand(target);
+  const Tensor sigmoid = tpx::ops::sigmoid(x);
+  Tensor gradient;
+  if (has_pos_weight) {
+    const Tensor pos_weight = loss_widened_operand(*pos_weight_opt);
+    const Tensor pos_t = tpx::ops::mul(pos_weight, t);
+    gradient = tpx::ops::sub(
+        tpx::ops::mul(
+            tpx::ops::add(tpx::ops::sub(pos_t, t), Scalar(1.0)), sigmoid),
+        pos_t);
+  } else {
+    gradient = tpx::ops::sub(sigmoid, t);
+  }
+  gradient = tpx::ops::mul(gradient, loss_widened_operand(grad_output));
+  if (has_weight) {
+    gradient = tpx::ops::mul(gradient, loss_widened_operand(*weight_opt));
+  }
+  if (reduction == 1 && self.numel() > 0) {
+    gradient = tpx::ops::mul(
+        gradient, Scalar(1.0 / static_cast<double>(self.numel())));
+  }
+  return tpx::ops::to(gradient, self.dtype());
+}
+
+// A target lane moves the likelihood both ways: the side it is not, less
+// pos_weight times the side it is.  Without a pos_weight the two likelihoods
+// collapse to the logit read with a sign, so the answer is the negated logit.
+Tensor binary_cross_entropy_with_logits_target_backward_kernel(
+    const Tensor& grad_output,
+    const Tensor& self,
+    const Tensor& target,
+    const std::optional<Tensor>& weight_opt,
+    const std::optional<Tensor>& pos_weight_opt,
+    int64_t reduction) {
+  constexpr const char* kName =
+      "binary_cross_entropy_with_logits_target_backward";
+  TP_CHECK(
+      reduction >= 0 && reduction <= 2,
+      std::string("Vulkan ") + kName + ": invalid reduction mode");
+  TP_CHECK(
+      target.dtype() == DType::Float32 || target.dtype() == DType::Float16,
+      std::string("Vulkan ") + kName +
+          " supports Float32 and Float16 tensors only");
+  const bool has_weight = weight_opt.has_value() && weight_opt->defined();
+  const bool has_pos_weight =
+      pos_weight_opt.has_value() && pos_weight_opt->defined();
+  const Tensor x = loss_widened_operand(self);
+  Tensor gradient;
+  if (has_pos_weight) {
+    const Tensor pos_weight = loss_widened_operand(*pos_weight_opt);
+    gradient = tpx::ops::sub(
+        tpx::ops::log_sigmoid(tpx::ops::neg(x)),
+        tpx::ops::mul(tpx::ops::log_sigmoid(x), pos_weight));
+  } else {
+    gradient = tpx::ops::neg(x);
+  }
+  gradient = tpx::ops::mul(gradient, loss_widened_operand(grad_output));
+  if (has_weight) {
+    gradient = tpx::ops::mul(gradient, loss_widened_operand(*weight_opt));
+  }
+  if (reduction == 1 && target.numel() > 0) {
+    gradient = tpx::ops::mul(
+        gradient, Scalar(1.0 / static_cast<double>(target.numel())));
+  }
+  return tpx::ops::to(gradient, target.dtype());
 }
 
 // The loss one element answers is how far it sits from the value it was matched
@@ -1049,6 +1140,13 @@ TENSORPLAY_LIBRARY_IMPL(Vulkan, LossKernels) {
   m.impl(
       "binary_cross_entropy_with_logits",
       &tensorplay::vulkan::ops::binary_cross_entropy_with_logits_kernel);
+  m.impl(
+      "binary_cross_entropy_with_logits_backward",
+      &tensorplay::vulkan::ops::binary_cross_entropy_with_logits_backward_kernel);
+  m.impl(
+      "binary_cross_entropy_with_logits_target_backward",
+      &tensorplay::vulkan::ops::
+          binary_cross_entropy_with_logits_target_backward_kernel);
   m.impl("tp_l1_loss", &tensorplay::vulkan::ops::l1_loss_kernel);
   m.impl(
       "tp_l1_loss_backward",

@@ -1654,6 +1654,14 @@
   self: binary_cross_entropy_backward(grad, self, target, weight, reduction)
   target: binary_cross_entropy_target_backward(grad, self, weight, reduction)
 
+- name: binary_cross_entropy_with_logits(Tensor self, Tensor target, Tensor? weight=None, Tensor? pos_weight=None, int reduction=1) -> Tensor
+  self: binary_cross_entropy_with_logits_backward(grad, self, target, weight, pos_weight, reduction)
+  target: binary_cross_entropy_with_logits_target_backward(grad, self, target, weight, pos_weight, reduction)
+
+- name: multilabel_soft_margin_loss(Tensor input, Tensor target, int reduction=1) -> Tensor
+  input: multilabel_soft_margin_loss_backward(grad, input, target, reduction)
+  target: multilabel_soft_margin_loss_target_backward(grad, input, target, reduction)
+
 - name: tp_margin_ranking_loss(Tensor input1, Tensor input2, Tensor target, float margin=0.0, int64_t reduction=1) -> Tensor
   input1: std::get<0>(tp_margin_ranking_loss_backward(grad, input1, input2, target, margin, reduction))
   input2: std::get<1>(tp_margin_ranking_loss_backward(grad, input1, input2, target, margin, reduction))

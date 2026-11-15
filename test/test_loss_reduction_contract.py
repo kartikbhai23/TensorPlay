@@ -226,6 +226,69 @@ class TestGradient(unittest.TestCase):
                                                msg=f"grad {tag}")
 
 
+    def test_bce_with_logits_and_multilabel(self):
+        """Both losses now carry a gradient back to their operands."""
+        for dev in reference_devices():
+            for op in ("binary_cross_entropy_with_logits",
+                       "multilabel_soft_margin_loss"):
+                for reduction in REDUCTIONS:
+                    ref_slots = _torch_inputs(op, torch.float64, 23)
+                    ref_leaves = [t.clone().requires_grad_(True)
+                                  for t in ref_slots]
+                    ref_out = getattr(torch_F, op)(
+                        *ref_leaves, reduction=reduction)
+                    grad_t = (torch.randn_like(ref_out, dtype=torch.float64)
+                              if reduction == "none"
+                              else torch.tensor(1.0, dtype=torch.float64))
+                    ref_grads = torch.autograd.grad(
+                        ref_out, ref_leaves, grad_outputs=grad_t,
+                        allow_unused=True)
+
+                    leaves = [from_reference(t, dev, requires_grad=True)
+                              for t in ref_slots]
+                    out = getattr(tp, op)(*leaves,
+                                          reduction=_reduction_enum(reduction))
+                    out.backward(from_reference(grad_t, dev))
+                    tag = f"{op} reduction={reduction} ({dev})"
+                    assert_reference_close(out, ref_out, msg=f"fwd {tag}")
+                    for leaf, ref_grad in zip(leaves, ref_grads):
+                        if ref_grad is None:
+                            continue
+                        assert_reference_close(leaf.grad, ref_grad,
+                                               msg=f"grad {tag}")
+
+    def test_bce_with_logits_weighted(self):
+        """The weighting planes flow into both operand gradients."""
+        ref_x, ref_t = _torch_inputs("binary_cross_entropy_with_logits",
+                                     torch.float64, 27)
+        weight = torch.rand(4, 5, dtype=torch.float64) + 0.5
+        pos_weight = torch.rand(5, dtype=torch.float64) + 0.5
+        for dev in reference_devices():
+            for reduction in REDUCTIONS:
+                ref_leaves = [t.clone().requires_grad_(True)
+                              for t in (ref_x, ref_t)]
+                ref_out = torch_F.binary_cross_entropy_with_logits(
+                    *ref_leaves, weight=weight, pos_weight=pos_weight,
+                    reduction=reduction)
+                grad_t = (torch.randn_like(ref_out, dtype=torch.float64)
+                          if reduction == "none"
+                          else torch.tensor(1.0, dtype=torch.float64))
+                ref_grads = torch.autograd.grad(ref_out, ref_leaves,
+                                                grad_outputs=grad_t)
+
+                leaves = [from_reference(t, dev, requires_grad=True)
+                          for t in (ref_x, ref_t)]
+                out = tp.binary_cross_entropy_with_logits(
+                    *leaves, from_reference(weight, dev),
+                    from_reference(pos_weight, dev),
+                    reduction=_reduction_enum(reduction))
+                out.backward(from_reference(grad_t, dev))
+                for leaf, ref_grad in zip(leaves, ref_grads):
+                    assert_reference_close(
+                        leaf.grad, ref_grad,
+                        msg=f"weighted grad {reduction} ({dev})")
+
+
 class TestOutDestination(unittest.TestCase):
     """The destination form carries the reduction through to its answer."""
 

@@ -4832,6 +4832,23 @@
     CPU: binary_cross_entropy_with_logits_cpu
     CUDA: binary_cross_entropy_with_logits_cuda
 
+# The logits backward answers one operand's gradient: sigmoid(x) shifted by the
+# target, scaled by the incoming gradient and the two weighting planes.  The
+# target form answers the likelihood each target lane would move instead.
+- func: binary_cross_entropy_with_logits_backward(Tensor grad_output, Tensor self, Tensor target, Tensor? weight=None, Tensor? pos_weight=None, int reduction=1) -> Tensor
+  device_check: NoCheck
+  variants: function
+  dispatch:
+    CPU: binary_cross_entropy_with_logits_backward_cpu
+    CUDA: binary_cross_entropy_with_logits_backward_cuda
+
+- func: binary_cross_entropy_with_logits_target_backward(Tensor grad_output, Tensor self, Tensor target, Tensor? weight=None, Tensor? pos_weight=None, int reduction=1) -> Tensor
+  device_check: NoCheck
+  variants: function
+  dispatch:
+    CPU: binary_cross_entropy_with_logits_target_backward_cpu
+    CUDA: binary_cross_entropy_with_logits_target_backward_cuda
+
 - func: poisson_nll_loss(Tensor input, Tensor target, bool log_input=True, bool full=False, float eps=1e-08, int reduction=1) -> Tensor
   variants: function
   dispatch:
@@ -4902,6 +4919,21 @@
   dispatch:
     CPU: multilabel_soft_margin_loss_cpu
     CUDA: multilabel_soft_margin_loss_cuda
+
+# The row walk averages the classes, so the input gradient is the input's
+# sigmoid shifted by the target and shared by the row length; the target form
+# answers how a target lane would move.
+- func: multilabel_soft_margin_loss_backward(Tensor grad_output, Tensor input, Tensor target, int reduction=1) -> Tensor
+  variants: function
+  dispatch:
+    CPU: multilabel_soft_margin_loss_backward_cpu
+    CUDA: multilabel_soft_margin_loss_backward_cuda
+
+- func: multilabel_soft_margin_loss_target_backward(Tensor grad_output, Tensor input, Tensor target, int reduction=1) -> Tensor
+  variants: function
+  dispatch:
+    CPU: multilabel_soft_margin_loss_target_backward_cpu
+    CUDA: multilabel_soft_margin_loss_target_backward_cuda
 
 - func: triplet_margin_loss(Tensor anchor, Tensor positive, Tensor negative, float margin=1.0, float p=2.0, float eps=1e-06, bool swap=False, int reduction=1) -> Tensor
   variants: function

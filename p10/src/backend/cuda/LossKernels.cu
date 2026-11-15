@@ -191,6 +191,121 @@ Tensor multilabel_soft_margin_loss_cuda(const Tensor& input, const Tensor& targe
     return reduction == 1 ? row_loss.mean() : row_loss.sum();
 }
 
+// The gradient walks answer in the width the forward carried: half and single
+// precision planes are read and written through single precision, and double
+// planes stay double.
+Tensor binary_cross_entropy_with_logits_backward_cuda(
+    const Tensor& grad_output, const Tensor& self, const Tensor& target,
+    const std::optional<Tensor>& weight_opt,
+    const std::optional<Tensor>& pos_weight_opt, int64_t reduction) {
+  tp_validate_reduction(reduction);
+  const bool has_w =
+      weight_opt.has_value() && weight_opt->defined() && weight_opt->numel() > 0;
+  const bool has_pw = pos_weight_opt.has_value() &&
+                      pos_weight_opt->defined() &&
+                      pos_weight_opt->numel() > 0;
+  const DType carry = loss_carry_dtype(self.dtype());
+  const Tensor x = ops::to(self, carry);
+  const Tensor t = ops::to(target, carry);
+  const Tensor sig = ops::sigmoid(x);
+  Tensor grad_input;
+  if (has_pw) {
+    const Tensor pos_weight = ops::to(*pos_weight_opt, carry);
+    const Tensor pos_t = ops::mul(pos_weight, t);
+    grad_input = ops::sub(
+        ops::mul(ops::add(ops::sub(pos_t, t), Scalar(1.0)), sig), pos_t);
+  } else {
+    grad_input = ops::sub(sig, t);
+  }
+  grad_input = ops::mul(grad_input, ops::to(grad_output, carry));
+  if (has_w) grad_input = ops::mul(grad_input, ops::to(*weight_opt, carry));
+  if (reduction == 1) {
+    grad_input =
+        ops::div(grad_input, Scalar(static_cast<double>(self.numel())));
+  }
+  return ops::to(grad_input, self.dtype());
+}
+
+Tensor binary_cross_entropy_with_logits_target_backward_cuda(
+    const Tensor& grad_output, const Tensor& self, const Tensor& target,
+    const std::optional<Tensor>& weight_opt,
+    const std::optional<Tensor>& pos_weight_opt, int64_t reduction) {
+  tp_validate_reduction(reduction);
+  const bool has_w =
+      weight_opt.has_value() && weight_opt->defined() && weight_opt->numel() > 0;
+  const bool has_pw = pos_weight_opt.has_value() &&
+                      pos_weight_opt->defined() &&
+                      pos_weight_opt->numel() > 0;
+  const DType carry = loss_carry_dtype(target.dtype());
+  const Tensor x = ops::to(self, carry);
+  Tensor grad_target;
+  if (has_pw) {
+    const Tensor pos_weight = ops::to(*pos_weight_opt, carry);
+    grad_target = ops::sub(ops::log_sigmoid(ops::neg(x)),
+                           ops::mul(ops::log_sigmoid(x), pos_weight));
+  } else {
+    grad_target = ops::neg(x);
+  }
+  grad_target = ops::mul(grad_target, ops::to(grad_output, carry));
+  if (has_w) grad_target = ops::mul(grad_target, ops::to(*weight_opt, carry));
+  if (reduction == 1) {
+    grad_target =
+        ops::div(grad_target, Scalar(static_cast<double>(target.numel())));
+  }
+  return ops::to(grad_target, target.dtype());
+}
+
+Tensor multilabel_soft_margin_loss_backward_cuda(
+    const Tensor& grad_output, const Tensor& input, const Tensor& target,
+    int64_t reduction) {
+  tp_validate_reduction(reduction);
+  const DType carry = loss_carry_dtype(input.dtype());
+  const int64_t C = input.dim() > 0 ? input.size(-1) : 0;
+  const int64_t rows = C > 0 ? input.numel() / C : 0;
+  if (C <= 0) return ops::zeros_like(input);
+  Tensor g = ops::div(ops::sub(ops::sigmoid(ops::to(input, carry)),
+                               ops::to(target, carry)),
+                      Scalar(static_cast<double>(C)));
+  const Tensor grad = ops::to(grad_output, carry);
+  if (reduction == 0) {
+    std::vector<int64_t> shape = shape_of(grad);
+    shape.push_back(1);
+    g = ops::mul(g, grad.reshape(shape));
+  } else {
+    g = ops::mul(g, grad);
+    if (reduction == 1 && rows > 0) {
+      g = ops::div(g, Scalar(static_cast<double>(rows)));
+    }
+  }
+  return ops::to(g, input.dtype());
+}
+
+Tensor multilabel_soft_margin_loss_target_backward_cuda(
+    const Tensor& grad_output, const Tensor& input, const Tensor& target,
+    int64_t reduction) {
+  tp_validate_reduction(reduction);
+  const DType carry = loss_carry_dtype(target.dtype());
+  const int64_t C = input.dim() > 0 ? input.size(-1) : 0;
+  const int64_t rows = C > 0 ? input.numel() / C : 0;
+  if (C <= 0) return ops::zeros_like(target);
+  const Tensor x = ops::to(input, carry);
+  Tensor g = ops::div(ops::sub(ops::log_sigmoid(ops::neg(x)),
+                               ops::log_sigmoid(x)),
+                      Scalar(static_cast<double>(C)));
+  const Tensor grad = ops::to(grad_output, carry);
+  if (reduction == 0) {
+    std::vector<int64_t> shape = shape_of(grad);
+    shape.push_back(1);
+    g = ops::mul(g, grad.reshape(shape));
+  } else {
+    g = ops::mul(g, grad);
+    if (reduction == 1 && rows > 0) {
+      g = ops::div(g, Scalar(static_cast<double>(rows)));
+    }
+  }
+  return ops::to(g, target.dtype());
+}
+
 Tensor tp_l1_loss_cuda(const Tensor& input, const Tensor& target,
                        int64_t reduction) {
     tp_validate_reduction(reduction);
@@ -430,8 +545,16 @@ Tensor tp_poisson_nll_loss_backward_cuda(const Tensor& grad_output,
 
 TENSORPLAY_LIBRARY_IMPL(CUDA, LossKernels) {
     m.impl("binary_cross_entropy_with_logits", binary_cross_entropy_with_logits_cuda);
+    m.impl("binary_cross_entropy_with_logits_backward",
+           binary_cross_entropy_with_logits_backward_cuda);
+    m.impl("binary_cross_entropy_with_logits_target_backward",
+           binary_cross_entropy_with_logits_target_backward_cuda);
     m.impl("triplet_margin_loss", triplet_margin_loss_cuda);
     m.impl("multilabel_soft_margin_loss", multilabel_soft_margin_loss_cuda);
+    m.impl("multilabel_soft_margin_loss_backward",
+           multilabel_soft_margin_loss_backward_cuda);
+    m.impl("multilabel_soft_margin_loss_target_backward",
+           multilabel_soft_margin_loss_target_backward_cuda);
     m.impl("tp_l1_loss", tp_l1_loss_cuda);
     m.impl("tp_l1_loss_backward", tp_l1_loss_backward_cuda);
     m.impl("tp_kl_div", tp_kl_div_cuda);
