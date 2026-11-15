@@ -495,7 +495,13 @@ pytest test/stax -q
 
 - 无 `torchinductor_opinfo` 全量算子对拍；
 - 无 max-autotune 全量、mkldnn、quantization、AOTI、cudagraph trees、compile_worker、fx_passes、pattern_matcher、select_algorithm、templates、foreach、multi_kernel、pad_mm、freezing、jagged、serialization 的对应测试（本轮补了 `test/stax/test_stax_post_grad_passes.py`，覆盖断言删除、局部性重排、随机算子保持、`rsqrt` 改写、切分与合并互为逆运算时的整对删除及乱序/错位保留；以及 `test/stax/test_stax_profiler_spans.py`，覆盖 span 进图与删除、开关默认关闭、训练区域、profiler 会话可见性）；
-- `compile_worker` 无测试；
+- `compile_worker` 本轮补 `test/stax/test_stax_compile_worker.py`（8 项）：定时器静默期只触发一次、
+  新事件重置静默期、退出取消待触发；心跳槽位未分配时全程空操作、忙槽位上报阶段与 pid、
+  `reset` 回收槽位；进程角色位与父进程变化判定。
+- pattern matcher / foreach 分组 / split scan 本轮补 `test/stax/test_stax_pattern_foreach_scan.py`（11 项）：
+  图模式改写命中节点、`extra_check` 可否决、关键字模式按签名绑定、未命中与空 pass 不动图、非图输入报错；
+  foreach 按源/目标 dtype 与形状分组并用 `-1` 分隔、单组返回 `None`、未提示的符号尺寸报错；
+  split scan 把每个归约块键抬到下限、程序维键不动。
 - 配置面此前无测试，本轮补 `test/stax/test_stax_config_surface.py`（12 项，见 §8.5）；
 - 无 fuzzer / `test_operators`。
 
@@ -574,7 +580,7 @@ pytest test/stax -q
 1. ~~修死 import；删除不可达的移植残留。~~ 已完成。
 2. ~~配置面与文档数字对齐。~~ 已完成（§8.5）：补齐 4 个被读取却未绑定的设置并新增 `save_config_portable`，
    修掉两处读错命名空间；配置面数字更新为实测 195 项 / 1,894 行。
-3. 补 `compile_worker`、pass、pattern matcher、foreach、split scan 等测试。
+3. ~~补 `compile_worker`、pass、pattern matcher、foreach、split scan 等测试。~~ 已完成（§8.3）。
 
 ---
 
@@ -701,6 +707,7 @@ pytest test/stax -q -p no:randomly
 | `8f15f15c` `test(compiler)` | 预算按字节生效与越界拒绝的用例；两种输入更新位置的结果与图形态；无更新时两种取值不变 |
 | `3b8a9207` `fix(compiler)` | 补齐移植模块读取却未绑定的 4 个设置；新增 `save_config_portable`；bucketing 改读存在的分布式命名空间；CUDA 精度上下文回退到进程级精度并把未暴露的缩减开关按缺席处理 |
 | `2431f64a` `test(compiler)` | 新增 `test/stax/test_stax_config_surface.py`（12 项）：读取名存在、编译线程首次使用时决定、带宽覆盖、bucket 模式来源、快照可写文本/分节/随设置变化/过滤私有名与自身辅助函数、隔离键稳定且随选择收缩 |
+| `c9d7abae` `test(compiler)` | 新增 `test/stax/test_stax_compile_worker.py`（8 项）与 `test/stax/test_stax_pattern_foreach_scan.py`（11 项），见 §8.3 |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
