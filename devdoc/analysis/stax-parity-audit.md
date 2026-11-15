@@ -33,12 +33,13 @@
 | P1 | 设备只注册 cpu/cuda；MPS/XPU/MTIA/ROCm 无代码生成 | 设备覆盖缺口，静态确认 | 未修 |
 | P1 | 整图 cache、分布式 overlap、bucketing 未接线 | 运行时能力缺口，静态确认 | 未修 |
 | P2 | 多处死 import 会在特定路径抛 `ImportError` | 移植残留，已核实路径 | 已清理 |
-| P2 | 配置面 190 vs 上游 299 个顶层项；文档数字过期 | 一致性问题 | 未修 |
+| P2 | 移植模块读取的设置名在本模块不存在，特定机器/配置上才走到就 `AttributeError`；`tp_configs` 这个隔离键形式也会撞上同一缺口 | 静默缺陷，静态确认 | 已修复（§8.5、§13） |
+| P2 | 配置面数字过期（190 项 / 1,793 行） | 一致性问题 | 已更新为实测 195 项 / 1,894 行（§1） |
 
 `pytest test/stax` 实测（修复前）：**1568 passed, 2 failed, 1 skipped**（1571 项，约 2 分 4 秒）。
 其中一个失败是确定性的 P0 正确性 bug；另一个是容差/顺序相关的偶发（单独运行通过）。
 
-`pytest test/stax -q` 实测（本轮修复后）：**1630 passed, 1 skipped**（1 分 00 秒），
+`pytest test/stax -q` 实测（本轮修复后）：**1645 passed, 1 skipped**，
 `pytest test/fx test/test_public_surface.py`：**247 passed**，
 `pytest test/higher_order_ops test/export`：**128 passed**。
 原先那两个失败都已不再是失败：确定性那个随 §2.1 修好；偶发那个是 bf16 容差写死 `2e-4` 造成的，
@@ -54,7 +55,7 @@
 | 图/前端 | `tensorplay/graph/` 35,577 行 | `torch/_dynamo/` 130,241 行 + `torch/fx/` |
 | stax 后端文件数 | 239 个 `.py` | 379 个 `.py` |
 | post-grad pass | `graph_passes/post_grad.py` 378 行 | `fx_passes/post_grad.py` 2,521 行 |
-| 配置面 | `stax/config.py` 1,793 行 / 190 顶层项 | 3,204 行 / 299 顶层项 |
+| 配置面 | `stax/config.py` 1,894 行 / 195 顶层项 | 3,204 行 / 306 顶层项 |
 
 核心文件行数并不落后，部分还略多：
 
@@ -479,8 +480,8 @@ cpp_wrapper=use_cuda_codegen,
 
 ```
 pytest test/stax -q
-# 修复前：1568 passed, 2 failed, 1 skipped in 124.65s
-# 修复后：1591 passed, 1 skipped in 64.52s
+# 修复前：1568 passed, 2 failed, 1 skipped
+# 修复后：1645 passed, 1 skipped
 ```
 
 修复前的两个失败：
@@ -495,6 +496,7 @@ pytest test/stax -q
 - 无 `torchinductor_opinfo` 全量算子对拍；
 - 无 max-autotune 全量、mkldnn、quantization、AOTI、cudagraph trees、compile_worker、fx_passes、pattern_matcher、select_algorithm、templates、foreach、multi_kernel、pad_mm、freezing、jagged、serialization 的对应测试（本轮补了 `test/stax/test_stax_post_grad_passes.py`，覆盖断言删除、局部性重排、随机算子保持、`rsqrt` 改写、切分与合并互为逆运算时的整对删除及乱序/错位保留；以及 `test/stax/test_stax_profiler_spans.py`，覆盖 span 进图与删除、开关默认关闭、训练区域、profiler 会话可见性）；
 - `compile_worker` 无测试；
+- 配置面此前无测试，本轮补 `test/stax/test_stax_config_surface.py`（12 项，见 §8.5）；
 - 无 fuzzer / `test_operators`。
 
 ### 8.4 文档声明 vs 实际
@@ -509,6 +511,32 @@ pytest test/stax -q
 | 符号捕获不支持无存储伪张量与数据相关输出尺寸 | `docs/source/stax.md:55` | 属实，且应明确到静态捕获路径 |
 
 ---
+
+### 8.5 设置面：读取名必须存在
+
+上游 `_inductor/config.py` 是一个扁平模块，各 pass 直接按名字读。本仓库把一部分设置收进
+子配置对象（`triton` / `cuda` / `cpp` / `tp_distributed_optimizations` …），移植时名字跟着
+旧结构写，于是**代码在、名字不在**：只有走到那条 branch 的机器或配置才会 `AttributeError`。
+
+本轮对 `stax/` 下全部 `config.<name>` 读取做静态核对（含 `if`/`try`/`with` 体的绑定），修掉 5 个
+真实缺失名：
+
+| 设置 | 读取方 | 语义 |
+| --- | --- | --- |
+| `static_launch_user_defined_triton_kernels` | `runtime/triton_heuristics.py` | 用户自带内核是否也走磁盘二进制静态启动 |
+| `intra_node_bw` / `inter_node_bw` | `comm_analysis.py` | 单机卡间 / 跨机带宽（GB/s，单向），`None` 表示按卡代次推断 |
+| `cudagraph_unsafe_unbacked_ops` | `scheduler.py` | 结果携带数据符号的算子名，其输出符号不可再重放 |
+| `save_config_portable` | `runtime/caching/context.py` 经 `tp_configs` | 把设置写成可跨进程比较的文本快照 |
+
+另外两处不是缺名而是读错结构：`bucketing._default_bucket_mode` 读了不存在的
+`aten_distributed_optimizations`；`_RuntimeContext.cuda_matmul_precision_configs` 读了本构建
+未暴露的 `tp.backends.cuda.matmul.fp32_precision` 与两个缩减开关，导致 `_isolation_key()` 直接抛错。
+
+快照的规则：每个子配置压平成 `section.name`，因此两个 section 可以同名；只保留能写成文本的值
+（数、串、布尔、`None` 及其容器），跨进程比较才有意义；设置里的可调用对象写成全限定名，换掉它会
+改变快照；本模块自己的辅助函数不算设置；私有名默认不写。
+
+快照 293 项，含私有名 298 项，均可 `json.dumps`。
 
 ## 9. 算子与分解覆盖
 
@@ -544,7 +572,8 @@ pytest test/stax -q
 ### P2（清理与一致性）
 
 1. ~~修死 import；删除不可达的移植残留。~~ 已完成。
-2. 配置面与文档数字对齐。
+2. ~~配置面与文档数字对齐。~~ 已完成（§8.5）：补齐 4 个被读取却未绑定的设置并新增 `save_config_portable`，
+   修掉两处读错命名空间；配置面数字更新为实测 195 项 / 1,894 行。
 3. 补 `compile_worker`、pass、pattern matcher、foreach、split scan 等测试。
 
 ---
@@ -670,6 +699,8 @@ pytest test/stax -q -p no:randomly
 | `269cc3eb` `fix(compiler)` | 非张量全局/闭包/模块属性进入特化键：不可变标量与元组按精确内容、可变容器与可调用对象按身份；枚举范围扩到子模块与模块运行代码可达的方法；代码自身写回的名字不计 |
 | `0f45c09b` `fix(compiler)` | `memory_budget` 真正约束留给反向的激活量（0 全重算、1 最省割、中间取可装入的候选割并按字节丢弃）；`keep_inference_input_mutations` 真正选择更新在图内还是运行后拷回；移出更新的图模块记录被写参数位置 |
 | `8f15f15c` `test(compiler)` | 预算按字节生效与越界拒绝的用例；两种输入更新位置的结果与图形态；无更新时两种取值不变 |
+| `3b8a9207` `fix(compiler)` | 补齐移植模块读取却未绑定的 4 个设置；新增 `save_config_portable`；bucketing 改读存在的分布式命名空间；CUDA 精度上下文回退到进程级精度并把未暴露的缩减开关按缺席处理 |
+| `2431f64a` `test(compiler)` | 新增 `test/stax/test_stax_config_surface.py`（12 项）：读取名存在、编译线程首次使用时决定、带宽覆盖、bucket 模式来源、快照可写文本/分节/随设置变化/过滤私有名与自身辅助函数、隔离键稳定且随选择收缩 |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
