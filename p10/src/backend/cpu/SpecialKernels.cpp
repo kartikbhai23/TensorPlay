@@ -128,6 +128,11 @@ Tensor scaled_modified_bessel_k1_cpu(const Tensor& self) {
                              "scaled_modified_bessel_k1");
 }
 Tensor i0e_cpu(const Tensor& self) {
+    if (self.dtype() == DType::Float16 || self.dtype() == DType::BFloat16) {
+        return float_math_vec_kernel(self.to(DType::Float32),
+                                     [](double x) { return calc_i0e(x); }, "i0e",
+                                     cpu::vecunary::VOp::I0e).to(self.dtype());
+    }
     return float_math_vec_kernel(self, [](double x) { return calc_i0e(x); }, "i0e",
                                  cpu::vecunary::VOp::I0e);
 }
@@ -137,6 +142,11 @@ Tensor i1_cpu(const Tensor& self) {
         cpu::vecunary::VOp::I1);
 }
 Tensor i1e_cpu(const Tensor& self) {
+    if (self.dtype() == DType::Float16 || self.dtype() == DType::BFloat16) {
+        return float_math_vec_kernel(self.to(DType::Float32),
+                                     [](double x) { return calc_i1e(x); }, "i1e",
+                                     cpu::vecunary::VOp::I1e).to(self.dtype());
+    }
     return float_math_vec_kernel(self, [](double x) { return calc_i1e(x); }, "i1e",
                                  cpu::vecunary::VOp::I1e);
 }
