@@ -491,8 +491,34 @@ Tensor tp_hinge_embedding_loss_backward_cuda(const Tensor& grad_output,
 
 Tensor tp_soft_margin_loss_cuda(const Tensor& input, const Tensor& target,
                                 int64_t reduction) {
-    Tensor loss = ((input * target) * Scalar(-1)).exp().add(Scalar(1)).log();
-    return tp_loss_reduce(loss, reduction);
+    tp_validate_reduction(reduction);
+    const DType acc = loss_carry_dtype(input.dtype());
+    // One pass forms log1p(exp(-x * t)): the staged form allocates and
+    // traverses a full elementwise tensor per term, and the log of one plus a
+    // sum loses the small-argument digits that log1p keeps.
+    auto pr = pair_carry_dev(input, target, acc);
+    Tensor elems = Tensor::empty(shape_of(pr.first), acc, input.device());
+    const int64_t n = elems.numel();
+    if (n) {
+        TensorIterator iter = TensorIteratorConfig()
+            .check_all_same_dtype(true)
+            .add_output(elems)
+            .add_const_input(pr.first)
+            .add_const_input(pr.second)
+            .build();
+        if (acc == DType::Float64) {
+            gpu_kernel(iter, [] __host__ __device__(double x, double t) -> double {
+                return ::log1p(::exp(-x * t));
+            });
+        } else {
+            gpu_kernel(iter, [] __host__ __device__(float x, float t) -> float {
+                return ::log1pf(::expf(-x * t));
+            });
+        }
+        CUDA_CHECK(cudaGetLastError());
+    }
+    if (reduction == 0) return elems.to(input.dtype());
+    return tp_loss_reduce(elems, reduction);
 }
 
 Tensor tp_soft_margin_loss_backward_cuda(const Tensor& grad_output,
