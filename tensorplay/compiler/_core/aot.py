@@ -1279,8 +1279,13 @@ class AotResult:
                 kwargs[p.name] = grad_output
             elif kind == "saved":
                 kwargs[p.name] = saved_by_name[key]
-            else:
+            elif key in leaf_args:
                 kwargs[p.name] = leaf_args[key]
+            else:
+                # A constant the region lifted to an attribute.  Both halves
+                # are rooted on the same module, so the backward reads it
+                # from there rather than being handed it as an argument.
+                kwargs[p.name] = self.backward_gm._get_attr(key)
         grads = self.backward_gm.forward(**kwargs)
         if len(self.leaf_targets) == 1:
             grads = (grads,)

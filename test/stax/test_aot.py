@@ -128,6 +128,33 @@ def test_partial_reduction_gradient_spreads_over_reduced_axes(formula, partition
 
 @pytest.mark.parametrize("policy", ["save_needed", "recompute_all"])
 @pytest.mark.parametrize("partitioner", ["default", "min_cut"])
+def test_a_lifted_constant_is_read_by_the_backward(policy, partitioner):
+    """A value created inside the region becomes an attribute, not an argument.
+
+    The backward graph is rooted on the same module, so it has to read such a
+    value from there; asking the caller for it as an input fails.
+    """
+
+    constant = tp.tensor([1.0, 2.0, 3.0])
+
+    def fn(x):
+        return x * constant
+
+    x = tp.randn(3)
+    gm = Tracer().trace(fn, sample_inputs={"x": x})
+    result = build_aot(
+        gm,
+        sample_inputs={"x": x},
+        policy=policy,
+        partitioner=partitioner,
+    )
+    value, grads = result.value_and_grad(x.clone().requires_grad_(True))
+    assert tp.allclose(value, x * constant)
+    assert tp.allclose(grads["x"], constant)
+
+
+@pytest.mark.parametrize("policy", ["save_needed", "recompute_all"])
+@pytest.mark.parametrize("partitioner", ["default", "min_cut"])
 def test_broadcast_scalar_param_gradient_reduces(policy, partitioner):
     def fn(x, w):
         return (x * w).sum()
