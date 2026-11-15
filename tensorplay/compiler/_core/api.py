@@ -786,7 +786,6 @@ def compile(
                     compiler_fn,
                     args,
                     kwargs,
-                    fullgraph=fullgraph,
                     backend_kwargs=backend_kwargs,
                     shape_spec=shape_spec,
                     region_key=make_region_key(
@@ -1631,7 +1630,6 @@ def _compile_region(
     example_inputs: tuple[Any, ...],
     example_kwargs: dict[str, Any],
     *,
-    fullgraph: bool,
     backend_kwargs: dict[str, Any],
     shape_spec: dict[str, Any] | None = None,
     region_key: str | None = None,
