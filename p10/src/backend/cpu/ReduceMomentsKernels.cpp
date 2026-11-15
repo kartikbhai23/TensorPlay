@@ -285,9 +285,13 @@ std::pair<Tensor, Tensor> var_mean_kernel_impl(const Tensor& self,
         }
     }
     const DType dt = isFloatingType(self.dtype()) ? self.dtype() : DType::Float32;
-    Tensor sc = self.to(dt).contiguous();
-    Tensor mean = Tensor::empty(out_sizes, dt, self.device());
-    Tensor var = Tensor::empty(out_sizes, dt, self.device());
+    // A reduced width is answered in single precision and narrowed once: its
+    // own layout cannot hold the running mean and the sum of squares.
+    const DType work_dt =
+        isReducedFloatingType(self.dtype()) ? DType::Float32 : dt;
+    Tensor sc = self.to(work_dt).contiguous();
+    Tensor mean = Tensor::empty(out_sizes, work_dt, self.device());
+    Tensor var = Tensor::empty(out_sizes, work_dt, self.device());
     const int64_t out_numel = mean.numel();
 
     std::vector<int64_t> strides(static_cast<size_t>(nd), 0);
@@ -325,7 +329,7 @@ std::pair<Tensor, Tensor> var_mean_kernel_impl(const Tensor& self,
     // one fixed-stride Welford chain per output element; a full reduction
     // splits into independently reduced chunks merged pairwise.  Both skip
     // the per-element coordinate arithmetic of the generic walk below.
-    if (n_red > 0 && (dt == DType::Float32 || dt == DType::Float64) &&
+    if (n_red > 0 && (work_dt == DType::Float32 || work_dt == DType::Float64) &&
         (red_dims.size() == 1 ||
          static_cast<int64_t>(red_dims.size()) == nd)) {
         const auto run = [&](auto* sp) {
@@ -480,8 +484,9 @@ std::pair<Tensor, Tensor> var_mean_kernel_impl(const Tensor& self,
                 }
             }
         };
-        if (dt == DType::Float32) run(sc.data_ptr<float>());
+        if (work_dt == DType::Float32) run(sc.data_ptr<float>());
         else run(sc.data_ptr<double>());
+        if (dt != work_dt) return {var.to(dt), mean.to(dt)};
         return {var, mean};
     }
 
@@ -540,7 +545,7 @@ std::pair<Tensor, Tensor> var_mean_kernel_impl(const Tensor& self,
         });
     };
 
-    switch (dt) {
+    switch (work_dt) {
         case DType::Float16:
             compute(sc.data_ptr<Half>(), mean.data_ptr<Half>(), var.data_ptr<Half>());
             break;
@@ -555,8 +560,9 @@ std::pair<Tensor, Tensor> var_mean_kernel_impl(const Tensor& self,
                     var.data_ptr<BFloat16>());
             break;
         default:
-            TP_THROW(TypeError, "std_mean: unsupported dtype ", toString(dt));
+            TP_THROW(TypeError, "std_mean: unsupported dtype ", toString(work_dt));
     }
+    if (dt != work_dt) return {var.to(dt), mean.to(dt)};
     return {var, mean};
 }
 
