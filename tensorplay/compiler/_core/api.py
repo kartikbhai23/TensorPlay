@@ -895,40 +895,287 @@ def _loaded_global_names(function: types.FunctionType) -> set[str]:
     return set(_loaded_global_names_of_code(function.__code__))
 
 
-def _modules_reached(program: Any) -> list[Any]:
-    """The modules whose state running ``program`` can update.
+def _state_roots(program: Any) -> tuple[list[Any], list[types.FunctionType]]:
+    """The modules and Python functions whose state a call can read.
 
-    The program itself or the module a bound method belongs to; for a plain
-    function, the modules it reaches through its closure or the globals it
-    loads -- a lambda calling a model it closes over updates that model.
+    Walks closure cells, the globals a function loads, the children of the
+    modules it reaches and the methods defined on their classes, so a value
+    reached through a helper is found too.  Every function and module is
+    visited once, which also stops a reference cycle from looping.
     """
 
     import tensorplay
 
     module_type = tensorplay.nn.Module
-    if isinstance(program, module_type):
-        return [program]
-    owner = getattr(program, "__self__", None)
-    if isinstance(owner, module_type):
-        return [owner]
-    function = inspect.unwrap(program) if callable(program) else None
-    if not isinstance(function, types.FunctionType):
-        return []
-    found: list[Any] = []
+    modules: list[Any] = []
+    functions: list[types.FunctionType] = []
+    seen_modules: set[int] = set()
+    seen_functions: set[int] = set()
 
-    def add(value: Any) -> None:
-        if isinstance(value, module_type) and all(value is not m for m in found):
-            found.append(value)
-
-    for cell in function.__closure__ or ():
+    def visit(value: Any) -> None:
+        if isinstance(value, module_type):
+            if id(value) in seen_modules:
+                return
+            seen_modules.add(id(value))
+            modules.append(value)
+            for function in _module_running_functions(value):
+                visit(function)
+            for child in getattr(value, "_modules", {}).values():
+                if child is not None:
+                    visit(child)
+            return
+        if isinstance(value, (staticmethod, classmethod)):
+            visit(value.__func__)
+            return
+        if isinstance(value, types.MethodType):
+            visit(value.__self__)
+            visit(value.__func__)
+            return
+        if not callable(value):
+            return
         try:
-            add(cell.cell_contents)
-        except ValueError:
+            function = inspect.unwrap(value)
+        except (TypeError, ValueError):
+            return
+        if not isinstance(function, types.FunctionType):
+            return
+        if id(function) in seen_functions:
+            return
+        seen_functions.add(id(function))
+        functions.append(function)
+        for cell in function.__closure__ or ():
+            try:
+                visit(cell.cell_contents)
+            except ValueError:
+                continue
+        scope = function.__globals__
+        for name in sorted(_loaded_global_names(function)):
+            visit(scope.get(name))
+
+    visit(program)
+    return modules, functions
+
+
+def _modules_reached(program: Any) -> list[Any]:
+    """The modules whose state running ``program`` can update.
+
+    The program itself or the module a bound method belongs to; for a plain
+    function, the modules it reaches through its closure or the globals it
+    loads -- a lambda calling a model it closes over updates that model.  A
+    helper a reached function calls is followed as well.
+    """
+
+    return _state_roots(program)[0]
+
+
+_MISSING = object()
+
+
+def _is_immutable_constant(value: Any) -> bool:
+    """Whether a value can be a literal in captured code and cannot change.
+
+    Tensors, modules and callables are handled elsewhere.  Numbers, text and
+    containers of them are what a capture may have fixed while tracing, and
+    an immutable one can be compared by value on every call.
+    """
+
+    if value is None or isinstance(value, (bool, int, float, complex, str, bytes)):
+        return True
+    if isinstance(value, (tuple, frozenset)):
+        return all(_is_immutable_constant(item) for item in value)
+    return False
+
+
+def _freeze_immutable_constant(value: Any) -> Any:
+    """A hashable, exact description of an immutable baked constant.
+
+    Floats are described by their hexadecimal spelling so that a sign change
+    on zero and a ``nan`` still compare as themselves; containers keep their
+    type, because a list and a tuple of the same items need not produce the
+    same trace.
+    """
+
+    kind = type(value).__name__
+    if isinstance(value, float):
+        return (kind, value.hex())
+    if isinstance(value, complex):
+        return (kind, value.real.hex(), value.imag.hex())
+    if value is None or isinstance(value, (bool, int, str, bytes)):
+        return (kind, value)
+    if isinstance(value, tuple):
+        return (kind, tuple(_freeze_immutable_constant(item) for item in value))
+    if isinstance(value, frozenset):
+        return (
+            kind,
+            tuple(sorted(
+                (_freeze_immutable_constant(item) for item in value), key=repr
+            )),
+        )
+    return (kind, id(value))
+
+
+def _constant_entry(value: Any) -> Any:
+    """A hashable description of a value a capture may have baked, or None.
+
+    Immutable values are compared by content.  A mutable container or a
+    callable is described by the object itself: a container's contents may be
+    edited in place while the capture only reads the object, a container the
+    captured call fills in would otherwise look like a new specialization on
+    every call, and a rebinding to another function changes which operations
+    the captured program would have recorded.  Rebinding a name to another
+    object is caught; in-place edits of a container are not.
+    """
+
+    if _is_immutable_constant(value):
+        return _freeze_immutable_constant(value)
+    if isinstance(value, (list, dict, set)) or callable(value):
+        return ("reference", id(value))
+    return None
+
+
+def _dependency_names(
+    code: types.CodeType,
+    opnames: tuple[str, ...],
+) -> frozenset[str]:
+    """Names one kind of instruction mentions in ``code`` and code inside it."""
+
+    names: set[str] = set()
+    pending = [code]
+    while pending:
+        current = pending.pop()
+        for instruction in dis.get_instructions(current):
+            if instruction.opname in opnames:
+                names.add(instruction.argval)
+        pending.extend(
+            c for c in current.co_consts if isinstance(c, types.CodeType)
+        )
+    return frozenset(names)
+
+
+@functools.lru_cache(maxsize=1024)
+def _assigned_names_of_code(code: types.CodeType) -> frozenset[str]:
+    """Global and closure-cell names ``code`` writes."""
+
+    return _dependency_names(
+        code,
+        ("STORE_GLOBAL", "STORE_NAME", "DELETE_GLOBAL", "DELETE_NAME"),
+    ) | _dependency_names(code, ("STORE_DEREF", "DELETE_DEREF"))
+
+
+@functools.lru_cache(maxsize=1024)
+def _assigned_attribute_names_of_code(code: types.CodeType) -> frozenset[str]:
+    """Attribute names ``code`` and code inside it write."""
+
+    return _dependency_names(code, ("STORE_ATTR", "DELETE_ATTR"))
+
+
+@functools.lru_cache(maxsize=1024)
+def _loaded_attribute_names_of_code(code: types.CodeType) -> frozenset[str]:
+    """The attribute names ``code``, and code defined inside it, reads."""
+
+    return _dependency_names(code, ("LOAD_ATTR", "LOAD_METHOD"))
+
+
+def _module_running_functions(module: Any) -> list[types.FunctionType]:
+    """The functions whose code runs when ``module`` is called.
+
+    ``forward`` and the methods it reaches from the module's own class are
+    followed, so both values read directly and values read by a helper are
+    part of what a call depends on.  Code that is not reached this way --
+    ``__init__`` or an unused method -- is not.
+    """
+
+    helpers: dict[str, types.FunctionType] = {}
+    for name, member in type(module).__dict__.items():
+        if isinstance(member, (staticmethod, classmethod)):
+            member = member.__func__
+        try:
+            member = inspect.unwrap(member)
+        except (TypeError, ValueError):
             continue
-    scope = function.__globals__
-    for name in sorted(_loaded_global_names(function)):
-        add(scope.get(name))
-    return found
+        if isinstance(member, types.FunctionType):
+            helpers[name] = member
+    forward = getattr(module, "forward", None)
+    if isinstance(forward, types.MethodType):
+        forward = forward.__func__
+    try:
+        forward = inspect.unwrap(forward)
+    except (TypeError, ValueError):
+        forward = None
+    running: list[types.FunctionType] = []
+    seen: set[int] = set()
+    pending = [forward] if isinstance(forward, types.FunctionType) else []
+    while pending:
+        function = pending.pop()
+        if id(function) in seen:
+            continue
+        seen.add(id(function))
+        running.append(function)
+        for name in _loaded_attribute_names_of_code(function.__code__):
+            helper = helpers.get(name)
+            if helper is not None:
+                pending.append(helper)
+    return running
+
+
+def _module_attribute_names(module: Any, *, assigned: bool = False) -> set[str]:
+    """Attribute names the module's running code reads (or writes)."""
+
+    collector = (
+        _assigned_attribute_names_of_code
+        if assigned
+        else _loaded_attribute_names_of_code
+    )
+    names: set[str] = set()
+    for function in _module_running_functions(module):
+        names.update(collector(function.__code__))
+    return names
+
+
+def _captured_constant_component(program: Any) -> tuple[Any, ...]:
+    """Values outside the argument list that a capture may have baked in.
+
+    A global number, a closure cell or a module attribute read while tracing
+    becomes part of the captured program.  Changing it must not reuse that
+    program, so its current value is part of the specialization key.  Names
+    the program itself assigns are left out: their value is an effect of the
+    call, not an input to it.
+    """
+
+    modules, functions = _state_roots(program)
+    entries: list[tuple[Any, ...]] = []
+    for function in functions:
+        label = f"{function.__module__}.{function.__qualname__}"
+        code = function.__code__
+        written = _assigned_names_of_code(code)
+        scope = function.__globals__
+        for name in sorted(_loaded_global_names(function) - written):
+            entry = _constant_entry(scope.get(name))
+            if entry is not None:
+                entries.append(("global", label, name, entry))
+        freevars = code.co_freevars
+        for index, cell in enumerate(function.__closure__ or ()):
+            if index < len(freevars) and freevars[index] in written:
+                continue
+            try:
+                value = cell.cell_contents
+            except ValueError:
+                continue
+            entry = _constant_entry(value)
+            if entry is not None:
+                entries.append(("closure", label, index, entry))
+    for module in modules:
+        assigned = _module_attribute_names(module, assigned=True)
+        for name in sorted(_module_attribute_names(module) - assigned):
+            value = module.__dict__.get(name, _MISSING)
+            if value is _MISSING:
+                value = type(module).__dict__.get(name, _MISSING)
+            if value is _MISSING:
+                continue
+            entry = _constant_entry(value)
+            if entry is not None:
+                entries.append(("attribute", id(module), name, entry))
+    return tuple(sorted(entries, key=repr))
 
 
 def _module_state_component(program: Any) -> tuple[Any, ...]:
@@ -936,19 +1183,25 @@ def _module_state_component(program: Any) -> tuple[Any, ...]:
 
     Rediscover roots on each call: closure cells and globals can be rebound,
     and children can be replaced without changing the root's training flag.
-    Child bindings retain aliases even though each module is visited once.
+    Values read from outside the arguments are compared too, since a capture
+    bakes them into the program it produces.
     """
 
-    return tuple(
-        (
-            index,
-            name,
-            id(module),
-            module.training,
-            tuple((child_name, id(child)) for child_name, child in module._modules.items()),
-        )
-        for index, root in enumerate(_modules_reached(program))
-        for name, module in root.named_modules(remove_duplicate=True)
+    modules, _ = _state_roots(program)
+    return (
+        tuple(
+            (
+                index,
+                id(module),
+                module.training,
+                tuple(
+                    (child_name, id(child))
+                    for child_name, child in module._modules.items()
+                ),
+            )
+            for index, module in enumerate(modules)
+        ),
+        _captured_constant_component(program),
     )
 
 
