@@ -5810,6 +5810,156 @@ void fold_short_rows_hw(const uint16_t* in, int64_t run, int64_t begin,
 // so the rows can go straight to the pool and skip the reduction iterator with
 // its identity fill and its per-element stride machinery.  Answers agree with
 // the iterator because both fold the same run with the same compare.
+// An integral run folded with a plain compare.  There is no not-a-number to
+// watch for and the answer is carried in the run's own width, so the seed is
+// the run's first value: no sentinel is needed, and a 64-bit run never passes
+// through a wider type that could not carry it.  Four running bests keep the
+// compare from being a single dependent chain.
+template <typename ctype, bool WantMax>
+inline ctype fold_run_integral(const ctype* data, int64_t n) {
+    auto pick = [](ctype a, ctype b) {
+        return WantMax ? (a < b ? b : a) : (b < a ? b : a);
+    };
+    if (n <= 0) return extrema_identity<ctype>(WantMax);
+    ctype b0 = data[0];
+    int64_t i = 1;
+    if (n >= 4) {
+        ctype b1 = data[1], b2 = data[2], b3 = data[3];
+        i = 4;
+        for (; i + 4 <= n; i += 4) {
+            b0 = pick(b0, data[i + 0]);
+            b1 = pick(b1, data[i + 1]);
+            b2 = pick(b2, data[i + 2]);
+            b3 = pick(b3, data[i + 3]);
+        }
+        b0 = pick(pick(b0, b1), pick(b2, b3));
+    }
+    for (; i < n; ++i) b0 = pick(b0, data[i]);
+    return b0;
+}
+
+#if defined(CPU_CAPABILITY_AVX2)
+// The identity of an integral extremum, broadcast in the width it is carried in.
+template <typename ctype>
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+__m256i integral_seed(bool maximum_value) {
+    const ctype value = extrema_identity<ctype>(maximum_value);
+    if constexpr (sizeof(ctype) == 1) {
+        return _mm256_set1_epi8(static_cast<char>(value));
+    } else if constexpr (sizeof(ctype) == 2) {
+        return _mm256_set1_epi16(static_cast<int16_t>(value));
+    } else if constexpr (sizeof(ctype) == 4) {
+        return _mm256_set1_epi32(static_cast<int32_t>(value));
+    } else {
+        return _mm256_set1_epi64x(static_cast<int64_t>(value));
+    }
+}
+
+// One step of an integral extremum in the width's own registers: the width's
+// own max or min instruction where the ISA has one, and a compare and a blend
+// for the eight-byte widths, which the ISA orders only as signed values; an
+// unsigned eight-byte value flips its sign bit before the compare and comes
+// back unchanged.
+template <typename ctype, bool WantMax>
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+__m256i integral_step(const __m256i& a, const __m256i& b) {
+    if constexpr (sizeof(ctype) == 1) {
+        if constexpr (std::is_signed_v<ctype>) {
+            return WantMax ? _mm256_max_epi8(a, b) : _mm256_min_epi8(a, b);
+        } else {
+            return WantMax ? _mm256_max_epu8(a, b) : _mm256_min_epu8(a, b);
+        }
+    } else if constexpr (sizeof(ctype) == 2) {
+        if constexpr (std::is_signed_v<ctype>) {
+            return WantMax ? _mm256_max_epi16(a, b) : _mm256_min_epi16(a, b);
+        } else {
+            return WantMax ? _mm256_max_epu16(a, b) : _mm256_min_epu16(a, b);
+        }
+    } else if constexpr (sizeof(ctype) == 4) {
+        if constexpr (std::is_signed_v<ctype>) {
+            return WantMax ? _mm256_max_epi32(a, b) : _mm256_min_epi32(a, b);
+        } else {
+            return WantMax ? _mm256_max_epu32(a, b) : _mm256_min_epu32(a, b);
+        }
+    } else {
+        __m256i x = a;
+        __m256i y = b;
+        if constexpr (std::is_unsigned_v<ctype>) {
+            const __m256i sign =
+                _mm256_set1_epi64x(std::numeric_limits<int64_t>::min());
+            x = _mm256_xor_si256(x, sign);
+            y = _mm256_xor_si256(y, sign);
+        }
+        const __m256i take_b =
+            WantMax ? _mm256_cmpgt_epi64(y, x) : _mm256_cmpgt_epi64(x, y);
+        return _mm256_blendv_epi8(a, b, take_b);
+    }
+}
+
+// The rows of a run answered with four accumulators so that the compare is not
+// a single dependent chain; the lanes are combined once per row and the
+// columns past the last full band are compared one at a time.
+template <typename ctype, bool WantMax>
+__attribute__((target("avx2,fma,f16c"), noinline))
+void fold_integral_rows(const ctype* in, int64_t run, int64_t begin,
+                        int64_t end, ctype* out) {
+    constexpr int64_t W = 32 / sizeof(ctype);
+    const __m256i seed = integral_seed<ctype>(WantMax);
+    auto load = [](const ctype* p) {
+        return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+    };
+    auto pick = [](ctype a, ctype b) {
+        return WantMax ? (a < b ? b : a) : (b < a ? b : a);
+    };
+    for (int64_t r = begin; r < end; ++r) {
+        const ctype* p = in + r * run;
+        int64_t i = 0;
+        ctype best = extrema_identity<ctype>(WantMax);
+        // A run shorter than one band has nothing to fold wide, and reading one
+        // anyway would compare a band of the identity against the handful of
+        // values the row really holds.
+        if (run >= W) {
+            __m256i a0 = seed, a1 = seed, a2 = seed, a3 = seed;
+            for (; i + 4 * W <= run; i += 4 * W) {
+                a0 = integral_step<ctype, WantMax>(a0, load(p + i));
+                a1 = integral_step<ctype, WantMax>(a1, load(p + i + W));
+                a2 = integral_step<ctype, WantMax>(a2, load(p + i + 2 * W));
+                a3 = integral_step<ctype, WantMax>(a3, load(p + i + 3 * W));
+            }
+            for (; i + W <= run; i += W) {
+                a0 = integral_step<ctype, WantMax>(a0, load(p + i));
+            }
+            const __m256i held = integral_step<ctype, WantMax>(
+                integral_step<ctype, WantMax>(a0, a1),
+                integral_step<ctype, WantMax>(a2, a3));
+            alignas(32) ctype lanes[W];
+            _mm256_store_si256(reinterpret_cast<__m256i*>(lanes), held);
+            for (int64_t k = 0; k < W; ++k) best = pick(best, lanes[k]);
+        }
+        for (; i < run; ++i) best = pick(best, p[i]);
+        out[r] = best;
+    }
+}
+#endif
+
+// One extremum step on a vector of any width: an integral width compares in its
+// own registers, everything else follows the rule that carries a not-a-number.
+template <typename T, bool WantMax>
+inline Vectorized<T> extremum_vec_step(const Vectorized<T>& a,
+                                       const Vectorized<T>& b) {
+#if defined(CPU_CAPABILITY_AVX2)
+    // Only the widths a vector register holds a whole number of times carry
+    // their own comparison; the rest keep the scalar rule below.
+    if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, uint8_t> ||
+                  std::is_same_v<T, int16_t> || std::is_same_v<T, int32_t> ||
+                  std::is_same_v<T, int64_t>) {
+        return Vectorized<T>(integral_step<T, WantMax>(
+            static_cast<__m256i>(a), static_cast<__m256i>(b)));
+    }
+#endif
+    return WantMax ? maximum(a, b) : minimum(a, b);
+}
+
 template <typename ctype>
 bool fold_trailing_extrema(Tensor& result, const Tensor& self, int64_t ndim,
                            const std::vector<int64_t>& resolved,
@@ -5905,6 +6055,34 @@ bool fold_trailing_extrema(Tensor& result, const Tensor& self, int64_t ndim,
             parallel_for(0, rows, 1, fold_rows);
         }
         return true;
+    } else if constexpr (std::is_integral_v<ctype>) {
+        // An integral row has no not-a-number to look for, so it folds with a
+        // plain compare and needs no identity at all; each row is read as one
+        // run rather than element by element.
+#if defined(CPU_CAPABILITY_AVX2)
+        auto fold_rows = [&](int64_t begin, int64_t end) {
+            if (maximum_value) {
+                fold_integral_rows<ctype, true>(data, run, begin, end, out);
+            } else {
+                fold_integral_rows<ctype, false>(data, run, begin, end, out);
+            }
+        };
+#else
+        auto fold_rows = [&](int64_t begin, int64_t end) {
+            for (int64_t r = begin; r < end; ++r) {
+                out[r] = maximum_value
+                    ? fold_run_integral<ctype, true>(data + r * run, run)
+                    : fold_run_integral<ctype, false>(data + r * run, run);
+            }
+        };
+#endif
+        if (self.numel() < GRAIN_SIZE || get_num_threads() == 1 ||
+            in_parallel_region()) {
+            fold_rows(0, rows);
+        } else {
+            parallel_for(0, rows, 1, fold_rows);
+        }
+        return true;
     } else {
         return false;
     }
@@ -5930,14 +6108,33 @@ bool fold_whole_extrema(Tensor& result, const Tensor& self, int64_t ndim,
     const int64_t chunks = std::min<int64_t>(
         get_num_threads(), (n + GRAIN_SIZE - 1) / GRAIN_SIZE);
     const int64_t per = (n + chunks - 1) / chunks;
-    std::vector<ctype> parts(chunks);
+    // A plain array rather than a std::vector: a one-bit element type would
+    // hand back a proxy reference, and the answers here are read as values.
+    std::unique_ptr<ctype[]> parts(new ctype[static_cast<size_t>(chunks)]);
     auto fold_chunks = [&](int64_t begin, int64_t end) {
         for (int64_t c = begin; c < end; ++c) {
             const int64_t lo = c * per;
             const int64_t hi = std::min(lo + per, n);
-            parts[c] = maximum_value
-                ? fold_run_extremum<ctype, true>(data + lo, hi - lo)
-                : fold_run_extremum<ctype, false>(data + lo, hi - lo);
+            if constexpr (std::is_integral_v<ctype> &&
+                          !std::is_same_v<ctype, bool>) {
+#if defined(CPU_CAPABILITY_AVX2)
+                if (maximum_value) {
+                    fold_integral_rows<ctype, true>(data + lo, hi - lo, 0, 1,
+                                                    &parts[c]);
+                } else {
+                    fold_integral_rows<ctype, false>(data + lo, hi - lo, 0, 1,
+                                                     &parts[c]);
+                }
+#else
+                parts[c] = maximum_value
+                    ? fold_run_integral<ctype, true>(data + lo, hi - lo)
+                    : fold_run_integral<ctype, false>(data + lo, hi - lo);
+#endif
+            } else {
+                parts[c] = maximum_value
+                    ? fold_run_extremum<ctype, true>(data + lo, hi - lo)
+                    : fold_run_extremum<ctype, false>(data + lo, hi - lo);
+            }
         }
     };
     parallel_for(0, chunks, 1, fold_chunks);
@@ -6090,11 +6287,7 @@ void fold_leading_block(const ctype* in, ctype* acc, int64_t cols,
     using Vec = Vectorized<ctype>;
     constexpr int64_t lanes = Vec::size();
     auto pair_of = [](const Vec& a, const Vec& b) {
-        if constexpr (WantMax) {
-            return maximum(a, b);
-        } else {
-            return minimum(a, b);
-        }
+        return extremum_vec_step<ctype, WantMax>(a, b);
     };
     // Seeding from the block's first row keeps an identity value out of the
     // fold, so a block holding a NaN cannot report anything but a NaN.
@@ -6146,11 +6339,7 @@ inline void fold_leading_thin(const ctype* in, ctype* out, int64_t rows,
     using Vec = Vectorized<ctype>;
     constexpr int64_t lanes = Vec::size();
     auto pair_of = [](const Vec& a, const Vec& b) {
-        if constexpr (WantMax) {
-            return maximum(a, b);
-        } else {
-            return minimum(a, b);
-        }
+        return extremum_vec_step<ctype, WantMax>(a, b);
     };
     auto fold_rows = [&](const ctype* base, int64_t off, Vec& acc) {
         const ctype* q = base + off;
@@ -6272,10 +6461,39 @@ bool fold_leading_extrema(Tensor& result, const Tensor& self, int64_t ndim,
         }
         return true;
     }
-    // A slice wider than the level-one cache would be evicted between the rows
-    // that fold into it, and with the rows shareable the banded walk would pay
-    // its stride for nothing.
-    if (cols * static_cast<int64_t>(sizeof(ctype)) > 16384) return false;
+    // A slice wider than the level-one cache cannot be held in registers over
+    // the whole run.  An eight-byte integral width then folds a block of
+    // columns at a time, each block walking the rows with its totals in
+    // registers: the blocks partition every row, so each element is still read
+    // exactly once, and no column is walked a second time to reach it.
+    if (cols * static_cast<int64_t>(sizeof(ctype)) > 16384) {
+        if constexpr (std::is_integral_v<ctype> &&
+                      !std::is_same_v<ctype, bool> && sizeof(ctype) == 8) {
+            ctype* out = result.data_ptr<ctype>();
+            const int64_t block = std::max<int64_t>(
+                4 * static_cast<int64_t>(Vectorized<ctype>::size()),
+                GRAIN_SIZE / rows);
+            auto fold_band = [&](int64_t begin, int64_t end) {
+                for (int64_t b = begin; b < end; b += block) {
+                    const int64_t band_end = std::min(cols, b + block);
+                    if (maximum_value) {
+                        fold_leading_thin<ctype, true>(data, out, rows, cols, b,
+                                                       band_end);
+                    } else {
+                        fold_leading_thin<ctype, false>(data, out, rows, cols,
+                                                        b, band_end);
+                    }
+                }
+            };
+            if (serial) {
+                fold_band(0, cols);
+            } else {
+                parallel_for(0, cols, block, fold_band);
+            }
+            return true;
+        }
+        return false;
+    }
 
     ctype* out = result.data_ptr<ctype>();
     if (tasks == 1) {
@@ -6491,7 +6709,7 @@ inline void extrema_narrow_real(const T* in, T* out, int64_t outer, int64_t red,
     constexpr int64_t W = Vec::size();
     const int64_t keep = inner - (NB - 1) * W;
     auto combine = [](const Vec& a, const Vec& b) {
-        return WantMax ? maximum(a, b) : minimum(a, b);
+        return extremum_vec_step<T, WantMax>(a, b);
     };
     auto load = [](const T* p, int64_t lanes, bool pad) {
         if (!pad) return Vec::loadu(p);
@@ -6669,6 +6887,51 @@ bool fold_narrow_extrema(Tensor& result, const Tensor& self, int64_t ndim,
 #else
         return false;
 #endif
+    } else if constexpr (std::is_integral_v<ctype> &&
+                         !std::is_same_v<ctype, bool>) {
+        // Under one outer block the middle slice is a leading axis of its own:
+        // its columns keep their totals over the whole run and are read once.
+        // A slice that fits the first-level cache is walked row after row, which
+        // is the stream the prefetcher follows; a wider one is walked a block of
+        // columns at a time instead, since the totals could no longer stay near
+        // the data.
+        // A long run is walked with the totals in registers, since a total
+        // read and written once per row costs more than the row itself.  A
+        // short run keeps the totals in memory and streams the rows instead,
+        // unless the totals no longer fit the cache nearest the data, which
+        // only a block of columns at a time can keep near it.
+        const bool row_major =
+            inner * static_cast<int64_t>(sizeof(ctype)) <= 16384 &&
+            (red < 512 ||
+             inner > 4 * static_cast<int64_t>(Vectorized<ctype>::size()));
+        auto fold_outer = [&](int64_t begin, int64_t end) {
+            for (int64_t o = begin; o < end; ++o) {
+                const ctype* block = data + o * red * inner;
+                ctype* acc = out + o * inner;
+                if (row_major) {
+                    if (maximum_value) {
+                        fold_leading_block<ctype, true>(block, acc, inner, 0,
+                                                        red);
+                    } else {
+                        fold_leading_block<ctype, false>(block, acc, inner, 0,
+                                                         red);
+                    }
+                } else if (maximum_value) {
+                    fold_leading_thin<ctype, true>(block, acc, red, inner, 0,
+                                                   inner);
+                } else {
+                    fold_leading_thin<ctype, false>(block, acc, red, inner, 0,
+                                                    inner);
+                }
+            }
+        };
+        if (self.numel() < GRAIN_SIZE || get_num_threads() == 1 ||
+            in_parallel_region()) {
+            fold_outer(0, outer);
+        } else {
+            parallel_for(0, outer, 1, fold_outer);
+        }
+        return true;
     } else {
         return false;
     }
@@ -6734,7 +6997,27 @@ Tensor extrema_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& d
                 return result; \
             } \
         } \
-        if constexpr (std::is_integral_v<ctype> && sizeof(ctype) == 8) { \
+        if constexpr (std::is_integral_v<ctype> && \
+                      !std::is_same_v<ctype, bool>) { \
+            if (fold_trailing_extrema<ctype>(result, self, ndim, resolved, \
+                                             maximum_value)) { \
+                return result; \
+            } \
+            if (fold_whole_extrema<ctype>(result, self, ndim, resolved, \
+                                          maximum_value)) { \
+                return result; \
+            } \
+            if (fold_leading_extrema<ctype>(result, self, ndim, resolved, \
+                                            maximum_value)) { \
+                return result; \
+            } \
+            if (fold_narrow_extrema<ctype>(result, self, ndim, resolved, \
+                                           maximum_value)) { \
+                return result; \
+            } \
+        } \
+        if constexpr (std::is_integral_v<ctype> && \
+                      !std::is_same_v<ctype, bool> && sizeof(ctype) == 8) { \
             TP_EXTREMA_ITER(); \
             binary_kernel_reduce(iter, ExtremaValuesOps<ctype>{maximum_value}, \
                                  extrema_identity<ctype>(maximum_value)); \
