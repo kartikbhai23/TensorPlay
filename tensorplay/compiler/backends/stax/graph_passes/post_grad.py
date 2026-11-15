@@ -1,7 +1,8 @@
+import operator
 from typing import Any
 
 import tensorplay as tp
-from tensorplay.graph import Graph, Node
+from tensorplay.graph import Graph, Node, map_arg
 from tensorplay.graph.experimental.symbolic_shapes import statically_known_true, sym_eq
 from tensorplay.graph.experimental.sympy_functions import OrderedSet
 from tensorplay._decomp import register_decomposition
@@ -16,6 +17,7 @@ from ..pattern_matcher import (
     Match,
     MULTIPLE,
     PatternMatcherPass,
+    get_mutation_region_id,
     register_graph_pattern,
     register_lowering_pattern as _register_lowering_pattern,
 )
@@ -269,6 +271,90 @@ def remove_noop_ops(graph: Graph):
                 graph.erase_node(node)
 
 
+@register_graph_pattern(
+    CallFunction(
+        tp_ops.reciprocal.default,
+        CallFunction(tp_ops.sqrt.default, KeywordArg("value")),
+    ),
+    pass_dict=pass_patterns[1],
+)
+def reciprocal_sqrt_to_rsqrt(match: Match, value):
+    """Write the reciprocal of a square root as the one operation it is.
+
+    Dividing one by a square root is the reciprocal square root, which is one
+    value per element rather than two.
+    """
+
+    def replacement(argument):
+        return tp_ops.rsqrt.default(argument)
+
+    match.replace_by_example(replacement, [value])
+
+
+def remove_assert_ops(graph: Graph) -> None:
+    """Drop the promises a graph makes about a value's metadata.
+
+    An assertion about a value's shape, dtype or layout states what the caller
+    already promised, and nothing the region computes comes from it.  Left in,
+    it gives the value a second reader that is not a computation, which keeps
+    a rewrite from moving the value's producer next to the reader that wants
+    it.
+    """
+
+    packet = getattr(tp_ops, "_assert_tensor_metadata", None)
+    if packet is None:
+        return
+    for node in list(graph.find_nodes(op="call_function", target=packet.default)):
+        # The assertion produces no value, so nothing reads it; one that is
+        # read is not a promise about a value and is left alone.
+        if node.users:
+            continue
+        graph.erase_node(node)
+
+
+def reorder_for_locality(graph: Graph) -> None:
+    """Move each value's producer next to the read that consumes it.
+
+    A value computed early and read late is carried through everything in
+    between: a buffer held, written and read again.  Moving the computation to
+    just before its reader keeps the result where the read finds it.
+
+    A producer that draws random numbers stays where it is, because the order
+    of the draws is part of what the program computes.  So does a producer on
+    the other side of a write to an input: the write is the boundary between
+    two orderings of the same values, and moving across it would change which
+    values the write sees.
+    """
+
+    seen = OrderedSet[Node]()
+    # Nothing moves across the write-back that functionalization leaves at the
+    # end of a graph, so the walk backwards stops at the first such write.
+    first_write = next(
+        iter(graph.find_nodes(op="call_function", target=tp_ops.copy_.default)),
+        None,
+    )
+    past_writes = first_write is None
+
+    def move_if_settled(producer: Node, reader: Node) -> None:
+        if (
+            producer.op == "call_function"
+            # A tuple unpacking names positions in a result rather than doing
+            # work of its own; it stays beside the call that produced it.
+            and producer.target is not operator.getitem
+            and all(user in seen for user in producer.users)
+            and get_mutation_region_id(graph, reader)
+            == get_mutation_region_id(graph, producer)
+            and "nondeterministic_seeded" not in getattr(producer.target, "tags", ())
+        ):
+            reader.prepend(producer)
+
+    for node in reversed(graph.nodes):
+        seen.add(node)
+        if not past_writes:
+            past_writes = node is first_write
+            continue
+        map_arg((node.args, node.kwargs), lambda producer: move_if_settled(producer, node))
+
 
 def decompose_auto_functionalized(graph: Graph) -> bool:
     """Each functional stand-in for a mutating operator, as what it does.
@@ -283,8 +369,6 @@ def decompose_auto_functionalized(graph: Graph) -> bool:
 
     Returns whether anything was rewritten.
     """
-
-    import operator
 
     from tensorplay._higher_order_ops.auto_functionalize import (
         auto_functionalized,
@@ -400,6 +484,15 @@ def post_grad_passes(gm, is_inference: bool, input_device=None) -> None:
     lazy_init(input_device)
     graph = gm.graph
 
+    if config.dce:
+        # What nothing reads costs a kernel and is not part of the result.
+        graph.eliminate_dead_code()
+
+    if config.reorder_for_locality and (
+        is_inference or config.reorder_for_locality_in_training
+    ):
+        reorder_for_locality(graph)
+
     for custom_pass in get_custom_graph_passes(config.post_grad_custom_pre_pass):
         custom_pass(graph)
 
@@ -410,8 +503,33 @@ def post_grad_passes(gm, is_inference: bool, input_device=None) -> None:
         # Operations whose result is their input, or which cancel out, cost a
         # kernel each until they are gone.
         remove_noop_ops(graph)
+        # A promise about a value says nothing about the computation, so it
+        # must not stand between a producer and the rewrites that want to
+        # move it.
+        remove_assert_ops(graph)
         for patterns in pass_patterns:
             patterns.apply(graph)
+        # The rewrites a program asks for by name are registered on first use,
+        # so a program that asks for none pays nothing for them.
+        requested = config.post_grad_fusion_options
+        if requested:
+            from ..utils import OPTIMUS_EXCLUDE_POST_GRAD
+            from .group_batch_fusion import POST_GRAD_FUSIONS
+            from .split_cat import POST_GRAD_PATTERNS
+
+            for pass_name in requested:
+                # The batch fusions are not pattern tables and are applied above.
+                if (
+                    pass_name in POST_GRAD_FUSIONS
+                    or pass_name in OPTIMUS_EXCLUDE_POST_GRAD
+                ):
+                    continue
+                patterns = POST_GRAD_PATTERNS.get(pass_name)
+                if patterns is None:
+                    raise RuntimeError(
+                        f"unknown post-grad pattern pass {pass_name!r}"
+                    )
+                patterns.apply(graph)
 
     for custom_pass in get_custom_graph_passes(config.post_grad_custom_post_pass):
         custom_pass(graph)

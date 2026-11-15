@@ -1694,6 +1694,22 @@ joint_graph_constant_folding = True
 #: Whether the pattern that recognises a sequence of operations is applied.
 pattern_matcher = True
 
+#: Whether operations nothing reads are dropped before the rewrites run, so a
+#: rewrite is not asked to recognise a shape of the graph that keeps values
+#: nobody uses.
+dce = os.environ.get("TP_DCE", "1") == "1"
+
+#: Whether a value's producers are moved next to the reader that consumes
+#: them, so what they write is still where the read looks for it.
+reorder_for_locality = os.environ.get("TP_REORDER_FOR_LOCALITY", "1") == "1"
+
+#: Whether that moving is also done while a graph is being trained.  The
+#: buffers a backward pass reads are laid out around the forward pass, so the
+#: order the forward pass runs in was picked for that layout already.
+reorder_for_locality_in_training = (
+    os.environ.get("TP_REORDER_FOR_LOCALITY_TRAINING", "0") == "1"
+)
+
 #: Whether a piece of a graph is written out as it is, which is what lets a
 #: fusion be seen rather than inferred.
 debug_fusion: bool = os.environ.get("TP_DEBUG_FUSION") == "1"
