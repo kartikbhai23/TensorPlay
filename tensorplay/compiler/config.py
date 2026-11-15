@@ -13,6 +13,7 @@ from __future__ import annotations
 __all__ = [
     "dynamic_shapes",
     "assume_static_by_default",
+    "capture_profiler_record_function",
     "recompile_limit",
     "accumulated_recompile_limit",
     "compile_threads",
@@ -75,6 +76,18 @@ assume_static_by_default: bool = True
 When false, an omitted shape policy uses rank-only tensor signatures.  Native
 lowerings still receive the real runtime tensors and are responsible for
 accepting the resulting shape range.
+"""
+
+
+capture_profiler_record_function: bool = False
+"""Record profiler spans in the captured graph as well as around the capture.
+
+When true, a ``record_function`` block met while capturing becomes two nodes of
+the graph, which the compiler drops once the region's operations are settled.
+A compiled region is one call from the profiler's point of view, so the span
+labels the capture run rather than the compiled call; the nodes exist so that
+what a capture recorded can be inspected before that drop.  When false the
+block adds nothing to the graph, which is the default.
 """
 
 

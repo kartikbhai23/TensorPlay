@@ -291,6 +291,32 @@ def reciprocal_sqrt_to_rsqrt(match: Match, value):
     match.replace_by_example(replacement, [value])
 
 
+def remove_profiler_ops(graph: Graph) -> None:
+    """Drop the spans that only tell the profiler where work happened.
+
+    A span marks a stretch of the program for the profiler and computes
+    nothing.  A compiled region is one call from the profiler's point of view,
+    so a span inside it labels work that is no longer kept apart; left in, it
+    gives every value it touches a second reader to consider, which keeps a
+    fusion from seeing that the value's producer could move.
+    """
+
+    from tensorplay.profiler.profiler import (
+        _record_function_enter,
+        _record_function_exit,
+    )
+
+    spans = {_record_function_enter, _record_function_exit}
+    doomed = [
+        node
+        for node in graph.nodes
+        if node.op == "call_function" and node.target in spans
+    ]
+    # The end of a span reads its beginning, so the ends go first.
+    for node in reversed(doomed):
+        graph.erase_node(node)
+
+
 def remove_assert_ops(graph: Graph) -> None:
     """Drop the promises a graph makes about a value's metadata.
 
@@ -495,6 +521,10 @@ def post_grad_passes(gm, is_inference: bool, input_device=None) -> None:
 
     for custom_pass in get_custom_graph_passes(config.post_grad_custom_pre_pass):
         custom_pass(graph)
+
+    # A span the profiler was told about marks work that this region no longer
+    # keeps apart, so it is dropped before anything looks for a fusion.
+    remove_profiler_ops(graph)
 
     if config.pattern_matcher:
         # Producers of the same kind next to each other are grouped so that

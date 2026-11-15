@@ -511,6 +511,84 @@ class profile:
         return self._ensure_events().export_stacks(path, metric)
 
 
+class _SpanHandle:
+    """What the beginning of a profiled span hands back to its end."""
+
+    __slots__ = ("name", "args", "marker")
+
+    def __init__(self, name, args=None, marker=None):
+        self.name = str(name)
+        self.args = args
+        # The graph value standing for this span's beginning when the span was
+        # opened while a graph was being recorded; ``None`` when the span is
+        # only being taken, as it is when a recorded graph is run.
+        self.marker = marker
+
+
+def _record_span_call(target, argument):
+    """Write one span marker into the graph being recorded, if one is.
+
+    A program being captured and a captured graph being put through the
+    compiler are both recorded, and a span met in either one is written into
+    that graph rather than taken for the profiler.  Reading it back out of the
+    graph is what makes the span survive a recording that happens again.
+    Returns the value standing for the marker, or ``None`` when the call is
+    not being recorded into a graph.
+    """
+
+    from tensorplay.graph._utils import _capture_disabled, get_active_tracer
+
+    if _capture_disabled.get():
+        return None
+    from tensorplay.compiler import config as compiler_config
+
+    if not getattr(compiler_config, "capture_profiler_record_function", False):
+        return None
+    tracer = get_active_tracer()
+    if tracer is not None:
+        proxy = tracer.create_proxy("call_function", target, argument, {})
+        proxy.node.meta["side_effect"] = True
+        return proxy
+    # A graph handed to the compiler is recorded at dispatcher level, where the
+    # recording is the one wearing the mode rather than a tracer of its own.
+    from tensorplay.graph.experimental.proxy_tensor import get_proxy_mode
+
+    mode = get_proxy_mode()
+    record = getattr(getattr(mode, "tracer", None), "record", None)
+    if record is None:
+        return None
+    node = record(target, argument, {}, None)
+    # A span computes nothing, so the cleanup that drops unused operations
+    # would drop it.  It is not nothing: the profiler was told where the work
+    # inside it happened.
+    node.meta["side_effect"] = True
+    return node
+
+
+def _record_function_enter(name, args=None):
+    """Begin a profiled span, and stand for its beginning in a graph.
+
+    The span is opened here rather than by the caller so that a graph carrying
+    this call opens it when the graph is run, the same as any other operation
+    whose effect is not a value.
+    """
+
+    marker = _record_span_call(_record_function_enter, (str(name), args))
+    if marker is None:
+        _C._profiler_user_begin(str(name))
+    return _SpanHandle(name, args, marker)
+
+
+def _record_function_exit(span):
+    """End the profiled span whose beginning opened it."""
+
+    marker = span.marker if isinstance(span, _SpanHandle) else None
+    if marker is None:
+        _C._profiler_user_end()
+        return
+    _record_span_call(_record_function_exit, (marker,))
+
+
 class record_function(ContextDecorator):
     """Mark a user-defined span in the active profiling session."""
 
@@ -518,17 +596,19 @@ class record_function(ContextDecorator):
         self.name = str(name)
         self.args = args
         self._entered = False
+        self._span = None
 
     def __enter__(self):
         if self._entered:
             raise RuntimeError("record_function context manager is not reentrant")
-        _C._profiler_user_begin(self.name)
         self._entered = True
+        self._span = _record_function_enter(self.name, self.args)
         return self
 
     def __exit__(self, exc_type, exc, tb):
         if self._entered:
-            _C._profiler_user_end()
+            _record_function_exit(self._span)
+            self._span = None
             self._entered = False
         return False
 
