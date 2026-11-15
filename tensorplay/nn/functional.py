@@ -2156,7 +2156,7 @@ def gaussian_nll_loss(
         if var < 0:
             raise ValueError("var has negative entry/entries")
         var = tensorplay.ones_like(input) * var
-    elif (var < 0).to(input.dtype).sum().item() > 0:
+    elif bool(tensorplay.any(var < 0)):
         raise ValueError("var has negative entry/entries")
 
     # Check var size
