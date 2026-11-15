@@ -685,14 +685,13 @@ linalg_solve_ex_internal_out_kernel_cuda(
 template <typename T>
 __global__ void eye_batched_kernel(int64_t n, int64_t matrix_stride,
                                    int64_t batch, T* out) {
-    const int64_t index =
+    int64_t index =
         static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (index >= batch * n) return;
-    const int64_t b = index / n;
-    const int64_t i = index % n;
-    T* plane = out + b * matrix_stride;
-    for (int64_t j = 0; j < n; ++j) {
-        plane[static_cast<size_t>(i * n + j)] = (i == j) ? T(1) : T(0);
+    const int64_t total = batch * matrix_stride;
+    const int64_t step = static_cast<int64_t>(gridDim.x) * blockDim.x;
+    for (; index < total; index += step) {
+        const int64_t i = index % matrix_stride;
+        out[index] = (i / n == i % n) ? T(1) : T(0);
     }
 }
 
@@ -702,15 +701,21 @@ std::tuple<Tensor, Tensor> linalg_inv_ex_kernel_cuda(const Tensor& A,
     const int64_t n = A.size(-1);
     const int64_t ms = n * n;
     const int64_t bs = linear_batch_size(batch_shape_of(A));
+    if (n == 0) {
+        run_real(A.dtype(), [](auto) {});
+        return {Tensor::empty(A.shape(), A.dtype(), A.device()),
+                Tensor::zeros(batch_shape_of(A), DType::Int32, A.device())};
+    }
     Tensor identity = Tensor::empty(A.shape(), A.dtype(), A.device());
     const auto stream = getCurrentCUDAStream().stream();
-    run_real(A.dtype(), [&](auto tag) {
-        using T = std::remove_pointer_t<decltype(tag)>;
-        eye_batched_kernel<<<dim3(static_cast<unsigned>((bs * n + 255) / 256)),
-                             256, 0, stream>>>(n, ms, bs,
-                                                identity.data_ptr<T>());
-    });
-    checkCuda(cudaGetLastError(), "linalg.inv identity");
+    if (bs * ms > 0) {
+        run_real(A.dtype(), [&](auto tag) {
+            using T = std::remove_pointer_t<decltype(tag)>;
+            const auto blocks = static_cast<unsigned>(std::min<int64_t>((bs * ms + 255) / 256, 65535));
+            eye_batched_kernel<<<blocks, 256, 0, stream>>>(n, ms, bs, identity.data_ptr<T>());
+        });
+        checkCuda(cudaGetLastError(), "linalg.inv identity");
+    }
     auto [inv, info] = linalg_solve_ex_kernel_cuda(A, identity, true, false);
     if (check_errors) check_infos(info, "linalg.inv_ex", A.dim() == 2);
     return {inv, info};
