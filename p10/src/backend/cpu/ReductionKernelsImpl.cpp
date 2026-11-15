@@ -6577,10 +6577,11 @@ Tensor extrema_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& d
     Tensor result = Tensor::empty(compute_reduction_shape(self, resolved, keepdim),
                                   self.dtype(), self.device());
     if (result.numel() == 0) return result;
-    Tensor viewed = review_reduce_result(result, ndim, mask, keepdim);
-// The walks below answer without the reduction iterator, so the iterator is
-// only built by the branches that need it.
+// The walks below answer from the result the caller asked for and without the
+// reduction iterator, so the layout the iterator needs is only built by the
+// branches that fall through to it.
 #define TP_EXTREMA_ITER() \
+    Tensor viewed = review_reduce_result(result, ndim, mask, keepdim); \
     TensorIterator iter = TensorIterator::reduce_op(viewed, self)
 #define TP_EXTREMA_CASE(ctype, name) \
     case DType::name: \
