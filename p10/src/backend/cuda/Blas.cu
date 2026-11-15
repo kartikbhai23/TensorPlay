@@ -224,21 +224,26 @@ Tensor vdot_cuda(const Tensor& a_in, const Tensor& b_in) {
 
     cublasHandle_t handle = CUDAContext::getCublasHandle();
     switch (dt) {
-        case DType::Float32:
+        case DType::Float32: {
+            CublasPointerModeGuard mode_guard(handle, CUBLAS_POINTER_MODE_DEVICE);
             CUBLAS_CHECK(cublasSdot(handle, static_cast<int>(n),
                                     a.data_ptr<float>(), 1,
                                     bmatch.data_ptr<float>(), 1,
                                     result.data_ptr<float>()));
             return result;
-        case DType::Float64:
+        }
+        case DType::Float64: {
+            CublasPointerModeGuard mode_guard(handle, CUBLAS_POINTER_MODE_DEVICE);
             CUBLAS_CHECK(cublasDdot(handle, static_cast<int>(n),
                                     a.data_ptr<double>(), 1,
                                     bmatch.data_ptr<double>(), 1,
                                     result.data_ptr<double>()));
             return result;
+        }
         case DType::Float16:
         case DType::BFloat16: {
             // fp32 accumulation contract, native storage for the scalar.
+            CublasPointerModeGuard mode_guard(handle, CUBLAS_POINTER_MODE_DEVICE);
             const cudaDataType_t cuda_type =
                 dt == DType::Float16 ? CUDA_R_16F : CUDA_R_16BF;
             CUBLAS_CHECK(cublasDotEx(handle, static_cast<int>(n),

@@ -137,6 +137,18 @@ void CUDAContext::warmupHandles() {
     handlesForCurrentDevice();
 }
 
+CublasPointerModeGuard::CublasPointerModeGuard(cublasHandle_t handle,
+                                               cublasPointerMode_t mode)
+    : handle_(handle) {
+    checkCublas(cublasGetPointerMode(handle_, &previous_),
+                "cublasGetPointerMode");
+    checkCublas(cublasSetPointerMode(handle_, mode), "cublasSetPointerMode");
+}
+
+CublasPointerModeGuard::~CublasPointerModeGuard() {
+    cublasSetPointerMode(handle_, previous_);
+}
+
 bool isCudaInitialized() {
     return g_cuda_initialized.load(std::memory_order_acquire);
 }

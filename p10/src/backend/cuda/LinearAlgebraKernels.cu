@@ -1194,14 +1194,16 @@ Tensor dot_kernel_cuda(const Tensor& self, const Tensor& other) {
     const Tensor x = operand(self, incx);
     const Tensor y = operand(other, incy);
 
+    cublasHandle_t handle = CUDAContext::getCublasHandle();
+    CublasPointerModeGuard mode_guard(handle, CUBLAS_POINTER_MODE_DEVICE);
     switch (dtype) {
         case DType::Float32:
-            CUBLAS_CHECK(cublasSdot(CUDAContext::getCublasHandle(), static_cast<int>(n),
+            CUBLAS_CHECK(cublasSdot(handle, static_cast<int>(n),
                                     x.data_ptr<float>(), incx, y.data_ptr<float>(), incy,
                                     result.data_ptr<float>()));
             return result;
         case DType::Float64:
-            CUBLAS_CHECK(cublasDdot(CUDAContext::getCublasHandle(), static_cast<int>(n),
+            CUBLAS_CHECK(cublasDdot(handle, static_cast<int>(n),
                                     x.data_ptr<double>(), incx, y.data_ptr<double>(), incy,
                                     result.data_ptr<double>()));
             return result;
@@ -1209,7 +1211,7 @@ Tensor dot_kernel_cuda(const Tensor& self, const Tensor& other) {
         case DType::BFloat16: {
             // FP32 accumulation contract, native storage for the scalar.
             CUBLAS_CHECK(cublasDotEx(
-                CUDAContext::getCublasHandle(), static_cast<int>(n),
+                handle, static_cast<int>(n),
                 x.data_ptr(), dot_cublas_type(dtype), incx,
                 y.data_ptr(), dot_cublas_type(dtype), incy,
                 result.data_ptr(), dot_cublas_type(dtype), CUDA_R_32F));

@@ -29,6 +29,20 @@ public:
     static void warmupHandles();
 };
 
+// Scalar BLAS results that live in device memory need the device pointer
+// mode: the default host mode copies the value back and stalls the stream.
+class P10_API CublasPointerModeGuard {
+public:
+    CublasPointerModeGuard(cublasHandle_t handle, cublasPointerMode_t mode);
+    ~CublasPointerModeGuard();
+    CublasPointerModeGuard(const CublasPointerModeGuard&) = delete;
+    CublasPointerModeGuard& operator=(const CublasPointerModeGuard&) = delete;
+
+private:
+    cublasHandle_t handle_;
+    cublasPointerMode_t previous_ = CUBLAS_POINTER_MODE_HOST;
+};
+
 // True once this process has made a successful CUDA runtime call. Seeding and
 // other bookkeeping use this to avoid initializing CUDA eagerly.
 P10_API bool isCudaInitialized();
