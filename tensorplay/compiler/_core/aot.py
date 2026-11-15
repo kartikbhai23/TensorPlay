@@ -230,6 +230,44 @@ def _rule_gather(b: _JointBuilder, node: Node, go: Node) -> List[_GradContributi
     return [(self_node, b.reduce_for(grad, node, self_node))]
 
 
+def _rule_sum(b: _JointBuilder, node: Node, go: Node) -> List[_GradContribution]:
+    """A reduction's gradient is its result spread back over what it read.
+
+    A full reduction spreads over the whole extent.  A partial one spreads
+    only over the reduced axes, so the reduced extents become singletons
+    before the spread: without that the result has the wrong rank and, when
+    the remaining extents disagree, cannot be spread at all.
+    """
+
+    inner = node.args[0]
+    rest = node.args[1:]
+    dim = node.kwargs.get("dim", rest[0] if len(rest) > 0 else None)
+    keepdim = bool(node.kwargs.get("keepdim", rest[1] if len(rest) > 1 else False))
+
+    input_shape = b.shape_of(inner)
+    grad = go
+    if input_shape is not None and not keepdim:
+        rank = len(input_shape)
+        if dim is None:
+            reduced = set(range(rank))
+        elif isinstance(dim, (tuple, list)):
+            reduced = {int(axis) % rank for axis in dim}
+        else:
+            reduced = {int(dim) % rank}
+        # A reduction leaves the extents it did not touch as they were, so the
+        # target comes from the input's shape alone rather than from the
+        # result's, whose description is not available yet.
+        target = tuple(
+            1 if axis in reduced else input_shape[axis] for axis in range(rank)
+        )
+        if target != tuple(input_shape):
+            # A reshape rather than a view: the spread result is often a
+            # broadcast value and need not be contiguous.
+            grad = b.bwd("call_method", "reshape", (go, target))
+    expanded = b.bwd("call_method", "expand", (grad, input_shape))
+    return [(inner, b.reduce_for(expanded, node, inner))]
+
+
 def _method_rule(formula: Callable[[_JointBuilder, Node, Node], Node]):
     def rule(b: _JointBuilder, node: Node, go: Node) -> List[_GradContribution]:
         inner = node.args[0]
@@ -259,14 +297,7 @@ _RULES: Dict[Tuple[str, Any], Callable] = {
     ("call_method", "relu"): _method_rule(
         lambda b, go, s: b.bwd("call_function", operator.mul, (go, b.bwd("call_function", operator.gt, (s, 0))))
     ),
-    ("call_method", "sum"): _method_rule(
-        # formula reads only the input's SIZES, never its values, so emit a
-        # metadata-only expand (no edge to the forward node) and the
-        # partitioner correctly saves nothing for sum.
-        lambda b, go, s: b.bwd(
-            "call_method", "expand", (go, b.shape_of(s))
-        )
-    ),
+    ("call_method", "sum"): _rule_sum,
     ("call_method", "sin"): _method_rule(
         lambda b, go, s: b.bwd("call_function", operator.mul, (b.bwd("call_method", "cos", (s,)), go))
     ),

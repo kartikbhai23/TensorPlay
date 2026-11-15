@@ -91,6 +91,41 @@ def test_a_value_used_twice_receives_both_contributions(formula, partitioner):
     )
 
 
+@pytest.mark.parametrize("partitioner", ["default", "min_cut"])
+@pytest.mark.parametrize(
+    "formula",
+    [
+        lambda x: x.sum(0),
+        lambda x: x.sum(1),
+        lambda x: x.sum(-1),
+        lambda x: x.sum(1, True),
+        lambda x: x.sum(dim=1, keepdim=True),
+        lambda x: x.sum((0, 2)),
+        lambda x: x.sum((0, 2), True),
+    ],
+    ids=[
+        "axis0",
+        "axis1",
+        "negative_axis",
+        "axis1_keepdim",
+        "axis1_keepdim_named",
+        "two_axes",
+        "two_axes_keepdim",
+    ],
+)
+def test_partial_reduction_gradient_spreads_over_reduced_axes(formula, partitioner):
+    """A partial reduction's gradient goes back only over the reduced axes.
+
+    The result of ``x.sum(1)`` has one extent fewer, so spreading it back means
+    putting a singleton where the reduced axis was; spreading it directly at
+    the input's shape either fails or lands on the wrong axes.
+    """
+
+    _assert_grads_match_eager(
+        formula, [tp.randn(2, 3, 4)], "save_needed", partitioner=partitioner
+    )
+
+
 @pytest.mark.parametrize("policy", ["save_needed", "recompute_all"])
 @pytest.mark.parametrize("partitioner", ["default", "min_cut"])
 def test_broadcast_scalar_param_gradient_reduces(policy, partitioner):
