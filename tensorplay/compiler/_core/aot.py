@@ -1381,7 +1381,7 @@ def build_aot(
             continue
         if seen_output:
             n.meta["is_backward"] = True
-    graph_module.graph.output((out_arg, *[g for _, g in grad_outputs]))
+    graph_module.graph.output((*out_elements, *[g for _, g in grad_outputs]))
 
     if partitioner == "min_cut":
         (
@@ -1390,7 +1390,11 @@ def build_aot(
             input_kinds,
             input_keys,
             saved_names_list,
-        ) = partition_min_cut(graph_module, memory_budget=memory_budget)
+        ) = partition_min_cut(
+            graph_module,
+            num_fwd_outputs=len(out_elements),
+            memory_budget=memory_budget,
+        )
     else:
         (
             forward_gm,
@@ -1398,7 +1402,9 @@ def build_aot(
             input_kinds,
             input_keys,
             saved_names_list,
-        ) = partition_default(graph_module, policy=policy)
+        ) = partition_default(
+            graph_module, num_fwd_outputs=len(out_elements), policy=policy
+        )
 
     leaf_targets = [name for name, _ in grad_outputs]
     if required_grads is not None:

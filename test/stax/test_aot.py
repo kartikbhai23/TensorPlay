@@ -155,6 +155,40 @@ def test_a_lifted_constant_is_read_by_the_backward(policy, partitioner):
 
 @pytest.mark.parametrize("policy", ["save_needed", "recompute_all"])
 @pytest.mark.parametrize("partitioner", ["default", "min_cut"])
+def test_multi_output_region_differentiates_each_result(policy, partitioner):
+    """Every result of a multi-output region is a forward result, not a gradient.
+
+    The joint graph's outputs are the forward's results followed by the
+    backward's.  Counting the second result as a gradient leaves the backward
+    reading a value the forward never handed it, and the split fails while
+    extracting the forward half.
+    """
+
+    def fn(x):
+        return (x.sum(), (x.sin() * x).sum())
+
+    x = tp.randn(4)
+    gm = Tracer().trace(fn, sample_inputs={"x": x})
+    result = build_aot(
+        gm,
+        sample_inputs={"x": x},
+        policy=policy,
+        partitioner=partitioner,
+    )
+    value, grads = result.value_and_grad(x.clone().requires_grad_(True))
+
+    eager = x.clone().requires_grad_(True)
+    first, second = fn(eager)
+    (first.sum() + second.sum()).backward()
+
+    assert isinstance(value, tuple) and len(value) == 2
+    assert tp.allclose(value[0], first)
+    assert tp.allclose(value[1], second)
+    assert tp.allclose(grads["x"], eager.grad)
+
+
+@pytest.mark.parametrize("policy", ["save_needed", "recompute_all"])
+@pytest.mark.parametrize("partitioner", ["default", "min_cut"])
 def test_broadcast_scalar_param_gradient_reduces(policy, partitioner):
     def fn(x, w):
         return (x * w).sum()
