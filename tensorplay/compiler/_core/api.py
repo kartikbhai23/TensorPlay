@@ -44,6 +44,7 @@ from .region_cache import (
     region_key as make_region_key,
     store_region,
 )
+from .shape_policy import shape_policy_signature
 
 
 _compiled_wrappers: WeakSet[Any] = WeakSet()
@@ -113,6 +114,77 @@ def _tensor_signature(value: Any, *, dynamic: bool) -> tuple[Any, ...] | None:
         bool(requires_grad),
         _stride_signature(value, dynamic=dynamic),
     )
+
+
+def _strides_follow_shape(shape: Any, strides: Any) -> bool:
+    """Whether ``strides`` is the dense layout of ``shape``."""
+
+    if not isinstance(shape, tuple) or not isinstance(strides, tuple):
+        return False
+    if len(shape) != len(strides):
+        return False
+    expected = 1
+    for size, stride in zip(reversed(shape), reversed(strides)):
+        if stride != expected:
+            return False
+        expected *= size
+    return True
+
+
+def _same_layout(expected: Any, actual: Any) -> bool:
+    """Whether two tensor signatures describe the same memory layout.
+
+    A dense tensor's strides are decided by its sizes, so a signature whose
+    strides are dense keeps the same layout as another dense one even when
+    the sizes differ.  Anything else keeps its strides as the layout fact.
+    """
+
+    stride_index = 6
+    expected_shape, expected_stride = expected[2], expected[stride_index]
+    actual_shape, actual_stride = actual[2], actual[stride_index]
+    if _strides_follow_shape(expected_shape, expected_stride) and (
+        _strides_follow_shape(actual_shape, actual_stride)
+    ):
+        return True
+    return expected_stride == actual_stride
+
+
+def _differs_only_in_tensor_shapes(expected: Any, actual: Any) -> bool:
+    """Whether two input signatures differ only in concrete tensor sizes."""
+
+    if isinstance(expected, tuple) and isinstance(actual, tuple):
+        if (
+            expected
+            and isinstance(expected[0], str)
+            and expected[0] == "tensor"
+            and len(expected) == len(actual)
+        ):
+            for index, (left, right) in enumerate(zip(expected, actual)):
+                if index == 2:  # the shape slot
+                    continue
+                if index == 6:  # the stride slot, decided by the sizes above
+                    if _same_layout(expected, actual):
+                        continue
+                    return False
+                if not _differs_only_in_tensor_shapes(left, right):
+                    return False
+            return True
+        if len(expected) != len(actual):
+            return False
+        return all(
+            _differs_only_in_tensor_shapes(left, right)
+            for left, right in zip(expected, actual)
+        )
+    return expected == actual
+
+
+def _shape_wobble(chain: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+    """Whether a stored specialization fails only on a changed tensor size."""
+
+    checker = getattr(chain, "fails_only_on_tensor_sizes", None)
+    if checker is None:
+        return False
+    return bool(checker(args, kwargs))
 
 
 def _value_signature(value: Any, *, dynamic: bool) -> Any:
@@ -333,18 +405,32 @@ def compile(
     ``backend(graph_module, example_inputs, **kwargs) -> callable``.  The
     frontend caches specializations by input metadata; capture and backend
     failures are surfaced as compiler errors.
+
+    The shape policy is chosen by ``dynamic`` or ``dynamic_shapes``:
+
+    * ``dynamic=None`` (the default) captures concrete sizes.  When a later
+      call changes only a tensor size, the region is captured again with
+      every extent that is not 0 or 1 symbolic, provided the backend declares
+      ``supports_symbolic_shapes`` and
+      :data:`tensorplay.compiler.config.automatic_dynamic_shapes` is true.
+    * ``dynamic=True`` captures extents symbolically from the first call.
+    * ``dynamic_shapes`` names the axes that may vary, per argument:
+      ``{"x": {0: Dim("batch")}, "y": (Dim("batch"), None)}``.  Unnamed axes
+      keep the example's size and are checked before a cached region runs.
+      The specification needs a backend that declares
+      ``supports_symbolic_shapes``.
+
+    A tensor marked with :func:`mark_static` keeps the example's extent even
+    when the policy would make it symbolic.
     """
 
     normalized_dynamic_shapes = dynamic_shapes
+    shape_spec: dict[str, Any] | None = None
     if dynamic_shapes is not None:
         if dynamic is not None:
             raise RuntimeError("dynamic and dynamic_shapes cannot both be specified")
-        if not isinstance(dynamic_shapes, bool):
-            raise TypeError(
-                "TensorPlay dynamic_shapes currently accepts only a bool; "
-                "use a bool dynamic policy for this frontend"
-            )
-        dynamic = dynamic_shapes
+        if isinstance(dynamic_shapes, bool):
+            dynamic = dynamic_shapes
 
     if mode is not None and options is not None:
         raise RuntimeError("Either mode or options can be specified, but not both")
@@ -369,6 +455,8 @@ def compile(
         raise TypeError("config.fail_on_recompile_limit_hit must be a bool")
     if not isinstance(compiler_config.force_disable_caches, bool):
         raise TypeError("config.force_disable_caches must be a bool")
+    if not isinstance(compiler_config.automatic_dynamic_shapes, bool):
+        raise TypeError("config.automatic_dynamic_shapes must be a bool")
     accumulated_limit = compiler_config.accumulated_recompile_limit
     if (
         not isinstance(accumulated_limit, int)
@@ -378,11 +466,16 @@ def compile(
         raise ValueError("config.accumulated_recompile_limit must be a positive integer")
 
     if model is None:
+        # A per-input specification is resolved against the program's
+        # arguments, which are unknown until the decorator is applied.
+        decorated_shapes = (
+            None if isinstance(dynamic_shapes, bool) else dynamic_shapes
+        )
         return lambda actual_model: compile(
             actual_model,
             fullgraph=fullgraph,
             backend=backend,
-            dynamic=dynamic,
+            dynamic=dynamic if decorated_shapes is None else None,
             mode=mode,
             options=options,
             name=name,
@@ -390,10 +483,7 @@ def compile(
             recompile_limit=recompile_limit,
             isolate_recompiles=isolate_recompiles,
             strict_native=strict_native,
-            # ``dynamic_shapes`` has already been normalized into ``dynamic``
-            # above.  Passing it again would look like the user supplied both
-            # mutually exclusive knobs on the recursive decorator call.
-            dynamic_shapes=None,
+            dynamic_shapes=decorated_shapes,
         )
     if not callable(model):
         raise TypeError(f"compile() expected a callable, got {type(model)!r}")
@@ -401,6 +491,13 @@ def compile(
         return model
     if recompile_limit is not None and recompile_limit < 1:
         raise ValueError("recompile_limit must be positive")
+
+    if dynamic_shapes is not None and not isinstance(dynamic_shapes, bool):
+        from .shape_policy import normalize_dynamic_shapes, parameter_names
+
+        shape_spec = normalize_dynamic_shapes(dynamic_shapes, parameter_names(model))
+        normalized_dynamic_shapes = shape_spec
+        dynamic = True
 
     lifted = _lift_free_tensors(model)
     if lifted is not None:
@@ -411,19 +508,35 @@ def compile(
                 program,
                 fullgraph=fullgraph,
                 backend=backend,
-                dynamic=dynamic,
+                dynamic=None if shape_spec is not None else dynamic,
                 mode=mode,
                 options=options,
                 name=name,
                 recompile_limit=recompile_limit,
                 isolate_recompiles=isolate_recompiles,
                 strict_native=strict_native,
+                dynamic_shapes=shape_spec,
             ),
             read_free,
         )
 
     backend_spec = get_default_backend() if backend is None else backend
     compiler_fn = lookup_backend(backend_spec)
+    if shape_spec is not None and not getattr(
+        compiler_fn, "supports_symbolic_shapes", False
+    ):
+        raise RuntimeError(
+            f"backend {backend_spec!r} cannot capture symbolic shapes; "
+            "dynamic_shapes needs a backend that declares "
+            "supports_symbolic_shapes"
+        )
+    automatic_dynamic = (
+        dynamic is None
+        and normalized_dynamic_shapes is None
+        and compiler_config.automatic_dynamic_shapes
+        and getattr(compiler_fn, "supports_symbolic_shapes", False)
+    )
+    dynamic_generalized = False
     backend_kwargs = _backend_kwargs(
         mode=mode,
         options=options,
@@ -514,7 +627,7 @@ def compile(
         nonlocal last_quick_key, last_compiled_fn
         nonlocal guard_param_names, gate_evaluator
         nonlocal last_call_fp, last_quick_parts, last_module_state
-        nonlocal compile_attempts
+        nonlocal compile_attempts, specialization_dynamic, dynamic_generalized
         if _capture_disabled.get():
             return model(*args, **kwargs)
         module_state = _module_state_component(model)
@@ -622,6 +735,47 @@ def compile(
                             + format_recompile_reasons(reasons),
                             stacklevel=2,
                         )
+                if (
+                    automatic_dynamic
+                    and not dynamic_generalized
+                    and any(
+                        _shape_wobble(chain, args, kwargs)
+                        for chain in guard_chains.values()
+                    )
+                ):
+                    # The concrete policy just failed because a size moved.
+                    # From here the region is captured with every extent that
+                    # is not 0 or 1 symbolic, which serves the sizes already
+                    # seen and the ones that would have followed each of
+                    # them as separate specializations.
+                    dynamic_generalized = True
+                    specialization_dynamic = True
+                    backend_kwargs["dynamic"] = True
+                    optimized._tensorplay_dynamic = True  # type: ignore[attr-defined]
+                    if cache_enabled:
+                        cache.clear()
+                        guard_chains.clear()
+                        backend_variants.clear()
+                    last_compiled_fn = None
+                    last_call_fp = None
+                    last_quick_parts = None
+                    input_signature = _quick_input_signature(
+                        args, kwargs, dynamic=specialization_dynamic
+                    )
+                    quick_key = (
+                        input_signature,
+                        shape_component,
+                        data_component,
+                        grad_state,
+                        module_state,
+                    )
+                    key = (
+                        _input_signature(args, kwargs, dynamic=specialization_dynamic),
+                        _guard_component(args, kwargs, _value_signature),
+                        data_component,
+                        grad_state,
+                        module_state,
+                    )
                 if compile_attempts >= accumulated_limit:
                     raise RuntimeError(
                         "TensorPlay accumulated recompilation limit reached"
@@ -634,10 +788,11 @@ def compile(
                     kwargs,
                     fullgraph=fullgraph,
                     backend_kwargs=backend_kwargs,
+                    shape_spec=shape_spec,
                     region_key=make_region_key(
                         target_cache,
                         model if _is_module_like(model) else None,
-                        key,
+                        key if shape_spec is None else (key, shape_policy_signature(shape_spec)),
                     ),
                 )
                 # Keys gain a guard component once capture reveals metadata
@@ -698,7 +853,9 @@ def compile(
     optimized._tensorplay_guard_chains = guard_chains  # type: ignore[attr-defined]
     optimized._tensorplay_last_recompile_reasons = ()  # type: ignore[attr-defined]
     optimized._tensorplay_original = model  # type: ignore[attr-defined]
-    optimized._tensorplay_dynamic = dynamic  # type: ignore[attr-defined]
+    optimized._tensorplay_dynamic = (  # type: ignore[attr-defined]
+        True if dynamic_generalized else dynamic
+    )
     optimized._tensorplay_dynamic_shapes = normalized_dynamic_shapes  # type: ignore[attr-defined]
     optimized._tensorplay_isolate_recompiles = isolate_recompiles  # type: ignore[attr-defined]
     optimized._tensorplay_recompile_limit = specialization_limit  # type: ignore[attr-defined]
@@ -1195,6 +1352,7 @@ def _compile_region(
     *,
     fullgraph: bool,
     backend_kwargs: dict[str, Any],
+    shape_spec: dict[str, Any] | None = None,
     region_key: str | None = None,
 ) -> tuple[Callable[..., Any], GraphModule]:
     devices = _generator_devices(example_inputs, example_kwargs)
@@ -1209,13 +1367,32 @@ def _compile_region(
             try:
                 with _compiler_context(), _preserve_module_state(model):
                     samples = _bind_sample_arguments(model, example_inputs, example_kwargs)
+                    if shape_spec is not None:
+                        # The declared dimensions are checked against this
+                        # call's examples before capture reads them.
+                        from tensorplay.export.dynamic_shapes import (
+                            check_dynamic_shapes,
+                        )
+
+                        if samples is None:
+                            raise RuntimeError(
+                                "dynamic_shapes needs a program whose argument "
+                                "names can be read"
+                            )
+                        check_dynamic_shapes(samples, shape_spec)
                     if (backend_kwargs or {}).get("dynamic") is True and getattr(
                         compiler_fn, "supports_symbolic_shapes", False
                     ):
                         from tensorplay.graph.experimental._symbolic_trace import SymbolicShapeTracer
 
-                        tracer = SymbolicShapeTracer(samples or {})
+                        tracer = SymbolicShapeTracer(samples or {}, dim_spec=shape_spec)
                     else:
+                        if shape_spec is not None:
+                            raise RuntimeError(
+                                "the selected backend cannot capture symbolic "
+                                "shapes; dynamic_shapes needs one that declares "
+                                "supports_symbolic_shapes"
+                            )
                         tracer = Tracer(execute=True)
                     # An operator that stands for a region of the program -- rather
                     # than for one operation -- has to be told that a capture is

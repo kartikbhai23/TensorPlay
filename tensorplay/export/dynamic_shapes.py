@@ -18,6 +18,7 @@ __all__ = [
     "Dim",
     "DerivedDim",
     "ShapesCollection",
+    "check_dynamic_shapes",
     "dims",
     "refine_dynamic_shapes_from_suggested_fixes",
 ]
@@ -671,6 +672,16 @@ def _check_dynamic_shapes(
                         f"({bound}). Suggested fixes:\n"
                         f"{_suggest_fix(dim.__name__, suggested, size[index])}"
                     )
+
+
+def check_dynamic_shapes(combined_args: Any, dynamic_shapes: Any) -> None:
+    """Validate a dimension specification against the example inputs.
+
+    ``combined_args`` maps argument names to values; ``dynamic_shapes`` uses
+    the same shape, with one dimension entry per input it mentions.
+    """
+
+    _check_dynamic_shapes(combined_args, dynamic_shapes)
 
 
 def _process_dynamic_shapes(

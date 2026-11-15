@@ -13,6 +13,7 @@ from __future__ import annotations
 __all__ = [
     "dynamic_shapes",
     "assume_static_by_default",
+    "automatic_dynamic_shapes",
     "capture_profiler_record_function",
     "recompile_limit",
     "accumulated_recompile_limit",
@@ -76,6 +77,22 @@ assume_static_by_default: bool = True
 When false, an omitted shape policy uses rank-only tensor signatures.  Native
 lowerings still receive the real runtime tensors and are responsible for
 accepting the resulting shape range.
+"""
+
+
+automatic_dynamic_shapes: bool = True
+"""Recompile a region with symbolic sizes after a size change.
+
+A compile call that states no shape policy first captures with the concrete
+sizes of its examples.  When a later call misses only because a tensor size
+changed, the region is captured again with every extent that is not 0 or 1
+symbolic, and the concrete entry it replaces is dropped.  Calls whose guards
+fail for any other reason (dtype, device, layout, module state, a branch
+outcome) still get an ordinary specialization.
+
+Only a backend that declares ``supports_symbolic_shapes`` can be generalized;
+the setting is read when a compiler wrapper is created, so it does not change
+the policy of wrappers that already exist.
 """
 
 

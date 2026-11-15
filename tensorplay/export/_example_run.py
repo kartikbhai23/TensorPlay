@@ -139,9 +139,15 @@ class ExampleRun:
             return Shaped(tuple(int(size) for size in value.shape), value.detach().clone())
         origins = frozenset({str(node.target)})
         if _is_tensor(sample):
-            sites = self.dims.sites.get(str(node.target), {})
+            name = str(node.target)
+            sites = self.dims.sites.get(name, {})
+            pinned = self.dims.static_axes
             extents = tuple(
-                sites[axis][0] if axis in sites else int(size)
+                pinned[(name, axis)]
+                if (name, axis) in pinned
+                else sites[axis][0]
+                if axis in sites
+                else int(size)
                 for axis, size in enumerate(sample.shape)
             )
             return Shaped(extents, sample.detach().clone(), origins)

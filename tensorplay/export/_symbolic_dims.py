@@ -96,6 +96,10 @@ class SymbolicDims:
         self.symbols: dict[sympy.Symbol, _Symbol] = {}
         #: input name -> axis -> (size expression, example size)
         self.sites: dict[str, dict[int, tuple[sympy.Expr, int]]] = {}
+        #: (input name, axis) -> size, for axes a capture pinned to one size
+        #: after the symbols were allocated.  A pinned axis reads as its
+        #: example size, so the values derived from it stay concrete.
+        self.static_axes: dict[tuple[str, int], int] = {}
         self.guards: list[Guard] = []
         #: What every symbol was on the example.
         self.hints: dict[sympy.Symbol, sympy.Integer] = {}

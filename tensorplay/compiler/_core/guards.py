@@ -251,6 +251,34 @@ class GuardChain:
             self.hits += 1
         return result
 
+    def fails_only_on_tensor_sizes(
+        self, args: Tuple[Any, ...], kwargs: Dict[str, Any]
+    ) -> bool:
+        """Whether this chain misses only because a tensor size moved.
+
+        Data-dependent branch outcomes, ambient autograd state, module state
+        and metadata other than sizes must all still agree; otherwise the
+        miss is about something a symbolic recapture cannot serve.
+        """
+
+        from .api import _differs_only_in_tensor_shapes
+
+        expected = (
+            self._signature,
+            self._guard_component,
+            self._data_component,
+            self._state_component,
+            self._module_component,
+        )
+        live = self._live_signature(args, kwargs)
+        if expected[0] == live[0] and expected[1] == live[1]:
+            return False
+        if expected[2:] != live[2:]:
+            return False
+        return _differs_only_in_tensor_shapes(
+            expected[0], live[0]
+        ) and _differs_only_in_tensor_shapes(expected[1], live[1])
+
     def explain(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> List[Guard]:
         """Guards this chain would fail against the given live arguments."""
 
