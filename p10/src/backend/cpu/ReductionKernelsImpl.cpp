@@ -5115,7 +5115,63 @@ inline void fold_short_rows(const ctype* data, int64_t run, int64_t begin,
     }
 }
 
-// A single trailing dimension of a dense tensor is one contiguous run per row,// A single trailing dimension of a dense tensor is one contiguous run per row,
+// A packed row shorter than one widened step: the row is widened from where it
+// lies with the lanes past its run replaced by the identity, so the compare and
+// its horizontal fold run on eight single-precision lanes rather than one
+// element at a time.  A row that holds a not-a-number takes the exact walk, and
+// the tensor's own last row reads through a padded copy.
+template <bool BFloat, bool WantMax>
+__attribute__((target("avx2,fma,f16c"), noinline))
+void fold_step_rows_hw(const uint16_t* in, int64_t run, int64_t begin,
+                       int64_t end, uint16_t* out, int64_t last_row) {
+    alignas(32) int32_t keep_bits[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    for (int64_t k = 0; k < run; ++k) keep_bits[k] = -1;
+    const __m256 keep =
+        _mm256_castsi256_ps(_mm256_load_si256(
+            reinterpret_cast<const __m256i*>(keep_bits)));
+    const __m256 identity = _mm256_set1_ps(
+        WantMax ? -std::numeric_limits<float>::infinity()
+                : std::numeric_limits<float>::infinity());
+    using Packed = std::conditional_t<BFloat, tensorplay::BFloat16,
+                                      tensorplay::Half>;
+    for (int64_t r = begin; r < end; ++r) {
+        const uint16_t* p = in + r * run;
+        __m256 value;
+        if (r == last_row) {
+            alignas(16) uint16_t pad[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            for (int64_t k = 0; k < run; ++k) pad[k] = p[k];
+            value = widen_row8<BFloat>(pad);
+        } else {
+            value = widen_row8<BFloat>(p);
+        }
+        if (_mm256_movemask_ps(_mm256_and_ps(
+                _mm256_cmp_ps(value, value, _CMP_UNORD_Q), keep)) != 0) {
+            const Packed* spelled = reinterpret_cast<const Packed*>(p);
+            Packed best = spelled[0];
+            for (int64_t k = 1; k < run; ++k) {
+                best = WantMax ? nan_max(best, spelled[k])
+                               : nan_min(best, spelled[k]);
+            }
+            reinterpret_cast<Packed*>(out)[r] = best;
+            continue;
+        }
+        const __m256 held = _mm256_blendv_ps(identity, value, keep);
+        __m256 folded = _mm256_permute2f128_ps(held, held, 0x1);
+        folded = WantMax ? _mm256_max_ps(held, folded)
+                         : _mm256_min_ps(held, folded);
+        const __m256 swapped = _mm256_shuffle_ps(folded, folded, 0x4E);
+        folded = WantMax ? _mm256_max_ps(folded, swapped)
+                         : _mm256_min_ps(folded, swapped);
+        const __m256 flipped = _mm256_shuffle_ps(folded, folded, 0xB1);
+        folded = WantMax ? _mm256_max_ps(folded, flipped)
+                         : _mm256_min_ps(folded, flipped);
+        const float answer = _mm256_cvtss_f32(folded);
+        out[r] = BFloat ? tensorplay::cpu::vecreduced::narrow_bf16_one(answer)
+                        : tensorplay::cpu::vecreduced::narrow_one_hw(answer);
+    }
+}
+
+// A single trailing dimension of a dense tensor is one contiguous run per row,
 // so the rows can go straight to the pool and skip the reduction iterator with
 // its identity fill and its per-element stride machinery.  Answers agree with
 // the iterator because both fold the same run with the same compare.
@@ -5144,13 +5200,29 @@ bool fold_trailing_extrema(Tensor& result, const Tensor& self, int64_t ndim,
         // A short run pays for the per-row walk, so the fold there is done
         // wide and the holder read back; a long run streams better through
         // the flat fold the caller falls back to.
-        if (run < 8 || run > 512 ||
-            !tensorplay::cpu::vecreduced::f16c_available()) {
-            return false;
-        }
+        if (!tensorplay::cpu::vecreduced::f16c_available()) return false;
         constexpr bool kBFloat = std::is_same_v<ctype, tensorplay::BFloat16>;
         const uint16_t* bits = reinterpret_cast<const uint16_t*>(data);
         uint16_t* obits = reinterpret_cast<uint16_t*>(out);
+        if (run < 8) {
+            auto fold_steps = [&](int64_t begin, int64_t end) {
+                if (maximum_value) {
+                    fold_step_rows_hw<kBFloat, true>(bits, run, begin, end,
+                                                     obits, rows - 1);
+                } else {
+                    fold_step_rows_hw<kBFloat, false>(bits, run, begin, end,
+                                                      obits, rows - 1);
+                }
+            };
+            if (self.numel() < GRAIN_SIZE || get_num_threads() == 1 ||
+                in_parallel_region()) {
+                fold_steps(0, rows);
+            } else {
+                parallel_for(0, rows, 1, fold_steps);
+            }
+            return true;
+        }
+        if (run > 512) return false;
         auto fold_bits = [&](int64_t begin, int64_t end) {
             for (int64_t r = begin; r < end; ++r) {
                 int64_t holder = 0;
