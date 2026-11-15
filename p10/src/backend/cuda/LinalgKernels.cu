@@ -571,35 +571,143 @@ linalg_slogdet_internal_out_kernel_cuda(
 
 // ------------------------------------------------------- getrs-based solve --
 
-// Solves op(A) X = B in place on the column-major buffer `B_cm`.
-template <typename scalar_t>
-void apply_getrs(const Tensor& LU_cm, const Tensor& pivots, Tensor& B_cm,
-                 cublasOperation_t trans) {
-    using Tr = CusolverTraits<scalar_t>;
-    const int64_t n = LU_cm.size(-2);
-    const int64_t nrhs = B_cm.size(-1);
-    const int64_t bs = linear_batch_size(batch_shape_of(B_cm));
-    auto* lu = LU_cm.data_ptr<scalar_t>();
-    auto* b = B_cm.data_ptr<scalar_t>();
-    const auto* piv = pivots.data_ptr<int32_t>();
-    const int64_t lu_ms = matrix_stride_of(LU_cm);
-    const int64_t b_ms = matrix_stride_of(B_cm);
-    const int64_t piv_stride = n;
-    Tensor dev_info = Tensor::zeros({bs}, DType::Int32, B_cm.device());
-    auto* info_data = dev_info.data_ptr<int32_t>();
-    const auto handle = CUDAContext::getCusolverDnHandle();
-    for (int64_t i = 0; i < bs; ++i) {
-        CUSOLVER_CHECK(Tr::getrs(handle, trans, static_cast<int>(n),
-                                 static_cast<int>(nrhs), &lu[i * lu_ms],
-                                 static_cast<int>(n), &piv[i * piv_stride],
-                                 &b[i * b_ms], static_cast<int>(B_cm.size(-2)),
-                                 &info_data[i]));
+// The row permutation the factorisation applied, resolved once on the device
+// so that every row of the right-hand side can be placed at the same time:
+// the swaps themselves are one dependent chain over the pivots, so a single
+// thread walks them and the gathered copy below does the real work.
+__global__ void row_permutation_kernel(int64_t n, const int32_t* pivots,
+                                       int32_t* rows, int32_t* inverse) {
+    if (blockIdx.x != 0 || threadIdx.x != 0) return;
+    for (int64_t i = 0; i < n; ++i) rows[i] = static_cast<int32_t>(i);
+    for (int64_t i = 0; i < n; ++i) {
+        const int64_t j = static_cast<int64_t>(pivots[i]) - 1;
+        const int32_t held = rows[i];
+        rows[i] = rows[j];
+        rows[j] = held;
+    }
+    if (inverse == nullptr) return;
+    for (int64_t i = 0; i < n; ++i) {
+        inverse[rows[i]] = static_cast<int32_t>(i);
     }
 }
 
+// out[row, col] = src[rows[row], col] over a block of columns, both buffers
+// column-major.  One block per column keeps every access to a column's own
+// contiguous run, which is where the parenthesised rows land.
+template <typename scalar_t>
+__global__ void gather_rows_kernel(const scalar_t* src, scalar_t* out,
+                                   const int32_t* rows, int64_t ldb,
+                                   int64_t n, int64_t nrhs) {
+    const int64_t row =
+        static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const int64_t col = static_cast<int64_t>(blockIdx.y);
+    if (row >= n || col >= nrhs) return;
+    out[row + col * ldb] = src[rows[row] + col * ldb];
+}
+
+// One triangular solve over the whole right-hand side: op(A) X = alpha B,
+// where A is the upper or the unit lower factor of the factorisation.
+template <typename scalar_t>
+void apply_one_trsm(cublasHandle_t handle, const scalar_t* a, int64_t lda,
+                    scalar_t* b, int64_t ldb, int64_t n, int64_t nrhs,
+                    cublasFillMode_t uplo, cublasOperation_t trans,
+                    cublasDiagType_t diag) {
+    const scalar_t alpha = scalar_t(1);
+    if constexpr (std::is_same_v<scalar_t, float>) {
+        CUBLAS_CHECK(cublasStrsm(handle, CUBLAS_SIDE_LEFT, uplo, trans, diag,
+                                 static_cast<int>(n), static_cast<int>(nrhs),
+                                 &alpha, a, static_cast<int>(lda), b,
+                                 static_cast<int>(ldb)));
+    } else {
+        CUBLAS_CHECK(cublasDtrsm(handle, CUBLAS_SIDE_LEFT, uplo, trans, diag,
+                                 static_cast<int>(n), static_cast<int>(nrhs),
+                                 &alpha, a, static_cast<int>(lda), b,
+                                 static_cast<int>(ldb)));
+    }
+}
+
+// Solves op(A) X = B from the factorisation, both sides column-major, and
+// answers in a column-major buffer of its own.  The permutation travels
+// through one gathered copy and the two factors go through the tuned
+// triangular solve, which answers this shape in a third of the time the
+// general solver takes for it.
+template <typename scalar_t>
+Tensor apply_getrs(const Tensor& LU_cm, const Tensor& pivots,
+                   const Tensor& B_cm, bool transpose) {
+    constexpr int64_t kColumnChunk = 65535;
+    constexpr int64_t kRowsPerBlock = 256;
+    const int64_t n = LU_cm.size(-2);
+    const int64_t nrhs = B_cm.size(-1);
+    const int64_t bs = linear_batch_size(batch_shape_of(B_cm));
+    if (bs == 0 || n == 0 || nrhs == 0) return B_cm;
+    const int64_t lu_ms = matrix_stride_of(LU_cm);
+    const int64_t b_ms = matrix_stride_of(B_cm);
+    const int64_t ldb = B_cm.size(-2);
+    auto stream = getCurrentCUDAStream().stream();
+    Tensor routes = Tensor::empty({2 * n}, DType::Int32, B_cm.device());
+    auto* route_data = routes.data_ptr<int32_t>();
+    auto* rows_data = route_data;
+    auto* inverse_data = route_data + n;
+    const auto* piv = pivots.data_ptr<int32_t>();
+    for (int64_t i = 0; i < bs; ++i) {
+        row_permutation_kernel<<<1, 1, 0, stream>>>(
+            n, &piv[i * n], rows_data, transpose ? inverse_data : nullptr);
+    }
+    Tensor solved = empty_column_major(
+        static_cast<std::vector<int64_t>>(B_cm.shape()), B_cm.dtype(),
+        B_cm.device());
+    auto* lu = LU_cm.data_ptr<scalar_t>();
+    auto* src = B_cm.data_ptr<scalar_t>();
+    auto* dst = solved.data_ptr<scalar_t>();
+    const auto handle = CUDAContext::getCublasHandle();
+    const unsigned row_blocks =
+        static_cast<unsigned>((n + kRowsPerBlock - 1) / kRowsPerBlock);
+    const int32_t* routes_used = transpose ? inverse_data : rows_data;
+    for (int64_t i = 0; i < bs; ++i) {
+        scalar_t* moved = dst + i * b_ms;
+        if (!transpose) {
+            // op(A) = A: place the rows first, then solve the two factors.
+            for (int64_t c0 = 0; c0 < nrhs; c0 += kColumnChunk) {
+                const int64_t cols = std::min<int64_t>(kColumnChunk, nrhs - c0);
+                gather_rows_kernel<scalar_t><<<
+                    dim3(row_blocks, static_cast<unsigned>(cols)),
+                    kRowsPerBlock, 0, stream>>>(
+                    src + i * b_ms + c0 * ldb, moved + c0 * ldb, rows_data,
+                    ldb, n, cols);
+            }
+            apply_one_trsm<scalar_t>(handle, lu + i * lu_ms, n, moved, ldb, n,
+                                     nrhs, CUBLAS_FILL_MODE_LOWER,
+                                     CUBLAS_OP_N, CUBLAS_DIAG_UNIT);
+            apply_one_trsm<scalar_t>(handle, lu + i * lu_ms, n, moved, ldb, n,
+                                     nrhs, CUBLAS_FILL_MODE_UPPER,
+                                     CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT);
+        } else {
+            // op(A) = A^T: the transposed factors are solved straight onto the
+            // right-hand side, and the permutation lands on the answer.
+            scalar_t* work = src + i * b_ms;
+            apply_one_trsm<scalar_t>(handle, lu + i * lu_ms, n, work, ldb, n,
+                                     nrhs, CUBLAS_FILL_MODE_UPPER,
+                                     CUBLAS_OP_T, CUBLAS_DIAG_NON_UNIT);
+            apply_one_trsm<scalar_t>(handle, lu + i * lu_ms, n, work, ldb, n,
+                                     nrhs, CUBLAS_FILL_MODE_LOWER,
+                                     CUBLAS_OP_T, CUBLAS_DIAG_UNIT);
+            for (int64_t c0 = 0; c0 < nrhs; c0 += kColumnChunk) {
+                const int64_t cols = std::min<int64_t>(kColumnChunk, nrhs - c0);
+                gather_rows_kernel<scalar_t><<<
+                    dim3(row_blocks, static_cast<unsigned>(cols)),
+                    kRowsPerBlock, 0, stream>>>(
+                    work + c0 * ldb, moved + c0 * ldb, routes_used, ldb, n,
+                    cols);
+            }
+        }
+    }
+    CUDA_CHECK(cudaGetLastError());
+    return solved;
+}
+
 std::tuple<Tensor, Tensor, Tensor, Tensor>
-linalg_solve_ex_internal_kernel_cuda(const Tensor& A, const Tensor& B,
-                                     bool left, bool check_errors) {
+linalg_solve_ex_impl(const Tensor& A, const Tensor& B, bool left,
+                     bool check_errors, bool keep_factors) {
     const char* api = "linalg.solve_ex";
     check_is_matrix(A, api, "A");
     bool vector_case = B.dim() == 1;
@@ -641,7 +749,7 @@ linalg_solve_ex_internal_kernel_cuda(const Tensor& A, const Tensor& B,
         Tensor B_cm = clone_batched_column_major(expand_to_batch(B_2d, batch));
         run_real(A.dtype(), [&](auto tag) {
             using T = std::remove_pointer_t<decltype(tag)>;
-            apply_getrs<T>(LU_work, pivots, B_cm, CUBLAS_OP_N);
+            B_cm = apply_getrs<T>(LU_work, pivots, B_cm, false);
         });
         result = B_cm.contiguous();
     } else {
@@ -650,19 +758,32 @@ linalg_solve_ex_internal_kernel_cuda(const Tensor& A, const Tensor& B,
             clone_batched_column_major(expand_to_batch(B_2d, batch).transpose(-2, -1));
         run_real(A.dtype(), [&](auto tag) {
             using T = std::remove_pointer_t<decltype(tag)>;
-            apply_getrs<T>(LU_work, pivots, BT_cm, CUBLAS_OP_T);
+            BT_cm = apply_getrs<T>(LU_work, pivots, BT_cm, true);
         });
         result = BT_cm.contiguous().transpose(-2, -1).contiguous();
     }
     if (vector_case) result = result.squeeze(-1);
     if (check_errors) check_infos(info, api, A.dim() == 2 && B.dim() == 2);
+    if (!keep_factors) {
+        // The caller throws the factors away; copying the column-major working
+        // buffer back to the caller's layout would be one full pass for nothing.
+        return {result, LU_work, pivots, info};
+    }
     return {result, LU_work.contiguous(), pivots.contiguous(), info.contiguous()};
+}
+
+std::tuple<Tensor, Tensor, Tensor, Tensor>
+linalg_solve_ex_internal_kernel_cuda(const Tensor& A, const Tensor& B,
+                                     bool left, bool check_errors) {
+    return linalg_solve_ex_impl(A, B, left, check_errors,
+                                /*keep_factors=*/true);
 }
 
 std::tuple<Tensor, Tensor> linalg_solve_ex_kernel_cuda(const Tensor& A,
                                                        const Tensor& B,
                                                        bool left, bool check_errors) {
-    auto values = linalg_solve_ex_internal_kernel_cuda(A, B, left, check_errors);
+    auto values = linalg_solve_ex_impl(A, B, left, check_errors,
+                                       /*keep_factors=*/false);
     return {std::get<0>(values), std::get<3>(values)};
 }
 
@@ -801,8 +922,7 @@ Tensor linalg_lu_solve_kernel_cuda(const Tensor& LU, const Tensor& pivots,
         Tensor B_cm = clone_batched_column_major(expand_to_batch(B, batch));
         run_real(LU.dtype(), [&](auto tag) {
             using T = std::remove_pointer_t<decltype(tag)>;
-            apply_getrs<T>(LU_work, piv_exp, B_cm,
-                           adjoint ? CUBLAS_OP_T : CUBLAS_OP_N);
+            B_cm = apply_getrs<T>(LU_work, piv_exp, B_cm, adjoint);
         });
         return B_cm.contiguous();
     }
@@ -810,8 +930,7 @@ Tensor linalg_lu_solve_kernel_cuda(const Tensor& LU, const Tensor& pivots,
         clone_batched_column_major(expand_to_batch(B, batch).transpose(-2, -1));
     run_real(LU.dtype(), [&](auto tag) {
         using T = std::remove_pointer_t<decltype(tag)>;
-        apply_getrs<T>(LU_work, piv_exp, BT_cm,
-                       adjoint ? CUBLAS_OP_N : CUBLAS_OP_T);
+        BT_cm = apply_getrs<T>(LU_work, piv_exp, BT_cm, !adjoint);
     });
     return BT_cm.contiguous().transpose(-2, -1).contiguous();
 }
