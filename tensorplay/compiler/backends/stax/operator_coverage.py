@@ -85,17 +85,15 @@ LIBRARY_CALLS: dict[str, str] = {
 #: whose extents are the *other* side's -- the input needs the output's windows
 #: laid over it, and the output needs the input's pixels scattered back -- and
 #: writing one means writing the other, so they are listed as a set.
+#:
+#: A name listed here must still have nothing that writes it out: a lowering
+#: that exists answers coverage from itself, so listing the name as uncovered
+#: would only be a claim the code has already outgrown.
 NOT_COVERED: dict[str, str] = {
-    "avg_pool2d_backward.default": "reduction over the input, driven by the output's windows",
-    "avg_pool3d_backward.default": "reduction over the input, driven by the output's windows",
     "max_pool2d_backward.default": "scatter to the input, driven by the saved indices",
     "max_pool3d_backward.default": "scatter to the input, driven by the saved indices",
-    "upsample_nearest2d_backward.default": "scatter to the input, driven by the source map",
     "upsample_nearest3d_backward.default": "scatter to the input, driven by the source map",
     "upsample_bilinear2d_backward.default": "scatter to the input, driven by the source map",
-    "index_add.default": "the decompositions' scatter, which this route cannot write",
-    "index_copy.default": "the decompositions' scatter, which this route cannot write",
-    "scatter_add.default": "the decompositions' scatter, which this route cannot write",
 }
 
 #: Operators the decompositions produce that this route also has to write, or
@@ -119,14 +117,23 @@ def _tables() -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
 
 
 def declared_coverage() -> dict[str, Coverage]:
-    """Every operator this route names, with what it does with it."""
+    """Every operator this route names, with what it does with it.
 
+    A name a live lowering or template answers is reported as that; only a
+    name nothing answers is reported as uncovered.  Without that check the
+    table would keep calling an operator uncovered after a lowering was added
+    for it, and the work list would ask for work already done.
+    """
+
+    lowerings, templates, _ = _tables()
     table: dict[str, Coverage] = {}
     for name in LIBRARY_CALLS:
         table[name] = Coverage.LIBRARY_CALL
     for name in NOT_COVERED:
         table[name] = Coverage.NOT_COVERED
     for name in NEEDED_BY_DECOMPOSITIONS:
+        if name in templates or name in lowerings:
+            continue
         table.setdefault(name, Coverage.NOT_COVERED)
     return table
 

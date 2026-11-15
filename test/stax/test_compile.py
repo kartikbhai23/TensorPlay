@@ -541,6 +541,15 @@ def test_operator_coverage_table_is_honest():
             coverage.Coverage.LOWERED,
             coverage.Coverage.TEMPLATE,
         )
+    # A live lowering or template answers for a name itself, so the declared
+    # table may not still call that name uncovered.
+    declared_uncovered = {
+        name
+        for name, declared in coverage.declared_coverage().items()
+        if declared is coverage.Coverage.NOT_COVERED
+    }
+    assert declared_uncovered.isdisjoint(lowerings)
+    assert declared_uncovered.isdisjoint(templates)
 
     # An operator nobody has named is not covered, and saying so is the point.
     assert not coverage.is_covered("no_such_operator.default")
