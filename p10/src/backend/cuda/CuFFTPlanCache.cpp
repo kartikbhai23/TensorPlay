@@ -52,10 +52,10 @@ cufftHandle make_plan(const PlanSpec& spec) {
     cufftHandle plan;
     check_cufft(cufftPlanMany(&plan, spec.rank,
                               n,
-                              spec.rank == 1 ? nullptr : inembed,
+                              spec.rank == 1 && spec.inembed[0] == 0 ? nullptr : inembed,
                               static_cast<int>(spec.istride),
                               static_cast<int>(spec.idist),
-                              spec.rank == 1 ? nullptr : onembed,
+                              spec.rank == 1 && spec.onembed[0] == 0 ? nullptr : onembed,
                               static_cast<int>(spec.ostride),
                               static_cast<int>(spec.odist),
                               static_cast<cufftType>(spec.type),

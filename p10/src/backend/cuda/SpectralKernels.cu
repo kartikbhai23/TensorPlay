@@ -910,7 +910,8 @@ __global__ void pad_time_axis_kernel(int64_t batch, int64_t len, int64_t pad,
 // {stride0, hop*stride1, stride1}) then mul(window_).
 template <typename T>
 __global__ void build_frames_kernel(int64_t batch, int64_t plen, int64_t n_fft,
-                                    int64_t hop, int64_t n_frames, const T* __restrict__ win,
+                                    int64_t hop, int64_t n_frames, int64_t win_length,
+                                    const T* __restrict__ win,
                                     const T* __restrict__ sig, T* __restrict__ frames) {
     const int64_t line = blockIdx.x;  // b * n_frames + t
     if (line >= batch * n_frames) return;
@@ -919,7 +920,9 @@ __global__ void build_frames_kernel(int64_t batch, int64_t plen, int64_t n_fft,
     const T* row = sig + b * plen + t * hop;
     T* dst = frames + line * n_fft;
     for (int64_t k = threadIdx.x; k < n_fft; k += blockDim.x) {
-        dst[k] = row[k] * win[k];
+        const T weight = win ? win[k] : T(k >= (n_fft - win_length) / 2 &&
+                                          k < (n_fft - win_length) / 2 + win_length);
+        dst[k] = row[k] * weight;
     }
 }
 
@@ -947,25 +950,53 @@ Tensor stft_cuda_impl(const Tensor& work, int64_t n_fft, int64_t hop, int64_t wi
     const int64_t n_frames = 1 + (plen - n_fft) / hop;
     const int64_t n_freq = onesided ? infer_onesided(n_fft) : n_fft;
 
-    Tensor win_t = Tensor::zeros({n_fft}, real_dtype_of(work.dtype()), work.device());
-    {
-        auto stream = getCurrentCUDAStream().stream();
-        if (window.has_value()) {
-            Tensor wv = window->contiguous();
-            TP_CHECK(wv.dim() == 1 && wv.size(0) == win, "stft: window must be 1D of size win_length");
-            CUDA_CHECK(cudaMemcpyAsync(
-                static_cast<R*>(win_t.data_ptr()) + (n_fft - win) / 2,
-                wv.data_ptr(), sizeof(R) * win, cudaMemcpyDeviceToDevice, stream));
+    if (!window.has_value() && win == n_fft && onesided && batch == 1 &&
+        n_frames > 0 && n_fft <= INT32_MAX && hop <= INT32_MAX && n_frames <= INT32_MAX) {
+        Tensor spec({n_frames, n_freq}, complex_dtype_of(work.dtype()), work.device());
+        cufft::PlanSpec plan_spec;
+        plan_spec.rank = 1;
+        plan_spec.type = IsDouble ? CUFFT_D2Z : CUFFT_R2C;
+        plan_spec.n[0] = n_fft;
+        plan_spec.inembed[0] = n_fft;
+        plan_spec.onembed[0] = n_freq;
+        plan_spec.istride = plan_spec.ostride = 1;
+        plan_spec.idist = hop;
+        plan_spec.odist = n_freq;
+        plan_spec.batch = n_frames;
+        cufftHandle plan = cufft::acquire_plan(plan_spec, currentDevice());
+        if constexpr (IsDouble) {
+            CUFFT_CHECK(cufftExecD2Z(plan, reinterpret_cast<cufftDoubleReal*>(work.data_ptr()),
+                                     reinterpret_cast<cufftDoubleComplex*>(spec.data_ptr())));
         } else {
-            CUDA_CHECK(cudaMemsetAsync(win_t.data_ptr(), 0, sizeof(R) * n_fft, stream));
-            if constexpr (IsDouble) {
-                fill_r_kernel<double><<<(n_fft + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
-                    reinterpret_cast<double*>(win_t.data_ptr()) + (n_fft - win) / 2, win, 1.0);
-            } else {
-                fill_r_kernel<float><<<(n_fft + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
-                    reinterpret_cast<float*>(win_t.data_ptr()) + (n_fft - win) / 2, win, 1.0f);
-            }
+            CUFFT_CHECK(cufftExecR2C(plan, reinterpret_cast<cufftReal*>(work.data_ptr()),
+                                     reinterpret_cast<cufftComplex*>(spec.data_ptr())));
         }
+        if (normalized) {
+            const int64_t total = n_frames * n_freq;
+            const R factor = norm_factor<R>(fft_norm_mode::by_root_n, n_fft);
+            scale_c_kernel<C, R><<<static_cast<unsigned>((total + kThreads - 1) / kThreads),
+                                  kThreads, 0, getCurrentCUDAStream().stream()>>>(
+                reinterpret_cast<C*>(spec.data_ptr()), total, factor);
+            CUDA_CHECK(cudaGetLastError());
+        }
+        if (return_complex) {
+            return was_1d ? spec.transpose(-2, -1)
+                          : spec.reshape({1, n_frames, n_freq}).transpose(-2, -1);
+        }
+        Tensor pairs = spec.view_dtype(real_dtype_of(work.dtype()));
+        return was_1d ? pairs.reshape({n_frames, n_freq, 2}).permute({1, 0, 2})
+                      : pairs.reshape({1, n_frames, n_freq, 2}).permute({0, 2, 1, 3});
+    }
+
+    Tensor win_t;
+    if (window.has_value()) {
+        win_t = Tensor::zeros({n_fft}, real_dtype_of(work.dtype()), work.device());
+        auto stream = getCurrentCUDAStream().stream();
+        Tensor wv = window->contiguous();
+        TP_CHECK(wv.dim() == 1 && wv.size(0) == win, "stft: window must be 1D of size win_length");
+        CUDA_CHECK(cudaMemcpyAsync(
+            static_cast<R*>(win_t.data_ptr()) + (n_fft - win) / 2,
+            wv.data_ptr(), sizeof(R) * win, cudaMemcpyDeviceToDevice, stream));
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -975,14 +1006,14 @@ Tensor stft_cuda_impl(const Tensor& work, int64_t n_fft, int64_t hop, int64_t wi
         auto stream = getCurrentCUDAStream().stream();
         if constexpr (IsDouble) {
             build_frames_kernel<double><<<batch * n_frames, kThreads, 0, stream>>>(
-                batch, plen, n_fft, hop, n_frames,
-                static_cast<const double*>(win_t.data_ptr()),
+                batch, plen, n_fft, hop, n_frames, win,
+                win_t.defined() ? static_cast<const double*>(win_t.data_ptr()) : nullptr,
                 static_cast<const double*>(work.data_ptr()),
                 static_cast<double*>(frames.data_ptr()));
         } else {
             build_frames_kernel<float><<<batch * n_frames, kThreads, 0, stream>>>(
-                batch, plen, n_fft, hop, n_frames,
-                static_cast<const float*>(win_t.data_ptr()),
+                batch, plen, n_fft, hop, n_frames, win,
+                win_t.defined() ? static_cast<const float*>(win_t.data_ptr()) : nullptr,
                 static_cast<const float*>(work.data_ptr()),
                 static_cast<float*>(frames.data_ptr()));
         }
@@ -1012,7 +1043,7 @@ Tensor stft_cuda_impl(const Tensor& work, int64_t n_fft, int64_t hop, int64_t wi
     if (was_1d) {
         return pairs.reshape({n_frames, n_freq, 2}).permute({1, 0, 2});
     }
-    return pairs.reshape({batch, n_frames, n_freq, 2}).permute({1, 2, 0, 3});
+    return pairs.reshape({batch, n_frames, n_freq, 2}).permute({0, 2, 1, 3});
 }
 
 Tensor stft_cuda(const Tensor& self, int64_t n_fft, std::optional<int64_t> hop_length,

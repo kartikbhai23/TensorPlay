@@ -34,10 +34,8 @@ namespace cufft {
 inline constexpr int64_t kMaxPlanNum = INT64_MAX;
 inline constexpr int64_t kDefaultCacheSize = 4096;
 
-// Full description of one cuFFT plan. `rank` is 1 or 2. For rank 1 the
-// embed arrays are unused and pass as null to the planner, matching the
-// plain batched 1D planning call; for rank 2 they carry the embedded
-// input/output layouts.
+// Full description of one cuFFT plan. `rank` is 1 or 2. Rank-one plans use
+// default layout when the embed arrays are zero, otherwise explicit layout.
 struct PlanSpec {
     int rank = 0;
     int type = 0;  // cufftType value (CUFFT_C2C, CUFFT_R2C, ...)
