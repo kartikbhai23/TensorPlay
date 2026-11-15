@@ -52,7 +52,7 @@
 `pytest test/stax` 实测（修复前）：**1568 passed, 2 failed, 1 skipped**（1571 项，约 2 分 4 秒）。
 其中一个失败是确定性的 P0 正确性 bug；另一个是容差/顺序相关的偶发（单独运行通过）。
 
-`pytest test/stax -q` 实测（本轮修复后）：**1755 passed, 1 skipped**，
+`pytest test/stax -q` 实测（本轮修复后）：**1756 passed, 1 skipped**，
 `pytest test/fx test/test_public_surface.py test/higher_order_ops test/export`：**376 passed**。
 原先那两个失败都已不再是失败：确定性那个随 §2.1 修好；偶发那个是 bf16 容差写死 `2e-4` 造成的，
 现在按 dtype 的机器精度取容差。
@@ -544,7 +544,7 @@ cpp_wrapper=use_cuda_codegen,
 ```
 pytest test/stax -q
 # 修复前：1568 passed, 2 failed, 1 skipped
-# 本轮修复后：1755 passed, 1 skipped
+# 本轮修复后：1756 passed, 1 skipped
 pytest test/fx test/test_public_surface.py test/higher_order_ops test/export -q
 # 376 passed
 ```
@@ -569,7 +569,7 @@ pytest test/fx test/test_public_surface.py test/higher_order_ops test/export -q
   split scan 把每个归约块键抬到下限、程序维键不动。
 - 配置面此前无测试，本轮补 `test/stax/test_stax_config_surface.py`（12 项，见 §8.5）；
 - 整图缓存补 `test/stax/test_stax_graph_cache.py`（7 项）：键随程序/输入/模块状态/设置/包版本变化、命中时不降级、符号形状不入缓存；
-- CPU 分块乘积补 `test/stax/test_stax_cpu_gemm_template.py`（12 项）：`mm`/`addmm`（行偏置与二维偏置）落成模板 kernel 且与 eager 一致、尾块形状、bf16/f16、其它类型不提供、不说话的后端列表不提供、两种 `mm`/`addmm` 拼写都指向同一 lowering、外部 kernel 名接受目标缓冲、边界符号的尺寸提示、读名不触发 store；
+- CPU 分块乘积补 `test/stax/test_stax_cpu_gemm_template.py`（13 项）：`mm`/`addmm`（行偏置与二维偏置）落成模板 kernel 且与 eager 一致、尾块形状、bf16/f16、其它类型不提供、不说话的后端列表不提供、两种 `mm`/`addmm` 拼写都指向同一 lowering、外部 kernel 名接受目标缓冲、边界符号的尺寸提示、读名不触发 store；
 - 无 fuzzer / `test_operators`。
 
 ### 8.4 文档声明 vs 实际
@@ -813,7 +813,10 @@ pytest test/stax -q -p no:randomly
 | `8b844fa6` `fix(compiler)` | 尺寸提示覆盖所有剩余自由符号（含 kernel 自造的循环符号），除零时回退而不是报错 |
 | `d880ca6d` `fix(compiler)` | 外部 kernel 以“能接目标缓冲”的形式（操作包）注册；被测量的是程序会写的那次调用 |
 | `a148dfee` `fix(compiler)` | 交给外部调用的值先 realize 再查 stride-1，未落地的值不再被判为无 stride |
-| `a35c7bea` `feat(compiler)` | CPU 分块乘积模板：`CppGemmTemplate` + AVX2/AVX512 micro-gemm（f32/bf16/f16）、线程/缓存分块、偏置与可折叠 epilogue 融进 store；`mm`/`addmm` 的 `.default` 拼写一并指向调优 lowering；框架 kernel 作为候选需两条设置一致；新增 `test/stax/test_stax_cpu_gemm_template.py`（12 项） |
+| `a35c7bea` `feat(compiler)` | CPU 分块乘积模板：`CppGemmTemplate` + AVX2/AVX512 micro-gemm（f32/bf16/f16）、线程/缓存分块、偏置与可折叠 epilogue 融进 store；`mm`/`addmm` 的 `.default` 拼写一并指向调优 lowering；框架 kernel 作为候选需两条设置一致；新增 `test/stax/test_stax_cpu_gemm_template.py`（13 项） |
+| `3966d1ed` `fix(compiler)` | 结果的布局用“写出来的尺寸”描述：`int()` 曾经在符号尺寸上直接抛错，而形状变化的第二个调用就会按符号捕获 |
+| `3961b439` `fix(compiler)` | 带偏置的乘积接受函数写法记录的位置参数（先加数系数、后乘积系数，见 §13.1） |
+| `a6a6951e` `docs(compiler)` | 审计报告记录整图缓存与 CPU 分块乘积，并把刻意不做的部分（预打包、整数路径、运行期才知道的行数）写在旁边 |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
@@ -833,6 +836,8 @@ pytest test/stax -q -p no:randomly
 | `pad_mm.py` | `constant_pad_nd: missing required argument "value"` | 本仓库该算子 `value` 无默认值 | 显式传 `0` |
 | 同上 | `AttributeError: fp32_precision` | 本构建的 cuBLAS 只有 `allow_tf32` | 先问新名字，没有再退回旧名字 |
 | 同上 | `TypeError: randn_like() ... not _RecordedTensorMetadata` | “描述”不是张量，`is_fake_tensor` 不认它 | 描述一律按形状/步长/类型/设备造出真值再测 |
+| `kernel_inputs.py` | `TypeError: Cannot convert symbols to int` | 结果布局从 `mnk()` 取尺寸，而 `mnk()` 把尺寸全部 `int()`；形状变化的第二次调用是按符号捕获的 | `mnk_symbolic()` 返回写出来的尺寸，`output_layout` 改用它；整数化只留给需要算分块/网格的调用者 |
+| `templates/mm.py` | `TypeError: tuned_addmm() takes 3 positional arguments but 5 were given` | 函数写法 `tp.addmm(input, mat1, mat2, beta, alpha)` 把两个标量按位置记进图，而 lowering 只接受关键字；首次调用记录的是算子自身形态（标量是关键字），只在第二次捕获（形状变化）上暴露 | lowering 同时接受两种写法，位置顺序按函数声明的顺序 |
 | `codecache.py` | `IsADirectoryError`（写本地缓存时） | 本地缓存文件与整图工件的目录用了同一个路径 `<cache>/cache/<system_hash>` | 本地缓存改为该目录下的 `local_cache.json` |
 | `pattern_matcher.py` | `TypeError: 'NullHandler' object does not support the context manager protocol` | 仓库里有两个 `NullHandler`（`virtualized` 与 `ops_handler`），判断用的是另一个 | 按 `virtualized.NullHandler` 判断；模式替换在没有 fake mode 时用 `nullcontext` |
 | `_core/api.py` | 各处 `AttributeError: is_cuda / is_contiguous / is_floating_point` | 值描述只保存了形状/类型/设备，pass 需要的判定没有 | 描述补上由形状/步长/设备/类型可直接推出的判定 |
