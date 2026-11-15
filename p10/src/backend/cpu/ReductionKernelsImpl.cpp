@@ -1573,6 +1573,227 @@ static bool try_extremum_lastdim_real(
     return false;
 }
 
+// The same fold for a reduced width: the lanes widen a step at a time, the
+// extreme is folded there, and a second walk finds the first position that
+// holds it.  A value the walk reads back from the layout keeps the exact bits
+// the first holder carried, which is the element the flat fold would keep.
+template <bool IsMax>
+inline float reduced_extremum_step(float best, float v) {
+    if (std::isnan(best)) return best;
+    if (std::isnan(v)) return v;
+    return IsMax ? (v > best ? v : best) : (v < best ? v : best);
+}
+
+template <bool IsMax, bool BFloat>
+__attribute__((target("avx2,fma,f16c"), noinline))
+static void reduced_row_extremum(const uint16_t* line, int64_t n,
+                                 uint16_t* value_out, int64_t* index_out) {
+    __m256 acc = BFloat ? tensorplay::cpu::vecreduced::widen_bf16_8(line)
+                        : tensorplay::cpu::vecreduced::widen8(line);
+    int64_t i = 8;
+    for (; i + 8 <= n; i += 8) {
+        const __m256 v = BFloat ? tensorplay::cpu::vecreduced::widen_bf16_8(line + i)
+                                : tensorplay::cpu::vecreduced::widen8(line + i);
+        const __m256 folded = IsMax ? _mm256_max_ps(acc, v) : _mm256_min_ps(acc, v);
+        // The plain fold answers with one operand, so a not-a-number in either
+        // lane would be replaced; the unordered lanes are put back.
+        acc = _mm256_or_ps(folded, _mm256_cmp_ps(acc, v, _CMP_UNORD_Q));
+    }
+    alignas(32) float lanes[8];
+    _mm256_store_ps(lanes, acc);
+    float best = lanes[0];
+    for (int k = 1; k < 8; ++k) best = reduced_extremum_step<IsMax>(best, lanes[k]);
+    for (; i < n; ++i) {
+        const float v = BFloat ? tensorplay::cpu::vecreduced::widen_bf16_one(line[i])
+                               : tensorplay::cpu::vecreduced::widen_one(line[i]);
+        best = reduced_extremum_step<IsMax>(best, v);
+    }
+    const __m256 vb = _mm256_set1_ps(best);
+    const bool want_nan = std::isnan(best);
+    int64_t found = -1;
+    int64_t j = 0;
+    for (; found < 0 && j + 8 <= n; j += 8) {
+        const __m256 v = BFloat ? tensorplay::cpu::vecreduced::widen_bf16_8(line + j)
+                                : tensorplay::cpu::vecreduced::widen8(line + j);
+        const int mask = want_nan
+            ? _mm256_movemask_ps(_mm256_cmp_ps(v, v, _CMP_UNORD_Q))
+            : _mm256_movemask_ps(_mm256_cmp_ps(v, vb, _CMP_EQ_OQ));
+        if (mask) found = j + __builtin_ctz(static_cast<unsigned>(mask));
+    }
+    for (; found < 0 && j < n; ++j) {
+        const float v = BFloat ? tensorplay::cpu::vecreduced::widen_bf16_one(line[j])
+                               : tensorplay::cpu::vecreduced::widen_one(line[j]);
+        if (want_nan ? std::isnan(v) : (v == best)) found = j;
+    }
+    *index_out = found;
+    *value_out = line[found];
+}
+
+// The same fold down a scanned axis that leaves packed columns per row: a
+// block of eight columns per vector is folded down the axis, and a second walk
+// down the same block records, per lane, the first row that holds the folded
+// value.  A not-a-number lane is matched by its own rule, since such a value
+// never equals anything.
+template <bool IsMax, bool BFloat, int V>
+__attribute__((target("avx2,fma,f16c"), noinline))
+static void reduced_extremum_columns(const uint16_t* x, uint16_t* values,
+                                     int64_t* indices, int64_t d_size,
+                                     int64_t inner) {
+    __m256 best[V];
+    for (int k = 0; k < V; ++k) {
+        best[k] = BFloat ? tensorplay::cpu::vecreduced::widen_bf16_8(x + 8 * k)
+                         : tensorplay::cpu::vecreduced::widen8(x + 8 * k);
+    }
+    for (int64_t r = 1; r < d_size; ++r) {
+        for (int k = 0; k < V; ++k) {
+            const __m256 v = BFloat
+                ? tensorplay::cpu::vecreduced::widen_bf16_8(x + r * inner + 8 * k)
+                : tensorplay::cpu::vecreduced::widen8(x + r * inner + 8 * k);
+            const __m256 folded = IsMax ? _mm256_max_ps(best[k], v)
+                                        : _mm256_min_ps(best[k], v);
+            best[k] = _mm256_or_ps(folded,
+                                   _mm256_cmp_ps(best[k], v, _CMP_UNORD_Q));
+        }
+    }
+    uint32_t pending = (8 * V >= 32) ? 0xFFFFFFFFu : ((1u << (8 * V)) - 1u);
+    for (int64_t r = 0; r < d_size && pending != 0; ++r) {
+        for (int k = 0; k < V; ++k) {
+            const __m256 v = BFloat
+                ? tensorplay::cpu::vecreduced::widen_bf16_8(x + r * inner + 8 * k)
+                : tensorplay::cpu::vecreduced::widen8(x + r * inner + 8 * k);
+            const __m256 equal = _mm256_cmp_ps(v, best[k], _CMP_EQ_OQ);
+            const __m256 unnumbered = _mm256_cmp_ps(v, v, _CMP_UNORD_Q);
+            const __m256 nan_lane = _mm256_cmp_ps(best[k], best[k], _CMP_UNORD_Q);
+            const uint32_t bits =
+                static_cast<uint32_t>(_mm256_movemask_ps(
+                    _mm256_blendv_ps(equal, unnumbered, nan_lane)))
+                << (8 * k);
+            uint32_t fresh = bits & pending;
+            while (fresh != 0) {
+                unsigned lane = static_cast<unsigned>(__builtin_ctz(fresh));
+                indices[lane] = r;
+                fresh &= fresh - 1;
+            }
+            pending &= ~bits;
+        }
+    }
+    for (int lane = 0; lane < 8 * V; ++lane) {
+        values[lane] = x[indices[lane] * inner + lane];
+    }
+}
+
+template <bool IsMax>
+static bool try_extremum_reduced_columns(const Tensor& input, Tensor& values,
+                                         int64_t* indices, int64_t outer,
+                                         int64_t d_size, int64_t inner) {
+    const DType dt = input.dtype();
+    const bool half_width = dt == DType::Float16;
+    if (!half_width && dt != DType::BFloat16) return false;
+    if (inner < 8 || d_size < 2) return false;
+    if (!tensorplay::cpu::vecreduced::f16c_available()) return false;
+    const uint16_t* in = half_width
+        ? reinterpret_cast<const uint16_t*>(input.data_ptr<tensorplay::Half>())
+        : reinterpret_cast<const uint16_t*>(
+              input.data_ptr<tensorplay::BFloat16>());
+    uint16_t* out = half_width
+        ? reinterpret_cast<uint16_t*>(values.data_ptr<tensorplay::Half>())
+        : reinterpret_cast<uint16_t*>(values.data_ptr<tensorplay::BFloat16>());
+    const int v = inner >= 32 ? 4 : 1;
+    const int64_t width = 8 * v;
+    const int64_t full = inner / width;
+    const int64_t block_grain =
+        std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(d_size, 1));
+    const auto block = [&](int64_t flat) {
+        const int64_t o = flat / full;
+        const int64_t c0 = (flat - o * full) * width;
+        const int64_t src = o * d_size * inner + c0;
+        const int64_t dst = o * inner + c0;
+        if (half_width) {
+            if (v == 4) {
+                reduced_extremum_columns<IsMax, false, 4>(
+                    in + src, out + dst, indices + dst, d_size, inner);
+            } else {
+                reduced_extremum_columns<IsMax, false, 1>(
+                    in + src, out + dst, indices + dst, d_size, inner);
+            }
+        } else {
+            if (v == 4) {
+                reduced_extremum_columns<IsMax, true, 4>(
+                    in + src, out + dst, indices + dst, d_size, inner);
+            } else {
+                reduced_extremum_columns<IsMax, true, 1>(
+                    in + src, out + dst, indices + dst, d_size, inner);
+            }
+        }
+    };
+    parallel_for(0, outer * full, block_grain,
+                 [&](int64_t b, int64_t e) {
+                     for (int64_t flat = b; flat < e; ++flat) block(flat);
+                 });
+    if (full * width < inner) {
+        // The last block covers the columns at the end of the row, which the
+        // block before it also covered; both answer the same values there.
+        const auto tail = [&](int64_t flat) {
+            const int64_t o = flat;
+            const int64_t src = o * d_size * inner + (inner - width);
+            const int64_t dst = o * inner + (inner - width);
+            if (half_width) {
+                if (v == 4) {
+                    reduced_extremum_columns<IsMax, false, 4>(
+                        in + src, out + dst, indices + dst, d_size, inner);
+                } else {
+                    reduced_extremum_columns<IsMax, false, 1>(
+                        in + src, out + dst, indices + dst, d_size, inner);
+                }
+            } else {
+                if (v == 4) {
+                    reduced_extremum_columns<IsMax, true, 4>(
+                        in + src, out + dst, indices + dst, d_size, inner);
+                } else {
+                    reduced_extremum_columns<IsMax, true, 1>(
+                        in + src, out + dst, indices + dst, d_size, inner);
+                }
+            }
+        };
+        parallel_for(0, outer, block_grain,
+                     [&](int64_t b, int64_t e) {
+                         for (int64_t flat = b; flat < e; ++flat) tail(flat);
+                     });
+    }
+    return true;
+}
+
+template <bool IsMax>
+static bool try_extremum_lastdim_reduced(const Tensor& input, Tensor& values,
+                                         int64_t* indices, int64_t outer,
+                                         int64_t d_size) {
+    const DType dt = input.dtype();
+    const bool half_width = dt == DType::Float16;
+    if (!half_width && dt != DType::BFloat16) return false;
+    if (!tensorplay::cpu::vecreduced::f16c_available()) return false;
+    const uint16_t* in = half_width
+        ? reinterpret_cast<const uint16_t*>(input.data_ptr<tensorplay::Half>())
+        : reinterpret_cast<const uint16_t*>(
+              input.data_ptr<tensorplay::BFloat16>());
+    uint16_t* out = half_width
+        ? reinterpret_cast<uint16_t*>(values.data_ptr<tensorplay::Half>())
+        : reinterpret_cast<uint16_t*>(values.data_ptr<tensorplay::BFloat16>());
+    const int64_t row_grain =
+        std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(d_size, 1));
+    parallel_for(0, outer, row_grain, [&](int64_t b, int64_t e) {
+        for (int64_t r = b; r < e; ++r) {
+            if (half_width) {
+                reduced_row_extremum<IsMax, false>(in + r * d_size, d_size,
+                                                   out + r, indices + r);
+            } else {
+                reduced_row_extremum<IsMax, true>(in + r * d_size, d_size,
+                                                  out + r, indices + r);
+            }
+        }
+    });
+    return true;
+}
+
 template <bool IsMax>
 static bool try_extremum_lastdim_vec(const Tensor& input, Tensor& values,
                                      int64_t* indices, int64_t outer,
@@ -1590,7 +1811,8 @@ static bool try_extremum_lastdim_vec(const Tensor& input, Tensor& values,
                                          outer, d_size);
         return true;
     }
-    return false;
+    return try_extremum_lastdim_reduced<IsMax>(input, values, indices, outer,
+                                               d_size);
 }
 
 // Column-wise fold over a leading dimension: the output span gathers the
@@ -4110,6 +4332,10 @@ std::tuple<Tensor, Tensor> max_dim_kernel_impl(const Tensor& self, int64_t dim0,
             sc, vals, idxs.data_ptr<int64_t>(), outer, d_size)) {
         return {vals, idxs};
     }
+    if (try_extremum_reduced_columns<true>(
+            sc, vals, idxs.data_ptr<int64_t>(), outer, d_size, inner)) {
+        return {vals, idxs};
+    }
 #endif
 
     // With the reduced dim removed (or sized 1 under keepdim), the output is
@@ -4334,6 +4560,10 @@ std::tuple<Tensor, Tensor> min_dim_kernel_impl(const Tensor& self, int64_t dim0,
     }
     if (inner == 1 && try_extremum_lastdim_vec<false>(
             sc, vals, idxs.data_ptr<int64_t>(), outer, d_size)) {
+        return {vals, idxs};
+    }
+    if (try_extremum_reduced_columns<false>(
+            sc, vals, idxs.data_ptr<int64_t>(), outer, d_size, inner)) {
         return {vals, idxs};
     }
 #endif
