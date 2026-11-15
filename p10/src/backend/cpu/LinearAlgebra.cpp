@@ -317,15 +317,6 @@ Tensor linalg_vector_norm_impl(
         TP_THROW(TypeError,
                  "linalg.vector_norm order must be real");
     }
-    // The negative-infinity order has no identity, so an empty input cannot
-    // answer it; a partial reduction over empty rows still answers its empty
-    // result.
-    if ((!dims.has_value() || dims->empty()) && self.numel() == 0 &&
-        ord.toDouble() == -std::numeric_limits<double>::infinity()) {
-        TP_THROW(RuntimeError,
-                 "linalg.vector_norm: the negative infinity norm of an empty "
-                 "tensor has no identity");
-    }
     DType result_dtype = DType::Undefined;
     Tensor working = cast_norm_input(self, dtype, &result_dtype);
     Tensor result;
