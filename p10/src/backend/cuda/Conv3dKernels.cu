@@ -12,8 +12,14 @@
 #ifdef USE_CUDNN
 #include <cudnn.h>
 #endif
+#ifdef TP_HAS_CUDNN_FRONTEND
+#include <cudnn_frontend.h>
+namespace fe = cudnn_frontend;
+#endif
 
+#include <array>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -235,6 +241,224 @@ inline void* conv_alpha_ptr(DType dtype, float& alpha, double& alpha_d) {
     return &alpha;
 }
 
+#ifdef TP_HAS_CUDNN_FRONTEND
+// Byte alignment of a tensor's storage: engines declare the widest alignment
+// they require, and one asking for more than the buffer offers is not offered.
+inline int64_t conv3d_alignment_of(const void* ptr) {
+    int64_t alignment = 1;
+    auto address = reinterpret_cast<uintptr_t>(ptr);
+    for (; alignment < 32; alignment *= 2) {
+        if (address % static_cast<uintptr_t>(alignment * 2)) return alignment;
+    }
+    return alignment;
+}
+
+struct Conv3dFwdKey {
+    cudnnDataType_t dtype;
+    int64_t N, C, D, H, W, K, kD, kH, kW, groups;
+    int64_t pd, ph, pw, sd, sh, sw, dd, dh, dw;
+    int device;
+    bool allow_tf32;
+    bool deterministic;
+    bool operator==(const Conv3dFwdKey& o) const {
+        return dtype == o.dtype && N == o.N && C == o.C && D == o.D && H == o.H &&
+               W == o.W && K == o.K && kD == o.kD && kH == o.kH && kW == o.kW &&
+               groups == o.groups && pd == o.pd && ph == o.ph && pw == o.pw &&
+               sd == o.sd && sh == o.sh && sw == o.sw && dd == o.dd &&
+               dh == o.dh && dw == o.dw && device == o.device &&
+               allow_tf32 == o.allow_tf32 && deterministic == o.deterministic;
+    }
+};
+
+struct Conv3dFwdKeyHash {
+    size_t operator()(const Conv3dFwdKey& k) const {
+        size_t h = std::hash<int64_t>{}(k.N);
+        for (auto v : {k.C, k.D, k.H, k.W, k.K, k.kD, k.kH, k.kW, k.groups,
+                       k.pd, k.ph, k.pw, k.sd, k.sh, k.sw, k.dd, k.dh, k.dw}) {
+            h = h * 1000003 ^ std::hash<int64_t>{}(v);
+        }
+        h = h * 1000003 ^ std::hash<int>{}(static_cast<int>(k.dtype));
+        h = h * 1000003 ^ std::hash<int>{}(k.device);
+        h = h * 1000003 ^ std::hash<int>{}(static_cast<int>(k.allow_tf32));
+        h = h * 1000003 ^ std::hash<int>{}(static_cast<int>(k.deterministic));
+        return h;
+    }
+};
+
+// Runs the forward convolution through the graph frontend.  Every tensor is
+// packed NCDHW, so geometry, dtype and the two numeric switches identify a
+// plan; planning happens once per identity and later calls replay the
+// execution descriptor, leaving one execute as the whole host side.
+inline void conv3d_forward_v8(const Tensor& input, const Tensor& weight,
+                              const Tensor& out,
+                              const std::vector<int64_t>& stride,
+                              const std::vector<int64_t>& padding,
+                              const std::vector<int64_t>& dilation,
+                              int64_t groups) {
+    static std::unordered_map<Conv3dFwdKey, std::shared_ptr<fe::ExecutionPlan>,
+                              Conv3dFwdKeyHash> g_conv3d_plan_cache;
+    static std::mutex g_conv3d_plan_mutex;
+
+    const cudnnDataType_t dtype = to_cudnn_data_type(input.dtype());
+    const cudnnDataType_t compute = to_cudnn_compute_type(input.dtype());
+    const bool allow_tf32 = tensorplay::globalContext().allowTF32CuDNN();
+    const bool deterministic = tensorplay::globalContext().deterministicAlgorithms();
+
+    const int64_t N = input.size(0), C = input.size(1);
+    const int64_t D = input.size(2), H = input.size(3), W = input.size(4);
+    const int64_t K = weight.size(0);
+    const int64_t kD = weight.size(2), kH = weight.size(3), kW = weight.size(4);
+    const int64_t Do = out.size(2), Ho = out.size(3), Wo = out.size(4);
+
+    Conv3dFwdKey key{dtype, N, C, D, H, W, K, kD, kH, kW, groups,
+                     padding[0], padding[1], padding[2],
+                     stride[0], stride[1], stride[2],
+                     dilation[0], dilation[1], dilation[2],
+                     static_cast<int>(input.device().index()),
+                     allow_tf32, deterministic};
+
+    cudnnHandle_t handle = CUDAContext::getCudnnHandle();
+    std::shared_ptr<fe::ExecutionPlan> plan;
+    {
+        std::lock_guard<std::mutex> lock(g_conv3d_plan_mutex);
+        auto it = g_conv3d_plan_cache.find(key);
+        if (it != g_conv3d_plan_cache.end()) plan = it->second;
+        if (!plan) {
+            const std::array<int64_t, 5> x_dim{N, C, D, H, W};
+            const std::array<int64_t, 5> w_dim{K, C / groups, kD, kH, kW};
+            const std::array<int64_t, 5> y_dim{N, K, Do, Ho, Wo};
+            const std::array<int64_t, 5> x_stride{C * D * H * W, D * H * W, H * W, W, 1};
+            const std::array<int64_t, 5> w_stride{
+                (C / groups) * kD * kH * kW, kD * kH * kW, kH * kW, kW, 1};
+            const std::array<int64_t, 5> y_stride{K * Do * Ho * Wo, Do * Ho * Wo,
+                                                  Ho * Wo, Wo, 1};
+            auto x_desc = fe::TensorBuilder()
+                              .setDim(5, x_dim.data())
+                              .setStrides(5, x_stride.data())
+                              .setId('x')
+                              .setAlignment(conv3d_alignment_of(input.data_ptr()))
+                              .setDataType(dtype)
+                              .build();
+            auto w_desc = fe::TensorBuilder()
+                              .setDim(5, w_dim.data())
+                              .setStrides(5, w_stride.data())
+                              .setId('w')
+                              .setAlignment(conv3d_alignment_of(weight.data_ptr()))
+                              .setDataType(dtype)
+                              .build();
+            auto y_desc = fe::TensorBuilder()
+                              .setDim(5, y_dim.data())
+                              .setStrides(5, y_stride.data())
+                              .setId('y')
+                              .setAlignment(conv3d_alignment_of(out.data_ptr()))
+                              .setDataType(dtype)
+                              .build();
+
+            int64_t pad[3] = {padding[0], padding[1], padding[2]};
+            int64_t strd[3] = {stride[0], stride[1], stride[2]};
+            int64_t dil[3] = {dilation[0], dilation[1], dilation[2]};
+
+            auto conv_desc = fe::ConvDescBuilder()
+                                 .setComputeType(compute)
+                                 .setMathMode(CUDNN_CROSS_CORRELATION)
+                                 .setSpatialDimCount(3)
+                                 .setSpatialStride(3, strd)
+                                 .setPrePadding(3, pad)
+                                 .setPostPadding(3, pad)
+                                 .setDilation(3, dil)
+                                 .build();
+
+            fe::Operation conv_op = fe::OperationBuilder(
+                                        CUDNN_BACKEND_OPERATION_CONVOLUTION_FORWARD_DESCRIPTOR)
+                                        .setxDesc(x_desc)
+                                        .setwDesc(w_desc)
+                                        .setyDesc(y_desc)
+                                        .setcDesc(conv_desc)
+                                        .build();
+            std::array<fe::Operation const*, 1> ops = {&conv_op};
+            auto op_graph = fe::OperationGraphBuilder()
+                                .setHandle(handle)
+                                .setOperationGraph(ops.size(), ops.data())
+                                .build();
+
+            // Engines that are non-deterministic, down-convert the inputs, or
+            // rely on tensor cores while TF32 is off cannot serve this call.
+            auto usable = [&](fe::EngineConfigList& from) {
+                fe::EngineConfigList kept;
+                auto drop = [&](cudnnBackendDescriptor_t c) {
+                    if (deterministic &&
+                        fe::hasNumericalNote<CUDNN_NUMERICAL_NOTE_NONDETERMINISTIC>(c)) {
+                        return true;
+                    }
+                    if (fe::hasNumericalNote<CUDNN_NUMERICAL_NOTE_DOWN_CONVERT_INPUTS>(c)) {
+                        return true;
+                    }
+                    if (dtype == CUDNN_DATA_FLOAT && !allow_tf32 &&
+                        fe::hasNumericalNote<CUDNN_NUMERICAL_NOTE_TENSOR_CORE>(c)) {
+                        return true;
+                    }
+                    return false;
+                };
+                fe::filter(from, kept, drop);
+                return kept;
+            };
+            auto first_buildable =
+                [&](fe::EngineConfigList& configs) -> std::shared_ptr<fe::ExecutionPlan> {
+                for (auto& ec : configs) {
+                    try {
+                        return std::make_shared<fe::ExecutionPlan>(
+                            fe::ExecutionPlanBuilder()
+                                .setHandle(handle)
+                                .setEngineConfig(ec)
+                                .build());
+                    } catch (...) {
+                        // Config cannot be realized on this device; try the next.
+                    }
+                }
+                return nullptr;
+            };
+
+            auto heuristics = fe::EngineHeuristicsBuilder()
+                                  .setOperationGraph(op_graph)
+                                  .setHeurMode(CUDNN_HEUR_MODE_INSTANT)
+                                  .build();
+            auto& configs = heuristics.getEngineConfig(heuristics.getEngineConfigCount());
+            auto filtered = usable(configs);
+            plan = first_buildable(filtered);
+            if (!plan) {
+                // The instant list can be tensor-core engines only; the
+                // fallback list carries the plain ones a float call without
+                // TF32 needs.
+                auto fallback = fe::EngineHeuristicsBuilder()
+                                    .setOperationGraph(op_graph)
+                                    .setHeurMode(CUDNN_HEUR_MODE_FALLBACK)
+                                    .build();
+                auto& plain = fallback.getEngineConfig(fallback.getEngineConfigCount());
+                auto plain_filtered = usable(plain);
+                plan = first_buildable(plain_filtered);
+            }
+            if (!plan) {
+                TP_THROW(RuntimeError, "cuDNN: no executable engine configs for conv3d");
+            }
+            g_conv3d_plan_cache[key] = plan;
+        }
+    }
+
+    const size_t workspace_size = plan->getWorkspaceSize();
+    auto workspace = getAllocator(DeviceType::CUDA)->allocate(
+        workspace_size ? workspace_size : 1, input.device());
+    void* data_ptrs[3] = {input.data_ptr(), weight.data_ptr(), out.data_ptr()};
+    int64_t uids[3] = {'x', 'w', 'y'};
+    auto variant_pack = fe::VariantPackBuilder()
+                            .setWorkspacePointer(workspace_size ? workspace.get() : nullptr)
+                            .setDataPointers(3, data_ptrs)
+                            .setUids(3, uids)
+                            .build();
+    CUDNN_CHECK(cudnnBackendExecute(handle, plan->get_raw_desc(),
+                                   variant_pack.get_raw_desc()));
+}
+#endif
+
 #endif
 
 }
@@ -263,8 +487,20 @@ Tensor conv3d_cuda(const Tensor& input, const Tensor& weight, const Tensor& bias
 
     Tensor out = Tensor::empty({input_c.size(0), weight_c.size(0), D_out, H_out, W_out},
                                input_c.dtype(), input_c.device());
+    // An empty batch or filter set has nothing to fill: engines reject
+    // zero-sized descriptors, and the empty result is already the answer.
+    if (out.numel() == 0) return out;
 
     cudnnHandle_t handle = CUDAContext::getCudnnHandle();
+#ifdef TP_HAS_CUDNN_FRONTEND
+    // Benchmark mode keeps the enumerating path, whose timed search covers
+    // the algorithm space this graph formulation does not name.
+    if (!conv_autotune_enabled()) {
+        conv3d_forward_v8(input_c, weight_c, out, stride, padding, dilation, groups);
+        conv3d_add_bias(handle, out, bias);
+        return out;
+    }
+#endif
     TensorDescNd x_desc; x_desc.set(input_c);
     FilterDescNd w_desc; w_desc.set(weight_c);
     TensorDescNd y_desc; y_desc.set(out);
