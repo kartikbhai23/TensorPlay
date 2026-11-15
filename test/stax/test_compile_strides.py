@@ -28,7 +28,13 @@ def test_dynamic_layouts_reuse_specializations_across_sizes():
     for size in (4, 6, 8):
         value = tp.randn(size, size)
         for operand in (value, value.t()):
-            assert tp.allclose(compiled(operand), operand.sin() + 1)
+            # ``sin(x) + 1`` approaches zero where ``sin(x)`` approaches -1.
+            # There the default relative bound is tighter than the one-ulp
+            # difference between the fused and eager sine, so compare with an
+            # absolute tolerance that matches the rest of the suite.
+            assert tp.allclose(
+                compiled(operand), operand.sin() + 1, atol=1e-5, rtol=1e-5
+            )
     assert len(compiled._tensorplay_cache) == 2
 
 
