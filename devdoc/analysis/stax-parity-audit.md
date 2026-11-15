@@ -442,6 +442,16 @@ cpp_wrapper=use_cuda_codegen,
 - `config.py` 补上 `post_grad_custom_pre_pass` / `post_grad_custom_post_pass` 两个开关（此前 `post_grad_passes` 想读也没有名字可读）。
 - 顺带修掉一处同源问题：`config.py` 里 `coordinate_descent_tuning`、`benchmark_kernel`、`benchmark_combo_kernel`、`strict_signed_zero` 各有两次顶层赋值，后一次的硬编码值覆盖了前一次的 `os.environ` 读取，于是 `TP_COORDINATE_DESCENT_TUNING`、`TP_BENCHMARK_KERNEL`、`TP_BENCHMARK_COMBO_KERNEL` 三个环境变量一直被静默忽略。删除重复定义后三个变量恢复生效。
 
+同一类问题在其他后端上是**接受即丢弃**：`eager` / `eager_noexcept` / `eager_debug` / `onnxrt` /
+`cudagraphs` 收到 `mode`、`options` 时只记一条 warning 就按原样编译；直接构造的 AOT autograd
+后端同样。调用者无法从产物看出请求没有生效。现在改为共享的 `check_backend_kwargs`：
+
+- 区域名、是否符号化形状、是否要求原生产物这三项只是描述区域，任何后端都可以收到；
+- 后端没有 `mode` / `options` 含义的，收到就 `RuntimeError`；
+- 选项已经绑定进 AOT autograd 后端内部编译器时，再传一次不算多余（它们已经生效）；
+- `cudagraphs` 后端此前把 `dynamic` 丢掉，于是可能把会变化的形状录进 CUDA graph；现在按
+  `dynamic=True` 跳过，`strict_native=True` 时报错。
+
 ---
 
 ## 6. 缺失的边缘子系统
@@ -503,6 +513,7 @@ cpp_wrapper=use_cuda_codegen,
 
 - 只有单层 manager：按输入布局录制，最多 8 个条目；输入地址漂移抛 `CudaGraphInputDrift`。
 - `dynamic=True` 跳过；训练（参数 requires_grad）跳过；原地修改/输出别名跳过。
+- 独立后端此前只在 stax 的 wrap 路径上检查 `dynamic`，后端入口把该参数丢掉；两条路现在一致。
 - 没有树式内存池、跨重编译复用、copy-back 语义。
 
 ### 8.3 测试
@@ -742,6 +753,7 @@ pytest test/stax -q -p no:randomly
 | `56320e21` `fix(compiler)` | 反向规则改为有序贡献表，按使用位置累加；同一节点填两个操作数（平方/立方/自加/自减/方法拼写/两路汇合/派生值复用）的梯度在两种分区下均补齐 |
 | `0747cc7d` `fix(compiler)` | 部分归约的梯度先补单例再回铺；单轴/负轴/命名轴/双轴/两种 keepdim 在两种分区下与按需重算一致 |
 | `8b41d4e5` `fix(compiler)` | 反向占位符不对应参数时从模块属性读取被提升的常量；区域自建常量的梯度用例覆盖两种分区与两种保存策略 |
+| `a338812c` `fix(compiler)` | 新增 `check_backend_kwargs`；eager/onnxrt/cudagraphs/未绑定选项的 AOT 后端拒绝不能兑现的 `mode`/`options`；cudagraphs 后端按 `dynamic` 跳过并在 `strict_native` 下报错；tvm 把区域名与 `dynamic` 当描述而非选项；测试补 4 项 |
 | `0d94a967` `fix(compiler)` | 多输出区域的联合输出压平并把前向结果个数传给两种分区器；两结果区域在两种分区与两种保存策略下与 eager 一致 |
 | `f6f8f2e8` `fix(compiler)` | 方法拼写的原地写算作写并留在前向；写前有读者时做前置副本，只有写后读者的直接用写后值；写前写后都有读者、以及写进计算值的情形明确拒绝；四种组合的梯度与缓冲结果对齐 |
 | `479e3158` `fix(compiler)` | 前向闭包保留所有确有效果的调用（不止写值）；训练区域在重写与切分之间不再丢掉 profiler span |
