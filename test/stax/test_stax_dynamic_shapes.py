@@ -167,6 +167,83 @@ def test_decorator_form_keeps_the_shape_specification(spec):
     assert len(artifacts) == 1
 
 
+def test_shared_dimension_must_hold_one_size():
+    compiled = tp.compile(
+        lambda x, y: x.sum(0) * y.sum(0),
+        backend=_counting_backend([]),
+        dynamic_shapes={"x": {0: Dim("batch")}, "y": {0: Dim("batch")}},
+    )
+    with pytest.raises(ValueError, match="conflicting example sizes"):
+        compiled(tp.randn(3, 2), tp.randn(4, 2))
+
+
+def test_mark_static_overrides_a_shared_dimension():
+    artifacts = []
+
+    def fn(x, y):
+        return x.sum(0) * y.sum(0)
+
+    fixed = tp.randn(4, 2)
+    tp.compiler.mark_static(fixed, 0)
+    compiled = tp.compile(
+        fn,
+        backend=_counting_backend(artifacts),
+        dynamic_shapes={"x": {0: Dim("batch")}, "y": {0: Dim("batch")}},
+    )
+    value = tp.randn(3, 2)
+    assert tp.allclose(compiled(value, fixed), value.sum(0) * fixed.sum(0))
+
+
+def test_derived_dimension_rejects_a_size_it_cannot_produce():
+    artifacts = []
+    compiled = tp.compile(
+        lambda x: x + 1,
+        backend=_counting_backend(artifacts),
+        dynamic_shapes={"x": {0: 2 * Dim("half", min=2)}},
+    )
+    with pytest.raises(ValueError, match="not of the form 2\\*half"):
+        compiled(tp.randn(5, 3))
+    assert artifacts == []
+
+
+def test_derived_dimension_rejects_an_unreachable_size_after_a_capture():
+    artifacts = []
+    compiled = tp.compile(
+        lambda x: x + 1,
+        backend=_counting_backend(artifacts),
+        dynamic_shapes={"x": {0: 2 * Dim("half", min=2)}},
+    )
+    value = tp.randn(4, 3)
+    assert tp.allclose(compiled(value), value + 1)
+    with pytest.raises(ValueError, match="not of the form 2\\*half"):
+        compiled(tp.randn(5, 3))
+    assert len(artifacts) == 1
+
+
+def test_derived_dimension_stays_consistent_with_its_root():
+    compiled = tp.compile(
+        lambda x, y: x.sum(0) * y.sum(0),
+        backend=_counting_backend([]),
+        dynamic_shapes={"x": {0: Dim("half")}, "y": {0: 2 * Dim("half")}},
+    )
+    with pytest.raises(ValueError, match="example sizes give 6 for the root"):
+        compiled(tp.randn(3, 2), tp.randn(8, 2))
+
+
+def test_declared_maximum_is_enforced_on_later_calls():
+    artifacts = []
+    compiled = tp.compile(
+        lambda x: x + 1,
+        backend=_counting_backend(artifacts),
+        dynamic_shapes={"x": {0: Dim("rows", min=2, max=5)}},
+    )
+    value = tp.randn(3, 4)
+    assert tp.allclose(compiled(value), value + 1)
+    with pytest.raises(ValueError, match="violates rows\\(min=2, max=5\\)"):
+        compiled(tp.randn(6, 4))
+    assert len(artifacts) == 1
+
+
 def test_automatic_dynamic_generalizes_after_a_size_change():
     artifacts = []
     compiled = tp.compile(lambda x: x + 1, backend=_counting_backend(artifacts))

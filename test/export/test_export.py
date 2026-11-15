@@ -209,6 +209,29 @@ def test_dynamic_shapes_derived_dim_relation():
         program(tp.randn(6, 3), tp.randn(11, 3))
 
 
+def test_dynamic_shapes_derived_dim_rejects_unreachable_example_size():
+    base = tp_export.Dim("base", min=2)
+    with pytest.raises(
+        tp_export.ConstraintsExceededError, match="not of the form 2\\*base"
+    ):
+        tp_export.export(
+            lambda t: t + 1,
+            tp.randn(5),
+            dynamic_shapes={"t": {0: base * 2}},
+        )
+
+
+def test_dynamic_shapes_derived_dim_must_match_its_root_example():
+    base = tp_export.Dim("base", min=2)
+    with pytest.raises(tp_export.ConstraintsExceededError, match="give 6 for the root"):
+        tp_export.export(
+            lambda a, b: a + b.sum(),
+            tp.randn(3, 2),
+            tp.randn(8, 2),
+            dynamic_shapes={"a": {0: base}, "b": {0: base * 2}},
+        )
+
+
 def test_dynamic_shapes_static_int_mismatch_raises():
     with pytest.raises(ValueError, match="static size"):
         tp_export.export(
