@@ -763,15 +763,54 @@ void multiply_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
                 _mm256_storeu_ps(acc + c + 8 * k, a[k]);
             }
         }
-        for (; c < cols; ++c) {
-            float value = acc[c];
-            for (int64_t r = r0; r < r1; ++r) {
-                const uint16_t bits = x[r * cols + c];
-                value *= BFloat
-                    ? tensorplay::cpu::vecreduced::widen_bf16_one(bits)
-                    : tensorplay::cpu::vecreduced::widen_one(bits);
+        for (; c + 8 <= cols; c += 8) {
+            __m256 a = _mm256_loadu_ps(acc + c);
+            int64_t r = r0;
+            for (; r + kFold <= r1; r += kFold) {
+                a = _mm256_mul_ps(
+                    a, fold_rows_hw<BFloat, kFold>(x + r * cols + c, cols));
             }
-            acc[c] = value;
+            for (; r < r1; ++r) {
+                a = _mm256_mul_ps(a, widen_row8<BFloat>(x + r * cols + c));
+            }
+            _mm256_storeu_ps(acc + c, a);
+        }
+        if (c < cols) {
+            // The last columns of a row do not fill a band.  A band read from
+            // there reaches into the next row, and those lanes are multiplied
+            // as well, but a product is formed lane by lane, so only the
+            // columns the row really has are written back.  The tensor's own
+            // last row has no row after it and reads through a copy.
+            const int64_t keep = cols - c;
+            alignas(32) float held[8] = {1.f, 1.f, 1.f, 1.f,
+                                         1.f, 1.f, 1.f, 1.f};
+            std::memcpy(held, acc + c,
+                        static_cast<size_t>(keep) * sizeof(float));
+            __m256 a = _mm256_load_ps(held);
+            int64_t r = r0;
+            for (; r + kFold <= r1; r += kFold) {
+                a = _mm256_mul_ps(
+                    a, fold_rows_hw<BFloat, kFold>(x + r * cols + c, cols));
+            }
+            for (; r < r1; ++r) {
+                const uint16_t* rp = x + r * cols + c;
+                __m256 b;
+                if (r == rows - 1) {
+                    alignas(16) uint16_t copy[8];
+                    std::memcpy(copy, rp,
+                                static_cast<size_t>(keep) * sizeof(uint16_t));
+                    for (int64_t k = keep; k < 8; ++k) {
+                        copy[k] = BFloat ? 0x3F80u : 0x3C00u;
+                    }
+                    b = widen_row8<BFloat>(copy);
+                } else {
+                    b = widen_row8<BFloat>(rp);
+                }
+                a = _mm256_mul_ps(a, b);
+            }
+            _mm256_store_ps(held, a);
+            std::memcpy(acc + c, held,
+                        static_cast<size_t>(keep) * sizeof(float));
         }
     }
 }
@@ -784,7 +823,7 @@ inline std::optional<Tensor> try_product_leading_reduced(
     }
     const int64_t rows = input.size(0);
     const int64_t cols = rows > 0 ? input.numel() / rows : 0;
-    if (rows == 0 || cols < 128) return std::nullopt;
+    if (rows == 0 || cols < 1) return std::nullopt;
     const bool half_width = input.dtype() == DType::Float16;
     const uint16_t* in = half_width
         ? reinterpret_cast<const uint16_t*>(input.data_ptr<tensorplay::Half>())
