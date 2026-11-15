@@ -4967,6 +4967,71 @@ void fold_leading_block(const ctype* in, ctype* acc, int64_t cols,
     }
 }
 
+// Few rows over a wide slice: four lane-vectors of columns keep their totals in
+// registers, and four rows fold into them at a time with the compares of the
+// other three rows still in flight.  Nothing but the input is touched, so a
+// slice narrower than the level-one cache is not a precondition here.
+template <typename ctype, bool WantMax>
+inline void fold_leading_thin(const ctype* in, ctype* out, int64_t rows,
+                              int64_t cols, int64_t begin, int64_t end) {
+    using Vec = Vectorized<ctype>;
+    constexpr int64_t lanes = Vec::size();
+    auto pair_of = [](const Vec& a, const Vec& b) {
+        if constexpr (WantMax) {
+            return maximum(a, b);
+        } else {
+            return minimum(a, b);
+        }
+    };
+    auto fold_rows = [&](const ctype* base, int64_t off, Vec& acc) {
+        const ctype* q = base + off;
+        acc = pair_of(acc, pair_of(pair_of(Vec::loadu(q), Vec::loadu(q + cols)),
+                                   pair_of(Vec::loadu(q + 2 * cols),
+                                           Vec::loadu(q + 3 * cols))));
+    };
+    int64_t j = begin;
+    for (; j + 4 * lanes <= end; j += 4 * lanes) {
+        Vec a0 = Vec::loadu(in + j);
+        Vec a1 = Vec::loadu(in + j + lanes);
+        Vec a2 = Vec::loadu(in + j + 2 * lanes);
+        Vec a3 = Vec::loadu(in + j + 3 * lanes);
+        int64_t s = 1;
+        for (; s + 4 <= rows; s += 4) {
+            const ctype* base = in + s * cols + j;
+            fold_rows(base, 0, a0);
+            fold_rows(base, lanes, a1);
+            fold_rows(base, 2 * lanes, a2);
+            fold_rows(base, 3 * lanes, a3);
+        }
+        for (; s < rows; ++s) {
+            const ctype* row = in + s * cols + j;
+            a0 = pair_of(a0, Vec::loadu(row));
+            a1 = pair_of(a1, Vec::loadu(row + lanes));
+            a2 = pair_of(a2, Vec::loadu(row + 2 * lanes));
+            a3 = pair_of(a3, Vec::loadu(row + 3 * lanes));
+        }
+        a0.store(out + j);
+        a1.store(out + j + lanes);
+        a2.store(out + j + 2 * lanes);
+        a3.store(out + j + 3 * lanes);
+    }
+    for (; j + lanes <= end; j += lanes) {
+        Vec acc = Vec::loadu(in + j);
+        for (int64_t s = 1; s < rows; ++s) {
+            acc = pair_of(acc, Vec::loadu(in + s * cols + j));
+        }
+        acc.store(out + j);
+    }
+    for (; j < end; ++j) {
+        ctype best = in[j];
+        for (int64_t s = 1; s < rows; ++s) {
+            const ctype value = in[s * cols + j];
+            best = WantMax ? nan_max(best, value) : nan_min(best, value);
+        }
+        out[j] = best;
+    }
+}
+
 // A leading dimension of a dense tensor is the one case where the rows can be
 // handed out whole: each task sweeps a contiguous block and carries its partial
 // answer as a private slice, so the walk never leaves the row it is reading.  The
@@ -4990,15 +5055,44 @@ bool fold_leading_extrema(Tensor& result, const Tensor& self, int64_t ndim,
     // A slice wider than the level-one cache would be evicted between the rows
     // that fold into it, and a block shorter than a few dozen rows per task is
     // better served by the banded walk, which then wins the prefetcher back.
-    if (cols * static_cast<int64_t>(sizeof(ctype)) > 16384) return false;
     const bool serial = self.numel() < GRAIN_SIZE || get_num_threads() == 1 ||
                         in_parallel_region();
     const int64_t tasks = serial ? 1 : get_num_threads();
-    if (rows < 32 * tasks) return false;
+    const ctype* data = self.data_ptr<ctype>();
+    if (rows < 32 * tasks) {
+        // With rows too few to share out, the columns keep their totals in
+        // registers over the whole row range and the bands are what the team
+        // splits instead.
+        const int64_t block = std::max<int64_t>(
+            4 * static_cast<int64_t>(Vectorized<ctype>::size()),
+            GRAIN_SIZE / rows);
+        ctype* out = result.data_ptr<ctype>();
+        auto fold_band = [&](int64_t begin, int64_t end) {
+            for (int64_t b = begin; b < end; b += block) {
+                const int64_t band_end = std::min(cols, b + block);
+                if (maximum_value) {
+                    fold_leading_thin<ctype, true>(data, out, rows, cols, b,
+                                                   band_end);
+                } else {
+                    fold_leading_thin<ctype, false>(data, out, rows, cols, b,
+                                                    band_end);
+                }
+            }
+        };
+        if (serial) {
+            fold_band(0, cols);
+        } else {
+            parallel_for(0, cols, block, fold_band);
+        }
+        return true;
+    }
+    // A slice wider than the level-one cache would be evicted between the rows
+    // that fold into it, and with the rows shareable the banded walk would pay
+    // its stride for nothing.
+    if (cols * static_cast<int64_t>(sizeof(ctype)) > 16384) return false;
 
     const int64_t per = (rows + tasks - 1) / tasks;
     Tensor buffer = Tensor::empty({tasks * cols}, self.dtype(), self.device());
-    const ctype* data = self.data_ptr<ctype>();
     ctype* slices = buffer.data_ptr<ctype>();
     auto fold_task = [&](int64_t t) {
         const int64_t begin = t * per;
