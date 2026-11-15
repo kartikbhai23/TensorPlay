@@ -1953,6 +1953,24 @@ inline uint64_t sort_f32_key(float value, uint32_t position, bool descending) {
     return (static_cast<uint64_t>(key) << 32) | static_cast<uint64_t>(position);
 }
 
+// The same fold for the reduced widths: the layout is sixteen bits, so the
+// sign bit moves every positive value above every negative one and a negative
+// value also gets its remaining bits complemented.  All not-a-number patterns
+// collapse onto the one key just above infinity, and a negative zero takes the
+// positive zero key, so values the ordering calls equal share a key.  The
+// infinity word differs between the two layouts: fifteen exponent bits in one
+// and eight in the other.
+template <uint32_t InfBits>
+inline uint64_t sort_u16_key(uint16_t bits, uint32_t position, bool descending) {
+    const uint32_t sign = static_cast<uint32_t>(bits >> 15);
+    uint32_t key = (static_cast<uint32_t>(bits) ^ (0x8000u | (0u - sign))) &
+                   0xFFFFu;
+    if ((bits & 0x7FFFu) > InfBits) key = 0x8000u | (InfBits + 1u);
+    if (bits == 0x8000u) key = 0x8000u;
+    if (descending) key = ~key;
+    return (static_cast<uint64_t>(key) << 32) | static_cast<uint64_t>(position);
+}
+
 template <typename ctype, typename index_t>
 void sort_dim_slices(const ctype* self, ctype* values, int64_t* indices,
                      int64_t outer, int64_t d_size, int64_t inner,
@@ -1983,6 +2001,47 @@ void sort_dim_slices(const ctype* self, ctype* values, int64_t* indices,
                         kb[j] = sort_f32_key(base[j], static_cast<uint32_t>(j), descending);
                     std::sort(kb, kb + d_size);
                     float* vbase = values + si * d_size;
+                    int64_t* ibase = indices + si * d_size;
+                    for (int64_t j = 0; j < d_size; ++j) {
+                        const uint32_t pick = static_cast<uint32_t>(kb[j]);
+                        vbase[j] = base[pick];
+                        ibase[j] = pick;
+                    }
+                }
+                return;
+            }
+        }
+        // The reduced widths fold the same way: one integer compare per pair
+        // orders the slice, and the value is read back from where it came.
+        if constexpr ((std::is_same_v<ctype, Half> ||
+                       std::is_same_v<ctype, BFloat16>) &&
+                      std::is_same_v<index_t, int32_t>) {
+            if (inner == 1) {
+                static thread_local std::vector<uint64_t> cached_keys;
+                std::vector<uint64_t> transient_keys;
+                uint64_t* kb = nullptr;
+                if (d_size <= kMaxCachedElems) {
+                    if (static_cast<int64_t>(cached_keys.size()) < d_size)
+                        cached_keys.resize(static_cast<size_t>(d_size));
+                    kb = cached_keys.data();
+                } else {
+                    transient_keys.resize(static_cast<size_t>(d_size));
+                    kb = transient_keys.data();
+                }
+                for (int64_t si = b; si < e; ++si) {
+                    const ctype* base = self + si * d_size;
+                    const uint16_t* bits = reinterpret_cast<const uint16_t*>(base);
+                    for (int64_t j = 0; j < d_size; ++j) {
+                        if constexpr (std::is_same_v<ctype, Half>) {
+                            kb[j] = sort_u16_key<0x7C00u>(
+                                bits[j], static_cast<uint32_t>(j), descending);
+                        } else {
+                            kb[j] = sort_u16_key<0x7F80u>(
+                                bits[j], static_cast<uint32_t>(j), descending);
+                        }
+                    }
+                    std::sort(kb, kb + d_size);
+                    ctype* vbase = values + si * d_size;
                     int64_t* ibase = indices + si * d_size;
                     for (int64_t j = 0; j < d_size; ++j) {
                         const uint32_t pick = static_cast<uint32_t>(kb[j]);
