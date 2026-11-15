@@ -530,7 +530,7 @@ struct NonZeroPredicate {
 // Pass one counts the matches without writing a per-element flag: each block
 // reduces its own slice and publishes one value.
 template <typename T, int BLOCK, int ITEMS>
-__global__ void nonzero_count_kernel(int64_t n, const T* x, int32_t* total,
+__global__ void nonzero_count_kernel(int64_t n, const T* x,
                                      int32_t* per_block) {
     int mine = 0;
     const int64_t tile_span = static_cast<int64_t>(gridDim.x) * (BLOCK * ITEMS);
@@ -557,7 +557,6 @@ __global__ void nonzero_count_kernel(int64_t n, const T* x, int32_t* total,
 #pragma unroll
         for (int w = 0; w < BLOCK / 32; ++w) sum += warp_totals[w];
         per_block[blockIdx.x] = static_cast<int32_t>(sum);
-        if (sum != 0) atomicAdd(total, static_cast<int32_t>(sum));
     }
 }
 
@@ -597,9 +596,11 @@ __global__ void nonzero_block_scan(int32_t blocks, int32_t* per_block,
 // Turns the per-block counts into the base slot of each block, so the scan
 // pass can write straight into the final positions without a second pass over
 // the input.  Runs over the chunk totals produced by nonzero_block_scan and
-// leaves their global bases in place.
+// leaves their global bases in place; the running carry that survives the last
+// chunk is the total match count, so the caller needs no separate reduction.
 template <int BLOCK>
-__global__ void nonzero_block_offsets(int32_t blocks, int32_t* per_block) {
+__global__ void nonzero_block_offsets(int32_t blocks, int32_t* per_block,
+                                      int32_t* total) {
     __shared__ int32_t carry;
     __shared__ int32_t warp_sums[BLOCK / 32];
     if (threadIdx.x == 0) carry = 0;
@@ -627,6 +628,7 @@ __global__ void nonzero_block_offsets(int32_t blocks, int32_t* per_block) {
         if (threadIdx.x == BLOCK - 1) carry += prefix + incl;
         __syncthreads();
     }
+    if (threadIdx.x == 0) total[0] = carry;
 }
 
 // BLOCK x ITEMS contiguous elements per block.  Each thread owns ITEMS
@@ -1040,8 +1042,10 @@ Tensor nonzero_cuda(const Tensor& self) {
     const auto stream = getCurrentCUDAStream().stream();
 
     // Pass one counts the matches straight off the input: no per-element flag
-    // array is written, so the input is read once and nothing else.
-    Tensor count_d = Tensor::zeros({1}, DType::Int32, self.device());
+    // array is written, so the input is read once and nothing else.  The total
+    // falls out of the offset scan's last carry, so nothing has to be zeroed
+    // before the launch either.
+    Tensor count_d = Tensor::empty({1}, DType::Int32, self.device());
     constexpr int kCountBlock = 256;
     // One tile per block: the output stays in ascending order only when a
     // block's elements are adjacent.  The 1-D grid reaches 2^31-1 blocks, so
@@ -1049,8 +1053,8 @@ Tensor nonzero_cuda(const Tensor& self) {
     constexpr int64_t kMaxBlocks = 2147483647;
     // Chunk size of the two-level offset scan and its log2, used to index the
     // segment bases from a flat block index.
-    constexpr int kScanChunk = 256;
-    constexpr int kScanShift = 8;
+    constexpr int kScanChunk = 1024;
+    constexpr int kScanShift = 10;
     static_assert((1 << kScanShift) == kScanChunk, "scan chunk must be a power of two");
     Tensor block_counts;
     Tensor segment_bases;
@@ -1062,10 +1066,10 @@ Tensor nonzero_cuda(const Tensor& self) {
             (n + kCountBlock * kItems - 1) / (kCountBlock * kItems);           \
         const unsigned blocks = static_cast<unsigned>(                        \
             std::min<int64_t>(tiles, kMaxBlocks));                            \
-        block_counts = Tensor::zeros({blocks}, DType::Int32, self.device());     \
+        block_counts = Tensor::empty({blocks}, DType::Int32, self.device());     \
         nonzero_count_kernel<ctype, kCountBlock, kItems>                      \
         <<<blocks, kCountBlock, 0, stream>>>(                                  \
-            n, self_c.data_ptr<ctype>(), count_d.data_ptr<int32_t>(),           \
+            n, self_c.data_ptr<ctype>(),                                        \
             block_counts.data_ptr<int32_t>());                                   \
         const int64_t segments =                                                \
             (static_cast<int64_t>(blocks) + kScanChunk - 1) / kScanChunk;       \
@@ -1075,7 +1079,8 @@ Tensor nonzero_cuda(const Tensor& self) {
             static_cast<int32_t>(blocks), block_counts.data_ptr<int32_t>(),     \
             segment_bases.data_ptr<int32_t>());                                 \
         nonzero_block_offsets<kScanChunk><<<1, kScanChunk, 0, stream>>>(        \
-            static_cast<int32_t>(segments), segment_bases.data_ptr<int32_t>()); \
+            static_cast<int32_t>(segments), segment_bases.data_ptr<int32_t>(),  \
+            count_d.data_ptr<int32_t>());                                        \
         break;                                                                   \
     }
     switch (self_c.dtype()) {
