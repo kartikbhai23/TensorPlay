@@ -899,6 +899,277 @@ Tensor norm_dim_typed(const Tensor& self, const std::vector<int64_t>& dims,
     return out;
 }
 
+// One reduced axis of a real tensor, walked as (outer, reduce, inner): the
+// square of every element folds into a per-column total over the inner
+// direction, which is the contiguous one, and the totals take a single square
+// root once.  Four rows land in a total before it is read back, so the walk is
+// limited by the input stream rather than by the total's own traffic.
+template <typename T>
+inline void normsq_dim_real_range(const T* in, T* out, int64_t red,
+                                  int64_t inner, int64_t block, int64_t nblk,
+                                  int64_t begin, int64_t end) {
+    using Vec = Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    // A task's totals are its own: the buffer is claimed here so every worker
+    // thread holds the one it will write, not the one the caller allocated.
+    static thread_local std::vector<T> totals;
+    if (static_cast<int64_t>(totals.size()) < block) {
+        totals.resize(static_cast<size_t>(block));
+    }
+    {
+        T* acc = totals.data();
+        for (int64_t task = begin; task < end; ++task) {
+            const int64_t o = task / nblk;
+            const int64_t c0 = (task % nblk) * block;
+            const int64_t n = std::min(block, inner - c0);
+            const T* base = in + (o * red) * inner + c0;
+            T* dst = out + o * inner + c0;
+            std::fill(acc, acc + n, T(0));
+            const int64_t vec = n & ~(W - 1);
+            int64_t r = 0;
+            for (; r + 4 <= red; r += 4) {
+                const T* p0 = base + (r + 0) * inner;
+                const T* p1 = base + (r + 1) * inner;
+                const T* p2 = base + (r + 2) * inner;
+                const T* p3 = base + (r + 3) * inner;
+                int64_t j = 0;
+                for (; j < vec; j += W) {
+                    const Vec q0 = Vec::loadu(p0 + j);
+                    const Vec q1 = Vec::loadu(p1 + j);
+                    const Vec q2 = Vec::loadu(p2 + j);
+                    const Vec q3 = Vec::loadu(p3 + j);
+                    (Vec::loadu(acc + j) +
+                     ((q0 * q0 + q1 * q1) + (q2 * q2 + q3 * q3)))
+                        .store(acc + j);
+                }
+                for (; j < n; ++j) {
+                    acc[j] += ((p0[j] * p0[j] + p1[j] * p1[j]) +
+                               (p2[j] * p2[j] + p3[j] * p3[j]));
+                }
+            }
+            for (; r < red; ++r) {
+                const T* p = base + r * inner;
+                int64_t j = 0;
+                for (; j < vec; j += W) {
+                    const Vec q = Vec::loadu(p + j);
+                    (Vec::loadu(acc + j) + q * q).store(acc + j);
+                }
+                for (; j < n; ++j) acc[j] += p[j] * p[j];
+            }
+            for (int64_t j = 0; j < n; ++j) dst[j] = std::sqrt(acc[j]);
+        }
+    }
+}
+
+template <typename T>
+inline void normsq_dim_real_impl(const T* in, T* out, int64_t outer,
+                                 int64_t red, int64_t inner) {
+    using Vec = Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const int64_t block = std::max<int64_t>(
+        4 * W, GRAIN_SIZE / std::max<int64_t>(red, 1));
+    const int64_t nblk = (inner + block - 1) / block;
+    parallel_for(0, outer * nblk, 1, [&](int64_t begin, int64_t end) {
+        normsq_dim_real_range<T>(in, out, red, inner, block, nblk, begin, end);
+    });
+}
+
+#if defined(__x86_64__)
+// The same walk over a packed width: the block of rows is widened a step at a
+// time and its squares fold into single-precision totals, which then narrow
+// once into the width the answer is carried in.  The walk is a free function
+// so that its target carries into the work a parallel task runs.
+template <bool BFloat>
+__attribute__((target("avx2,fma,f16c"), noinline))
+void normsq_dim_reduced_range(const uint16_t* in, uint16_t* out,
+                              int64_t outer, int64_t red, int64_t inner,
+                              int64_t block, int64_t nblk, int64_t begin,
+                              int64_t end) {
+    using tensorplay::cpu::vecreduced::widen8;
+    using tensorplay::cpu::vecreduced::widen_bf16_8;
+    constexpr int64_t W = 8;
+    static thread_local std::vector<float> totals;
+    if (static_cast<int64_t>(totals.size()) < block) {
+        totals.resize(static_cast<size_t>(block));
+    }
+    float* acc = totals.data();
+    for (int64_t task = begin; task < end; ++task) {
+        const int64_t o = task / nblk;
+        const int64_t c0 = (task % nblk) * block;
+        const int64_t n = std::min(block, inner - c0);
+        const uint16_t* base = in + (o * red) * inner + c0;
+        uint16_t* dst = out + o * inner + c0;
+        std::fill(acc, acc + n, 0.f);
+        const int64_t vec = n & ~(W - 1);
+        if (n < W) {
+            // A run narrower than one step is widened from where it lies: the
+            // lanes past the run belong to the next row and are dropped, and
+            // only the tensor's own last row needs a padded copy to read.
+            __m256 ta = _mm256_setzero_ps();
+            for (int64_t rr = 0; rr < red; ++rr) {
+                const uint16_t* p = base + rr * inner;
+                __m256 q;
+                if (o + 1 == outer && rr + 1 == red) {
+                    alignas(16) uint16_t pad[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+                    for (int64_t k = 0; k < n; ++k) pad[k] = p[k];
+                    q = BFloat ? widen_bf16_8(pad) : widen8(pad);
+                } else {
+                    q = BFloat ? widen_bf16_8(p) : widen8(p);
+                }
+                ta = _mm256_add_ps(ta, _mm256_mul_ps(q, q));
+            }
+            _mm256_storeu_ps(acc, ta);
+            for (int64_t j = 0; j < n; ++j) {
+                const float v = std::sqrt(acc[j]);
+                dst[j] = BFloat
+                    ? tensorplay::cpu::vecreduced::narrow_bf16_one(v)
+                    : tensorplay::cpu::vecreduced::narrow_one_hw(v);
+            }
+            continue;
+        }
+        int64_t r = 0;
+        for (; r + 4 <= red; r += 4) {
+            const uint16_t* p0 = base + (r + 0) * inner;
+            const uint16_t* p1 = base + (r + 1) * inner;
+            const uint16_t* p2 = base + (r + 2) * inner;
+            const uint16_t* p3 = base + (r + 3) * inner;
+            int64_t j = 0;
+            for (; j < vec; j += W) {
+                const __m256 q0 =
+                    BFloat ? widen_bf16_8(p0 + j) : widen8(p0 + j);
+                const __m256 q1 =
+                    BFloat ? widen_bf16_8(p1 + j) : widen8(p1 + j);
+                const __m256 q2 =
+                    BFloat ? widen_bf16_8(p2 + j) : widen8(p2 + j);
+                const __m256 q3 =
+                    BFloat ? widen_bf16_8(p3 + j) : widen8(p3 + j);
+                _mm256_storeu_ps(
+                    acc + j,
+                    _mm256_add_ps(
+                        _mm256_loadu_ps(acc + j),
+                        _mm256_add_ps(
+                            _mm256_add_ps(_mm256_mul_ps(q0, q0),
+                                          _mm256_mul_ps(q1, q1)),
+                            _mm256_add_ps(_mm256_mul_ps(q2, q2),
+                                          _mm256_mul_ps(q3, q3)))));
+            }
+            for (; j < n; ++j) {
+                const float a = BFloat
+                    ? tensorplay::cpu::vecreduced::widen_bf16_one(p0[j])
+                    : tensorplay::cpu::vecreduced::widen_one(p0[j]);
+                const float bq = BFloat
+                    ? tensorplay::cpu::vecreduced::widen_bf16_one(p1[j])
+                    : tensorplay::cpu::vecreduced::widen_one(p1[j]);
+                const float cq = BFloat
+                    ? tensorplay::cpu::vecreduced::widen_bf16_one(p2[j])
+                    : tensorplay::cpu::vecreduced::widen_one(p2[j]);
+                const float dq = BFloat
+                    ? tensorplay::cpu::vecreduced::widen_bf16_one(p3[j])
+                    : tensorplay::cpu::vecreduced::widen_one(p3[j]);
+                acc[j] += ((a * a + bq * bq) + (cq * cq + dq * dq));
+            }
+        }
+        for (; r < red; ++r) {
+            const uint16_t* p = base + r * inner;
+            int64_t j = 0;
+            for (; j < vec; j += W) {
+                const __m256 q =
+                    BFloat ? widen_bf16_8(p + j) : widen8(p + j);
+                _mm256_storeu_ps(acc + j,
+                                 _mm256_add_ps(_mm256_loadu_ps(acc + j),
+                                               _mm256_mul_ps(q, q)));
+            }
+            for (; j < n; ++j) {
+                const float v = BFloat
+                    ? tensorplay::cpu::vecreduced::widen_bf16_one(p[j])
+                    : tensorplay::cpu::vecreduced::widen_one(p[j]);
+                acc[j] += v * v;
+            }
+        }
+        for (int64_t j = 0; j < n; ++j) {
+            const float v = std::sqrt(acc[j]);
+            dst[j] = BFloat
+                ? tensorplay::cpu::vecreduced::narrow_bf16_one(v)
+                : tensorplay::cpu::vecreduced::narrow_one_hw(v);
+        }
+    }
+}
+
+template <bool BFloat>
+inline void normsq_dim_reduced_impl(const uint16_t* in, uint16_t* out,
+                                    int64_t outer, int64_t red, int64_t inner) {
+    const int64_t block = std::max<int64_t>(
+        4 * 8, GRAIN_SIZE / std::max<int64_t>(red, 1));
+    const int64_t nblk = (inner + block - 1) / block;
+    tensorplay::parallel::parallel_for(
+        0, outer * nblk, 1, [&](int64_t begin, int64_t end) {
+            normsq_dim_reduced_range<BFloat>(in, out, outer, red, inner, block,
+                                             nblk, begin, end);
+        });
+}
+#endif
+
+// A single reduced axis of a real tensor at the two-norm answers the same
+// value the per-element fold does, but walks the contiguous direction of a
+// row instead of stepping across the reduced axis.
+inline std::optional<Tensor> try_normsq_dim(
+        const Tensor& self, int64_t dim, bool keepdim,
+        const std::vector<int64_t>& dims) {
+    const DType dt = self.dtype();
+    if (dt != DType::Float32 && dt != DType::Float64 &&
+        dt != DType::Float16 && dt != DType::BFloat16) {
+        return std::nullopt;
+    }
+    if (!self.is_contiguous() || self.numel() == 0 || self.dim() == 0) {
+        return std::nullopt;
+    }
+    const int64_t nd = self.dim();
+    const int64_t d = dim < 0 ? dim + nd : dim;
+    if (d < 0 || d >= nd) return std::nullopt;
+    const bool reduced_fast =
+        dt == DType::BFloat16 ||
+        (dt == DType::Float16 &&
+         tensorplay::cpu::vecreduced::f16c_available());
+    if (!reduced_fast && (dt == DType::Float16 || dt == DType::BFloat16)) {
+        return std::nullopt;
+    }
+    int64_t outer = 1, inner = 1;
+    for (int64_t i = 0; i < d; ++i) outer *= self.size(i);
+    for (int64_t i = d + 1; i < nd; ++i) inner *= self.size(i);
+    const int64_t red = self.size(d);
+    if (red == 0 || inner == 0 || outer == 0) return std::nullopt;
+    Tensor out = Tensor::empty(compute_reduction_shape(self, dims, keepdim),
+                               dt, self.device());
+    if (dt == DType::Float32) {
+        normsq_dim_real_impl<float>(self.data_ptr<float>(),
+                                    out.data_ptr<float>(), outer, red, inner);
+        return out;
+    }
+    if (dt == DType::Float64) {
+        normsq_dim_real_impl<double>(self.data_ptr<double>(),
+                                     out.data_ptr<double>(), outer, red, inner);
+        return out;
+    }
+#if defined(__x86_64__)
+    if (dt == DType::Float16) {
+        normsq_dim_reduced_impl<false>(
+            reinterpret_cast<const uint16_t*>(
+                self.data_ptr<tensorplay::Half>()),
+            reinterpret_cast<uint16_t*>(out.data_ptr<tensorplay::Half>()),
+            outer, red, inner);
+        return out;
+    }
+    normsq_dim_reduced_impl<true>(
+        reinterpret_cast<const uint16_t*>(
+            self.data_ptr<tensorplay::BFloat16>()),
+        reinterpret_cast<uint16_t*>(out.data_ptr<tensorplay::BFloat16>()),
+        outer, red, inner);
+    return out;
+#else
+    return std::nullopt;
+#endif
+}
+
 Tensor norm_dim_kernel_impl(const Tensor& self,
                             const std::vector<int64_t>& dims,
                             double p, bool keepdim) {
@@ -1020,6 +1291,16 @@ Tensor norm_dim_kernel_impl(const Tensor& self,
                 });
             }
             return out;
+        }
+    }
+
+    // One named axis that is not the trailing block walks its squares over the
+    // contiguous direction of a row instead of stepping across the reduced
+    // one, which is the order the per-element fold pays for.
+    if (p == 2.0 && dims.size() == 1) {
+        if (std::optional<Tensor> squared =
+                try_normsq_dim(self, dims[0], keepdim, dims)) {
+            return std::move(*squared);
         }
     }
 
@@ -2568,7 +2849,7 @@ std::optional<Tensor> sum_leading_rows_split_impl(
     while ((int64_t(1) << lg) < grain) {
         ++lg;
     }
-    const int64_t group = int64_t(1) << std::max<int64_t>(4, lg / 4);
+    const int64_t group = int64_t(1) << std::max<int64_t>(4, std::min<int64_t>(7, lg / 2));
     const int64_t tslice = cascade ? 4 * cols : cols;
     Tensor buffer =
         Tensor::empty({nthreads * tslice}, input.dtype(), input.device());
