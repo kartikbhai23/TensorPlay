@@ -1784,15 +1784,56 @@ inline void check_shrink_dtype(const Tensor& self, const char* name) {
     }
 }
 
-Tensor hardshrink_cpu(const Tensor& self, const Scalar& lambd) {
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+__attribute__((target("avx2"), noinline))
+static void hardshrink_bf16_chunk(const uint16_t* src, uint16_t* dst,
+                                   int64_t begin, int64_t end, uint16_t limit) {
+    const __m256i magnitude_mask = _mm256_set1_epi16(0x7fff);
+    const __m256i bound = _mm256_set1_epi16(static_cast<int16_t>(limit));
+    int64_t i = begin;
+    for (; i + 16 <= end; i += 16) {
+        const __m256i x = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+        const __m256i magnitude = _mm256_and_si256(x, magnitude_mask);
+        const __m256i outside = _mm256_cmpgt_epi16(magnitude, bound);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i),
+                            _mm256_and_si256(x, outside));
+    }
+    for (; i < end; ++i) {
+        const uint16_t x = src[i];
+        dst[i] = (x & 0x7fff) <= limit ? 0 : x;
+    }
+}
+#endif
+
+Tensor hardshrink_cpu(const Tensor& self, const Scalar& lambd, const Tensor* destination = nullptr) {
     check_shrink_dtype(self, "hardshrink");
-    return float_math_vec_kernel(self, HardshrinkBand{lambd.toDouble()}, "hardshrink",
+    const double l = lambd.toDouble();
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    if (self.dtype() == DType::BFloat16 && l >= 0 && vecunary::avx2_available()) {
+        Tensor input = self.contiguous();
+        Tensor output = destination ? *destination : Tensor::empty(
+            static_cast<std::vector<int64_t>>(self.shape()), self.dtype(), self.device());
+        const uint16_t bound = detail::float_to_bfloat16_bits(static_cast<float>(l)) & 0x7fff;
+        const auto* src = reinterpret_cast<const uint16_t*>(input.data_ptr<BFloat16>());
+        auto* dst = reinterpret_cast<uint16_t*>(output.data_ptr<BFloat16>());
+        parallel_for(0, input.numel(), GRAIN_SIZE, [&](int64_t b, int64_t e) {
+            hardshrink_bf16_chunk(src, dst, b, e, bound);
+        });
+        return output;
+    }
+#endif
+    return float_math_vec_kernel(self, HardshrinkBand{l}, "hardshrink",
                                  vecunary::VOp::Hardshrink,
-                                 vecunary::VParams{lambd.toDouble(), 0.0, 0.0});
+                                 vecunary::VParams{l, 0.0, 0.0}, destination);
 }
 Tensor& hardshrink_out_cpu(const Tensor& self, const Scalar& lambd, Tensor& out) {
     check_shrink_dtype(self, "hardshrink");
     double l = lambd.toDouble();
+    if (destination_takes_flat(out, self.device(), self.dtype(),
+                               static_cast<std::vector<int64_t>>(self.shape()), self)) {
+        hardshrink_cpu(self, lambd, &out);
+        return out;
+    }
     return dtype_unary_out_kernel(
         self, out, [l](const Tensor& v) { return hardshrink_cpu(v, Scalar(l)); },
         HardshrinkBand{l}, "hardshrink");
@@ -2106,7 +2147,9 @@ TENSORPLAY_LIBRARY_IMPL(CPU, OpsKernels) {
     m.impl("clamp_min.Tensor", clamp_min_tensor_cpu);
     m.impl("clamp_max.Tensor", clamp_max_tensor_cpu);
     // Activations
-    m.impl("hardshrink", hardshrink_cpu);
+    m.impl("hardshrink", [](const Tensor& self, const Scalar& lambd) {
+        return hardshrink_cpu(self, lambd);
+    });
     m.impl("hardshrink.out", hardshrink_out_cpu);
     m.impl("hardshrink_backward", hardshrink_backward_cpu);
     m.impl("hardshrink_backward.grad_input", hardshrink_backward_out_cpu);
