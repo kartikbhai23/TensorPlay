@@ -639,6 +639,38 @@ void store_column_totals(const float* const* partials, int64_t nthreads,
     }
 }
 
+// The column totals of a product narrowed a band at a time: the totals of every
+// worker multiply a lane at a time and the packed answer is formed once per
+// band rather than once per column.
+template <bool BFloat>
+__attribute__((target("avx2,fma,f16c"), noinline))
+void store_column_products(const float* const* partials, int64_t nthreads,
+                           int64_t cols, uint16_t* out) {
+    int64_t c = 0;
+    for (; c + 8 <= cols; c += 8) {
+        __m256 p = _mm256_loadu_ps(partials[0] + c);
+        for (int64_t t = 1; t < nthreads; ++t) {
+            p = _mm256_mul_ps(p, _mm256_loadu_ps(partials[t] + c));
+        }
+        if constexpr (BFloat) {
+            tensorplay::cpu::vecreduced::store_bf16_8(out + c, p);
+        } else {
+            tensorplay::cpu::vecreduced::lay_f16_8<false>(out + c, p);
+        }
+    }
+    for (; c < cols; ++c) {
+        float p = 1.f;
+        for (int64_t t = 0; t < nthreads; ++t) {
+            p *= partials[t][c];
+        }
+        if constexpr (BFloat) {
+            out[c] = tensorplay::cpu::vecreduced::narrow_bf16_one(p);
+        } else {
+            out[c] = tensorplay::cpu::vecreduced::narrow_one_hw(p);
+        }
+    }
+}
+
 // The last axis of a packed tensor, multiplied a row at a time, with the
 // thin case widened whole.
 inline std::optional<Tensor> try_product_lastdim_reduced(
@@ -922,9 +954,21 @@ inline std::optional<Tensor> try_product_leading_reduced(
     for (int64_t t = 0; t < nthreads; ++t) {
         columns[static_cast<size_t>(t)] = partials[static_cast<size_t>(t)].data();
     }
+#if defined(__x86_64__)
+    if (tensorplay::cpu::vecreduced::f16c_available()) {
+        if (half_width) {
+            store_column_products<false>(columns.data(), nthreads, cols, outp);
+        } else {
+            store_column_products<true>(columns.data(), nthreads, cols, outp);
+        }
+        return out;
+    }
+#endif
     for (int64_t c = 0; c < cols; ++c) {
         float p = 1.f;
-        for (int64_t t = 0; t < nthreads; ++t) p *= columns[static_cast<size_t>(t)][static_cast<size_t>(c)];
+        for (int64_t t = 0; t < nthreads; ++t) {
+            p *= columns[static_cast<size_t>(t)][static_cast<size_t>(c)];
+        }
         if (half_width) {
             outp[c] = tensorplay::cpu::vecreduced::narrow_one_hw(p);
         } else {
