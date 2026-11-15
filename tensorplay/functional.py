@@ -2845,7 +2845,9 @@ def sum(input, dim=None, keepdim=False, *, dtype=DType.undefined):
         if _captured is not None:
             return _captured
     if dim is None:
-        return _C.sum(input, dtype=dtype)
+        if not keepdim:
+            return _C.sum(input, dtype=dtype)
+        dim = []
     return _C.sum(input, dim, keepdim, dtype=dtype)
 
 def mean(input, dim=None, keepdim=False, *, dtype=DType.undefined):
@@ -2854,7 +2856,9 @@ def mean(input, dim=None, keepdim=False, *, dtype=DType.undefined):
         if _captured is not None:
             return _captured
     if dim is None:
-        return _C.mean(input, dtype=dtype)
+        if not keepdim:
+            return _C.mean(input, dtype=dtype)
+        dim = []
     return _C.mean(input, dim, keepdim, dtype=dtype)
 
 def sum_squared_error(input, other, dim=[], keepdim=False):
@@ -2972,10 +2976,12 @@ def var(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if correction is None:
         correction = 1 if (unbiased is None or unbiased) else 0
     if dim is None:
-        return _C.var(input, correction=correction, keepdim=keepdim)
-    if isinstance(dim, int) and not isinstance(dim, bool):
+        dim = []
+    elif isinstance(dim, int) and not isinstance(dim, bool):
         dim = [dim]
-    return _C.var(input, list(dim), correction, keepdim)
+    else:
+        dim = list(dim)
+    return _C.var(input, dim, correction, keepdim)
 
 def std(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if _capturing():
@@ -2985,10 +2991,12 @@ def std(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if correction is None:
         correction = 1 if (unbiased is None or unbiased) else 0
     if dim is None:
-        return _C.std(input, correction=correction, keepdim=keepdim)
-    if isinstance(dim, int) and not isinstance(dim, bool):
+        dim = []
+    elif isinstance(dim, int) and not isinstance(dim, bool):
         dim = [dim]
-    return _C.std(input, list(dim), correction, keepdim)
+    else:
+        dim = list(dim)
+    return _C.std(input, dim, correction, keepdim)
 
 def median(input, dim=None, keepdim=False):
     if _capturing():
@@ -3005,7 +3013,9 @@ def norm(input, p=2.0, dim=None, keepdim=False):
         if _captured is not None:
             return _captured
     if dim is None:
-        return _C.norm(input, p)
+        if not keepdim:
+            return _C.norm(input, p)
+        dim = []
     return _C.norm(input, dim, p, keepdim)
 
 def exponential_(input, lambd=1.0, generator=None):
@@ -6015,6 +6025,8 @@ def nanmedian(input, dim=None, keepdim=False):
     return _C.nanmedian(input, dim, keepdim)
 
 def nansum(input, dim=[], keepdim=False, *, out=None):
+    if dim is None:
+        dim = []
     if out is not None:
         if _capturing():
             _captured = _capture_call(nansum, (input, dim, keepdim), {'out': out})
