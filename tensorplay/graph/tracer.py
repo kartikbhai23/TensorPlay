@@ -465,6 +465,11 @@ class Tracer:
     ) -> Proxy:
         if _capture_disabled.get():
             raise GraphCaptureError("graph capture is disabled for this operation")
+        if kind == "call_function" and _utils.is_disallowed_target(target):
+            raise GraphCaptureError(
+                f"{_utils._format_target(target)} is declared disallowed in a "
+                "captured region; call it outside the region it must not join"
+            )
         if (
             kind in ("call_function", "call_method")
             and _reading_enclosing_values.get()

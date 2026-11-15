@@ -20,6 +20,7 @@ from tensorplay.graph._utils import (
     _capture_disabled,
     _compiling,
     _native_capture_state,
+    disallow_target as _disallow_target,
 )
 
 from . import config
@@ -642,6 +643,15 @@ def _capture_adapter(record: _CallableRecord) -> Callable[..., Any]:
         if record.mode == "disabled":
             return _capture_opaque_region(record, tracer, args, kwargs)
 
+        if record.mode == "disallow":
+            name = getattr(record.original, "__name__", None) or type(
+                record.original
+            ).__name__
+            raise GraphCaptureError(
+                f"{name} is declared disallowed in a captured region; call it "
+                "outside the region it must not join"
+            )
+
         if record.mode in {"allow", "nonstrict"}:
             return _capture_opaque_region(record, tracer, args, kwargs)
 
@@ -694,27 +704,71 @@ def allow_in_graph(fn: Any) -> Any:
 def disallow_in_graph(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Declare that a callable must not be absorbed into a captured graph.
 
-    The tracer is meant to treat calls to ``fn`` as region boundaries: the
-    surrounding pieces are captured as separate graphs and ``fn`` itself
-    runs eagerly between them.  Under eager execution the marker is inert
-    metadata, so the callable is returned unchanged.
+    A captured region that reaches ``fn`` is refused rather than recorded.
+    The marker suits calls whose effect the graph cannot carry -- an
+    in-place update of a caller-owned buffer, say -- because recording them
+    would repeat the effect once per compiled call while the surrounding
+    capture already performed it on the example.
+
+    The callable is returned unchanged; outside capture the marker has no
+    effect.
     """
 
+    if builtins.isinstance(fn, (list, tuple)):
+        return [disallow_in_graph(item) for item in fn]
     if not callable(fn):
         raise AssertionError("disallow_in_graph expects a callable")
+    _register_record(fn, "disallow")
+    _disallow_target(fn)
     return fn
 
 
 def mark_static(tensor: Any, dim: int | None = None) -> Any:
-    """Mark a tensor (or one dimension of it) as fixed for shape policies.
+    """Pin one tensor's extents to the sizes seen at compile time.
 
-    A marked dimension is meant to be treated as a compile-time constant
-    rather than a symbolic size.  Eager execution has no dynamic shape
-    environment, so the marker records nothing here and the input is
-    returned unchanged; it matters only to a capture that resolves
-    symbolic sizes.
+    Called before ``compile``, the mark tells the shape policy that the
+    tensor's dimensions (or the one named by ``dim``) may not be treated as
+    symbolic, even when the compile call asks for dynamic shapes.  Called
+    while a region is being captured, the mark pins the extent the value had
+    on the example and keeps a condition on it; reads of that extent made
+    afterwards answer with the concrete size.
+
+    A tensor with no marks keeps the policy of the compile call: symbolic
+    when it asks for dynamic shapes, concrete otherwise.
     """
 
+    from tensorplay.graph.proxy import Proxy
+
+    if isinstance(tensor, Proxy):
+        hook = getattr(tensor.tracer, "mark_static_dim", None)
+        if hook is not None:
+            hook(tensor, dim)
+        return tensor
+
+    shape = getattr(tensor, "shape", None)
+    if shape is None:
+        if callable(getattr(tensor, "forward", None)):
+            # A module's attributes are read through the graph's own state
+            # guards, so a static module needs no separate record here.
+            return tensor
+        raise TypeError(
+            f"mark_static expects a tensor or a module, got {type(tensor)!r}"
+        )
+
+    rank = len(shape)
+    axes = range(rank) if dim is None else (dim,)
+    marked = set(getattr(tensor, "_tensorplay_static_dims", ()))
+    for axis in axes:
+        if type(axis) is not int:
+            raise TypeError(f"mark_static expects an int dim, got {type(axis)!r}")
+        index = axis + rank if axis < 0 else axis
+        if index < 0 or index >= rank:
+            raise IndexError(
+                f"dimension {axis} is out of range for a "
+                f"{rank}-dimensional tensor"
+            )
+        marked.add(index)
+    tensor._tensorplay_static_dims = tuple(sorted(marked))
     return tensor
 
 
@@ -939,12 +993,36 @@ def _callable_globals(root: Any) -> dict[str, Any] | None:
     return namespace
 
 
-def _capture_records_in(root: Any) -> tuple[_CallableRecord, ...]:
+def _callable_function(target: Any) -> Any:
+    """The function a callable body runs, or ``target`` when there is none."""
+
+    if callable(getattr(target, "forward", None)) and callable(
+        getattr(target, "named_children", None)
+    ):
+        target = target.forward
+    if inspect.ismethod(target):
+        return target.__func__
+    return target
+
+
+def _callable_values(root: Any) -> Iterator[Any]:
+    """Values a callable reads by name: module globals and closure cells."""
+
     namespace = _callable_globals(root)
-    if namespace is None:
-        return ()
+    if namespace is not None:
+        yield from namespace.values()
+    closure = getattr(_callable_function(root), "__closure__", None)
+    if closure:
+        for cell in closure:
+            try:
+                yield cell.cell_contents
+            except ValueError:
+                continue
+
+
+def _capture_records_in(root: Any) -> tuple[_CallableRecord, ...]:
     found: dict[int, _CallableRecord] = {}
-    for value in namespace.values():
+    for value in _callable_values(root):
         record = _record_for(value)
         if record is not None:
             found[id(record)] = record
@@ -989,31 +1067,43 @@ def _unwrap_callable(value: Any) -> tuple[Any, _CallableRecord | None]:
 
 
 def _capture_root(root: Any) -> Any:
-    namespace = _callable_globals(root)
-    if namespace is None:
-        return root
-    if not any(_record_for(value) is not None for value in namespace.values()):
+    if not any(_record_for(value) is not None for value in _callable_values(root)):
         return root
 
-    target = root
+    target = _callable_function(root)
     bound_instance = None
-    if inspect.ismethod(target):
-        bound_instance = target.__self__
-        target = target.__func__
+    if inspect.ismethod(root):
+        bound_instance = root.__self__
     if not builtins.isinstance(target, types.FunctionType):
         return root
 
-    patched_namespace = dict(namespace)
+    namespace = _callable_globals(root)
+    patched_namespace = dict(namespace) if namespace is not None else {}
     for name, value in list(patched_namespace.items()):
         record = _record_for(value)
         if record is not None:
             patched_namespace[name] = _capture_adapter(record)
+    closure = target.__closure__
+    if closure is not None:
+        patched_cells = []
+        for cell in closure:
+            try:
+                value = cell.cell_contents
+            except ValueError:
+                patched_cells.append(cell)
+                continue
+            record = _record_for(value)
+            if record is not None:
+                patched_cells.append(types.CellType(_capture_adapter(record)))
+            else:
+                patched_cells.append(cell)
+        closure = tuple(patched_cells)
     captured = types.FunctionType(
         target.__code__,
         patched_namespace,
         target.__name__,
         target.__defaults__,
-        target.__closure__,
+        closure,
     )
     captured.__kwdefaults__ = target.__kwdefaults__
     captured.__annotations__ = dict(getattr(target, "__annotations__", {}))
@@ -1075,10 +1165,15 @@ def compile(
         if dynamic is not None:
             raise RuntimeError("dynamic and dynamic_shapes cannot both be specified")
         if not builtins.isinstance(dynamic_shapes, bool):
-            raise TypeError(
-                "TensorPlay dynamic_shapes currently accepts only a bool; "
-                "use a bool dynamic policy for this frontend"
-            )
+            # A per-input specification names the dimensions that may vary;
+            # it is validated against the program's arguments and examples by
+            # the capture frontend.  With no program yet, the specification is
+            # kept for the decorated call, which knows the argument names.
+            if model is not None:
+                from ._core.shape_policy import normalize_dynamic_shapes
+                from ._core.shape_policy import parameter_names
+
+                normalize_dynamic_shapes(dynamic_shapes, parameter_names(model))
     if mode is not None and options is not None:
         raise RuntimeError("Either mode or options can be specified, but not both")
     if options is not None and not builtins.isinstance(options, dict):

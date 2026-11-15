@@ -131,6 +131,26 @@ def get_active_tracer() -> Any:
     return _active_tracer.get()
 
 
+#: Callables a captured region must not absorb.  The map holds the callable
+#: itself alongside its id so an id freed by a collected object cannot be
+#: mistaken for a registered one.  A region that reaches one of these raises
+#: instead of recording it: the call either mutates state the graph cannot
+#: describe or computes something the graph would evaluate at the wrong time.
+_disallowed_targets: Dict[int, Any] = {}
+
+
+def disallow_target(target: Any) -> None:
+    """Declare that a captured region must not absorb ``target``."""
+
+    _disallowed_targets[id(target)] = target
+
+
+def is_disallowed_target(target: Any) -> bool:
+    """Whether ``target`` was declared off-limits to captured regions."""
+
+    return _disallowed_targets.get(id(target)) is target
+
+
 # Set while an operator traces a piece of the program it holds -- a branch, a
 # loop body -- in a trace of its own.  A value of the enclosing trace that the
 # piece closes over is read there as the tensor it stood for; the operator then

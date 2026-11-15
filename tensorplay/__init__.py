@@ -699,7 +699,7 @@ _register_checks()
 del _register_checks
 
 from . import _stax
-from .compiler._core import compile
+from .compiler import compile
 from . import compiler
 from . import library
 from . import profiler
