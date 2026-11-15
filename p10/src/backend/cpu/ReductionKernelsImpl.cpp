@@ -6050,6 +6050,31 @@ Tensor prod_kernel_impl(const Tensor& self, DType dtype) {
     return out;
 }
 
+// One contiguous run multiplied through four independent lane accumulators, so
+// the chain does not wait the multiply's latency on every step, then folded
+// into the single answer the run carries.
+template <typename T>
+inline T product_row(const T* x, int64_t n) {
+    using Vec = Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    Vec a0(T(1)), a1(T(1)), a2(T(1)), a3(T(1));
+    int64_t i = 0;
+    for (; i + 4 * W <= n; i += 4 * W) {
+        a0 = a0 * Vec::loadu(x + i);
+        a1 = a1 * Vec::loadu(x + i + W);
+        a2 = a2 * Vec::loadu(x + i + 2 * W);
+        a3 = a3 * Vec::loadu(x + i + 3 * W);
+    }
+    Vec acc = (a0 * a1) * (a2 * a3);
+    for (; i + W <= n; i += W) acc = acc * Vec::loadu(x + i);
+    alignas(64) T lanes[W];
+    acc.store(lanes);
+    T value = T(1);
+    for (int64_t k = 0; k < W; ++k) value *= lanes[k];
+    for (; i < n; ++i) value *= x[i];
+    return value;
+}
+
 Tensor prod_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims, bool keepdim, DType dtype) {
     DType out_dtype = dtype;
     if (out_dtype == DType::Undefined) {
@@ -6110,6 +6135,32 @@ Tensor prod_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims
             return out;
         }
 #endif
+        // A trailing run is one contiguous stream per answer: it multiplies
+        // where it lies instead of through the reduction iterator, which pays
+        // its own setup for every row of a short answer.
+        if (inner == 1 && input.dtype() == out_dtype && d_size >= 16 &&
+            (out_dtype == DType::Float32 || out_dtype == DType::Float64)) {
+            const int64_t row_grain =
+                std::max<int64_t>(1, GRAIN_SIZE / d_size);
+            if (out_dtype == DType::Float32) {
+                const float* values = input.data_ptr<float>();
+                float* outp = out.data_ptr<float>();
+                parallel_for(0, outer, row_grain, [&](int64_t b, int64_t e) {
+                    for (int64_t r = b; r < e; ++r) {
+                        outp[r] = product_row<float>(values + r * d_size, d_size);
+                    }
+                });
+            } else {
+                const double* values = input.data_ptr<double>();
+                double* outp = out.data_ptr<double>();
+                parallel_for(0, outer, row_grain, [&](int64_t b, int64_t e) {
+                    for (int64_t r = b; r < e; ++r) {
+                        outp[r] = product_row<double>(values + r * d_size, d_size);
+                    }
+                });
+            }
+            return out;
+        }
 
         // Leading-dim product of a real matrix: walk whole rows into per-thread
         // column buffers, so reads stay contiguous, then fold the buffers. Four
