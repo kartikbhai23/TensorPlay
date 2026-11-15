@@ -584,6 +584,36 @@ def test_a_backend_without_options_refuses_one():
         compiled(tp.ones(2))
 
 
+def test_a_region_name_is_kept_from_the_backend():
+    """A region's name identifies the compile call, not the artifact's maker.
+
+    It is the frontend's to report -- the callable carries it and the
+    recompilation diagnostics use it -- so handing the same label to every
+    backend would only give each of them something to drop.
+    """
+
+    seen = {}
+
+    def backend(graph_module, example_inputs, **kwargs):
+        seen.update(kwargs)
+        return graph_module.forward
+
+    tp.compiler.register_backend(backend, name="name_spy")
+    try:
+        compiled = tp.compile(lambda a: a + 1, backend="name_spy", name="block 3")
+        compiled(tp.ones(2))
+    finally:
+        tp.compiler.unregister_backend("name_spy")
+
+    assert "name" not in seen
+    assert compiled._tensorplay_region_name == "block 3"
+
+
+def test_a_backend_refuses_a_label_it_cannot_attach():
+    with pytest.raises(RuntimeError, match="cannot honour"):
+        registry.check_backend_kwargs("eager", {"name": "block 3"})
+
+
 def test_cudagraphs_skips_dynamic_regions(caplog):
     """Shapes that change between calls cannot be frozen into a capture."""
 

@@ -86,7 +86,6 @@ def stax(
     *,
     mode: str | None = None,
     options: dict[str, Any] | None = None,
-    name: str | None = None,
     dynamic: bool | None = None,
     strict_native: bool = False,
     **kwargs: Any,
@@ -99,9 +98,8 @@ def stax(
     compiler error, so a benchmark can never report the Python GraphModule
     executor as compiled performance.
     """
-    # ``name`` only labels the region.  Anything else handed in that this
-    # entry does not name itself is a request nothing would honour.
-    del name
+    # Anything handed in that this entry does not name itself is a request
+    # nothing would honour.
     check_backend_kwargs("stax", kwargs)
     if mode not in (None, *_MODE_OPTIONS):
         raise RuntimeError(f"unknown Stax optimization mode: {mode!r}")
@@ -126,6 +124,10 @@ def stax(
     coordinate_descent_tuning = resolved.get(
         "stax.coordinate_descent_tuning", False
     )
+    # ``use_fusion``, ``max_autotune`` and ``coordinate_descent_tuning`` act by
+    # the settings patched below: the rewrites and search tiers read those
+    # while the region is lowered.  Passing them on as arguments as well would
+    # be a second path nothing reads.
     if not use_triton:
         # Every kernel this backend writes for a device that carries Triton is
         # a Triton program; there is no second form to fall back on, so the
@@ -153,11 +155,7 @@ def stax(
         compiled = _lower_stax_region(
             graph_module,
             example_inputs,
-            use_fusion=use_fusion,
             use_cuda_codegen=use_cuda_codegen,
-            use_triton=use_triton,
-            max_autotune=max_autotune,
-            coordinate_descent_tuning=coordinate_descent_tuning,
             dynamic=dynamic,
             strict_native=strict_native,
         )
@@ -242,11 +240,7 @@ def _lower_stax_region(
     graph_module: GraphModule,
     example_inputs: list[Any],
     *,
-    use_fusion: bool,
     use_cuda_codegen: bool,
-    use_triton: bool,
-    max_autotune: bool,
-    coordinate_descent_tuning: bool,
     dynamic: bool | None,
     strict_native: bool,
 ):

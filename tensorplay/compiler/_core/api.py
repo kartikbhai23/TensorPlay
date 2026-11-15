@@ -371,7 +371,6 @@ def _backend_kwargs(
     *,
     mode: str | None,
     options: dict[str, Any] | None,
-    name: str | None,
     dynamic: bool | None,
     strict_native: bool,
 ) -> dict[str, Any]:
@@ -380,8 +379,6 @@ def _backend_kwargs(
         kwargs["mode"] = mode
     if options:
         kwargs["options"] = dict(options)
-    if name is not None:
-        kwargs["name"] = name
     if dynamic is not None:
         kwargs["dynamic"] = dynamic
     if strict_native:
@@ -556,7 +553,6 @@ def compile(
     backend_kwargs = _backend_kwargs(
         mode=mode,
         options=options,
-        name=name,
         dynamic=dynamic,
         strict_native=strict_native,
     )

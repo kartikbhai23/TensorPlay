@@ -387,9 +387,8 @@ def tvm(
     # ``tensorplay.compile(..., options={...})`` delivers the mapping as one
     # ``options`` keyword; direct calls may pass the same keys flat.
     options = {**dict(options or {}), **kwargs}
-    # The region's label and whether its shapes are symbolic describe the
-    # region rather than ask this backend for anything.
-    options.pop("name", None)
+    # Whether the region's shapes are symbolic describes the region rather
+    # than asking this backend for anything.
     options.pop("dynamic", None)
     strict_native = bool(options.pop("strict_native", False))
     target = options.pop("target", None)

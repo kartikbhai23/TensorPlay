@@ -475,13 +475,20 @@ def test_stax_mode_patch_overlaid_by_explicit_options(monkeypatch):
     from tensorplay.compiler.backends.stax import backend as stax_backend
     from tensorplay.compiler.backends import cudagraphs as cg
 
-    captured: dict = {}
+    import contextlib
+
+    patches: list[dict] = []
+
+    @contextlib.contextmanager
+    def fake_patch(settings):
+        patches.append(dict(settings))
+        yield
 
     def fake_lower(graph_module, example_inputs, **kwargs):
-        captured.update(kwargs)
         return lambda *args: "lowered"
 
     monkeypatch.setattr(stax_backend, "_lower_stax_region", fake_lower)
+    monkeypatch.setattr(stax_backend.config, "patch", fake_patch)
 
     wrapped: list = []
 
@@ -494,23 +501,23 @@ def test_stax_mode_patch_overlaid_by_explicit_options(monkeypatch):
 
     # the mode's patch lands as defaults and drives the replay wrap...
     stax_backend.stax(graph_like, [], mode="max-autotune")
-    assert captured["max_autotune"] is True
-    assert captured["coordinate_descent_tuning"] is True
+    assert patches[0]["max_autotune"] is True
+    assert patches[0]["coordinate_descent_tuning"] is True
     assert len(wrapped) == 1
 
     # ...and an explicit option wins over the mode patch per key
     stax_backend.stax(
         graph_like, [], mode="max-autotune", options={"stax.cudagraphs": False}
     )
-    assert captured["max_autotune"] is True
+    assert patches[1]["max_autotune"] is True
     assert len(wrapped) == 1  # no further wrap: explicit opt-out
 
     # a mode without the autotune knobs leaves them off
     stax_backend.stax(
         graph_like, [], mode="reduce-overhead", options={"stax.max_autotune": False}
     )
-    assert captured["max_autotune"] is False
-    assert captured["coordinate_descent_tuning"] is False
+    assert "max_autotune" not in patches[2]
+    assert "coordinate_descent_tuning" not in patches[2]
     assert len(wrapped) == 2
 
 

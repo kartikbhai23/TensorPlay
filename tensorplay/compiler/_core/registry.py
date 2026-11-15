@@ -169,9 +169,12 @@ def unregister_backend(name: str) -> None:
 
 
 #: Keywords that describe the region rather than ask a backend for anything:
-#: its name, whether its shapes are symbolic, and whether a native artifact is
-#: required.  Every backend may be handed these whatever it does with them.
-_REGION_KEYWORDS = frozenset({"name", "dynamic", "strict_native"})
+#: whether its shapes are symbolic and whether a native artifact is required.
+#: Every backend may be handed these, since they say what the region is rather
+#: than what to do with it.  A region's name is not here: it identifies the
+#: compile call, so the frontend keeps it and puts it on the callable it
+#: returns instead of handing every backend a label to drop.
+_REGION_KEYWORDS = frozenset({"dynamic", "strict_native"})
 
 
 def check_backend_kwargs(

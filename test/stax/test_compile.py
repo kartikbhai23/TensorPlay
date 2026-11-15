@@ -76,7 +76,10 @@ def test_custom_backend_receives_graph_module_and_caches_specializations():
     assert compiled(x).tolist() == [2.0, 4.0]
     assert len(calls) == 1
     assert calls[0][0].graph.placeholders[0].name == "x"
-    assert calls[0][2] == {"name": "test"}
+    # The region's name identifies the compile call, so it stays with the
+    # frontend; a backend is handed only what it is asked to honour.
+    assert calls[0][2] == {}
+    assert compiled._tensorplay_region_name == "test"
 
 
 def test_dynamic_mode_reuses_one_specialization_across_sizes():
