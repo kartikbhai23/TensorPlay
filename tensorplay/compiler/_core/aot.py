@@ -369,13 +369,44 @@ def _copy_nodes(
     return graph, mapping, [mapping[n] for n in nodes]
 
 
-def _forward_writes(fwd_nodes: List[Node]) -> List[Node]:
-    """The forward operations held for what they write rather than return."""
+def _write_destination(node: Node) -> Optional[Node]:
+    """The value an operation rewrites in place, when that is what it does.
 
-    return [
-        n for n in fwd_nodes
-        if n.op == "call_function" and n.is_impure(impure_random=False)
-    ]
+    A call is a write when its name says it updates the value it is called on,
+    whether it is spelled as a method or as a free function.  An operation
+    that changes some other observable state -- a print, say -- is not one:
+    there is no value later work reads through the change.
+    """
+
+    if node.op == "call_method":
+        if not (isinstance(node.target, str) and node.target.endswith("_")):
+            return None
+    elif node.op == "call_function":
+        target = node.target
+        schema = getattr(target, "_schema", None)
+        mutable = (
+            schema is not None
+            and not isinstance(schema, str)
+            and getattr(schema, "is_mutable", False)
+        )
+        name = getattr(target, "__name__", "") or getattr(target, "_opname", "")
+        if not (mutable or (isinstance(name, str) and name.endswith("_"))):
+            return None
+    else:
+        return None
+    dest = node.args[0] if node.args else None
+    return dest if isinstance(dest, Node) else None
+
+
+def _forward_writes(fwd_nodes: List[Node]) -> List[Node]:
+    """The forward operations held for what they write rather than return.
+
+    A write's own result is usually read by nothing: it is held so that the
+    value it names -- the program's buffer, an input handed in by the caller --
+    holds the updated contents once the forward runs.
+    """
+
+    return [n for n in fwd_nodes if _write_destination(n) is not None]
 
 
 def _backward_reach(bwd_nodes: List[Node], bwd_out_args: List[Any], stop: set) -> set:
@@ -397,26 +428,66 @@ def _backward_reach(bwd_nodes: List[Node], bwd_out_args: List[Any], stop: set) -
 def _snapshot_inputs_read_after_write(
     joint: Graph, writes: List[Node], reached: set
 ) -> List[Node]:
-    """Give the backward a copy of each input it reads that the forward writes.
+    """Copy an input before the forward writes it, when the graph read it first.
 
-    The forward's results are written back into an input -- a buffer updated
-    in place -- before the backward runs, so a backward reading that input
-    would read the value after the write.  It reads a copy taken before the
-    write instead, as does every other reader; the copies are returned for
-    the caller to keep for the backward.
+    The nodes of a captured graph run in order, so a reader placed before the
+    write sees the value as it arrived and a reader placed after it sees the
+    written value.  A value kept for the backward is read after the whole
+    forward has run, which is after the write, so a backward that needs what a
+    reader before the write saw has to read a copy of the input taken at that
+    point.
+
+    A copy is made only when a reader came first.  When every reader comes
+    after the write, the written value is the one they all meant, and handing
+    the backward the input itself is right.  When both kinds of reader exist,
+    no single value answers both, so the region is refused rather than
+    differentiated against the wrong one.
+
+    A write to anything other than an input is refused as well: the value it
+    updates was computed by the forward, so the write has to be ordered
+    against the readers and the backward, which only functionalizing the
+    region can do.  The copies are returned for the caller to keep.
     """
 
     import tensorplay
 
+    order: Dict[Node, int] = {}
+    for index, node in enumerate(joint.nodes):
+        order[node] = index
+
     written: Dict[Node, List[Node]] = {}
     for n in writes:
-        dest = n.args[0] if n.args else None
-        if _op_name(n) == "copy_" and isinstance(dest, Node) and dest.op == "placeholder":
+        dest = _write_destination(n)
+        if dest is not None and dest.op != "placeholder":
+            raise AOTError(
+                "the region writes in place into a value it computed; "
+                "functionalize the region before differentiating it"
+            )
+        if dest is not None:
             written.setdefault(dest, []).append(n)
+
     snapshots = []
     for primal, its_writes in written.items():
         if primal not in reached:
             continue
+        readers = [
+            u
+            for u in primal.users
+            if u not in its_writes and not u.meta.get("is_backward")
+        ]
+        first = min(its_writes, key=order.__getitem__)
+        before = [u for u in readers if order[u] < order[first]]
+        after = [u for u in readers if order[u] > order[first]]
+        if not before:
+            # Every reader comes after the write, so the written value is the
+            # one each of them means.
+            continue
+        if after:
+            raise AOTError(
+                "an input is read both before and after it is written in place, "
+                "so its gradient has no single value to use; functionalize the "
+                "region before differentiating it"
+            )
         with joint.inserting_after(primal):
             snap = joint.call_function(tensorplay.ops.tp.clone.default, (primal,))
         snap.meta.update({k: v for k, v in primal.meta.items() if k != "is_backward"})

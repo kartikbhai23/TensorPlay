@@ -441,3 +441,127 @@ def test_inference_without_updates_is_unchanged(keep):
     graph = _graph_of(compiled)
     assert _copy_nodes(graph) == []
     assert "input_update_placeholders" not in graph.meta
+
+
+# ---------------------------------------------------------------------------
+# in-place writes inside a differentiated region
+# ---------------------------------------------------------------------------
+
+
+def _mutation_inputs():
+    return tp.tensor([1.0, 1.0, 2.0]), tp.tensor([5.0, 5.0, 5.0])
+
+
+@pytest.mark.parametrize("policy", ["save_needed", "recompute_all"])
+@pytest.mark.parametrize("partitioner", ["default", "min_cut"])
+def test_a_write_before_the_read_reaches_the_caller_and_the_gradient(
+    policy, partitioner
+):
+    """The written value is the one the region and the backward both mean.
+
+    ``buf.add_(1.0)`` is held for what it writes, not for a result, so the
+    split that keeps only what its results are computed from would drop it and
+    the region would run on the buffer as it arrived.  Every reader here comes
+    after the write, so the written value is also the one the gradient uses.
+    """
+
+    def fn(x, buf):
+        buf.add_(1.0)
+        return (x * buf).sum()
+
+    sample_x, sample_buf = _mutation_inputs()
+    gm = Tracer().trace(fn, sample_inputs={"x": sample_x, "buf": sample_buf})
+    result = build_aot(
+        gm,
+        sample_inputs={"x": sample_x, "buf": sample_buf},
+        policy=policy,
+        partitioner=partitioner,
+    )
+
+    x, buf = _mutation_inputs()
+    x.requires_grad_(True)
+    value, grads = result.value_and_grad(x, buf)
+
+    assert tp.allclose(value, tp.tensor(24.0))
+    assert tp.allclose(grads["x"], tp.tensor([6.0, 6.0, 6.0]))
+    # The caller's buffer holds what the eager call would have written.
+    assert buf.tolist() == [6.0, 6.0, 6.0]
+
+
+@pytest.mark.parametrize("policy", ["save_needed", "recompute_all"])
+@pytest.mark.parametrize("partitioner", ["default", "min_cut"])
+def test_a_read_before_the_write_keeps_the_value_it_read(policy, partitioner):
+    """A gradient of a value read before the write uses that value.
+
+    The region reads the buffer, then writes it; the gradient of the read is
+    the buffer as it was.  Reading the buffer after the forward updated it
+    would use the written value instead.
+    """
+
+    def fn(x, buf):
+        y = x * buf
+        buf.add_(1.0)
+        return y.sum()
+
+    sample_x, sample_buf = _mutation_inputs()
+    gm = Tracer().trace(fn, sample_inputs={"x": sample_x, "buf": sample_buf})
+    result = build_aot(
+        gm,
+        sample_inputs={"x": sample_x, "buf": sample_buf},
+        policy=policy,
+        partitioner=partitioner,
+    )
+
+    x, buf = _mutation_inputs()
+    x.requires_grad_(True)
+    value, grads = result.value_and_grad(x, buf)
+
+    assert tp.allclose(value, tp.tensor(20.0))
+    assert tp.allclose(grads["x"], tp.tensor([5.0, 5.0, 5.0]))
+    assert buf.tolist() == [6.0, 6.0, 6.0]
+
+
+@pytest.mark.parametrize("policy", ["save_needed", "recompute_all"])
+@pytest.mark.parametrize("partitioner", ["default", "min_cut"])
+def test_an_input_read_on_both_sides_of_a_write_is_refused(policy, partitioner):
+    """No single value answers a gradient that spans the write.
+
+    One read happens before the write and one after, so the input holds two
+    different values and the backward would have to know which read each use
+    came from.  Saying so is better than picking one and being wrong.
+    """
+
+    def fn(x, buf):
+        before = x * buf
+        buf.add_(1.0)
+        after = x * buf
+        return (before + after).sum()
+
+    sample_x, sample_buf = _mutation_inputs()
+    gm = Tracer().trace(fn, sample_inputs={"x": sample_x, "buf": sample_buf})
+    with pytest.raises(AOTError, match="read both before and after"):
+        build_aot(
+            gm,
+            sample_inputs={"x": sample_x, "buf": sample_buf},
+            policy=policy,
+            partitioner=partitioner,
+        )
+
+
+@pytest.mark.parametrize("partitioner", ["default", "min_cut"])
+def test_a_write_into_a_computed_value_is_refused(partitioner):
+    """Only a region that functionalizes can order a write into a result."""
+
+    def fn(x):
+        inner = x * 2.0
+        inner.add_(1.0)
+        return (inner * inner).sum()
+
+    sample_x = tp.tensor([1.0, 2.0, 3.0])
+    gm = Tracer().trace(fn, sample_inputs={"x": sample_x})
+    with pytest.raises(AOTError, match="writes in place into a value it computed"):
+        build_aot(
+            gm,
+            sample_inputs={"x": sample_x},
+            partitioner=partitioner,
+        )
