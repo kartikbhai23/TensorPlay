@@ -395,16 +395,28 @@ void draw_rrelu_noise_cuda(const Tensor& self, Tensor& noise, const Scalar& lowe
 Tensor rrelu_with_noise_kernel_cuda(const Tensor& self, Tensor& noise, const Scalar& lower,
                                     const Scalar& upper, bool training,
                                     std::optional<Generator> generator) {
-    if (training) draw_rrelu_noise_cuda(self, noise, lower, upper, generator);
-    return binary_float_op_kernel_v2(self, noise,
-        RreluWithNoiseFunctor(lower.toDouble(), upper.toDouble(), training));
+    if (training) {
+        draw_rrelu_noise_cuda(self, noise, lower, upper, generator);
+        return binary_float_op_kernel_v2(self, noise,
+            RreluWithNoiseFunctor(lower.toDouble(), upper.toDouble(), training));
+    }
+    // Evaluation keeps the noise buffer untouched and needs no second
+    // operand, so run the midpoint slope as a plain leaky relu.
+    return leaky_relu_kernel_cuda(
+        self, Scalar((lower.toDouble() + upper.toDouble()) / 2.0));
 }
 
 Tensor& rrelu_with_noise__cuda(Tensor& self, Tensor& noise, const Scalar& lower,
                                const Scalar& upper, bool training,
                                std::optional<Generator> generator) {
-    self.copy_(rrelu_with_noise_kernel_cuda(self, noise, lower, upper, training, generator));
-    return self;
+    if (training) {
+        draw_rrelu_noise_cuda(self, noise, lower, upper, generator);
+        self.copy_(binary_float_op_kernel_v2(self, noise,
+            RreluWithNoiseFunctor(lower.toDouble(), upper.toDouble(), training)));
+        return self;
+    }
+    return unary_float_op_kernel_out(
+        self, self, LeakyReluFunctor((lower.toDouble() + upper.toDouble()) / 2.0));
 }
 // log_sigmoid forward with its saved buffer: log_sigmoid(x) = -softplus(-x);
 // the buffer caches ::exp(-|x|), the stable remainder of the softplus
