@@ -1695,7 +1695,15 @@ def mutate_cat_node(match: Match, split_sections: list[int], dim: int):
 getitem_split_tp = ListOf(
     CallFunction(
         operator.getitem,
-        CallFunctionVarArgs([tp.ops.tp.split_with_sizes.default], users=MULTIPLE),
+        CallFunctionVarArgs(
+            [
+                tp.ops.tp.split_with_sizes.default,
+                # Splitting by an explicit list of sizes is its own overload,
+                # and it is the one a call written with a list reaches.
+                tp.ops.tp.split.sizes,
+            ],
+            users=MULTIPLE,
+        ),
         Ignored(),
         _users=MULTIPLE,
     ),

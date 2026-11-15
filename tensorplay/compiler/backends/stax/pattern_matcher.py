@@ -918,6 +918,42 @@ class _TargetExpr(PatternExpr):
 _SimpleSpec = tuple[Any, ...]
 
 
+def _bind_call_by_name(
+    target: Any, args: Sequence[Any], kwargs: Mapping[str, Any]
+) -> list[tuple[str, Any, bool]] | None:
+    """Pair each value of one call with the name its declaration gives it.
+
+    A call records its values either by position or by name, and the same call
+    can be written either way.  Binding both forms to one sequence of names is
+    what lets a pattern describe a call that a writer recorded differently.
+    An argument the call leaves out is the default its declaration gives it,
+    and the third element says whether the call itself supplied the value.
+    """
+
+    schema = getattr(target, "_schema", None)
+    arguments = getattr(schema, "arguments", None)
+    if arguments is None:
+        return None
+    bound: list[tuple[str, Any, bool]] = []
+    position = 0
+    for argument in arguments:
+        name = getattr(argument, "name", None)
+        if not isinstance(name, str):
+            return None
+        if not getattr(argument, "kwarg_only", False) and position < len(args):
+            bound.append((name, args[position], True))
+            position += 1
+        elif name in kwargs:
+            bound.append((name, kwargs[name], True))
+        elif getattr(argument, "has_default", False):
+            bound.append((name, getattr(argument, "default_value", None), False))
+        else:
+            return None
+    if position != len(args):
+        return None
+    return bound
+
+
 class _TargetArgsExpr(_TargetExpr):
     """
     Base class for filtering match by node.{target,args,kwargs}
@@ -1006,7 +1042,7 @@ class _TargetArgsExpr(_TargetExpr):
         return f"{self.__class__.__name__}({joiner_str.join(args)})"
 
     def _match(self, node: Any, ctx: MatchContext) -> MatchResult:
-        if not self._match_fns(node) or len(node.args) != len(self.args):
+        if not self._match_fns(node):
             return FailedMatch("function_mismatch: node={}, pattern={}", node, self)
 
         if not self._match_users(node, ctx):
@@ -1014,9 +1050,43 @@ class _TargetArgsExpr(_TargetExpr):
 
         _args = node.args
         _kwargs = node.kwargs
-        if len(_kwargs) < len(self.kwargs):
+        if len(_args) != len(self.args) or len(_kwargs) < len(self.kwargs):
+            # The call was written in a different shape than the pattern:
+            # values the pattern names may have been given by position, and
+            # values it leaves to their default may be missing entirely.  What
+            # is written down is not what is computed, so the call is read by
+            # the names its declaration gives its arguments.
+            bound = _bind_call_by_name(node.target, _args, _kwargs)
+        else:
+            bound = None
+        if bound is not None:
+            if len(bound) < len(self.args):
+                return FailedMatch(
+                    "function_mismatch: node={}, pattern={}", node, self
+                )
+            _args = tuple(value for _, value, _ in bound[: len(self.args)])
+            named = {name: value for name, value, _ in bound[len(self.args):]}
+            _kwargs = {}
+            for name in self.kwargs:
+                if name not in named:
+                    return FailedMatch(
+                        "function_mismatch: node={}, pattern={}", node, self
+                    )
+                _kwargs[name] = named[name]
+            # An argument the call actually gave that the pattern does not
+            # mention is an argument the pattern is not describing.
+            for name, _, given in bound[len(self.args):]:
+                if given and name not in self.kwargs:
+                    return FailedMatch(
+                        "function_mismatch: node={}, pattern={}", node, self
+                    )
+        elif len(_kwargs) < len(self.kwargs):
             from tensorplay.graph.operator_schemas import normalize_function
 
+            if len(_args) != len(self.args):
+                return FailedMatch(
+                    "function_mismatch: node={}, pattern={}", node, self
+                )
             if not callable(node.target):
                 raise AssertionError(
                     f"expected callable node.target, got {node.target}"
@@ -1035,6 +1105,8 @@ class _TargetArgsExpr(_TargetExpr):
                     return FailedMatch(
                         "function_mismatch: node={}, pattern={}", node, self
                     )
+        elif len(_args) != len(self.args):
+            return FailedMatch("function_mismatch: node={}, pattern={}", node, self)
         else:
             _kwargs = {i: _kwargs[i] for i in _kwargs if i in self.kwargs}
 
