@@ -1009,8 +1009,10 @@ Tensor feature_dropout_backward_cuda(const Tensor& grad, const Tensor& mask,
 
 
 // ---------------------------------------------------------------------------
-// expressed as dispatcher composites (narrow/add/mul/sum|cumsum). x=None
-// selects uniform spacing dx. Backward rebuilds the per-element weights:
+// Numerical integration. Uniform spacing reduces to a single sum plus the two
+// end samples; an explicit coordinate vector adds one spacing difference that
+// broadcasts over the sample axis. The cumulative form stays a dispatcher
+// composite (narrow/add/mul/cumsum). Backward rebuilds per-element weights:
 //   sum form:   w = dx * [0.5, 1, ..., 1, 0.5]
 //   x form:     w = 0.5 * ([x1-x0] ++ diff(x) ++ [x_{n-1}-x_{n-2}])
 //   cumulative: grad_y[j] = w[j] * sum_{k >= j} grad[k]
@@ -1067,21 +1069,27 @@ Tensor trapezoid_cuda(const Tensor& y, const std::optional<Tensor>& x_opt, const
     const int64_t d = trapz_dim(dim, y.dim());
     const int64_t n = y.size(d);
     if (n < 2) return y.narrow(d, 0, 0).sum(std::vector<int64_t>{d}, false);
-    Tensor avg = y.narrow(d, 0, n - 1).add(y.narrow(d, 1, n - 1)).mul(0.5);
-    if (x.defined()) {
-        bool was_1d = x.dim() == 1;
-        Tensor xb = was_1d && y.dim() > 1
-            ? [&] {
-                  std::vector<int64_t> view(y.dim(), 1);
-                  view[d] = x.size(0);
-                  return x.reshape(view).expand(
-                      static_cast<std::vector<int64_t>>(y.shape()));
-              }()
-            : x;
-        avg = avg.mul(xb.narrow(d, 1, n - 1).sub(xb.narrow(d, 0, n - 1)));
-    } else {
-        avg = avg.mul(dx);
+    if (!x.defined()) {
+        // Uniform spacing folds into the sum: the interior samples are
+        // counted once and the two ends contribute half a step each.
+        Tensor edges = y.select(d, 0).add(y.select(d, n - 1)).mul(0.5);
+        return y.sum(std::vector<int64_t>{d}, false).sub(edges).mul(dx);
     }
+    // Keep x compact: only the spacing axis carries data, the remaining
+    // axes broadcast against the sample pairs, so no full-size copy forms.
+    Tensor xb = x;
+    if (x.dim() == 1) {
+        std::vector<int64_t> view(y.dim(), 1);
+        view[d] = x.size(0);
+        xb = x.reshape(view);
+    } else if (x.dim() < y.dim()) {
+        std::vector<int64_t> view(y.dim(), 1);
+        const int64_t off = y.dim() - x.dim();
+        for (int64_t i = 0; i < x.dim(); ++i) view[off + i] = x.size(i);
+        xb = x.reshape(view);
+    }
+    Tensor dxs = xb.narrow(d, 1, n - 1).sub(xb.narrow(d, 0, n - 1));
+    Tensor avg = y.narrow(d, 0, n - 1).add(y.narrow(d, 1, n - 1)).mul(0.5).mul(dxs);
     return avg.sum(std::vector<int64_t>{d}, false);
 }
 
