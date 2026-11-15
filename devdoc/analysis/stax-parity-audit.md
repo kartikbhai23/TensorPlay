@@ -27,6 +27,7 @@
 | P1 | 切分与合并互为逆运算时两个算子都不必留下，此前只有点名 `split_cat` 表才处理 | 能力缺失，已核实 | 已补（§4.2） |
 | P1 | 前端无字节码帧求值/图中断/恢复，Python 副作用只发生一次 | 架构差异，已复现 | 未修（架构选择） |
 | P1 | `dynamic_shapes` 只接受 bool，无自动 dynamic、无 `Dim`、`mark_static` 为空操作 | 能力缺失，已核实 | 已修复（§3.2、§13） |
+| P0 | 反向扫描按输入值聚合贡献，`x*x`、`x+x`、两路汇到同一值时只保留一项，梯度错误 | 正确性 bug，已复现 | 已修复（§3.4、§13） |
 | P0 | 捕获时读到的非张量全局/闭包/模块属性改变后仍复用旧程序，结果陈旧 | 正确性 bug，已复现 | 已修复（§3.3、§13） |
 | P1 | AOT 的 `memory_budget` 与 `keep_inference_input_mutations` 接收后丢弃 | 静默失效，已核实 | 已修复（§3.4、§13） |
 | P1 | 无 AOTInductor 部署包、无 cudagraph trees、无 oneDNN/MKLDNN/quantized/freezing/CPU GEMM 模板 | 子系统缺失，静态确认 | 未修 |
@@ -265,6 +266,10 @@ for _ in range(3):
   无变异的图，运行后把最终值拷回对应参数；`True` 把写留在图里。两者对调用者结果一致。
   更新被移出图的图模块会记录被写的参数位置，图捕获的跳过判定把它算作“输入被修改”，
   不会把仍会写参数的区域当成纯函数重放。
+- 已修复：反向扫描的每条规则返回“每个使用位置一项”的有序贡献表，再按值累加。
+  此前规则用“输入值 → 贡献”的映射，两个操作数是同一节点时后一项覆盖前一项，于是
+  `(x * x)` 的梯度是 `x` 而不是 `2x`，两条路径汇到同一值时也丢一项。两个操作数是不同
+  输入时看不出差别，所以既有用例全部漏过。
 - 缺失/受限：
   - 无 compiled autograd、无 AOT autograd cache；
   - 二阶反向导数显式报错；
@@ -710,6 +715,7 @@ pytest test/stax -q -p no:randomly
 | `c9d7abae` `test(compiler)` | 新增 `test/stax/test_stax_compile_worker.py`（8 项）与 `test/stax/test_stax_pattern_foreach_scan.py`（11 项），见 §8.3 |
 | `f9224c6f` `fix(compiler)` | `config_comms` 补上被读却未绑定的 `sink_waits_iterative_swap_with_collectives`；测试遍历后端所有 `config_comms.` 引用确认可解析 |
 | `3758e5fc` `fix(compiler)` | 覆盖表删除 6 个已有 lowering 的 `NOT_COVERED` 条目；分解需要的名字若已有 lowering/模板则不再折进未覆盖集；测试加断言禁止声明与实表漂移 |
+| `56320e21` `fix(compiler)` | 反向规则改为有序贡献表，按使用位置累加；同一节点填两个操作数（平方/立方/自加/自减/方法拼写/两路汇合/派生值复用）的梯度在两种分区下均补齐 |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
