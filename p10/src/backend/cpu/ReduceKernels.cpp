@@ -704,6 +704,18 @@ std::tuple<Tensor, Tensor> nanmedian_dim_values_cpu(
     return {values, indices};
 }
 
+std::tuple<Tensor, Tensor> median_dim_cpu(const Tensor& self, int64_t dim,
+                                          bool keepdim);
+
+std::tuple<Tensor, Tensor> median_dim_values_cpu(
+    const Tensor& self, int64_t dim, bool keepdim, Tensor& values,
+    Tensor& indices) {
+    auto result = median_dim_cpu(self, dim, keepdim);
+    write_out(values, std::get<0>(result));
+    write_out(indices, std::get<1>(result));
+    return {values, indices};
+}
+
 template <typename T>
 inline bool summary_value_is_nan(T value) {
     if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
@@ -822,8 +834,13 @@ struct KthValueLess {
     }
 };
 
-std::tuple<Tensor, Tensor> kthvalue_cpu(const Tensor& self, int64_t k,
-                                        int64_t dim, bool keepdim) {
+// `nan_is_answer` decides what a slice holding a NaN reports: the k-th smallest
+// element of the whole slice (kthvalue), or that NaN together with the position
+// it occupies (median).  Both answers come out of the same walk, so the NaN
+// search rides along with the copy that already runs and costs no extra pass.
+std::tuple<Tensor, Tensor> kthvalue_dim_impl(const Tensor& self, int64_t k,
+                                             int64_t dim, bool keepdim,
+                                             bool nan_is_answer) {
     const int64_t nd = self.dim();
     if (nd == 0) {
         if (dim != 0 && dim != -1) {
@@ -869,6 +886,8 @@ std::tuple<Tensor, Tensor> kthvalue_cpu(const Tensor& self, int64_t k,
             for (int64_t si = b; si < e; ++si) { \
                 const int64_t o = si / inner, in2 = si % inner; \
                 const ctype* src = sp + o * d_size * inner + in2; \
+                const int64_t oi = keepdim ? si : (o * inner + in2); \
+                int64_t first_nan = -1; \
                 if constexpr (std::is_same_v<ctype, float> || std::is_same_v<ctype, double>) { \
                     /* Selecting over a dense copy of the slice keeps every probe in \
                        one short contiguous run and swaps a single element instead \
@@ -882,6 +901,13 @@ std::tuple<Tensor, Tensor> kthvalue_cpu(const Tensor& self, int64_t k,
                         vals[static_cast<size_t>(j)] = v; \
                         has_nan |= std::isnan(v); \
                     } \
+                    if (has_nan && nan_is_answer) { \
+                        first_nan = 0; \
+                        while (!std::isnan(src[first_nan * inner])) ++first_nan; \
+                        vp[oi] = std::numeric_limits<ctype>::quiet_NaN(); \
+                        ip[oi] = first_nan; \
+                        continue; \
+                    } \
                     if (!has_nan) { \
                         std::nth_element(vals.begin(), vals.begin() + (k - 1), vals.end()); \
                         const ctype v = vals[static_cast<size_t>(k - 1)]; \
@@ -894,15 +920,24 @@ std::tuple<Tensor, Tensor> kthvalue_cpu(const Tensor& self, int64_t k,
                         for (int64_t j = idx + 1; rank > 0 && j < d_size; ++j) { \
                             if (src[j * inner] == v && --rank == 0) idx = j; \
                         } \
-                        const int64_t oi = keepdim ? si : (o * inner + in2); \
                         vp[oi] = v; \
                         ip[oi] = idx; \
+                        continue; \
+                    } \
+                } else if (nan_is_answer) { \
+                    for (int64_t j = 0; j < d_size; ++j) { \
+                        const ctype v = src[j * inner]; \
+                        buf[static_cast<size_t>(j)] = {v, j}; \
+                        if (first_nan < 0 && summary_value_is_nan(v)) first_nan = j; \
+                    } \
+                    if (first_nan >= 0) { \
+                        vp[oi] = std::numeric_limits<ctype>::quiet_NaN(); \
+                        ip[oi] = first_nan; \
                         continue; \
                     } \
                 } \
                 for (int64_t j = 0; j < d_size; ++j) buf[j] = {src[j * inner], j}; \
                 std::nth_element(buf.begin(), buf.begin() + (k - 1), buf.end(), KthValueLess<ctype>{}); \
-                const int64_t oi = keepdim ? si : (o * inner + in2); \
                 vp[oi] = buf[static_cast<size_t>(k - 1)].first; \
                 ip[oi] = buf[static_cast<size_t>(k - 1)].second; \
             } \
@@ -915,6 +950,20 @@ std::tuple<Tensor, Tensor> kthvalue_cpu(const Tensor& self, int64_t k,
     }
 #undef TP_KTH_CASE
     return {values, indices};
+}
+
+std::tuple<Tensor, Tensor> kthvalue_cpu(const Tensor& self, int64_t k,
+                                        int64_t dim, bool keepdim) {
+    return kthvalue_dim_impl(self, k, dim, keepdim, /*nan_is_answer=*/false);
+}
+
+// The median asks the same order statistic, except that a slice holding a NaN
+// reports that NaN rather than the value the non-NaN entries would put there.
+std::tuple<Tensor, Tensor> median_dim_cpu(const Tensor& self, int64_t dim,
+                                          bool keepdim) {
+    const int64_t n = self.size(wrap_dim(dim, self.dim()));
+    return kthvalue_dim_impl(self, (n + 1) / 2, dim, keepdim,
+                             /*nan_is_answer=*/true);
 }
 
 template <typename scalar_t>
@@ -1202,6 +1251,8 @@ TENSORPLAY_LIBRARY_IMPL(CPU, ReduceKernels) {
     m.impl("var_mean", var_mean_cpu);
     m.impl("mode", mode_cpu);
     m.impl("kthvalue", kthvalue_cpu);
+    m.impl("median.dim", median_dim_cpu);
+    m.impl("median.dim_values", median_dim_values_cpu);
     m.impl("count_nonzero", count_nonzero_cpu);
     m.impl("dist", dist_cpu);
     m.impl("renorm", renorm_cpu);
