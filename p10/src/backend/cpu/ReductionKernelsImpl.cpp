@@ -956,15 +956,43 @@ Tensor norm_dim_typed(const Tensor& self, const std::vector<int64_t>& dims,
     return out;
 }
 
-// One reduced axis of a real tensor, walked as (outer, reduce, inner): the
-// square of every element folds into a per-column total over the inner
-// direction, which is the contiguous one, and the totals take a single square
-// root once.  Four rows land in a total before it is read back, so the walk is
-// limited by the input stream rather than by the total's own traffic.
-template <typename T>
-inline void normsq_dim_real_range(const T* in, T* out, int64_t red,
-                                  int64_t inner, int64_t block, int64_t nblk,
-                                  int64_t begin, int64_t end) {
+// What a column total folds from its elements: a two-norm folds their squares
+// and takes one square root of the total, a one-norm folds their magnitudes,
+// and a plain sum folds the element itself.
+enum class TotalMode { Sum, Abs, Square };
+
+template <typename T, TotalMode Mode>
+inline Vectorized<T> fold_total_step(const Vectorized<T>& q) {
+    if constexpr (Mode == TotalMode::Square) {
+        return q * q;
+    } else if constexpr (Mode == TotalMode::Abs) {
+        return q.abs();
+    } else {
+        return q;
+    }
+}
+
+template <typename T, TotalMode Mode>
+inline T fold_total_one(T v) {
+    if constexpr (Mode == TotalMode::Square) {
+        return v * v;
+    } else if constexpr (Mode == TotalMode::Abs) {
+        return std::abs(v);
+    } else {
+        return v;
+    }
+}
+
+// One reduced axis of a real tensor, walked as (outer, reduce, inner): every
+// element of a row folds into a per-column total over the inner direction,
+// which is the contiguous one, and the totals are read back once.  A two-norm
+// takes one square root of its totals.  Four rows land in a total before it is
+// read back, so the walk is limited by the input stream rather than by the
+// total's own traffic.
+template <typename T, TotalMode Mode>
+inline void norm_totals_real_range(const T* in, T* out, int64_t red,
+                                   int64_t inner, int64_t block, int64_t nblk,
+                                   int64_t begin, int64_t end) {
     using Vec = Vectorized<T>;
     constexpr int64_t W = Vec::size();
     // A task's totals are its own: the buffer is claimed here so every worker
@@ -991,43 +1019,49 @@ inline void normsq_dim_real_range(const T* in, T* out, int64_t red,
                 const T* p3 = base + (r + 3) * inner;
                 int64_t j = 0;
                 for (; j < vec; j += W) {
-                    const Vec q0 = Vec::loadu(p0 + j);
-                    const Vec q1 = Vec::loadu(p1 + j);
-                    const Vec q2 = Vec::loadu(p2 + j);
-                    const Vec q3 = Vec::loadu(p3 + j);
-                    (Vec::loadu(acc + j) +
-                     ((q0 * q0 + q1 * q1) + (q2 * q2 + q3 * q3)))
+                    const Vec q0 = fold_total_step<T, Mode>(Vec::loadu(p0 + j));
+                    const Vec q1 = fold_total_step<T, Mode>(Vec::loadu(p1 + j));
+                    const Vec q2 = fold_total_step<T, Mode>(Vec::loadu(p2 + j));
+                    const Vec q3 = fold_total_step<T, Mode>(Vec::loadu(p3 + j));
+                    (Vec::loadu(acc + j) + ((q0 + q1) + (q2 + q3)))
                         .store(acc + j);
                 }
                 for (; j < n; ++j) {
-                    acc[j] += ((p0[j] * p0[j] + p1[j] * p1[j]) +
-                               (p2[j] * p2[j] + p3[j] * p3[j]));
+                    acc[j] += ((fold_total_one<T, Mode>(p0[j]) +
+                                fold_total_one<T, Mode>(p1[j])) +
+                               (fold_total_one<T, Mode>(p2[j]) +
+                                fold_total_one<T, Mode>(p3[j])));
                 }
             }
             for (; r < red; ++r) {
                 const T* p = base + r * inner;
                 int64_t j = 0;
                 for (; j < vec; j += W) {
-                    const Vec q = Vec::loadu(p + j);
-                    (Vec::loadu(acc + j) + q * q).store(acc + j);
+                    const Vec q = fold_total_step<T, Mode>(Vec::loadu(p + j));
+                    (Vec::loadu(acc + j) + q).store(acc + j);
                 }
-                for (; j < n; ++j) acc[j] += p[j] * p[j];
+                for (; j < n; ++j) acc[j] += fold_total_one<T, Mode>(p[j]);
             }
-            for (int64_t j = 0; j < n; ++j) dst[j] = std::sqrt(acc[j]);
+            for (int64_t j = 0; j < n; ++j) {
+                dst[j] = Mode == TotalMode::Square
+                    ? static_cast<T>(std::sqrt(acc[j]))
+                    : static_cast<T>(acc[j]);
+            }
         }
     }
 }
 
-template <typename T>
-inline void normsq_dim_real_impl(const T* in, T* out, int64_t outer,
-                                 int64_t red, int64_t inner) {
+template <typename T, TotalMode Mode>
+inline void norm_totals_real_impl(const T* in, T* out, int64_t outer,
+                                  int64_t red, int64_t inner) {
     using Vec = Vectorized<T>;
     constexpr int64_t W = Vec::size();
     const int64_t block = std::max<int64_t>(
         4 * W, GRAIN_SIZE / std::max<int64_t>(red, 1));
     const int64_t nblk = (inner + block - 1) / block;
     parallel_for(0, outer * nblk, 1, [&](int64_t begin, int64_t end) {
-        normsq_dim_real_range<T>(in, out, red, inner, block, nblk, begin, end);
+        norm_totals_real_range<T, Mode>(in, out, red, inner, block, nblk,
+                                        begin, end);
     });
 }
 
@@ -1048,7 +1082,19 @@ __m256 widen_row8(const uint16_t* p) {
     return BFloat ? widen_bf16_8(p) : widen8(p);
 }
 
-template <bool BFloat, bool IsSquare, bool Root>
+template <TotalMode Mode>
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+__m256 fold_total_step8(const __m256& q) {
+    if constexpr (Mode == TotalMode::Square) {
+        return _mm256_mul_ps(q, q);
+    } else if constexpr (Mode == TotalMode::Abs) {
+        return _mm256_andnot_ps(_mm256_set1_ps(-0.0f), q);
+    } else {
+        return q;
+    }
+}
+
+template <bool BFloat, TotalMode Mode, bool Root>
 __attribute__((target("avx2,fma,f16c"), noinline))
 void column_totals_reduced_range(const uint16_t* in, uint16_t* out,
                                  int64_t outer, int64_t red, int64_t inner,
@@ -1088,21 +1134,21 @@ void column_totals_reduced_range(const uint16_t* in, uint16_t* out,
                 const __m256 q1 = widen_row8<BFloat>(base + (rr + 1) * inner);
                 const __m256 q2 = widen_row8<BFloat>(base + (rr + 2) * inner);
                 const __m256 q3 = widen_row8<BFloat>(base + (rr + 3) * inner);
-                a0 = _mm256_add_ps(a0, IsSquare ? _mm256_mul_ps(q0, q0) : q0);
-                a1 = _mm256_add_ps(a1, IsSquare ? _mm256_mul_ps(q1, q1) : q1);
-                a2 = _mm256_add_ps(a2, IsSquare ? _mm256_mul_ps(q2, q2) : q2);
-                a3 = _mm256_add_ps(a3, IsSquare ? _mm256_mul_ps(q3, q3) : q3);
+                a0 = _mm256_add_ps(a0, fold_total_step8<Mode>(q0));
+                a1 = _mm256_add_ps(a1, fold_total_step8<Mode>(q1));
+                a2 = _mm256_add_ps(a2, fold_total_step8<Mode>(q2));
+                a3 = _mm256_add_ps(a3, fold_total_step8<Mode>(q3));
             }
             for (; rr < bulk; ++rr) {
                 const __m256 q = widen_row8<BFloat>(base + rr * inner);
-                a0 = _mm256_add_ps(a0, IsSquare ? _mm256_mul_ps(q, q) : q);
+                a0 = _mm256_add_ps(a0, fold_total_step8<Mode>(q));
             }
             if (last_plane) {
                 alignas(16) uint16_t pad[8] = {0, 0, 0, 0, 0, 0, 0, 0};
                 const uint16_t* p = base + (red - 1) * inner;
                 for (int64_t k = 0; k < n; ++k) pad[k] = p[k];
                 const __m256 q = widen_row8<BFloat>(pad);
-                a0 = _mm256_add_ps(a0, IsSquare ? _mm256_mul_ps(q, q) : q);
+                a0 = _mm256_add_ps(a0, fold_total_step8<Mode>(q));
             }
             _mm256_storeu_ps(acc, _mm256_add_ps(_mm256_add_ps(a0, a1),
                                                 _mm256_add_ps(a2, a3)));
@@ -1141,10 +1187,10 @@ void column_totals_reduced_range(const uint16_t* in, uint16_t* out,
                     _mm256_add_ps(
                         _mm256_loadu_ps(acc + j),
                         _mm256_add_ps(
-                            _mm256_add_ps(IsSquare ? _mm256_mul_ps(q0, q0) : q0,
-                                          IsSquare ? _mm256_mul_ps(q1, q1) : q1),
-                            _mm256_add_ps(IsSquare ? _mm256_mul_ps(q2, q2) : q2,
-                                          IsSquare ? _mm256_mul_ps(q3, q3) : q3))));
+                            _mm256_add_ps(fold_total_step8<Mode>(q0),
+                                          fold_total_step8<Mode>(q1)),
+                            _mm256_add_ps(fold_total_step8<Mode>(q2),
+                                          fold_total_step8<Mode>(q3)))));
             }
             if (vec < n) {
                 const __m256 q0 = widen_row8<BFloat>(p0 + vec);
@@ -1161,10 +1207,10 @@ void column_totals_reduced_range(const uint16_t* in, uint16_t* out,
                 tail = _mm256_add_ps(
                     tail,
                     _mm256_add_ps(
-                        _mm256_add_ps(IsSquare ? _mm256_mul_ps(q0, q0) : q0,
-                                      IsSquare ? _mm256_mul_ps(q1, q1) : q1),
-                        _mm256_add_ps(IsSquare ? _mm256_mul_ps(q2, q2) : q2,
-                                      IsSquare ? _mm256_mul_ps(q3, q3) : q3)));
+                        _mm256_add_ps(fold_total_step8<Mode>(q0),
+                                      fold_total_step8<Mode>(q1)),
+                        _mm256_add_ps(fold_total_step8<Mode>(q2),
+                                      fold_total_step8<Mode>(q3))));
             }
         }
         for (; r < red; ++r) {
@@ -1176,7 +1222,7 @@ void column_totals_reduced_range(const uint16_t* in, uint16_t* out,
                 _mm256_storeu_ps(
                     acc + j,
                     _mm256_add_ps(_mm256_loadu_ps(acc + j),
-                                  IsSquare ? _mm256_mul_ps(q, q) : q));
+                                  fold_total_step8<Mode>(q)));
             }
             if (vec < n) {
                 __m256 q;
@@ -1187,7 +1233,7 @@ void column_totals_reduced_range(const uint16_t* in, uint16_t* out,
                 } else {
                     q = widen_row8<BFloat>(p + vec);
                 }
-                tail = _mm256_add_ps(tail, IsSquare ? _mm256_mul_ps(q, q) : q);
+                tail = _mm256_add_ps(tail, fold_total_step8<Mode>(q));
             }
         }
         if (vec < n) {
@@ -1204,7 +1250,7 @@ void column_totals_reduced_range(const uint16_t* in, uint16_t* out,
     }
 }
 
-template <bool BFloat, bool IsSquare, bool Root>
+template <bool BFloat, TotalMode Mode, bool Root>
 inline void column_totals_reduced_impl(const uint16_t* in, uint16_t* out,
                                        int64_t outer, int64_t red,
                                        int64_t inner) {
@@ -1213,7 +1259,7 @@ inline void column_totals_reduced_impl(const uint16_t* in, uint16_t* out,
     const int64_t nblk = (inner + block - 1) / block;
     tensorplay::parallel::parallel_for(
         0, outer * nblk, 1, [&](int64_t begin, int64_t end) {
-            column_totals_reduced_range<BFloat, IsSquare, Root>(
+            column_totals_reduced_range<BFloat, Mode, Root>(
                 in, out, outer, red, inner, block, nblk, begin, end);
         });
 }
@@ -1252,10 +1298,10 @@ inline std::optional<Tensor> try_sum_dim_reduced_half(
         ? reinterpret_cast<uint16_t*>(out.data_ptr<tensorplay::Half>())
         : reinterpret_cast<uint16_t*>(out.data_ptr<tensorplay::BFloat16>());
     if (half_width) {
-        column_totals_reduced_impl<false, false, false>(in, outp, outer, red,
+        column_totals_reduced_impl<false, TotalMode::Sum, false>(in, outp, outer, red,
                                                         inner);
     } else {
-        column_totals_reduced_impl<true, false, false>(in, outp, outer, red,
+        column_totals_reduced_impl<true, TotalMode::Sum, false>(in, outp, outer, red,
                                                        inner);
     }
     return out;
@@ -1265,9 +1311,9 @@ inline std::optional<Tensor> try_sum_dim_reduced_half(
 // A single reduced axis of a real tensor at the two-norm answers the same
 // value the per-element fold does, but walks the contiguous direction of a
 // row instead of stepping across the reduced axis.
-inline std::optional<Tensor> try_normsq_dim(
+inline std::optional<Tensor> try_norm_totals_dim(
         const Tensor& self, int64_t dim, bool keepdim,
-        const std::vector<int64_t>& dims) {
+        const std::vector<int64_t>& dims, double p) {
     const DType dt = self.dtype();
     if (dt != DType::Float32 && dt != DType::Float64 &&
         dt != DType::Float16 && dt != DType::BFloat16) {
@@ -1299,30 +1345,57 @@ inline std::optional<Tensor> try_normsq_dim(
     if (red == 0 || inner == 0 || outer == 0) return std::nullopt;
     Tensor out = Tensor::empty(compute_reduction_shape(self, dims, keepdim),
                                dt, self.device());
+    const bool squared = p == 2.0;
     if (dt == DType::Float32) {
-        normsq_dim_real_impl<float>(self.data_ptr<float>(),
-                                    out.data_ptr<float>(), outer, red, inner);
+        if (squared) {
+            norm_totals_real_impl<float, TotalMode::Square>(
+                self.data_ptr<float>(), out.data_ptr<float>(), outer, red,
+                inner);
+        } else {
+            norm_totals_real_impl<float, TotalMode::Abs>(
+                self.data_ptr<float>(), out.data_ptr<float>(), outer, red,
+                inner);
+        }
         return out;
     }
     if (dt == DType::Float64) {
-        normsq_dim_real_impl<double>(self.data_ptr<double>(),
-                                     out.data_ptr<double>(), outer, red, inner);
+        if (squared) {
+            norm_totals_real_impl<double, TotalMode::Square>(
+                self.data_ptr<double>(), out.data_ptr<double>(), outer, red,
+                inner);
+        } else {
+            norm_totals_real_impl<double, TotalMode::Abs>(
+                self.data_ptr<double>(), out.data_ptr<double>(), outer, red,
+                inner);
+        }
         return out;
     }
 #if defined(__x86_64__)
     if (dt == DType::Float16) {
-        column_totals_reduced_impl<false, true, true>(
-            reinterpret_cast<const uint16_t*>(
-                self.data_ptr<tensorplay::Half>()),
-            reinterpret_cast<uint16_t*>(out.data_ptr<tensorplay::Half>()),
-            outer, red, inner);
+        const uint16_t* in = reinterpret_cast<const uint16_t*>(
+            self.data_ptr<tensorplay::Half>());
+        uint16_t* op = reinterpret_cast<uint16_t*>(
+            out.data_ptr<tensorplay::Half>());
+        if (squared) {
+            column_totals_reduced_impl<false, TotalMode::Square, true>(
+                in, op, outer, red, inner);
+        } else {
+            column_totals_reduced_impl<false, TotalMode::Abs, false>(
+                in, op, outer, red, inner);
+        }
         return out;
     }
-    column_totals_reduced_impl<true, true, true>(
-        reinterpret_cast<const uint16_t*>(
-            self.data_ptr<tensorplay::BFloat16>()),
-        reinterpret_cast<uint16_t*>(out.data_ptr<tensorplay::BFloat16>()),
-        outer, red, inner);
+    const uint16_t* in = reinterpret_cast<const uint16_t*>(
+        self.data_ptr<tensorplay::BFloat16>());
+    uint16_t* op = reinterpret_cast<uint16_t*>(
+        out.data_ptr<tensorplay::BFloat16>());
+    if (squared) {
+        column_totals_reduced_impl<true, TotalMode::Square, true>(
+            in, op, outer, red, inner);
+    } else {
+        column_totals_reduced_impl<true, TotalMode::Abs, false>(
+            in, op, outer, red, inner);
+    }
     return out;
 #else
     return std::nullopt;
@@ -1491,13 +1564,13 @@ Tensor norm_dim_kernel_impl(const Tensor& self,
         }
     }
 
-    // One named axis that is not the trailing block walks its squares over the
+    // One named axis that is not the trailing block walks its totals over the
     // contiguous direction of a row instead of stepping across the reduced
     // one, which is the order the per-element fold pays for.
-    if (p == 2.0 && dims.size() == 1) {
-        if (std::optional<Tensor> squared =
-                try_normsq_dim(self, dims[0], keepdim, dims)) {
-            return std::move(*squared);
+    if ((p == 1.0 || p == 2.0) && dims.size() == 1) {
+        if (std::optional<Tensor> totals =
+                try_norm_totals_dim(self, dims[0], keepdim, dims, p)) {
+            return std::move(*totals);
         }
     }
 
