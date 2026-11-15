@@ -4547,25 +4547,57 @@ template <typename ctype, bool WantMax>
 inline ctype fold_run_extremum(const ctype* data, int64_t n) {
     using Vec = Vectorized<ctype>;
     constexpr int64_t lanes = Vec::size();
-    Vec acc[4];
-    for (auto& a : acc) a = Vec(extrema_identity<ctype>(WantMax));
-    Vec traced[2]{Vec(ctype(0)), Vec(ctype(0))};
+    Vec acc0, acc1, acc2, acc3, acc4, acc5, acc6, acc7;
+    const Vec seed(extrema_identity<ctype>(WantMax));
+    acc0 = acc1 = acc2 = acc3 = acc4 = acc5 = acc6 = acc7 = seed;
+    Vec trace0{ctype(0)}, trace1{ctype(0)};
+    Vec trace2{ctype(0)}, trace3{ctype(0)};
     int64_t i = 0;
+    for (; i + 8 * lanes <= n; i += 8 * lanes) {
+        const Vec v0 = Vec::loadu(data + i + 0 * lanes);
+        const Vec v1 = Vec::loadu(data + i + 1 * lanes);
+        const Vec v2 = Vec::loadu(data + i + 2 * lanes);
+        const Vec v3 = Vec::loadu(data + i + 3 * lanes);
+        const Vec v4 = Vec::loadu(data + i + 4 * lanes);
+        const Vec v5 = Vec::loadu(data + i + 5 * lanes);
+        const Vec v6 = Vec::loadu(data + i + 6 * lanes);
+        const Vec v7 = Vec::loadu(data + i + 7 * lanes);
+        acc0 = extremum_vec<WantMax>(acc0, v0);
+        acc1 = extremum_vec<WantMax>(acc1, v1);
+        acc2 = extremum_vec<WantMax>(acc2, v2);
+        acc3 = extremum_vec<WantMax>(acc3, v3);
+        acc4 = extremum_vec<WantMax>(acc4, v4);
+        acc5 = extremum_vec<WantMax>(acc5, v5);
+        acc6 = extremum_vec<WantMax>(acc6, v6);
+        acc7 = extremum_vec<WantMax>(acc7, v7);
+        trace0 = trace0 + (v0 + v1);
+        trace1 = trace1 + (v2 + v3);
+        trace2 = trace2 + (v4 + v5);
+        trace3 = trace3 + (v6 + v7);
+    }
     for (; i + 4 * lanes <= n; i += 4 * lanes) {
-        for (int j = 0; j < 4; ++j) {
-            const Vec value = Vec::loadu(data + i + j * lanes);
-            acc[j] = extremum_vec<WantMax>(acc[j], value);
-            traced[j & 1] = traced[j & 1] + value;
-        }
+        const Vec v0 = Vec::loadu(data + i + 0 * lanes);
+        const Vec v1 = Vec::loadu(data + i + 1 * lanes);
+        const Vec v2 = Vec::loadu(data + i + 2 * lanes);
+        const Vec v3 = Vec::loadu(data + i + 3 * lanes);
+        acc0 = extremum_vec<WantMax>(acc0, v0);
+        acc1 = extremum_vec<WantMax>(acc1, v1);
+        acc2 = extremum_vec<WantMax>(acc2, v2);
+        acc3 = extremum_vec<WantMax>(acc3, v3);
+        trace0 = trace0 + (v0 + v1);
+        trace1 = trace1 + (v2 + v3);
     }
     ctype marks[lanes];
-    (traced[0] + traced[1]).store(marks);
+    ((trace0 + trace1) + (trace2 + trace3)).store(marks);
     for (int64_t k = 0; k < lanes; ++k) {
         if (!(marks[k] == marks[k])) return fold_run_exact<ctype, WantMax>(data, n);
     }
     ctype values[lanes];
     ctype best = extrema_identity<ctype>(WantMax);
-    for (auto& a : acc) {
+    const Vec pairs[4] = {
+        extremum_vec<WantMax>(acc0, acc1), extremum_vec<WantMax>(acc2, acc3),
+        extremum_vec<WantMax>(acc4, acc5), extremum_vec<WantMax>(acc6, acc7)};
+    for (const Vec& a : pairs) {
         a.store(values);
         for (int64_t k = 0; k < lanes; ++k) {
             best = WantMax ? (best < values[k] ? values[k] : best)
