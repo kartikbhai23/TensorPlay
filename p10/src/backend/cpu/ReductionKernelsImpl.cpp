@@ -2711,6 +2711,87 @@ static bool try_sum_dim_real(const Tensor& input, Tensor& output, int64_t dim) {
     }
     return true;
 }
+// Leading-dim reduction whose columns fit in one to four lane-vectors: each
+// column vector keeps its accumulator in a register, and four rows fold into
+// it at a time. The loads of the other three rows run while the accumulator's
+// own add is still in flight, so the walk is limited by the input stream and
+// not by the latency of one dependent add per row.
+template <typename Scalar, int64_t NC>
+inline void sum_leading_narrow_range(const Scalar* TP_RESTRICT in,
+                                     Scalar* TP_RESTRICT dst, int64_t rows,
+                                     int64_t cols, int64_t begin) {
+    using Vec = Vectorized<Scalar>;
+    constexpr int64_t vs = Vec::size();
+    Vec acc[NC];
+    for (int64_t u = 0; u < NC; ++u) {
+        acc[u] = Vec::loadu(in + begin + u * vs);
+    }
+    int64_t r = 1;
+    for (; r + 4 <= rows; r += 4) {
+        const Scalar* TP_RESTRICT p0 = in + (r + 0) * cols + begin;
+        const Scalar* TP_RESTRICT p1 = in + (r + 1) * cols + begin;
+        const Scalar* TP_RESTRICT p2 = in + (r + 2) * cols + begin;
+        const Scalar* TP_RESTRICT p3 = in + (r + 3) * cols + begin;
+        for (int64_t u = 0; u < NC; ++u) {
+            acc[u] = acc[u] + ((Vec::loadu(p0 + u * vs) + Vec::loadu(p1 + u * vs)) +
+                               (Vec::loadu(p2 + u * vs) + Vec::loadu(p3 + u * vs)));
+        }
+    }
+    for (; r < rows; ++r) {
+        const Scalar* TP_RESTRICT p = in + r * cols + begin;
+        for (int64_t u = 0; u < NC; ++u) {
+            acc[u] = acc[u] + Vec::loadu(p + u * vs);
+        }
+    }
+    for (int64_t u = 0; u < NC; ++u) {
+        acc[u].store(dst + begin + u * vs);
+    }
+}
+
+// Dispatch the narrow-column walk over the data types it serves; a row count
+// too short to fill four folds is left to the other shapes.
+template <typename Scalar>
+inline bool sum_leading_narrow_impl(const Scalar* TP_RESTRICT in,
+                                    Scalar* TP_RESTRICT out, int64_t rows,
+                                    int64_t cols) {
+    using Vec = Vectorized<Scalar>;
+    constexpr int64_t vs = Vec::size();
+    if (rows < 8 || cols == 0 || cols % vs != 0) {
+        return false;
+    }
+    switch (cols / vs) {
+        case 1:
+            sum_leading_narrow_range<Scalar, 1>(in, out, rows, cols, 0);
+            return true;
+        case 2:
+            sum_leading_narrow_range<Scalar, 2>(in, out, rows, cols, 0);
+            return true;
+        case 3:
+            sum_leading_narrow_range<Scalar, 3>(in, out, rows, cols, 0);
+            return true;
+        case 4:
+            sum_leading_narrow_range<Scalar, 4>(in, out, rows, cols, 0);
+            return true;
+        case 5:
+            sum_leading_narrow_range<Scalar, 5>(in, out, rows, cols, 0);
+            return true;
+        case 6:
+            sum_leading_narrow_range<Scalar, 6>(in, out, rows, cols, 0);
+            return true;
+        case 7:
+            sum_leading_narrow_range<Scalar, 7>(in, out, rows, cols, 0);
+            return true;
+        case 8:
+            sum_leading_narrow_range<Scalar, 8>(in, out, rows, cols, 0);
+            return true;
+        case 16:
+            sum_leading_narrow_range<Scalar, 16>(in, out, rows, cols, 0);
+            return true;
+        default:
+            return false;
+    }
+}
+
 // Leading-dim contiguous reduction over a small row count. Each task owns a
 // contiguous span of the output and streams one full row segment at a time
 // with kUnroll independent vector accumulators. A round-robin walk over row
@@ -2795,9 +2876,23 @@ static std::optional<Tensor> try_sum_leading_rows(
         std::memcpy(out.data_ptr(), input.data_ptr(), bytes);
         return out;
     }
-    bool handled = input.dtype() == DType::Float32
-        ? sum_leading_rows_stream<8, float>(input, out)
-        : sum_leading_rows_stream<8, double>(input, out);
+    bool handled = false;
+    const bool alone = tensorplay::parallel::get_num_threads() == 1;
+    if (alone) {
+        // A single walker keeps every column vector's total in a register; a
+        // team would have each member re-read the whole input for its own
+        // columns, so the row split serves that case.
+        const int64_t rows = input.size(0);
+        const int64_t cols = input.numel() / rows;
+        handled = input.dtype() == DType::Float32
+            ? sum_leading_narrow_impl<float>(
+                  input.data_ptr<float>(), out.data_ptr<float>(), rows, cols)
+            : sum_leading_narrow_impl<double>(
+                  input.data_ptr<double>(), out.data_ptr<double>(), rows, cols);
+    }
+    if (!handled && input.dtype() == DType::Float32) {
+        handled = sum_leading_rows_stream<8, float>(input, out);
+    }
     if (!handled) {
         return std::nullopt;
     }
