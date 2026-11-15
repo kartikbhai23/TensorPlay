@@ -100,13 +100,26 @@ class _RuntimeContext(_Context):
             - FP16 reduced precision reduction allowance
             - BF16 reduced precision reduction allowance
         """
+        precision = getattr(tp.backends.cuda.matmul, "fp32_precision", None)
+        if precision is None:
+            # The matrix-multiply namespace answers only for the switches it
+            # has; the process-wide precision reads the same state.
+            precision = tp.backends.fp32_precision
         return {
-            "tp.backends.cuda.matmul.fp32_precision": tp.backends.cuda.matmul.fp32_precision,
+            "tp.backends.cuda.matmul.fp32_precision": precision,
             "tp.backends.cuda.matmul.allow_fp16_reduced_precision_reduction": (
-                tp.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
+                getattr(
+                    tp.backends.cuda.matmul,
+                    "allow_fp16_reduced_precision_reduction",
+                    None,
+                )
             ),
             "tp.backends.cuda.matmul.allow_bf16_reduced_precision_reduction": (
-                tp.backends.cuda.matmul.allow_bf16_reduced_precision_reduction
+                getattr(
+                    tp.backends.cuda.matmul,
+                    "allow_bf16_reduced_precision_reduction",
+                    None,
+                )
             ),
         }
 

@@ -20,6 +20,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 import sys
+import types
 
 # Whether a loop nest's strides are padded so that every access is aligned to
 # the width of a memory transaction.  Off for a region whose extents are not
@@ -1312,6 +1313,11 @@ bundle_triton_into_fx_graph_cache: bool | None = None
 #: Whether a compiled kernel can be launched from a binary already on disk,
 #: without going through the runtime's own compile step.
 use_static_triton_launcher: bool = False
+
+#: Whether a kernel a program wrote for itself is launched that way too.  The
+#: shape of its launch is the program's own, so it is only taken from a binary
+#: on disk when the program has said that is what it wants.
+static_launch_user_defined_triton_kernels: bool = False
 force_disable_caches: bool = False
 
 #: Whether a region's finished wrapper is stored under its own key and loaded
@@ -1461,6 +1467,78 @@ def is_fbcode() -> bool:
     """
 
     return False
+
+
+_SNAPSHOT_SCALARS = (bool, int, float, str)
+
+
+def save_config_portable(*, ignore_private_configs: bool = True) -> dict[str, Any]:
+    """Write the settings down in a form another process can read back.
+
+    Every section is flattened to ``section.name``.  A value is kept only when
+    it can be written as text -- a number, a string, a flag, ``None``, or a
+    container of them -- because the result is compared between processes and
+    must mean the same thing in each.  A callable that is a setting rather
+    than part of this module's own surface is written as its qualified name,
+    so replacing it changes the snapshot.  Private names are left out unless
+    the caller asks for them.
+    """
+
+    module = sys.modules[__name__]
+
+    def portable(value: Any) -> tuple[bool, Any]:
+        if value is None or isinstance(value, _SNAPSHOT_SCALARS):
+            return True, value
+        if isinstance(value, bytes):
+            return True, value.decode("utf-8", "replace")
+        if isinstance(value, (list, tuple)):
+            items = []
+            for item in value:
+                ok, converted = portable(item)
+                if not ok:
+                    return False, None
+                items.append(converted)
+            return True, items
+        if isinstance(value, (set, frozenset)):
+            items = []
+            for item in value:
+                ok, converted = portable(item)
+                if not ok:
+                    return False, None
+                items.append(converted)
+            return True, sorted(items, key=repr)
+        if isinstance(value, dict):
+            pairs: dict[str, Any] = {}
+            for key, item in value.items():
+                ok_key, converted_key = portable(key)
+                ok_item, converted_item = portable(item)
+                if not (ok_key and ok_item):
+                    return False, None
+                pairs[str(converted_key)] = converted_item
+            return True, dict(sorted(pairs.items()))
+        if isinstance(value, types.FunctionType) and value.__module__ != __name__:
+            return True, f"{value.__module__}.{value.__qualname__}"
+        return False, None
+
+    def section(prefix: str, obj: Any):
+        for name in sorted(dir(obj)):
+            if name.startswith("__"):
+                continue
+            if ignore_private_configs and name.startswith("_"):
+                continue
+            value = getattr(obj, name)
+            if isinstance(value, (types.ModuleType, type)):
+                continue
+            if type(value).__module__ == __name__:
+                # A section holds settings of its own; they are named by the
+                # section so that two sections may use the same name.
+                yield from section(f"{prefix}{name}.", value)
+                continue
+            ok, converted = portable(value)
+            if ok:
+                yield f"{prefix}{name}", converted
+
+    return dict(section("", module))
 
 
 class _EagerNumerics:
@@ -1723,6 +1801,12 @@ reorder_for_compute_comm_overlap_passes: list = []
 #: communication with its computation is worth the ordering it costs.
 min_overlap_ratio = 1.1
 
+#: The bandwidth between cards of one node and between nodes, in GB/s in one
+#: direction.  ``None`` reads it from the generation of the machine's cards,
+#: which is what an unmeasured machine gets; a measurement overrides it.
+intra_node_bw: int | None = None
+inter_node_bw: int | None = None
+
 #: How far apart two operations may be and still be written as one kernel, and
 #: how much memory writing them together may cost over writing them apart.
 combo_kernel_max_distance: int = 64
@@ -1777,6 +1861,14 @@ def decide_compile_threads() -> int:
         log.info("compile_threads set to %d", compile_threads)
 
     return compile_threads
+
+
+#: Operations whose results carry a symbol whose value comes from data.  An
+#: extent that is not known until the data arrives cannot be replayed from a
+#: captured graph, so an operation listed here marks its results so.  A name
+#: is ``namespace::kernel`` for an operation packet, or
+#: ``namespace::kernel.overload`` for one form of it.
+cudagraph_unsafe_unbacked_ops: list[str] = []
 
 #: Whether the region is drawn as it was written, annotated with what each of
 #: its nodes became, which is what shows where a value stopped being what the

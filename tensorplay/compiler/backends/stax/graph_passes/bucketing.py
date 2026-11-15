@@ -61,7 +61,7 @@ BucketMode: TypeAlias = Literal[
 def _default_bucket_mode() -> BucketMode:
     from .. import config
 
-    return config.aten_distributed_optimizations.bucket_mode or "default"
+    return config.tp_distributed_optimizations.bucket_mode or "default"
 
 
 # Helper functions moved to top for better organization
