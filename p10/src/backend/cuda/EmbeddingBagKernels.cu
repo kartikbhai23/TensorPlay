@@ -34,6 +34,7 @@ enum BagMode : int64_t { kBagSum = 0, kBagMean = 1, kBagMax = 2 };
 
 constexpr int kWarp = 32;
 constexpr int kBagsPerBlock = 8;
+constexpr int kBagSplitRows = 8;
 constexpr int kFlatThreads = 256;
 constexpr unsigned kMaxGridY = 65535u;
 
@@ -52,126 +53,97 @@ inline unsigned grid_dim(int64_t count, int64_t per_block) {
 // Positions that no bag covers keep -1 and take no part in either direction.
 // ---------------------------------------------------------------------------
 
+// One warp owns one bag: lane 0 reads the bounds, the warp counts the
+// non-padding positions of the same range and marks the position-to-bag map,
+// and lane 0 publishes the bounds and the size.  The forward route needs all
+// of them together, so the map is written here instead of in a launch of its
+// own.  The same walk range-checks the indices, so the reduction kernels do
+// not have to re-read them for validation.
 template <typename IndexT>
-__global__ void bag_layout_kernel(const IndexT* __restrict__ offsets,
-                                  int64_t n_offsets, int64_t num_bags,
-                                  int64_t numel, bool include_last_offset,
-                                  int64_t* __restrict__ starts,
-                                  int64_t* __restrict__ ends) {
-  const int64_t b = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (b >= num_bags) return;
-
-  int64_t start = static_cast<int64_t>(offsets[b]);
-  int64_t end = (b + 1 < n_offsets) ? static_cast<int64_t>(offsets[b + 1]) : numel;
-  if (!include_last_offset && b + 1 == num_bags) end = numel;
-
-  if (start < 0) start = 0;
-  if (start > numel) start = numel;
-  if (end < start) end = start;
-  if (end > numel) end = numel;
-  starts[b] = start;
-  ends[b] = end;
-}
-
-__global__ void offset2bag_kernel(const int64_t* __restrict__ starts,
-                                  const int64_t* __restrict__ ends,
-                                  int64_t num_bags, int64_t numel,
-                                  int64_t* __restrict__ offset2bag) {
-  const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (i >= numel) return;
-
-  // Ranges tile the covered prefix in non-decreasing order, so the last bag
-  // whose start is at or below `i` is the only one that can contain it.
-  int64_t lo = 0;
-  int64_t hi = num_bags;
-  while (lo < hi) {
-    const int64_t mid = (lo + hi) >> 1;
-    if (starts[mid] <= i) lo = mid + 1; else hi = mid;
-  }
-  const int64_t bag = lo - 1;
-  offset2bag[i] = (bag >= 0 && i < ends[bag]) ? bag : static_cast<int64_t>(-1);
-}
-
-template <typename IndexT>
-__global__ void bag_size_kernel(const IndexT* __restrict__ indices,
-                                const int64_t* __restrict__ starts,
-                                const int64_t* __restrict__ ends,
-                                int64_t num_bags, int64_t padding_idx,
-                                int64_t* __restrict__ bag_size) {
+__global__ void bag_layout_size_kernel(const IndexT* __restrict__ offsets,
+                                       int64_t n_offsets, int64_t num_bags,
+                                       int64_t numel, bool include_last_offset,
+                                       int64_t padding_idx, int64_t num_rows,
+                                       const IndexT* __restrict__ indices,
+                                       int64_t* __restrict__ starts,
+                                       int64_t* __restrict__ ends,
+                                       int64_t* __restrict__ bag_size,
+                                       int64_t* __restrict__ offset2bag,
+                                       int64_t* __restrict__ cleared_max) {
   const int64_t bag = static_cast<int64_t>(blockIdx.x) * blockDim.y + threadIdx.y;
   if (bag >= num_bags) return;
 
-  const int64_t s = starts[bag];
-  const int64_t e = ends[bag];
+  int64_t start = 0;
+  int64_t end = 0;
+  if (threadIdx.x == 0) {
+    start = static_cast<int64_t>(offsets[bag]);
+    end = (bag + 1 < n_offsets) ? static_cast<int64_t>(offsets[bag + 1]) : numel;
+    if (!include_last_offset && bag + 1 == num_bags) end = numel;
+
+    if (start < 0) start = 0;
+    if (start > numel) start = numel;
+    if (end < start) end = start;
+    if (end > numel) end = numel;
+  }
+  start = __shfl_sync(0xffffffffu, start, 0);
+  end = __shfl_sync(0xffffffffu, end, 0);
+
   int64_t count = 0;
-  for (int64_t i = s + threadIdx.x; i < e; i += kWarp) {
-    if (static_cast<int64_t>(indices[i]) != padding_idx) ++count;
+  bool invalid = false;
+  for (int64_t i = start + threadIdx.x; i < end; i += kWarp) {
+    const int64_t r = static_cast<int64_t>(indices[i]);
+    invalid = invalid || r < 0 || r >= num_rows;
+    if (r != padding_idx) ++count;
+    offset2bag[i] = bag;
   }
-  for (int offset = kWarp / 2; offset > 0; offset >>= 1) {
-    count += __shfl_down_sync(0xffffffffffffffffull, count, offset);
+  for (int step = kWarp / 2; step > 0; step >>= 1) {
+    count += __shfl_down_sync(0xffffffffu, count, step);
   }
-  if (threadIdx.x == 0) bag_size[bag] = count;
+  assert(__ballot_sync(0xffffffffu, invalid) == 0 &&
+         "embedding_bag: index out of range in the embedding table");
+  if (threadIdx.x == 0) {
+    starts[bag] = start;
+    ends[bag] = end;
+    bag_size[bag] = count;
+    if (cleared_max != nullptr) cleared_max[bag] = 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Forward: one thread owns one (bag, feature) pair.  Feature-major threading
-// keeps the weight and output accesses coalesced, and the index read is a
-// warp-wide broadcast out of cache.
+// Forward, sum and mean: one block owns one bag and a tile of kWarp features.
+// Within the block one warp row owns a strided share of the bag's positions,
+// so a long bag is covered by several warps at once; with few bags that is
+// what fills the machine.  Every row walks its positions in the same order,
+// so the reduction is reproducible: the shares are added back in row order.
 // ---------------------------------------------------------------------------
 
 template <typename T, typename AccT, typename IndexT>
-__global__ void bag_forward_kernel(const T* __restrict__ weight,
-                                   int64_t num_rows, int64_t D,
-                                   const IndexT* __restrict__ indices,
-                                   const T* __restrict__ per_sample_weights,
-                                   const int64_t* __restrict__ starts,
-                                   const int64_t* __restrict__ ends,
-                                   const int64_t* __restrict__ bag_size,
-                                   int64_t num_bags, int64_t mode,
-                                   int64_t padding_idx,
-                                   T* __restrict__ output,
-                                   int64_t* __restrict__ max_indices) {
-  const int64_t bag = static_cast<int64_t>(blockIdx.x) * blockDim.y + threadIdx.y;
+__global__ void bag_forward_split_kernel(const T* __restrict__ weight,
+                                         int64_t D,
+                                         const IndexT* __restrict__ indices,
+                                         const T* __restrict__ per_sample_weights,
+                                         const int64_t* __restrict__ starts,
+                                         const int64_t* __restrict__ ends,
+                                         const int64_t* __restrict__ bag_size,
+                                         int64_t num_bags, int64_t mode,
+                                         int64_t padding_idx,
+                                         T* __restrict__ output,
+                                         int64_t d_tiles) {
+  __shared__ AccT partial[kBagSplitRows * kWarp];
+
+  const int64_t line = static_cast<int64_t>(blockIdx.x);
+  const int64_t bag = line / d_tiles;
   if (bag >= num_bags) return;
+  const int64_t d = (line % d_tiles) * kWarp + threadIdx.x;
+  const int64_t row = threadIdx.y;
 
   const int64_t s = starts[bag];
   const int64_t e = ends[bag];
-  const int64_t stride = static_cast<int64_t>(gridDim.y) * blockDim.x;
 
-  // Validating up front keeps the accumulation loop free of a second exit
-  // path, which would otherwise cost it registers and occupancy.
-  bool has_invalid = false;
-  for (int64_t i = s; i < e; ++i) {
-    const int64_t r = static_cast<int64_t>(indices[i]);
-    has_invalid = has_invalid || r < 0 || r >= num_rows;
-  }
-  assert(!has_invalid && "embedding_bag: index out of range in the embedding table");
-
-  for (int64_t d = static_cast<int64_t>(blockIdx.y) * blockDim.x + threadIdx.x;
-       d < D; d += stride) {
-    if (mode == kBagMax) {
-      // Select instead of branch throughout: both the padding test and the
-      // running-maximum test vary per lane, so branching on either would
-      // serialize the warp over random data.
-      AccT best = 0;
-      int64_t arg = 0;
-      bool first = true;
-      for (int64_t i = s; i < e; ++i) {
-        const int64_t r = static_cast<int64_t>(indices[i]);
-        const AccT v = static_cast<AccT>(weight[r * D + d]);
-        const bool keep = r != padding_idx;
-        const bool take = keep && (first || v > best);
-        best = take ? v : best;
-        arg = take ? r : arg;
-        first = first && !keep;
-      }
-      output[bag * D + d] = first ? static_cast<T>(0) : static_cast<T>(best);
-      max_indices[bag * D + d] = first ? static_cast<int64_t>(0) : arg;
-      continue;
-    }
-
-    AccT acc = 0;
-    for (int64_t i = s; i < e; ++i) {
+  const int64_t rows = blockDim.y;
+  AccT acc = 0;
+  if (d < D) {
+    for (int64_t i = s + row; i < e; i += rows) {
       const int64_t r = static_cast<int64_t>(indices[i]);
       AccT v = static_cast<AccT>(weight[r * D + d]);
       if (per_sample_weights != nullptr) {
@@ -179,11 +151,64 @@ __global__ void bag_forward_kernel(const T* __restrict__ weight,
       }
       acc += (r == padding_idx) ? static_cast<AccT>(0) : v;
     }
+  }
+  partial[row * kWarp + threadIdx.x] = acc;
+  __syncthreads();
+
+  if (row == 0 && d < D) {
+    for (int64_t r = 1; r < rows; ++r) {
+      acc += partial[r * kWarp + threadIdx.x];
+    }
     if (mode == kBagMean) {
       const int64_t count = bag_size[bag];
       if (count > 0) acc /= static_cast<AccT>(count);
     }
     output[bag * D + d] = static_cast<T>(acc);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Forward, max: one thread owns one (bag, feature) pair.  Feature-major
+// threading keeps the weight and output accesses coalesced, and the index
+// read is a warp-wide broadcast out of cache.  The selection walks the bag in
+// order, so the reported row is the first maximum.
+// ---------------------------------------------------------------------------
+
+template <typename T, typename AccT, typename IndexT>
+__global__ void bag_max_forward_kernel(const T* __restrict__ weight,
+                                       int64_t D,
+                                       const IndexT* __restrict__ indices,
+                                       const int64_t* __restrict__ starts,
+                                       const int64_t* __restrict__ ends,
+                                       int64_t num_bags, int64_t padding_idx,
+                                       T* __restrict__ output,
+                                       int64_t* __restrict__ max_indices) {
+  const int64_t bag = static_cast<int64_t>(blockIdx.x) * blockDim.y + threadIdx.y;
+  if (bag >= num_bags) return;
+
+  const int64_t s = starts[bag];
+  const int64_t e = ends[bag];
+  const int64_t stride = static_cast<int64_t>(gridDim.y) * blockDim.x;
+
+  for (int64_t d = static_cast<int64_t>(blockIdx.y) * blockDim.x + threadIdx.x;
+       d < D; d += stride) {
+    // Select instead of branch throughout: both the padding test and the
+    // running-maximum test vary per lane, so branching on either would
+    // serialize the warp over random data.
+    AccT best = 0;
+    int64_t arg = 0;
+    bool first = true;
+    for (int64_t i = s; i < e; ++i) {
+      const int64_t r = static_cast<int64_t>(indices[i]);
+      const AccT v = static_cast<AccT>(weight[r * D + d]);
+      const bool keep = r != padding_idx;
+      const bool take = keep && (first || v > best);
+      best = take ? v : best;
+      arg = take ? r : arg;
+      first = first && !keep;
+    }
+    output[bag * D + d] = first ? static_cast<T>(0) : static_cast<T>(best);
+    max_indices[bag * D + d] = first ? static_cast<int64_t>(0) : arg;
   }
 }
 
@@ -331,59 +356,75 @@ int64_t bag_count(const Tensor& offsets, bool include_last_offset) {
 }
 
 // Materializes starts/ends/offset2bag/bag_size on the device so the operator
-// never has to read `offsets` back to the host.
+// never has to read `offsets` back to the host.  All four live in one int64
+// buffer, which the layout kernel writes outright, so it is allocated
+// uninitialized.  The bounds stay pointers into it; only the three values the
+// caller receives are wrapped as views.  The max-index slots travel in the
+// same buffer -- the forward pass fills them in max mode, and the layout warp
+// clears them otherwise so the sum and mean results stay zero as specified.
 struct BagLayoutBuffers {
-  Tensor starts;
-  Tensor ends;
+  Tensor workspace;
   Tensor offset2bag;
   Tensor bag_size;
+  Tensor max_indices;
+  // The bounds stay raw: nothing outside the forward launch reads them, and
+  // wrapping them as tensors would only cost a view apiece.
+  int64_t* starts = nullptr;
+  int64_t* ends = nullptr;
 };
 
 BagLayoutBuffers build_bag_layout(const Tensor& indices, const Tensor& offsets,
                                   int64_t num_bags, int64_t padding_idx,
-                                  bool include_last_offset, cudaStream_t stream) {
+                                  bool include_last_offset, bool with_max_indices,
+                                  int64_t D, int64_t num_rows, cudaStream_t stream) {
   const int64_t numel = indices.numel();
   const Device device = offsets.device();
+  const int64_t max_slots = with_max_indices ? num_bags * D : num_bags;
+  const int64_t total = 3 * num_bags + numel + max_slots;
 
   BagLayoutBuffers buf;
-  buf.starts = Tensor::zeros({num_bags}, DType::Int64, device);
-  buf.ends = Tensor::zeros({num_bags}, DType::Int64, device);
-  buf.bag_size = Tensor::zeros({num_bags}, DType::Int64, device);
-  buf.offset2bag = Tensor::full({numel}, Scalar(static_cast<int64_t>(-1)),
-                                DType::Int64, device);
-  if (num_bags == 0) return buf;
+  buf.workspace = Tensor::empty({total}, DType::Int64, device);
+  int64_t* base = buf.workspace.data_ptr<int64_t>();
+  buf.starts = base;
+  buf.ends = base + num_bags;
+  int64_t* bag_size = base + 2 * num_bags;
+  int64_t* offset2bag = base + 3 * num_bags;
+  int64_t* max_slot_ptr = base + 3 * num_bags + numel;
+  const auto slot = [&](int64_t offset, int64_t length) {
+    return buf.workspace.narrow(0, offset, length);
+  };
+  buf.bag_size = slot(2 * num_bags, num_bags);
+  buf.offset2bag = slot(3 * num_bags, numel);
+  buf.max_indices = with_max_indices
+      ? slot(3 * num_bags + numel, max_slots).view({num_bags, D})
+      : slot(3 * num_bags + numel, max_slots);
+  int64_t* cleared_max = with_max_indices ? nullptr : max_slot_ptr;
 
-  int64_t* starts = buf.starts.data_ptr<int64_t>();
-  int64_t* ends = buf.ends.data_ptr<int64_t>();
-
-  const dim3 flat_block(kFlatThreads);
-  const dim3 layout_grid(grid_dim(num_bags, kFlatThreads));
-  if (offsets.dtype() == DType::Int64) {
-    bag_layout_kernel<int64_t><<<layout_grid, flat_block, 0, stream>>>(
-        offsets.data_ptr<int64_t>(), offsets.numel(), num_bags, numel,
-        include_last_offset, starts, ends);
-  } else {
-    bag_layout_kernel<int32_t><<<layout_grid, flat_block, 0, stream>>>(
-        offsets.data_ptr<int32_t>(), offsets.numel(), num_bags, numel,
-        include_last_offset, starts, ends);
-  }
-
+  // Positions outside every bag keep -1.  Only the head before the first
+  // offset and the tail after the last one can stay uncovered on sane input,
+  // and a byte fill covers them without a kernel.
   if (numel > 0) {
-    offset2bag_kernel<<<dim3(grid_dim(numel, kFlatThreads)), flat_block, 0, stream>>>(
-        starts, ends, num_bags, numel, buf.offset2bag.data_ptr<int64_t>());
+    CUDA_CHECK(cudaMemsetAsync(offset2bag, 0xFF,
+                               static_cast<size_t>(numel) * sizeof(int64_t), stream));
   }
+  if (num_bags == 0) return buf;
 
   const dim3 warp_block(kWarp, kBagsPerBlock);
   const dim3 warp_grid(grid_dim(num_bags, kBagsPerBlock));
-  if (indices.dtype() == DType::Int64) {
-    bag_size_kernel<int64_t><<<warp_grid, warp_block, 0, stream>>>(
+  if (offsets.dtype() == DType::Int64) {
+    bag_layout_size_kernel<int64_t><<<warp_grid, warp_block, 0, stream>>>(
+        offsets.data_ptr<int64_t>(), offsets.numel(), num_bags, numel,
+        include_last_offset, padding_idx, num_rows,
         indices.numel() > 0 ? indices.data_ptr<int64_t>() : nullptr,
-        starts, ends, num_bags, padding_idx, buf.bag_size.data_ptr<int64_t>());
+        buf.starts, buf.ends, bag_size, offset2bag, cleared_max);
   } else {
-    bag_size_kernel<int32_t><<<warp_grid, warp_block, 0, stream>>>(
+    bag_layout_size_kernel<int32_t><<<warp_grid, warp_block, 0, stream>>>(
+        offsets.data_ptr<int32_t>(), offsets.numel(), num_bags, numel,
+        include_last_offset, padding_idx, num_rows,
         indices.numel() > 0 ? indices.data_ptr<int32_t>() : nullptr,
-        starts, ends, num_bags, padding_idx, buf.bag_size.data_ptr<int64_t>());
+        buf.starts, buf.ends, bag_size, offset2bag, cleared_max);
   }
+
   return buf;
 }
 
@@ -394,21 +435,39 @@ void launch_bag_forward(const Tensor& weight, const Tensor& indices,
                         int64_t mode, int64_t padding_idx, Tensor& output,
                         Tensor& max_indices, cudaStream_t stream) {
   using acc_t = typename BagAcc<T>::type;
-  const int64_t num_rows = weight.size(0);
   const int64_t D = weight.size(1);
+  const T* weight_ptr = weight.data_ptr<T>();
+  const IndexT* index_ptr =
+      indices.numel() > 0 ? indices.data_ptr<IndexT>() : nullptr;
+  const T* psw_ptr = per_sample_weights.defined() && per_sample_weights.numel() > 0
+      ? per_sample_weights.data_ptr<T>() : nullptr;
 
-  const dim3 block(kWarp, kBagsPerBlock);
-  const dim3 grid(grid_dim(num_bags, kBagsPerBlock),
-                  std::min<unsigned>(grid_dim(D, kWarp), kMaxGridY));
-  bag_forward_kernel<T, acc_t, IndexT><<<grid, block, 0, stream>>>(
-      weight.data_ptr<T>(), num_rows, D,
-      indices.numel() > 0 ? indices.data_ptr<IndexT>() : nullptr,
-      per_sample_weights.defined() && per_sample_weights.numel() > 0
-          ? per_sample_weights.data_ptr<T>() : nullptr,
-      layout.starts.data_ptr<int64_t>(), layout.ends.data_ptr<int64_t>(),
-      layout.bag_size.data_ptr<int64_t>(), num_bags, mode, padding_idx,
-      output.data_ptr<T>(),
-      mode == kBagMax ? max_indices.data_ptr<int64_t>() : nullptr);
+  if (mode == kBagMax) {
+    const dim3 block(kWarp, kBagsPerBlock);
+    const dim3 grid(grid_dim(num_bags, kBagsPerBlock),
+                    std::min<unsigned>(grid_dim(D, kWarp), kMaxGridY));
+    bag_max_forward_kernel<T, acc_t, IndexT><<<grid, block, 0, stream>>>(
+        weight_ptr, D, index_ptr,
+        layout.starts, layout.ends,
+        num_bags, padding_idx, output.data_ptr<T>(),
+        max_indices.data_ptr<int64_t>());
+    return;
+  }
+
+  const int64_t d_tiles = (D + kWarp - 1) / kWarp;
+  const int64_t lines = num_bags * d_tiles;
+  // Splitting a bag over several warps pays off only when a bag is long
+  // enough to keep every warp busy; with many short bags the extra rows would
+  // just multiply the thread count past the work.
+  const int64_t per_bag = indices.numel() / std::max<int64_t>(num_bags, 1);
+  const int rows = per_bag >= 128 ? 8 : per_bag >= 32 ? 4 : per_bag >= 8 ? 2 : 1;
+  const dim3 block(kWarp, static_cast<unsigned>(rows));
+  bag_forward_split_kernel<T, acc_t, IndexT>
+      <<<static_cast<unsigned>(lines), block, 0, stream>>>(
+          weight_ptr, D, index_ptr, psw_ptr,
+          layout.starts, layout.ends,
+          layout.bag_size.data_ptr<int64_t>(), num_bags, mode, padding_idx,
+          output.data_ptr<T>(), d_tiles);
 }
 
 template <typename T, typename IndexT>
@@ -571,13 +630,14 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> _embedding_bag_cuda(
   const int64_t D = weight.size(1);
   const cudaStream_t stream = getCurrentCUDAStream().stream();
 
-  BagLayoutBuffers layout =
-      build_bag_layout(indices, offsets, num_bags, padding_idx, include_last_offset, stream);
+  BagLayoutBuffers layout = build_bag_layout(
+      indices, offsets, num_bags, padding_idx, include_last_offset,
+      mode == kBagMax, D, weight.size(0), stream);
 
-  Tensor output = Tensor::zeros({num_bags, D}, weight.dtype(), weight.device());
-  Tensor max_indices = mode == kBagMax
-      ? Tensor::zeros({num_bags, D}, DType::Int64, weight.device())
-      : Tensor::zeros({num_bags}, DType::Int64, weight.device());
+  // Every (bag, feature) slot is written by the forward kernel: an empty bag
+  // accumulates zero and a max bag without entries publishes zero as well.
+  Tensor output = Tensor::empty({num_bags, D}, weight.dtype(), weight.device());
+  Tensor max_indices = layout.max_indices;
 
   if (num_bags > 0 && D > 0) {
     const DType index_dtype = indices.dtype();
@@ -788,7 +848,9 @@ Tensor _embedding_bag_per_sample_weights_backward_cuda(
     const bool include_last_offset = offsets.numel() == grad.size(0) + 1;
     const int64_t num_bags = bag_count(offsets, include_last_offset);
     offset2bag = build_bag_layout(indices, offsets, num_bags, padding_idx,
-                                  include_last_offset, stream).offset2bag;
+                                  include_last_offset, false, 0,
+                                  weight.size(0), stream)
+                     .offset2bag;
   } else {
     if (offset2bag.numel() != numel) {
       TP_THROW(RuntimeError,
