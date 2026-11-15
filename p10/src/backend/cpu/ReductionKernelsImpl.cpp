@@ -519,14 +519,87 @@ void fold_thin_rows(const uint16_t* in, int64_t rows, int64_t run,
     }
 }
 
+// A running product that has decayed into the range a float no longer holds
+// with full precision is multiplied far more slowly than a normal one, and a
+// column of small factors spends most of its walk there.  Each column of a band
+// is therefore scaled up by a power of two as soon as it falls below 2^-64 --
+// its value is unchanged, since the factor is exact -- and scaled back once
+// when its totals leave; a column that has grown past 2^60 is scaled back at
+// once so that the scaling can never overflow.  Columns are scaled one at a
+// time, so a band whose columns decay at different rates keeps every one of
+// them in the range where a multiply answers at full speed.
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+void keep_totals_in_range(__m256& a, __m256i& shiftv) {
+    // A column is scaled by its own magnitude: a negative column of ordinary
+    // size is not small, and a column that is already zero stays there.
+    const __m256 magnitude =
+        _mm256_andnot_ps(_mm256_set1_ps(-0.f), a);
+    const __m256 small = _mm256_and_ps(
+        _mm256_cmp_ps(magnitude, _mm256_set1_ps(0x1p-64f), _CMP_LT_OQ),
+        _mm256_cmp_ps(magnitude, _mm256_setzero_ps(), _CMP_GT_OQ));
+    const __m256i grown = _mm256_and_si256(
+        _mm256_castps_si256(
+            _mm256_cmp_ps(magnitude, _mm256_set1_ps(0x1p60f), _CMP_GT_OQ)),
+        _mm256_cmpgt_epi32(shiftv, _mm256_setzero_si256()));
+    if ((_mm256_movemask_ps(small) |
+         _mm256_movemask_ps(_mm256_castsi256_ps(grown))) == 0) {
+        return;
+    }
+    const __m256i sixty_four = _mm256_set1_epi32(64);
+    if (_mm256_movemask_ps(small) != 0) {
+        a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_set1_ps(0x1p64f)),
+                            small);
+        shiftv = _mm256_add_epi32(
+            shiftv, _mm256_and_si256(_mm256_castps_si256(small), sixty_four));
+    }
+    if (_mm256_movemask_ps(_mm256_castsi256_ps(grown)) != 0) {
+        a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_set1_ps(0x1p-64f)),
+                            _mm256_castsi256_ps(grown));
+        shiftv = _mm256_sub_epi32(
+            shiftv, _mm256_and_si256(grown, sixty_four));
+    }
+}
+
 // A packed row of a reduced width multiplied through single precision, four
-// chains of lanes in flight.
+// chains of lanes in flight.  A long row of small factors walks a chain down
+// into the range a float no longer holds with full precision, where a multiply
+// costs far more than a normal one and most of the row is spent; each chain is
+// therefore held in range by an exact power of two, and the scaling its lanes
+// carry is applied to the row's answer once, as one factor, so no intermediate
+// is ever written below the range.
 template <bool BFloat>
 __attribute__((target("avx2,fma,f16c"), noinline))
 float product_reduced_chunk(const uint16_t* x, int64_t b, int64_t e) {
     const __m256 one = _mm256_set1_ps(1.0f);
     __m256 a0 = one, a1 = one, a2 = one, a3 = one;
+    __m256i s0 = _mm256_setzero_si256();
+    __m256i s1 = s0, s2 = s0, s3 = s0;
     int64_t i = b;
+    // A check reads the magnitude of every lane, so it is made once over four
+    // factors: a lane that has decayed this far stays inside the range a float
+    // carries for another four, and a chain of eight columns is what pays for
+    // the check otherwise.
+    for (; i + 128 <= e; i += 128) {
+        for (int64_t k = 0; k < 4; ++k) {
+            const uint16_t* p = x + i + 32 * k;
+            a0 = _mm256_mul_ps(a0, BFloat
+                ? tensorplay::cpu::vecreduced::widen_bf16_8(p)
+                : tensorplay::cpu::vecreduced::widen8(p));
+            a1 = _mm256_mul_ps(a1, BFloat
+                ? tensorplay::cpu::vecreduced::widen_bf16_8(p + 8)
+                : tensorplay::cpu::vecreduced::widen8(p + 8));
+            a2 = _mm256_mul_ps(a2, BFloat
+                ? tensorplay::cpu::vecreduced::widen_bf16_8(p + 16)
+                : tensorplay::cpu::vecreduced::widen8(p + 16));
+            a3 = _mm256_mul_ps(a3, BFloat
+                ? tensorplay::cpu::vecreduced::widen_bf16_8(p + 24)
+                : tensorplay::cpu::vecreduced::widen8(p + 24));
+        }
+        keep_totals_in_range(a0, s0);
+        keep_totals_in_range(a1, s1);
+        keep_totals_in_range(a2, s2);
+        keep_totals_in_range(a3, s3);
+    }
     for (; i + 32 <= e; i += 32) {
         a0 = _mm256_mul_ps(a0, BFloat
             ? tensorplay::cpu::vecreduced::widen_bf16_8(x + i)
@@ -540,12 +613,18 @@ float product_reduced_chunk(const uint16_t* x, int64_t b, int64_t e) {
         a3 = _mm256_mul_ps(a3, BFloat
             ? tensorplay::cpu::vecreduced::widen_bf16_8(x + i + 24)
             : tensorplay::cpu::vecreduced::widen8(x + i + 24));
+        keep_totals_in_range(a0, s0);
+        keep_totals_in_range(a1, s1);
+        keep_totals_in_range(a2, s2);
+        keep_totals_in_range(a3, s3);
     }
     __m256 acc = _mm256_mul_ps(_mm256_mul_ps(a0, a1), _mm256_mul_ps(a2, a3));
+    __m256i sa = _mm256_setzero_si256();
     for (; i + 8 <= e; i += 8) {
         acc = _mm256_mul_ps(acc, BFloat
             ? tensorplay::cpu::vecreduced::widen_bf16_8(x + i)
             : tensorplay::cpu::vecreduced::widen8(x + i));
+        keep_totals_in_range(acc, sa);
     }
     alignas(32) float lanes[8];
     _mm256_store_ps(lanes, acc);
@@ -554,6 +633,19 @@ float product_reduced_chunk(const uint16_t* x, int64_t b, int64_t e) {
     for (; i < e; ++i) {
         p *= BFloat ? tensorplay::cpu::vecreduced::widen_bf16_one(x[i])
                     : tensorplay::cpu::vecreduced::widen_one(x[i]);
+    }
+    // Every lane of the answer above carries its own power of two; the row's
+    // answer takes them back as a single factor, which is exact while the
+    // answer stays in range and rounds once when it does not.
+    const __m256i total = _mm256_add_epi32(
+        _mm256_add_epi32(s0, s1), _mm256_add_epi32(_mm256_add_epi32(s2, s3), sa));
+    __m128i held = _mm_add_epi32(_mm256_castsi256_si128(total),
+                                 _mm256_extracti128_si256(total, 1));
+    held = _mm_add_epi32(held, _mm_shuffle_epi32(held, 0x4E));
+    held = _mm_add_epi32(held, _mm_shuffle_epi32(held, 0xB1));
+    const int scaling = _mm_cvtsi128_si32(held);
+    if (scaling != 0 && std::isfinite(p)) {
+        p = static_cast<float>(std::ldexp(static_cast<double>(p), -scaling));
     }
     return p;
 }
@@ -750,47 +842,6 @@ __m256 fold_rows_hw(const uint16_t* p, int64_t cols) {
     }
 }
 
-// A running product that has decayed into the range a float no longer holds
-// with full precision is multiplied far more slowly than a normal one, and a
-// column of small factors spends most of its walk there.  Each column of a band
-// is therefore scaled up by a power of two as soon as it falls below 2^-64 --
-// its value is unchanged, since the factor is exact -- and scaled back once
-// when its totals leave; a column that has grown past 2^60 is scaled back at
-// once so that the scaling can never overflow.  Columns are scaled one at a
-// time, so a band whose columns decay at different rates keeps every one of
-// them in the range where a multiply answers at full speed.
-__attribute__((target("avx2,fma,f16c"), always_inline)) inline
-void keep_totals_in_range(__m256& a, __m256i& shiftv) {
-    // A column is scaled by its own magnitude: a negative column of ordinary
-    // size is not small, and a column that is already zero stays there.
-    const __m256 magnitude =
-        _mm256_andnot_ps(_mm256_set1_ps(-0.f), a);
-    const __m256 small = _mm256_and_ps(
-        _mm256_cmp_ps(magnitude, _mm256_set1_ps(0x1p-64f), _CMP_LT_OQ),
-        _mm256_cmp_ps(magnitude, _mm256_setzero_ps(), _CMP_GT_OQ));
-    const __m256i grown = _mm256_and_si256(
-        _mm256_castps_si256(
-            _mm256_cmp_ps(magnitude, _mm256_set1_ps(0x1p60f), _CMP_GT_OQ)),
-        _mm256_cmpgt_epi32(shiftv, _mm256_setzero_si256()));
-    if ((_mm256_movemask_ps(small) |
-         _mm256_movemask_ps(_mm256_castsi256_ps(grown))) == 0) {
-        return;
-    }
-    const __m256i sixty_four = _mm256_set1_epi32(64);
-    if (_mm256_movemask_ps(small) != 0) {
-        a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_set1_ps(0x1p64f)),
-                            small);
-        shiftv = _mm256_add_epi32(
-            shiftv, _mm256_and_si256(_mm256_castps_si256(small), sixty_four));
-    }
-    if (_mm256_movemask_ps(_mm256_castsi256_ps(grown)) != 0) {
-        a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_set1_ps(0x1p-64f)),
-                            _mm256_castsi256_ps(grown));
-        shiftv = _mm256_sub_epi32(
-            shiftv, _mm256_and_si256(grown, sixty_four));
-    }
-}
-
 // The scaling a band carries applied to its totals, one power of two at a time:
 // each step leaves a value no smaller than the answer that follows, so an
 // intermediate cannot flush to zero while the answer would not.
@@ -806,12 +857,60 @@ void rescale_totals(__m256& a, __m256i shiftv) {
     }
 }
 
+// The same scaling applied in one step: a power of two as far below the range
+// of a float as the walk wants is formed exactly in double precision and the
+// totals cross back in a single multiply, so a total that has been carried a
+// long way does not spend a dependent multiply per step it was scaled by.
+__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+void rescale_totals_wide(__m256& a, __m256i shiftv) {
+    if (_mm256_testz_si256(shiftv, shiftv) != 0) return;
+    shiftv = _mm256_min_epi32(shiftv, _mm256_set1_epi32(1022));
+    const __m256i bias = _mm256_set1_epi64x(1023);
+    const __m256i e_lo = _mm256_slli_epi64(
+        _mm256_sub_epi64(bias,
+                         _mm256_cvtepi32_epi64(_mm256_castsi256_si128(shiftv))),
+        52);
+    const __m256i e_hi = _mm256_slli_epi64(
+        _mm256_sub_epi64(
+            bias, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(shiftv, 1))),
+        52);
+    const __m256d lo = _mm256_mul_pd(
+        _mm256_cvtps_pd(_mm256_castps256_ps128(a)), _mm256_castsi256_pd(e_lo));
+    const __m256d hi = _mm256_mul_pd(
+        _mm256_cvtps_pd(_mm256_extractf128_ps(a, 1)), _mm256_castsi256_pd(e_hi));
+    a = _mm256_set_m128(_mm256_cvtpd_ps(hi), _mm256_cvtpd_ps(lo));
+}
+
+// The column totals carry a scaling of their own: a total that has decayed
+// below the range a float holds with full precision is kept by an exact power
+// of two, and the power its columns carry is remembered alongside them, so a
+// walk over many blocks of rows never has to cross back into that range and
+// return, which would cost a dependent multiply on a value a float carries
+// without full precision at the head of every block.  The totals are taken back
+// once, after the last block.
+__attribute__((target("avx2,fma,f16c"), noinline))
+void unravel_column_totals(float* acc, const int32_t* shifts, int64_t cols) {
+    int64_t c = 0;
+    for (; c + 8 <= cols; c += 8) {
+        __m256 a = _mm256_loadu_ps(acc + c);
+        const __m256i s = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(shifts + c));
+        rescale_totals_wide(a, s);
+        _mm256_storeu_ps(acc + c, a);
+    }
+    for (; c < cols; ++c) {
+        acc[c] = static_cast<float>(std::ldexp(
+            static_cast<double>(acc[c]),
+            -std::min<int64_t>(shifts[c], 1022)));
+    }
+}
+
 // The leading axis of a packed tensor, multiplied a whole row into per-worker
 // column totals.
 template <bool BFloat>
 __attribute__((target("avx2,fma,f16c"), noinline))
 void multiply_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
-                           int64_t cols, float* acc) {
+                           int64_t cols, float* acc, int32_t* shifts) {
     // A block of rows folds into the column totals while four bands of eight
     // columns stay in registers, so the totals are read and written once per
     // block rather than once per row.  Sixteen rows at a time are multiplied
@@ -825,17 +924,23 @@ void multiply_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
     const int64_t rows = end - begin;
     int64_t block = std::max<int64_t>(
         kFold, 24576 / std::max<int64_t>(cols, 1));
+    // One block cannot decay far enough for a scaling to be worth carrying
+    // past it, so its totals are taken back where the block ends and the
+    // scaling columns are never touched.
+    const bool carried = rows > block;
     block = std::min<int64_t>(block, rows);
     for (int64_t r0 = begin; r0 < end; r0 += block) {
         const int64_t r1 = std::min(end, r0 + block);
         int64_t c = 0;
         for (; c + 32 <= cols; c += 32) {
             __m256 a[4];
-            __m256i shift[4] = {_mm256_setzero_si256(), _mm256_setzero_si256(),
-                                _mm256_setzero_si256(),
-                                _mm256_setzero_si256()};
+            __m256i shift[4];
             for (int64_t k = 0; k < 4; ++k) {
                 a[k] = _mm256_loadu_ps(acc + c + 8 * k);
+                shift[k] = carried
+                    ? _mm256_loadu_si256(
+                          reinterpret_cast<const __m256i*>(shifts + c + 8 * k))
+                    : _mm256_setzero_si256();
             }
             int64_t r = r0;
             for (; r + kFold <= r1; r += kFold) {
@@ -843,6 +948,14 @@ void multiply_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
                     const uint16_t* rp = x + r * cols + c + 8 * k;
                     a[k] = _mm256_mul_ps(a[k],
                                          fold_rows_hw<BFloat, kFold>(rp, cols));
+                    keep_totals_in_range(a[k], shift[k]);
+                }
+            }
+            for (; r + 4 <= r1; r += 4) {
+                for (int64_t k = 0; k < 4; ++k) {
+                    const uint16_t* rp = x + r * cols + c + 8 * k;
+                    a[k] = _mm256_mul_ps(a[k],
+                                         fold_rows_hw<BFloat, 4>(rp, cols));
                     keep_totals_in_range(a[k], shift[k]);
                 }
             }
@@ -854,25 +967,42 @@ void multiply_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
                 }
             }
             for (int64_t k = 0; k < 4; ++k) {
-                rescale_totals(a[k], shift[k]);
+                if (!carried) rescale_totals_wide(a[k], shift[k]);
                 _mm256_storeu_ps(acc + c + 8 * k, a[k]);
+                if (carried) {
+                    _mm256_storeu_si256(
+                        reinterpret_cast<__m256i*>(shifts + c + 8 * k),
+                        shift[k]);
+                }
             }
         }
         for (; c + 8 <= cols; c += 8) {
             __m256 a = _mm256_loadu_ps(acc + c);
-            __m256i shift = _mm256_setzero_si256();
+            __m256i shift = carried
+                ? _mm256_loadu_si256(
+                      reinterpret_cast<const __m256i*>(shifts + c))
+                : _mm256_setzero_si256();
             int64_t r = r0;
             for (; r + kFold <= r1; r += kFold) {
                 a = _mm256_mul_ps(
                     a, fold_rows_hw<BFloat, kFold>(x + r * cols + c, cols));
                 keep_totals_in_range(a, shift);
             }
+            for (; r + 4 <= r1; r += 4) {
+                a = _mm256_mul_ps(
+                    a, fold_rows_hw<BFloat, 4>(x + r * cols + c, cols));
+                keep_totals_in_range(a, shift);
+            }
             for (; r < r1; ++r) {
                 a = _mm256_mul_ps(a, widen_row8<BFloat>(x + r * cols + c));
                 keep_totals_in_range(a, shift);
             }
-            rescale_totals(a, shift);
+            if (!carried) rescale_totals_wide(a, shift);
             _mm256_storeu_ps(acc + c, a);
+            if (carried) {
+                _mm256_storeu_si256(
+                    reinterpret_cast<__m256i*>(shifts + c), shift);
+            }
         }
         if (c < cols) {
             // The last columns of a row do not fill a band.  A band read from
@@ -883,10 +1013,17 @@ void multiply_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
             const int64_t keep = cols - c;
             alignas(32) float held[8] = {1.f, 1.f, 1.f, 1.f,
                                          1.f, 1.f, 1.f, 1.f};
+            alignas(32) int32_t held_shift[8] = {0, 0, 0, 0, 0, 0, 0, 0};
             std::memcpy(held, acc + c,
                         static_cast<size_t>(keep) * sizeof(float));
             __m256 a = _mm256_load_ps(held);
             __m256i shift = _mm256_setzero_si256();
+            if (carried) {
+                std::memcpy(held_shift, shifts + c,
+                            static_cast<size_t>(keep) * sizeof(int32_t));
+                shift = _mm256_load_si256(
+                    reinterpret_cast<const __m256i*>(held_shift));
+            }
             int64_t r = r0;
             for (; r + kFold <= r1; r += kFold) {
                 a = _mm256_mul_ps(
@@ -910,10 +1047,15 @@ void multiply_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
                 a = _mm256_mul_ps(a, b);
                 keep_totals_in_range(a, shift);
             }
-            rescale_totals(a, shift);
+            if (!carried) rescale_totals_wide(a, shift);
             _mm256_store_ps(held, a);
+            _mm256_store_si256(reinterpret_cast<__m256i*>(held_shift), shift);
             std::memcpy(acc + c, held,
                         static_cast<size_t>(keep) * sizeof(float));
+            if (carried) {
+                std::memcpy(shifts + c, held_shift,
+                            static_cast<size_t>(keep) * sizeof(int32_t));
+            }
         }
     }
 }
@@ -936,15 +1078,32 @@ inline std::optional<Tensor> try_product_leading_reduced(
     std::vector<std::vector<float>> partials(
         static_cast<size_t>(nthreads),
         std::vector<float>(static_cast<size_t>(cols), 1.f));
+    const int64_t rows_per_block =
+        std::max<int64_t>(16, 24576 / std::max<int64_t>(cols, 1));
+    const bool carried = rows > rows_per_block;
+    std::vector<std::vector<int32_t>> carried_shifts(
+        static_cast<size_t>(carried ? nthreads : 0),
+        std::vector<int32_t>(static_cast<size_t>(cols), 0));
     const int64_t row_grain =
         std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(cols, 1));
     parallel_for(0, rows, row_grain, [&](int64_t b, int64_t e) {
-        float* acc = partials[static_cast<size_t>(get_thread_num())].data();
-        if (half_width) {
-            multiply_rows_reduced<false>(in, b, e, cols, acc);
-        } else {
-            multiply_rows_reduced<true>(in, b, e, cols, acc);
+        const size_t worker = static_cast<size_t>(get_thread_num());
+        float* acc = partials[worker].data();
+        if (!carried) {
+            if (half_width) {
+                multiply_rows_reduced<false>(in, b, e, cols, acc, nullptr);
+            } else {
+                multiply_rows_reduced<true>(in, b, e, cols, acc, nullptr);
+            }
+            return;
         }
+        int32_t* shifts = carried_shifts[worker].data();
+        if (half_width) {
+            multiply_rows_reduced<false>(in, b, e, cols, acc, shifts);
+        } else {
+            multiply_rows_reduced<true>(in, b, e, cols, acc, shifts);
+        }
+        unravel_column_totals(acc, shifts, cols);
     });
     Tensor out = Tensor::empty(out_shape, input.dtype(), input.device());
     uint16_t* outp = half_width
