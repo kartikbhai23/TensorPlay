@@ -39,6 +39,8 @@ namespace cuda {
 Tensor div_kernel(const Tensor& self, const Tensor& other);
 Tensor sub_kernel(const Tensor& self, const Tensor& other,
                    const Scalar& alpha);
+Tensor rsub_scalar_kernel(const Tensor& self, const Scalar& other,
+                          const Scalar& alpha);
 
 namespace {
 

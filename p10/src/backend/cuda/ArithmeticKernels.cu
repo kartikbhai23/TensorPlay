@@ -2537,6 +2537,44 @@ Tensor sub_scalar_kernel(const Tensor& self, const Scalar& other, const Scalar& 
     return result;
 }
 
+// other - alpha * self.  The scalar rides in the functor at compute precision,
+// so the answer costs one pass over the tensor; staging the scalar into a
+// buffer of the tensor's own extent would only add two more.
+Tensor rsub_scalar_kernel(const Tensor& self, const Scalar& other,
+                          const Scalar& alpha) {
+    const DType dt = isFloatingType(other.dtype())
+                         ? (isFloatingType(self.dtype()) ? self.dtype()
+                                                         : DType::Float32)
+                         : self.dtype();
+    const bool folded = dt == DType::Float32 || dt == DType::Float64 ||
+                        dt == DType::Float16 || dt == DType::BFloat16 ||
+                        dt == DType::UInt8 || dt == DType::Int8 ||
+                        dt == DType::Int16 || dt == DType::Int32 ||
+                        dt == DType::Int64;
+    if (folded) {
+        Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
+                                      dt, self.device());
+        if (self.numel() == 0) return result;
+        Tensor a = (self.dtype() == dt) ? self : self.to(dt);
+        Tensor scalar_tensor({}, other, Device(DeviceType::CPU));
+        TensorIterator iter = TensorIteratorConfig()
+            .allow_cpu_scalars(true)
+            .check_all_same_dtype(false)
+            .add_output(result)
+            .add_input(scalar_tensor)
+            .add_input(a)
+            .build();
+        run_binary_iter<IterSubFunctor>(iter, alpha);
+        CUDA_CHECK(cudaGetLastError());
+        return result;
+    }
+    Tensor sc = self.to(dt).contiguous();
+    Tensor full = Tensor::full({}, other, dt, self.device())
+                      .expand(static_cast<std::vector<int64_t>>(sc.shape()))
+                      .contiguous();
+    return sub_kernel(full, sc, alpha);
+}
+
 Tensor& sub_scalar_inplace_kernel(Tensor& self, const Scalar& other, const Scalar& alpha) {
     if (self.numel() == 0) return self;
 

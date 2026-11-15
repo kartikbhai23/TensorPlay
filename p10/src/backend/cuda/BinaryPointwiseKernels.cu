@@ -28,14 +28,7 @@ namespace cuda {
 namespace {
 
 Tensor rsub_scalar_cuda(const Tensor& self, const Scalar& other, const Scalar& alpha) {
-    DType dt = isFloatingType(other.dtype())
-                   ? (isFloatingType(self.dtype()) ? self.dtype() : DType::Float32)
-                   : self.dtype();
-    Tensor sc = self.to(dt).contiguous();
-    Tensor full = Tensor::full({}, other, dt, self.device())
-                      .expand(shape_of(sc)).contiguous();
-    // other - alpha * self, routed through the shared subtract kernel.
-    return sub_kernel(full, sc, alpha);
+    return rsub_scalar_kernel(self, other, alpha);
 }
 
 Tensor rsub_tensor_cuda(const Tensor& self, const Tensor& other, const Scalar& alpha) {
