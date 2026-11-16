@@ -318,6 +318,55 @@ inline bool cpu_has_bf16() {
     static const bool ok = __builtin_cpu_supports("avx512bf16") != 0;
     return ok;
 }
+
+// An integral widening read eight elements at a time and extended four of them
+// to a register each: the extension is one instruction per half register, so a
+// byte becomes eight bytes at a rate the scalar walk cannot approach.  The
+// value of every element is unchanged, sign or zero extended by its own width.
+template <typename dst_t, typename src_t>
+__attribute__((target("avx2")))
+static void widen_int_simd(dst_t* dst, const src_t* src, int64_t n) {
+    constexpr int64_t k = 8;
+    int64_t i = 0;
+    for (; i + k <= n; i += k) {
+        __m256i lo;
+        __m256i hi;
+        if constexpr (sizeof(src_t) == 1) {
+            const __m128i raw = _mm_loadl_epi64(
+                reinterpret_cast<const __m128i*>(src + i));
+            if constexpr (std::is_unsigned_v<src_t>) {
+                lo = _mm256_cvtepu8_epi64(raw);
+                hi = _mm256_cvtepu8_epi64(_mm_srli_si128(raw, 4));
+            } else {
+                lo = _mm256_cvtepi8_epi64(raw);
+                hi = _mm256_cvtepi8_epi64(_mm_srli_si128(raw, 4));
+            }
+        } else if constexpr (sizeof(src_t) == 2) {
+            const __m128i raw = _mm_loadu_si128(
+                reinterpret_cast<const __m128i*>(src + i));
+            if constexpr (std::is_unsigned_v<src_t>) {
+                lo = _mm256_cvtepu16_epi64(raw);
+                hi = _mm256_cvtepu16_epi64(_mm_srli_si128(raw, 8));
+            } else {
+                lo = _mm256_cvtepi16_epi64(raw);
+                hi = _mm256_cvtepi16_epi64(_mm_srli_si128(raw, 8));
+            }
+        } else {
+            const __m256i raw = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(src + i));
+            if constexpr (std::is_unsigned_v<src_t>) {
+                lo = _mm256_cvtepu32_epi64(_mm256_castsi256_si128(raw));
+                hi = _mm256_cvtepu32_epi64(_mm256_extracti128_si256(raw, 1));
+            } else {
+                lo = _mm256_cvtepi32_epi64(_mm256_castsi256_si128(raw));
+                hi = _mm256_cvtepi32_epi64(_mm256_extracti128_si256(raw, 1));
+            }
+        }
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), lo);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i + 4), hi);
+    }
+    for (; i < n; ++i) dst[i] = cast_value<dst_t>(src[i]);
+}
 #endif // __x86_64__
 
 // Contiguous dtype-conversion cast; SIMD for the autocast-critical fp32
@@ -336,6 +385,9 @@ void cast_contiguous(dst_t* dst, const src_t* src, int64_t len) {
         }
     } else if constexpr (std::is_same_v<dst_t, float> && std::is_same_v<src_t, BFloat16>) {
         if (__builtin_cpu_supports("avx2")) { bf16_to_f32_simd(&src->x, dst, len); return; }
+    } else if constexpr (std::is_integral_v<dst_t> && sizeof(dst_t) == 8 &&
+                         std::is_integral_v<src_t> && sizeof(src_t) <= 4) {
+        if (__builtin_cpu_supports("avx2")) { widen_int_simd(dst, src, len); return; }
     }
 #endif
     for (int64_t i = 0; i < len; ++i)
