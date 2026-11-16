@@ -679,12 +679,22 @@ void accumulate_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
                 _mm256_add_ps(widen_row<BFloat>(r2 + c), widen_row<BFloat>(r3 + c)));
             _mm256_storeu_ps(acc + c, _mm256_add_ps(_mm256_loadu_ps(acc + c), sum));
         }
-        for (; c < cols; ++c) {
-            const auto one = [](const uint16_t* p) {
-                return BFloat ? tensorplay::cpu::vecreduced::widen_bf16_one(*p)
-                              : tensorplay::cpu::vecreduced::widen_one(*p);
-            };
-            acc[c] += ((one(r0 + c) + one(r1 + c)) + (one(r2 + c) + one(r3 + c)));
+        // A row that ends mid-band crosses its last few columns here.  The
+        // crossing is the instruction the rest of the walk uses, so it is
+        // written out at the width the walk holds rather than reached through
+        // a call that cannot be inlined into the loop.
+        if constexpr (BFloat) {
+            for (; c < cols; ++c) {
+                acc[c] += ((tensorplay::cpu::vecreduced::widen_bf16_one(r0[c]) +
+                            tensorplay::cpu::vecreduced::widen_bf16_one(r1[c])) +
+                           (tensorplay::cpu::vecreduced::widen_bf16_one(r2[c]) +
+                            tensorplay::cpu::vecreduced::widen_bf16_one(r3[c])));
+            }
+        } else {
+            for (; c < cols; ++c) {
+                acc[c] += ((_cvtsh_ss(r0[c]) + _cvtsh_ss(r1[c])) +
+                           (_cvtsh_ss(r2[c]) + _cvtsh_ss(r3[c])));
+            }
         }
     }
     for (; r < end; ++r) {
@@ -697,7 +707,7 @@ void accumulate_rows_reduced(const uint16_t* x, int64_t begin, int64_t end,
         }
         for (; c < cols; ++c) {
             acc[c] += BFloat ? tensorplay::cpu::vecreduced::widen_bf16_one(rp[c])
-                             : tensorplay::cpu::vecreduced::widen_one(rp[c]);
+                             : _cvtsh_ss(rp[c]);
         }
     }
 }
