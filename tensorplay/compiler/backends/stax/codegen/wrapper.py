@@ -1671,6 +1671,7 @@ class PythonWrapperCodegen(CodeGen):
                 operator_set = tp.ops.tp
                 framework_ops = tp.ops.stax
                 _empty_strided = tp._C.empty_strided
+                _as_strided = tp._C.as_strided
                 _device_cpu = tp.device("cpu")
                 _device_cuda = tp.device("cuda")
                 def empty_strided_cpu(size, stride, dtype, **kwargs):
@@ -1680,7 +1681,7 @@ class PythonWrapperCodegen(CodeGen):
                     return _empty_strided(size, stride, dtype=dtype, device=_device_cuda, **kwargs)
                 empty_strided_xpu = lambda *args, **kwargs: tp.empty_strided(*args, device="xpu", **kwargs)
                 empty_strided_mtia = lambda *args, **kwargs: tp.empty_strided(*args, device="mtia", **kwargs)
-                reinterpret_tensor = lambda t, size, stride, offset: tp.as_strided(t, size, stride, t.storage_offset() + offset)
+                reinterpret_tensor = lambda t, size, stride, offset: _as_strided(t, size, stride, t.storage_offset() + offset)
             """,
             strip=True,
         )

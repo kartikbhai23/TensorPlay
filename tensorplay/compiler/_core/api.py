@@ -946,10 +946,13 @@ def _state_roots(program: Any) -> tuple[list[Any], list[types.FunctionType]]:
             return
         if not callable(value):
             return
-        try:
-            function = inspect.unwrap(value)
-        except (TypeError, ValueError):
-            return
+        if isinstance(value, types.FunctionType) and "__wrapped__" not in value.__dict__:
+            function = value
+        else:
+            try:
+                function = inspect.unwrap(value)
+            except (TypeError, ValueError):
+                return
         if not isinstance(function, types.FunctionType):
             return
         if id(function) in seen_functions:
