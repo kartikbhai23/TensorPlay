@@ -2290,13 +2290,7 @@ def one_hot(tensor: Tensor, num_classes: int = -1) -> Tensor:
         captured = _capture_call(one_hot, (tensor, num_classes), {})
         if captured is not None:
             return captured
-    if num_classes < 0:
-        if tensor.numel() == 0:
-            raise RuntimeError("Cannot infer num classes from empty tensor")
-        num_classes = int(tensor.max().item()) + 1
-    t64 = tensor.to(DType.int64)
-    rng = tensorplay.arange(num_classes, dtype=DType.int64, device=tensor.device)
-    return t64.unsqueeze(-1).eq(rng).to(DType.int64)
+    return tensorplay.one_hot(tensor, num_classes)
 
 
 def sigmoid(input):

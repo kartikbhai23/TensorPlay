@@ -95,6 +95,24 @@ Tensor diff_cuda(const Tensor& self, int64_t n, int64_t dim, const std::optional
     return diff_helper(Tensor::cat(pieces, d), n, d);
 }
 
+// A one-hot row per block: thread j writes output[i*classes + j] = (j == v),
+// so the result is produced in one pass and one write per element.  The
+// alternative of materializing a bool equality tensor and converting it to
+// int64 costs a second pass over the full output; writing the final int64
+// value directly halves the traffic.
+template <typename T>
+__global__ void one_hot_kernel(int64_t n, int64_t num_classes, const T* input,
+                               int64_t* output) {
+    const int64_t i = static_cast<int64_t>(blockIdx.x);
+    if (i >= n) return;
+    const T v = input[i];
+    const int64_t base = i * num_classes;
+    for (int64_t j = static_cast<int64_t>(threadIdx.x); j < num_classes;
+         j += static_cast<int64_t>(blockDim.x)) {
+        output[base + j] = v == static_cast<T>(j) ? int64_t(1) : int64_t(0);
+    }
+}
+
 Tensor one_hot_cuda(const Tensor& self, int64_t num_classes) {
     if (self.dtype() != DType::Int64) {
         TP_THROW(RuntimeError, "one_hot is only applicable to index tensor of type LongTensor.");
@@ -105,11 +123,27 @@ Tensor one_hot_cuda(const Tensor& self, int64_t num_classes) {
         }
         num_classes = self.max().item().to<int64_t>() + 1;
     }
-    Tensor index = Tensor::arange(Scalar(static_cast<int64_t>(0)), Scalar(num_classes),
-                                  Scalar(static_cast<int64_t>(1)), DType::Int64, self.device());
+    TP_CHECK(num_classes >= 1, "num_classes should be positive");
     auto sizes = static_cast<std::vector<int64_t>>(self.shape());
-    sizes.push_back(1);
-    return eq_kernel_cuda(self.view(sizes), index).to(DType::Int64);
+    sizes.push_back(num_classes);
+    const int64_t n = self.numel();
+    if (n == 0) {
+        return Tensor::empty(sizes, DType::Int64, self.device());
+    }
+    Tensor input = self.contiguous();
+    Tensor result = Tensor::empty(sizes, DType::Int64, self.device());
+    constexpr int kBlock = 256;
+    constexpr int64_t kMaxBlocks = 2147483647;
+    const int64_t blocks = std::min<int64_t>(n, kMaxBlocks);
+    auto stream = getCurrentCUDAStream().stream();
+    one_hot_kernel<int64_t><<<static_cast<unsigned>(blocks), kBlock, 0, stream>>>(
+        n, num_classes, input.data_ptr<int64_t>(),
+        result.data_ptr<int64_t>());
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        TP_THROW(RuntimeError, std::string("CUDA Error: ") + cudaGetErrorString(error));
+    }
+    return result;
 }
 
 namespace {
