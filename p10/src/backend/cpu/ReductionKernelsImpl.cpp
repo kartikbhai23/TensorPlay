@@ -6743,6 +6743,73 @@ __m256i integral_step(const __m256i& a, const __m256i& b) {
     }
 }
 
+// One step of an integral extremum over half a register.
+template <typename ctype, bool WantMax>
+__attribute__((target("avx2"), always_inline)) inline
+__m128i integral_step128(const __m128i& a, const __m128i& b) {
+    if constexpr (sizeof(ctype) == 1) {
+        if constexpr (std::is_signed_v<ctype>) {
+            return WantMax ? _mm_max_epi8(a, b) : _mm_min_epi8(a, b);
+        } else {
+            return WantMax ? _mm_max_epu8(a, b) : _mm_min_epu8(a, b);
+        }
+    } else if constexpr (sizeof(ctype) == 2) {
+        if constexpr (std::is_signed_v<ctype>) {
+            return WantMax ? _mm_max_epi16(a, b) : _mm_min_epi16(a, b);
+        } else {
+            return WantMax ? _mm_max_epu16(a, b) : _mm_min_epu16(a, b);
+        }
+    } else if constexpr (sizeof(ctype) == 4) {
+        if constexpr (std::is_signed_v<ctype>) {
+            return WantMax ? _mm_max_epi32(a, b) : _mm_min_epi32(a, b);
+        } else {
+            return WantMax ? _mm_max_epu32(a, b) : _mm_min_epu32(a, b);
+        }
+    } else {
+        __m128i x = a;
+        __m128i y = b;
+        if constexpr (std::is_unsigned_v<ctype>) {
+            const __m128i sign =
+                _mm_set1_epi64x(std::numeric_limits<int64_t>::min());
+            x = _mm_xor_si128(x, sign);
+            y = _mm_xor_si128(y, sign);
+        }
+        const __m128i take_b =
+            WantMax ? _mm_cmpgt_epi64(y, x) : _mm_cmpgt_epi64(x, y);
+        return _mm_blendv_epi8(a, b, take_b);
+    }
+}
+
+// The lanes of a register reduced to their one extremum without leaving the
+// registers: the halves are compared against each other until a single lane
+// holds the answer.  A walk that reads its answer back from memory pays a
+// store-forwarding step for every row it answers.
+template <typename ctype, bool WantMax>
+__attribute__((target("avx2"), always_inline)) inline
+ctype integral_horizontal(const __m256i& v) {
+    __m128i m = integral_step128<ctype, WantMax>(
+        _mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
+    if constexpr (sizeof(ctype) == 8) {
+        // One lane already holds the answer: the two halves are four bytes.
+        const __m128i hi = _mm_unpackhi_epi64(m, m);
+        const ctype answer = static_cast<ctype>(_mm_cvtsi128_si64(
+            integral_step128<ctype, WantMax>(m, hi)));
+        return answer;
+    }
+    m = integral_step128<ctype, WantMax>(m, _mm_shuffle_epi32(m, 0x4E));
+    m = integral_step128<ctype, WantMax>(m, _mm_shuffle_epi32(m, 0xB1));
+    if constexpr (sizeof(ctype) == 4) {
+        return static_cast<ctype>(_mm_cvtsi128_si32(m));
+    } else if constexpr (sizeof(ctype) == 2) {
+        m = integral_step128<ctype, WantMax>(m, _mm_srli_si128(m, 2));
+        return static_cast<ctype>(_mm_extract_epi16(m, 0));
+    } else {
+        m = integral_step128<ctype, WantMax>(m, _mm_srli_si128(m, 2));
+        m = integral_step128<ctype, WantMax>(m, _mm_srli_epi16(m, 8));
+        return static_cast<ctype>(_mm_cvtsi128_si32(m) & 0xFF);
+    }
+}
+
 // The rows of a run answered with four accumulators so that the compare is not
 // a single dependent chain; the lanes are combined once per row and the
 // columns past the last full band are compared one at a time.
@@ -6779,9 +6846,7 @@ void fold_integral_rows(const ctype* in, int64_t run, int64_t begin,
             const __m256i held = integral_step<ctype, WantMax>(
                 integral_step<ctype, WantMax>(a0, a1),
                 integral_step<ctype, WantMax>(a2, a3));
-            alignas(32) ctype lanes[W];
-            _mm256_store_si256(reinterpret_cast<__m256i*>(lanes), held);
-            for (int64_t k = 0; k < W; ++k) best = pick(best, lanes[k]);
+            best = pick(best, integral_horizontal<ctype, WantMax>(held));
         }
         for (; i < run; ++i) best = pick(best, p[i]);
         out[r] = best;
@@ -7711,16 +7776,57 @@ bool fold_narrow_extrema(Tensor& result, const Tensor& self, int64_t ndim,
     ctype* out = result.data_ptr<ctype>();
     if constexpr (kReal) {
         constexpr int64_t W = Vectorized<ctype>::size();
-        if (inner > 4 * W) return false;
-        if (maximum_value) {
-            extrema_narrow_real_dispatch<ctype, true>(data, out, outer, red, inner);
-        } else {
-            extrema_narrow_real_dispatch<ctype, false>(data, out, outer, red, inner);
+        if (inner <= 4 * W) {
+            if (maximum_value) {
+                extrema_narrow_real_dispatch<ctype, true>(data, out, outer, red,
+                                                          inner);
+            } else {
+                extrema_narrow_real_dispatch<ctype, false>(data, out, outer, red,
+                                                           inner);
+            }
+            return true;
+        }
+        // A slice wider than four registers is walked one block of outer
+        // indices at a time: every element of the slice is read once and its
+        // column totals stay in registers over a group of rows, which the
+        // iterator only approaches after building its own layout.
+        if (red * inner * static_cast<int64_t>(sizeof(ctype)) > 32768) {
+            return false;
+        }
+        for (int64_t o = 0; o < outer; ++o) {
+            const ctype* block = data + o * red * inner;
+            ctype* acc = out + o * inner;
+            if (maximum_value) {
+                fold_leading_block<ctype, true>(block, acc, inner, 0, red);
+            } else {
+                fold_leading_block<ctype, false>(block, acc, inner, 0, red);
+            }
         }
         return true;
     } else if constexpr (kReduced) {
 #if defined(__x86_64__)
-        if (inner > 32) return false;
+        if (inner > 32) {
+            // The same over a packed width: a slice that fits the nearest
+            // cache is folded a whole block of outer indices at a time, one
+            // band of widened columns at a time.
+            if (!tensorplay::cpu::vecreduced::f16c_available()) return false;
+            if (red * inner * 2 > 32768) return false;
+            constexpr bool kBFloat = std::is_same_v<ctype, tensorplay::BFloat16>;
+            const uint16_t* bits = reinterpret_cast<const uint16_t*>(data);
+            uint16_t* obits = reinterpret_cast<uint16_t*>(out);
+            for (int64_t o = 0; o < outer; ++o) {
+                const uint16_t* block = bits + o * red * inner;
+                uint16_t* acc = obits + o * inner;
+                if (maximum_value) {
+                    fold_leading_block_hw<kBFloat, true>(block, acc, inner, 0,
+                                                         red);
+                } else {
+                    fold_leading_block_hw<kBFloat, false>(block, acc, inner, 0,
+                                                          red);
+                }
+            }
+            return true;
+        }
         if (!tensorplay::cpu::vecreduced::f16c_available()) return false;
         constexpr bool kBFloat = std::is_same_v<ctype, tensorplay::BFloat16>;
         const uint16_t* bits = reinterpret_cast<const uint16_t*>(data);
