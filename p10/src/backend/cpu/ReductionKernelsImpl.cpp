@@ -5305,6 +5305,157 @@ inline std::optional<Tensor> try_sum_middle_int(
     return out;
 }
 
+// Four factors of one row widened into the wide integer, so that a band of
+// columns is multiplied in the width its answer is kept in.
+template <typename T>
+__attribute__((target("avx2"), always_inline)) inline
+__m256i load_widen_i64(const T* p) {
+    if constexpr (sizeof(T) == 8) {
+        return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+    } else if constexpr (sizeof(T) == 4) {
+        const __m128i raw =
+            _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+        if constexpr (std::is_unsigned_v<T>) {
+            return _mm256_cvtepu32_epi64(raw);
+        } else {
+            return _mm256_cvtepi32_epi64(raw);
+        }
+    } else if constexpr (sizeof(T) == 2) {
+        const __m128i raw =
+            _mm_loadl_epi64(reinterpret_cast<const __m128i*>(p));
+        if constexpr (std::is_unsigned_v<T>) {
+            return _mm256_cvtepu16_epi64(raw);
+        } else {
+            return _mm256_cvtepi16_epi64(raw);
+        }
+    } else {
+        int32_t word;
+        std::memcpy(&word, p, sizeof(word));
+        const __m128i raw = _mm_cvtsi32_si128(word);
+        if constexpr (std::is_unsigned_v<T>) {
+            return _mm256_cvtepu8_epi64(raw);
+        } else {
+            return _mm256_cvtepi8_epi64(raw);
+        }
+    }
+}
+
+// The low 64 bits of each lane's product: the low halves multiplied as 32-bit
+// unsigned products plus the two cross terms shifted into place.
+__attribute__((target("avx2"), always_inline)) inline
+__m256i mul_i64_low(const __m256i& a, const __m256i& b) {
+    const __m256i low = _mm256_mul_epu32(a, b);
+    const __m256i cross =
+        _mm256_add_epi64(_mm256_mul_epu32(_mm256_srli_epi64(a, 32), b),
+                         _mm256_mul_epu32(a, _mm256_srli_epi64(b, 32)));
+    return _mm256_add_epi64(low, _mm256_slli_epi64(cross, 32));
+}
+
+// A middle axis of an integral tensor multiplied into the wide integer its
+// answer is kept in.  Each plane of rows is multiplied where it lies, a band of
+// eight columns at a time, and the products wrap in that width, so the answer
+// is the exact product modulo it.
+template <typename T>
+__attribute__((target("avx2"), noinline))
+static void prod_middle_int_span(const T* in, int64_t* outp, int64_t red,
+                                 int64_t inner, int64_t begin, int64_t end) {
+    for (int64_t o = begin; o < end; ++o) {
+        const T* plane = in + o * red * inner;
+        int64_t* acc = outp + o * inner;
+        int64_t c = 0;
+        for (; c + 8 <= inner; c += 8) {
+            __m256i lo = load_widen_i64(plane + c);
+            __m256i hi = load_widen_i64(plane + c + 4);
+            for (int64_t r = 1; r < red; ++r) {
+                const T* row = plane + r * inner + c;
+                lo = mul_i64_low(lo, load_widen_i64(row));
+                hi = mul_i64_low(hi, load_widen_i64(row + 4));
+            }
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + c), lo);
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + c + 4), hi);
+        }
+        for (; c < inner; ++c) {
+            uint64_t total = static_cast<uint64_t>(plane[c]);
+            for (int64_t r = 1; r < red; ++r) {
+                total *= static_cast<uint64_t>(plane[r * inner + c]);
+            }
+            acc[c] = static_cast<int64_t>(total);
+        }
+    }
+}
+
+template <typename T>
+static void prod_middle_int(const Tensor& input, int64_t* outp, int64_t outer,
+                            int64_t red, int64_t inner) {
+    const T* in = reinterpret_cast<const T*>(input.data_ptr());
+    const int64_t grain =
+        std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(red * inner, 1));
+    if (get_num_threads() == 1 || in_parallel_region() ||
+        outer * red * inner < GRAIN_SIZE) {
+        prod_middle_int_span<T>(in, outp, red, inner, 0, outer);
+        return;
+    }
+    parallel_for(0, outer, grain, [&](int64_t b, int64_t e) {
+        prod_middle_int_span<T>(in, outp, red, inner, b, e);
+    });
+}
+
+// The same guards as the middle-axis sum: a plane that stays in the
+// first-level cache is walked band by band, and beyond it only a plane whose
+// rows fill whole cache lines is, so no pass re-reads a line for a fragment.
+inline std::optional<Tensor> try_prod_middle_int(
+        const Tensor& input, const std::vector<int64_t>& out_shape,
+        int64_t axis) {
+    const DType dt = input.dtype();
+    if (!input.is_contiguous() || !isIntegralType(dt, true)) {
+        return std::nullopt;
+    }
+    const int64_t rank = input.dim();
+    if (rank < 3 || axis <= 0 || axis >= rank - 1) return std::nullopt;
+    int64_t outer = 1;
+    int64_t inner = 1;
+    for (int64_t i = 0; i < axis; ++i) outer *= input.size(i);
+    for (int64_t i = axis + 1; i < rank; ++i) inner *= input.size(i);
+    const int64_t red = input.size(axis);
+    if (outer < 1 || red < 1 || inner < 1) return std::nullopt;
+    const int64_t itemsize = static_cast<int64_t>(elementSize(dt));
+    if (red * inner * itemsize > 32768 && inner * itemsize < 64) {
+        return std::nullopt;
+    }
+    Tensor out = Tensor::empty(out_shape, DType::Int64, input.device());
+    int64_t* outp = out.data_ptr<int64_t>();
+    switch (dt) {
+        case DType::UInt8:
+        case DType::Bool:
+            prod_middle_int<uint8_t>(input, outp, outer, red, inner);
+            break;
+        case DType::Int8:
+            prod_middle_int<int8_t>(input, outp, outer, red, inner);
+            break;
+        case DType::Int16:
+            prod_middle_int<int16_t>(input, outp, outer, red, inner);
+            break;
+        case DType::UInt16:
+            prod_middle_int<uint16_t>(input, outp, outer, red, inner);
+            break;
+        case DType::Int32:
+            prod_middle_int<int32_t>(input, outp, outer, red, inner);
+            break;
+        case DType::UInt32:
+            prod_middle_int<uint32_t>(input, outp, outer, red, inner);
+            break;
+        case DType::Int64:
+            prod_middle_int<int64_t>(input, outp, outer, red, inner);
+            break;
+        case DType::UInt64:
+            prod_middle_int<uint64_t>(input, outp, outer, red, inner);
+            break;
+        default:
+            return std::nullopt;
+    }
+    return out;
+}
+
 Tensor sum_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims, bool keepdim, DType dtype) {
     DType out_dtype = dtype;
     if (out_dtype == DType::Undefined) {
@@ -8863,8 +9014,24 @@ Tensor prod_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims
     }
     
     std::vector<int64_t> out_shape = compute_reduction_shape(self, dims, keepdim);
+
+    // An integral tensor reduced over a middle axis keeps each plane of rows
+    // contiguous, so the planes are multiplied where they lie instead of
+    // through a converted copy of the whole input.
+    if (dims.size() == 1 && out_dtype == DType::Int64) {
+        const int64_t rank = self.dim();
+        const int64_t axis = dims[0] < 0 ? dims[0] + rank : dims[0];
+        if (rank >= 3 && axis > 0 && axis < rank - 1 &&
+            self.is_contiguous()) {
+            if (std::optional<Tensor> direct =
+                    try_prod_middle_int(self, out_shape, axis)) {
+                return std::move(*direct);
+            }
+        }
+    }
+
     Tensor out = Tensor::empty(out_shape, out_dtype, self.device());
-    
+
     Tensor self_in = self;
     if (self.dtype() != out_dtype) {
         self_in = self.to(out_dtype);
