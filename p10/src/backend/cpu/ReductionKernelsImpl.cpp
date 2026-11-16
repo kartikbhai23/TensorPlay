@@ -6929,6 +6929,44 @@ inline ctype fold_run_integral(const ctype* data, int64_t n) {
 }
 
 #if defined(CPU_CAPABILITY_AVX2)
+// One extremum step between two registers of any integral width, chosen at
+// compile time so the sign of the element and the instruction exist.
+template <typename ctype, bool WantMax>
+__attribute__((target("avx2"), always_inline)) inline
+__m256i extrema_reg_step(const __m256i& a, const __m256i& b) {
+    if constexpr (sizeof(ctype) == 1) {
+        if constexpr (std::is_signed_v<ctype>) {
+            return WantMax ? _mm256_max_epi8(a, b) : _mm256_min_epi8(a, b);
+        } else {
+            return WantMax ? _mm256_max_epu8(a, b) : _mm256_min_epu8(a, b);
+        }
+    } else if constexpr (sizeof(ctype) == 2) {
+        if constexpr (std::is_signed_v<ctype>) {
+            return WantMax ? _mm256_max_epi16(a, b) : _mm256_min_epi16(a, b);
+        } else {
+            return WantMax ? _mm256_max_epu16(a, b) : _mm256_min_epu16(a, b);
+        }
+    } else if constexpr (sizeof(ctype) == 4) {
+        if constexpr (std::is_signed_v<ctype>) {
+            return WantMax ? _mm256_max_epi32(a, b) : _mm256_min_epi32(a, b);
+        } else {
+            return WantMax ? _mm256_max_epu32(a, b) : _mm256_min_epu32(a, b);
+        }
+    } else {
+        __m256i x = a;
+        __m256i y = b;
+        if constexpr (std::is_unsigned_v<ctype>) {
+            const __m256i sign =
+                _mm256_set1_epi64x(std::numeric_limits<int64_t>::min());
+            x = _mm256_xor_si256(x, sign);
+            y = _mm256_xor_si256(y, sign);
+        }
+        const __m256i take =
+            WantMax ? _mm256_cmpgt_epi64(y, x) : _mm256_cmpgt_epi64(x, y);
+        return _mm256_blendv_epi8(a, b, take);
+    }
+}
+
 // The identity of an integral extremum, broadcast in the width it is carried in.
 template <typename ctype>
 __attribute__((target("avx2,fma,f16c"), always_inline)) inline
@@ -7052,6 +7090,63 @@ ctype integral_horizontal(const __m256i& v) {
         return static_cast<ctype>(_mm_cvtsi128_si32(m) & 0xFF);
     }
 }
+
+// A trailing run of any integral width folded with four register chains, so a
+// row keeps its compares in flight instead of waiting on one dependent chain,
+// and the answer is reduced from the registers instead of being read back from
+// a slice written once per row.
+template <typename ctype, bool WantMax>
+__attribute__((target("avx2"), noinline))
+void fold_integral_rows_reg(const ctype* in, int64_t run, int64_t begin,
+                            int64_t end, ctype* out) {
+    constexpr int64_t W = 32 / sizeof(ctype);
+    for (int64_t r = begin; r < end; ++r) {
+        const ctype* p = in + r * run;
+        int64_t i = 0;
+        ctype best = extrema_identity<ctype>(WantMax);
+        if (run >= W) {
+            __m256i a0 = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(p));
+            __m256i a1 = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(p + W));
+            __m256i a2 = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(p + 2 * W));
+            __m256i a3 = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(p + 3 * W));
+            i = 4 * W;
+            for (; i + 4 * W <= run; i += 4 * W) {
+                a0 = extrema_reg_step<ctype, WantMax>(
+                    a0, _mm256_loadu_si256(
+                            reinterpret_cast<const __m256i*>(p + i)));
+                a1 = extrema_reg_step<ctype, WantMax>(
+                    a1, _mm256_loadu_si256(
+                            reinterpret_cast<const __m256i*>(p + i + W)));
+                a2 = extrema_reg_step<ctype, WantMax>(
+                    a2, _mm256_loadu_si256(
+                            reinterpret_cast<const __m256i*>(p + i + 2 * W)));
+                a3 = extrema_reg_step<ctype, WantMax>(
+                    a3, _mm256_loadu_si256(
+                            reinterpret_cast<const __m256i*>(p + i + 3 * W)));
+            }
+            for (; i + W <= run; i += W) {
+                a0 = extrema_reg_step<ctype, WantMax>(
+                    a0, _mm256_loadu_si256(
+                            reinterpret_cast<const __m256i*>(p + i)));
+            }
+            const __m256i held = extrema_reg_step<ctype, WantMax>(
+                extrema_reg_step<ctype, WantMax>(a0, a1),
+                extrema_reg_step<ctype, WantMax>(a2, a3));
+            best = integral_horizontal<ctype, WantMax>(held);
+        }
+        const int64_t tail = run - i;
+        for (int64_t k = 0; k < tail; ++k) {
+            best = WantMax ? (best < p[i + k] ? p[i + k] : best)
+                           : (p[i + k] < best ? p[i + k] : best);
+        }
+        out[r] = best;
+    }
+}
+
 
 // The rows of a run answered with four accumulators so that the compare is not
 // a single dependent chain; the lanes are combined once per row and the
@@ -7215,11 +7310,24 @@ bool fold_trailing_extrema(Tensor& result, const Tensor& self, int64_t ndim,
         // plain compare and needs no identity at all; each row is read as one
         // run rather than element by element.
 #if defined(CPU_CAPABILITY_AVX2)
+        // Four register chains fold the row without a round trip through a
+        // staging slice, so a run of wide elements streams at the speed of its
+        // compares.  A run too short to fill four chains keeps the memory
+        // fold, which then touches no stack at all.
+        const bool short_run = run < 8 * (32 / sizeof(ctype));
         auto fold_rows = [&](int64_t begin, int64_t end) {
+            if (short_run) {
+                if (maximum_value) {
+                    fold_integral_rows<ctype, true>(data, run, begin, end, out);
+                } else {
+                    fold_integral_rows<ctype, false>(data, run, begin, end, out);
+                }
+                return;
+            }
             if (maximum_value) {
-                fold_integral_rows<ctype, true>(data, run, begin, end, out);
+                fold_integral_rows_reg<ctype, true>(data, run, begin, end, out);
             } else {
-                fold_integral_rows<ctype, false>(data, run, begin, end, out);
+                fold_integral_rows_reg<ctype, false>(data, run, begin, end, out);
             }
         };
 #else
