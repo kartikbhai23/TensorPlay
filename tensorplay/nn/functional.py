@@ -1785,16 +1785,11 @@ def max_pool1d(
         return max_pool1d_with_indices(
             input, kernel_size, stride=stride, padding=padding,
             dilation=dilation, ceil_mode=ceil_mode)
-    unbatched = input.dim() == 2
-    x = input.unsqueeze(0) if unbatched else input
     k = _single(kernel_size)[0]
     s = k if stride is None else _single(stride)[0]
     p = _single(padding)[0]
     d = _single(dilation)[0]
-    out = max_pool2d(
-        x.unsqueeze(3), (k, 1), (s, 1), (p, 0), (d, 1), ceil_mode,
-    ).squeeze(3)
-    return out.squeeze(0) if unbatched else out
+    return _C.max_pool1d(input, [k], [s], [p], [d], ceil_mode)
 
 
 def adaptive_avg_pool1d(input: Tensor, output_size) -> Tensor:
