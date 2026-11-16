@@ -306,7 +306,7 @@ __device__ inline void topk_radix_select(
     const T* data, IndexType k, bool largest, IndexType slice_size,
     IndexType within_slice_stride, IndexType* smem, T* top_k) {
   using Key = typename TopKRadixTraits<T>::key_type;
-  constexpr int radix_bits = 4;
+  constexpr int radix_bits = 2;
   constexpr int radix_size = 1 << radix_bits;
   constexpr int radix_mask = radix_size - 1;
   IndexType counts[radix_size];
