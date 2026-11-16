@@ -9302,6 +9302,23 @@ Tensor prod_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims
                 }
             }
         }
+        // A leading axis of real rows is multiplied where it lies: the rows
+        // stream once into per-column totals, so no output element is walked a
+        // second time to reach its own column.
+        if (dim == 0 && input.dtype() == out_dtype &&
+            (out_dtype == DType::Float32 || out_dtype == DType::Float64) &&
+            d_size >= 2) {
+            if (out_dtype == DType::Float32) {
+                product_band_tree_rows<float>(input.data_ptr<float>(),
+                                              out.data_ptr<float>(), outer,
+                                              d_size, inner);
+            } else {
+                product_band_tree_rows<double>(input.data_ptr<double>(),
+                                               out.data_ptr<double>(), outer,
+                                               d_size, inner);
+            }
+            return out;
+        }
         if (inner == 1 && try_product_lastdim_real_avx512(
                 input.data_ptr(), out.data_ptr(), outer, d_size, input.dtype())) {
             return out;
