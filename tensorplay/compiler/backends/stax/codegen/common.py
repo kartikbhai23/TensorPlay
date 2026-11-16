@@ -154,7 +154,7 @@ class CudaDeviceOpOverrides(DeviceOpOverrides):
         return "tp.cuda.synchronize()"
 
     def device_guard(self, device_idx) -> str:
-        return f"tp.cuda.device({device_idx})"
+        return f"tp.cuda._DeviceGuard({device_idx})"
 
     def current_device_idx_expr(self) -> str:
         return "tp.cuda.current_device()"

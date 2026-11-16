@@ -96,7 +96,8 @@ def _exchange_device(device: int) -> int:
     if device < 0:
         return -1
     prev = current_device()
-    set_device(device)
+    if prev != device:
+        _lcuda.set_device(device)
     return prev
 
 
@@ -104,7 +105,8 @@ def _maybe_exchange_device(device: int) -> int:
     if device < 0:
         return -1
     prev = current_device()
-    set_device(device)
+    if prev != device:
+        _lcuda.set_device(device)
     return prev
 
 
