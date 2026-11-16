@@ -341,6 +341,31 @@ __global__ void glu_backward_fused_kernel(index_t n, index_t block,
     out[a_off + block] = static_cast<T>(g * a * sig * (one - sig));
 }
 
+// A split along the only axis leaves the two halves as two contiguous runs,
+// so a thread can take four output elements with one wide load from each half
+// instead of two scalar loads per element.  The wide path needs the halves to
+// be four-element aligned; the caller checks that before choosing it.
+__global__ void glu_fused_vec_f32_kernel(int n, int block, const float* src,
+                                         float* out) {
+    const int stride = static_cast<int>(blockDim.x) * gridDim.x * 4;
+    for (int li = blockIdx.x * blockDim.x * 4 + threadIdx.x * 4; li < n;
+         li += stride) {
+        if (li + 4 <= n) {
+            const float4 a = *reinterpret_cast<const float4*>(src + li);
+            const float4 b = *reinterpret_cast<const float4*>(src + li + block);
+            const float4 r = {a.x / (1.0f + ::expf(-b.x)),
+                              a.y / (1.0f + ::expf(-b.y)),
+                              a.z / (1.0f + ::expf(-b.z)),
+                              a.w / (1.0f + ::expf(-b.w))};
+            *reinterpret_cast<float4*>(out + li) = r;
+        } else {
+            for (int j = 0; li + j < n; ++j) {
+                out[li + j] = src[li + j] / (1.0f + ::expf(-src[li + j + block]));
+            }
+        }
+    }
+}
+
 }  // namespace
 
 Tensor glu_cuda(const Tensor& self, int64_t dim) {
@@ -375,6 +400,22 @@ Tensor glu_cuda(const Tensor& self, int64_t dim) {
         constexpr int64_t kGluThreads = 256;
         const unsigned blocks = static_cast<unsigned>((n + kGluThreads - 1) / kGluThreads);
         const dim3 block(kGluThreads);
+        // When the split axis is the only one, the two halves are two
+        // contiguous runs and a wide load per half feeds four elements at
+        // once.  The wide path needs both halves four-element aligned.
+        const int64_t outer = self.numel() / (nIn * inner);
+        if (self.dtype() == DType::Float32 && outer == 1 &&
+            (block_len % 4) == 0 &&
+            n <= static_cast<int64_t>(std::numeric_limits<int32_t>::max()) &&
+            block_len <= static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+            constexpr int kVecThreads = 256;
+            const int chunks = static_cast<int>((n / 4 + kVecThreads - 1) / kVecThreads);
+            glu_fused_vec_f32_kernel<<<chunks, kVecThreads, 0, stream>>>(
+                static_cast<int>(n), static_cast<int>(block_len),
+                self.data_ptr<float>(), out.data_ptr<float>());
+            checkCuda(cudaGetLastError(), "glu vec kernel");
+            return out;
+        }
 #define TP_GLU(name_, ctype, acc_) \
     case DType::name_: { \
         const ctype* source = self.data_ptr<ctype>(); \
