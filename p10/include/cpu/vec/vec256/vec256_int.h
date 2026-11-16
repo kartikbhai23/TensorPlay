@@ -1315,8 +1315,17 @@ template <>
 Vectorized<int64_t> inline operator*(
     const Vectorized<int64_t>& a,
     const Vectorized<int64_t>& b) {
-  // No AVX2 64-bit multiply; emulate with the compiler-vectorized loop.
-  return int_elementwise_binary_256(a, b, std::multiplies<int64_t>());
+  // The full 64-bit products of the low halves, plus the two cross terms
+  // shifted into their place: the low 64 bits of a product are the low 64 bits
+  // of that sum, so the answer is exact for every pair of values.
+  const __m256i x = static_cast<__m256i>(a);
+  const __m256i y = static_cast<__m256i>(b);
+  const __m256i low = _mm256_mul_epu32(x, y);
+  const __m256i cross =
+      _mm256_add_epi64(_mm256_mul_epu32(_mm256_srli_epi64(x, 32), y),
+                       _mm256_mul_epu32(x, _mm256_srli_epi64(y, 32)));
+  return Vectorized<int64_t>(
+      _mm256_add_epi64(low, _mm256_slli_epi64(cross, 32)));
 }
 
 template <>
