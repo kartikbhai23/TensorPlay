@@ -109,6 +109,25 @@ std::vector<int64_t> compute_reduction_shape(const Tensor& self, const std::vect
     return out_shape;
 }
 
+// True when the named dimensions are exactly every axis of an ndim tensor, so
+// the reduction spans the whole payload.  The axes are tracked in a bitmask,
+// which also rejects a repeated axis.
+inline bool names_every_axis(const std::vector<int64_t>& dims, int64_t ndim) {
+    if (ndim <= 0 || ndim > 63 ||
+        static_cast<int64_t>(dims.size()) != ndim) {
+        return false;
+    }
+    uint64_t seen = 0;
+    for (int64_t d : dims) {
+        const int64_t rank = d < 0 ? d + ndim : d;
+        if (rank < 0 || rank >= ndim) return false;
+        const uint64_t bit = uint64_t(1) << rank;
+        if ((seen & bit) != 0) return false;
+        seen |= bit;
+    }
+    return seen == ((uint64_t(1) << ndim) - 1);
+}
+
 // ndim, inserting size-1 dims with stride 0 at the reduced positions so the
 // iterator can identify the reduced dims from the output's strides.
 Tensor review_reduce_result(const Tensor& result, int64_t ndim, const std::vector<bool>& mask, bool keepdim) {
@@ -5658,6 +5677,16 @@ Tensor sum_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims,
         return sum_kernel_impl(self, dtype);
     }
 
+    // Dimensions that name every axis still ask for one number: the flat walk
+    // answers that without the per-element iterator, and keepdim only re-cuts
+    // the answer to a shape of ones.
+    if (names_every_axis(dims, self.dim())) {
+        Tensor full = sum_kernel_impl(self, dtype);
+        if (!keepdim) return full;
+        return full.reshape(
+            std::vector<int64_t>(static_cast<size_t>(self.dim()), 1));
+    }
+
     if (std::optional<Tensor> permuted = review_permuted_reduction(
             self, dims, keepdim,
             [&](const Tensor& dense, const std::vector<int64_t>& dense_dims) {
@@ -9450,6 +9479,15 @@ Tensor prod_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims
     
     if (dims.empty()) {
         return prod_kernel_impl(self, dtype);
+    }
+
+    // Every axis named is the whole tensor, which the flat product walk
+    // answers without the per-element iterator.
+    if (names_every_axis(dims, self.dim())) {
+        Tensor full = prod_kernel_impl(self, dtype);
+        if (!keepdim) return full;
+        return full.reshape(
+            std::vector<int64_t>(static_cast<size_t>(self.dim()), 1));
     }
     
     std::vector<int64_t> out_shape = compute_reduction_shape(self, dims, keepdim);
