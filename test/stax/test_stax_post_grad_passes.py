@@ -210,3 +210,28 @@ def test_cat_prefix_outside_first_input_keeps_both_joins(width):
     actual, seen = _compiled_order(fn, a, b)
     assert actual.tolist() == expected.tolist()
     assert seen[-1].count(tp.ops.tp.cat.default) == 2
+
+
+@pytest.mark.parametrize("dtype", [tp.float32, tp.int32, tp.float64])
+def test_cat_prefix_rewrite_preserves_values_for_noncontiguous_inputs(dtype):
+    def fn(a, b):
+        joined = tp.cat([a, b], 1)
+        return tp.cat([joined, joined[:, :3]], 1) + 2
+
+    a = tp.arange(30, dtype=dtype).reshape(5, 6).transpose(0, 1)
+    b = tp.arange(18, dtype=dtype).reshape(3, 6).transpose(0, 1)
+    actual, _ = _compiled_order(fn, a, b)
+    assert actual.tolist() == fn(a, b).tolist()
+
+
+def test_cat_prefix_rewrite_handles_mixed_types():
+    def fn(a, b):
+        joined = tp.cat([a, b], 1)
+        return tp.cat([joined, joined[:, :2]], 1)
+
+    a = tp.arange(6, dtype=tp.int32).reshape(2, 3)
+    b = tp.ones((2, 4))
+    actual, _ = _compiled_order(fn, a, b)
+    expected = fn(a, b)
+    assert actual.dtype == expected.dtype
+    assert actual.tolist() == expected.tolist()

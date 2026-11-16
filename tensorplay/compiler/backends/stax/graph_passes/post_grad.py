@@ -1,6 +1,7 @@
 import operator
 from typing import Any
 
+import sympy
 import tensorplay as tp
 from tensorplay.graph import Graph, Node, map_arg
 from tensorplay.graph.experimental.symbolic_shapes import statically_known_true, sym_eq
@@ -329,12 +330,20 @@ def _prefix_fits_first_cat_input(match: Match) -> bool:
 )
 def cat_slice_cat(match, cat_input, size):
     from ..op_lowerings import lower_cat, slice_
+    from ..ir import ConcatKernel, TensorBox
 
     first, *rest = cat_input
-    return lower_cat([first, *rest, slice_(first, 1, 0, size)], 1)
+    inputs = [first, *rest, slice_(first, 1, 0, size)]
+    if (
+        first.get_device().type == "cpu"
+        and all(value.get_dtype() == first.get_dtype() for value in inputs)
+        and all(sympy.sympify(value.get_size()[1]).is_positive is True for value in inputs)
+    ):
+        return TensorBox(ConcatKernel.create(inputs, 1))
+    return lower_cat(inputs, 1)
 
 
-cat_slice_cat._tp_cache_key = "cat_slice_cat_v1"
+cat_slice_cat._tp_cache_key = "cat_slice_cat_v2"
 
 
 #: The two ways a value is cut into pieces of given sizes: one takes the sizes
