@@ -12,7 +12,9 @@
 #include "MemoryFormat.h"
 #include "tensorplay/ops/TPXOpsGenerated.h"
 #include <cmath>
+#include <cstring>
 #include <algorithm>
+#include <vector>
 #include "OutWrite.h"
 #include "cpu/UpsampleKernels.h"
 
@@ -130,6 +132,70 @@ inline std::vector<int64_t> grad_input_shape(const Tensor& grad_output,
     return input_size;
 }
 
+// One resampled axis: the source index of every output position, plus the
+// shape that index sequence turned out to have.  Nearest never needs a weight,
+// so a table of indices is the whole plan; a sequence that is a plain copy or a
+// constant run of repeats is recorded as such instead of walked.
+struct NearestAxis {
+    std::vector<int64_t> map;   // empty when `run` describes the sequence
+    int64_t src_size = 0;
+    int64_t dst_size = 0;
+    int64_t run = 1;            // 1: copy, >1: each source index covers `run`
+                                // outputs in order, 0: read `map`
+};
+
+inline NearestAxis nearest_axis(float scale, int64_t src_size, int64_t dst_size) {
+    NearestAxis ax;
+    ax.src_size = src_size;
+    ax.dst_size = dst_size;
+    if (src_size == dst_size || src_size <= 0) {
+        ax.run = 1;
+        return ax;
+    }
+    ax.run = 0;
+    ax.map.resize(static_cast<size_t>(dst_size));
+    for (int64_t i = 0; i < dst_size; ++i)
+        ax.map[i] = nearest_neighbor_compute_source_index(scale, i, src_size);
+    if (dst_size % src_size != 0) return ax;
+    const int64_t run = dst_size / src_size;
+    if (run <= 1) return ax;
+    for (int64_t i = 0; i < src_size; ++i) {
+        for (int64_t k = 0; k < run; ++k) {
+            if (ax.map[i * run + k] != i) return ax;
+        }
+    }
+    ax.run = run;
+    return ax;
+}
+
+// The source index of one output position of an axis.
+inline int64_t axis_index(const NearestAxis& ax, int64_t i) {
+    if (ax.run == 1) return i;
+    return ax.map[static_cast<size_t>(i)];
+}
+
+// One output row from one source row when the axis is the last dimension: the
+// row is covered either by a straight copy, by a source element repeated over
+// its run of outputs, or by one indexed load per output element.
+template <typename T>
+inline void nearest_row(const T* src, T* dst, const NearestAxis& ax) {
+    if (ax.run == 1) {
+        std::memcpy(dst, src, static_cast<size_t>(ax.src_size) * sizeof(T));
+        return;
+    }
+    if (ax.run > 1) {
+        const int64_t run = ax.run;
+        for (int64_t i = 0; i < ax.src_size; ++i) {
+            const T v = src[i];
+            T* out = dst + i * run;
+            for (int64_t k = 0; k < run; ++k) out[k] = v;
+        }
+        return;
+    }
+    const int64_t* map = ax.map.data();
+    for (int64_t i = 0; i < ax.dst_size; ++i) dst[i] = src[map[i]];
+}
+
 #define UP_DISPATCH(t, ...) \
     switch ((t).dtype()) { \
         case DType::Float32: { using scalar_t = float; using accscalar_t = float; __VA_ARGS__; break; } \
@@ -150,16 +216,18 @@ Tensor upsample_nearest1d_cpu(const Tensor& self, const std::vector<int64_t>& ou
     const int64_t W1 = in.size(2), W2 = output_size[0];
     if (in.numel() == 0 || W2 == 0) return result;
 
+    const NearestAxis width_axis =
+        nearest_axis(compute_scales_value_f(scales, W1, W2), W1, W2);
+
     UP_DISPATCH(in, {
         const scalar_t* idata = in.data_ptr<scalar_t>();
         scalar_t* odata = result.data_ptr<scalar_t>();
-        const float width_scale = compute_scales_value_f(scales, W1, W2);
-        parallel_for(0, N * C * W2, 1, [&](int64_t begin, int64_t end) {
-            for (int64_t it = begin; it < end; ++it) {
-                const int64_t w2 = it % W2;
-                const int64_t nc = it / W2;
-                const int64_t w1 = (W1 == W2) ? w2 : nearest_neighbor_compute_source_index(width_scale, w2, W1);
-                odata[it] = idata[nc * W1 + w1];
+        // One (n, c) row per task: the row walk then costs no index arithmetic
+        // beyond the axis plan itself.
+        parallel_for(0, N * C, 1, [&](int64_t begin, int64_t end) {
+            for (int64_t nc = begin; nc < end; ++nc) {
+                nearest_row<scalar_t>(idata + nc * W1, odata + nc * W2,
+                                      width_axis);
             }
         });
     });
@@ -197,26 +265,28 @@ Tensor upsample_nearest2d_cpu(const Tensor& self, const std::vector<int64_t>& ou
     const int64_t H2 = output_size[0], W2 = output_size[1];
     if (in.numel() == 0 || H2 == 0 || W2 == 0) return result;
 
+    const NearestAxis width_axis =
+        nearest_axis(compute_scales_value_f(scales_w, W1, W2), W1, W2);
+    const NearestAxis height_axis =
+        nearest_axis(compute_scales_value_f(scales_h, H1, H2), H1, H2);
+
     UP_DISPATCH(in, {
         const scalar_t* idata = in.data_ptr<scalar_t>();
         scalar_t* odata = result.data_ptr<scalar_t>();
-        const float height_scale = compute_scales_value_f(scales_h, H1, H2);
-        const float width_scale = compute_scales_value_f(scales_w, W1, W2);
-        // Parallel over (n, c, h2) output rows; each gathers one row.
+        // Parallel over (n, c, h2) output rows: the row resolves its source
+        // row once, then writes the whole row from the width plan.  A task
+        // finds the height and (n, c) of its first row once and then carries
+        // them for the rest, so the run of rows costs one increment each.
         parallel_for(0, N * C * H2, 1, [&](int64_t begin, int64_t end) {
+            int64_t h2 = begin % H2;
+            int64_t nc = begin / H2;
             for (int64_t idx = begin; idx < end; ++idx) {
-                const int64_t h2 = idx % H2;
-                const int64_t nc = idx / H2;
-                const int64_t h1 = (H1 == H2) ? h2 : nearest_neighbor_compute_source_index(height_scale, h2, H1);
-                const scalar_t* src_row = idata + (nc * H1 + h1) * W1;
-                scalar_t* dst_row = odata + idx * W2;
-                if (W1 == W2) {
-                    for (int64_t w2 = 0; w2 < W2; ++w2) dst_row[w2] = src_row[w2];
-                } else {
-                    for (int64_t w2 = 0; w2 < W2; ++w2) {
-                        const int64_t w1 = nearest_neighbor_compute_source_index(width_scale, w2, W1);
-                        dst_row[w2] = src_row[w1];
-                    }
+                const int64_t h1 = axis_index(height_axis, h2);
+                nearest_row<scalar_t>(idata + (nc * H1 + h1) * W1,
+                                      odata + idx * W2, width_axis);
+                if (++h2 == H2) {
+                    h2 = 0;
+                    ++nc;
                 }
             }
         });
@@ -234,22 +304,36 @@ Tensor upsample_nearest3d_cpu(const Tensor& self, const std::vector<int64_t>& ou
     const int64_t D2 = output_size[0], H2 = output_size[1], W2 = output_size[2];
     if (in.numel() == 0) return result;
 
+    const NearestAxis width_axis =
+        nearest_axis(compute_scales_value_f(scales_w, W1, W2), W1, W2);
+    const NearestAxis height_axis =
+        nearest_axis(compute_scales_value_f(scales_h, H1, H2), H1, H2);
+    const NearestAxis depth_axis =
+        nearest_axis(compute_scales_value_f(scales_d, D1, D2), D1, D2);
+
     UP_DISPATCH(in, {
         const scalar_t* idata = in.data_ptr<scalar_t>();
         scalar_t* odata = result.data_ptr<scalar_t>();
-        const float depth_scale = compute_scales_value_f(scales_d, D1, D2);
-        const float height_scale = compute_scales_value_f(scales_h, H1, H2);
-        const float width_scale = compute_scales_value_f(scales_w, W1, W2);
-        parallel_for(0, N * C * D2 * H2 * W2, 1, [&](int64_t begin, int64_t end) {
-            for (int64_t it = begin; it < end; ++it) {
-                const int64_t w2 = it % W2;
-                const int64_t h2 = (it / W2) % H2;
-                const int64_t d2 = (it / (W2 * H2)) % D2;
-                const int64_t nc = it / (W2 * H2 * D2);
-                const int64_t d1 = (D1 == D2) ? d2 : nearest_neighbor_compute_source_index(depth_scale, d2, D1);
-                const int64_t h1 = (H1 == H2) ? h2 : nearest_neighbor_compute_source_index(height_scale, h2, H1);
-                const int64_t w1 = (W1 == W2) ? w2 : nearest_neighbor_compute_source_index(width_scale, w2, W1);
-                odata[it] = idata[((nc * D1 + d1) * H1 + h1) * W1 + w1];
+        // Parallel over (n, c, d2, h2) output rows.  A task decodes the depth
+        // and (n, c) of its first row once, then carries them forward, so the
+        // run of rows costs one increment and one carry each.
+        parallel_for(0, N * C * D2 * H2, 1, [&](int64_t begin, int64_t end) {
+            int64_t h2 = begin % H2;
+            int64_t outer = begin / H2;
+            int64_t d2 = outer % D2;
+            int64_t nc = outer / D2;
+            for (int64_t idx = begin; idx < end; ++idx) {
+                const int64_t d1 = axis_index(depth_axis, d2);
+                const int64_t h1 = axis_index(height_axis, h2);
+                nearest_row<scalar_t>(idata + ((nc * D1 + d1) * H1 + h1) * W1,
+                                      odata + idx * W2, width_axis);
+                if (++h2 == H2) {
+                    h2 = 0;
+                    if (++d2 == D2) {
+                        d2 = 0;
+                        ++nc;
+                    }
+                }
             }
         });
     });

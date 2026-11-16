@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 namespace tensorplay {
 namespace cpu {
@@ -67,26 +68,38 @@ void upsample_nearest2d_cl_typed(const T* in, T* out,
     // dtype (they compute the source index through the float helper).
     const float hscale = static_cast<float>(sh);
     const float wscale = static_cast<float>(sw);
-    const int64_t items = N * oH * oW;
-    parallel_for(0, items, 1, [&](int64_t begin, int64_t end) {
-        for (int64_t item = begin; item < end; ++item) {
-            const int64_t ow = item % oW;
-            const int64_t oh = (item / oW) % oH;
-            const int64_t n = item / (oW * oH);
+    // The width index of an output pixel is the same for every row, so it is
+    // resolved once into a channel offset per output column instead of twice
+    // per pixel.
+    std::vector<int64_t> woff(static_cast<size_t>(oW));
+    for (int64_t ow = 0; ow < oW; ++ow) {
+        const int64_t iw = (W == oW)
+            ? ow
+            : std::min(static_cast<int64_t>(std::floor(static_cast<float>(ow) * wscale)), W - 1);
+        woff[static_cast<size_t>(ow)] = iw * C;
+    }
+    // One output row per task, so the row index resolves the height step and
+    // the pixel walk is one span copy per output column.
+    const int64_t rows = N * oH;
+    parallel_for(0, rows, 1, [&](int64_t begin, int64_t end) {
+        for (int64_t r = begin; r < end; ++r) {
+            const int64_t oh = r % oH;
+            const int64_t n = r / oH;
             const int64_t ih = (H == oH)
                 ? oh
                 : std::min(static_cast<int64_t>(std::floor(static_cast<float>(oh) * hscale)), H - 1);
-            const int64_t iw = (W == oW)
-                ? ow
-                : std::min(static_cast<int64_t>(std::floor(static_cast<float>(ow) * wscale)), W - 1);
-            const T* src = in + ((n * H + ih) * W + iw) * C;
-            T* dst = out + item * C;
-            int64_t c = 0;
-            for (; c < C - (C % V); c += V) {
-                Vec::loadu(src + c).store(dst + c);
-            }
-            for (; c < C; ++c) {
-                dst[c] = src[c];
+            const T* row = in + ((n * H + ih) * W) * C;
+            T* out_row = out + r * oW * C;
+            for (int64_t ow = 0; ow < oW; ++ow) {
+                const T* src = row + woff[static_cast<size_t>(ow)];
+                T* dst = out_row + ow * C;
+                int64_t c = 0;
+                for (; c < C - (C % V); c += V) {
+                    Vec::loadu(src + c).store(dst + c);
+                }
+                for (; c < C; ++c) {
+                    dst[c] = src[c];
+                }
             }
         }
     });
