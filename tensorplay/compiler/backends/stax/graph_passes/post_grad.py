@@ -11,6 +11,7 @@ from tensorplay.primitives.common import is_integer_dtype
 
 from .. import config
 from ..fx_utils import get_fake_args_kwargs, get_node_storage
+from ..utils import is_gpu, is_view
 from ..pattern_matcher import (
     Arg,
     CallFunction,
@@ -344,6 +345,161 @@ def cat_slice_cat(match, cat_input, size):
 
 
 cat_slice_cat._tp_cache_key = "cat_slice_cat_v2"
+
+
+def view_to_reshape(graph: Graph) -> None:
+    """Retarget ``view`` to ``reshape``.
+
+    The lowering answers both spellings with the same kernel, but downstream
+    readers -- the fusion decisions above, a serialized deployment form --
+    would otherwise see two names for one operation.
+    """
+
+    for node in graph.find_nodes(op="call_function", target=tp_ops.view.default):
+        node.target = tp_ops.reshape.default
+    for node in graph.find_nodes(op="call_method", target="view"):
+        node.target = tp_ops.reshape.default
+        node.op = "call_function"
+
+
+def _is_bias_like_addmm_input(inp: Node, output: Node) -> bool:
+    # The wider upstream check also accepts computed inputs whose value is a
+    # real tensor; the values recorded here are descriptions, so only the
+    # shapes a capture read directly qualify.
+    return inp.op in ("placeholder", "get_attr")
+
+
+#: The device the region being rewritten runs on.  The values the patterns
+#: see are stand-ins on the meta device, so a decision that depends on where
+#: the kernels would run reads the region's device instead.
+_region_input_device: str | None = None
+
+
+def _match_device_type(value: Any) -> str:
+    """The device type a match's value would run on.
+
+    The stand-ins the patterns match against all report ``meta``; the region
+    itself was opened with a real device, recorded when the pass ran.
+    """
+
+    device = getattr(value, "device", None)
+    device_type = getattr(device, "type", None)
+    if device_type is None or device_type == "meta":
+        if _region_input_device is not None:
+            return _region_input_device
+        return "cuda" if tp.cuda.is_available() else "cpu"
+    return device_type
+
+
+def is_pointwise_use(use: Node) -> bool:
+    """Whether every consumer behind ``use`` is a pointwise computation.
+
+    Reads through views and selections: reshaping a value does not change
+    what is computed on it.
+    """
+
+    if use.op != "call_function":
+        return False
+    target = use.target
+    if target is operator.getitem or is_view(target):
+        return all(is_pointwise_use(user) for user in use.users)
+    return "pointwise" in getattr(target, "tags", ())
+
+
+def should_prefer_unfused_addmm(match: Match) -> bool:
+    """Whether an addmm is worth reading as a pointwise chain over a matmul.
+
+    Only the GPU fuses the add into the matmul's epilogue; elsewhere the
+    fused form is already one kernel and unfusing it adds operations.
+    """
+
+    inp = match.kwargs["inp"]
+    value = inp.meta.get("val")
+    if value is None or not is_gpu(_match_device_type(value)):
+        return False
+    mat1, mat2 = match.args
+    keys = {
+        (getattr(v, "dtype", None), getattr(v, "device", None))
+        for v in (value, mat1.meta.get("val"), mat2.meta.get("val"))
+    }
+    if len(keys) != 1:
+        return False
+    beta = match.kwargs.get("beta", 1)
+    # A zero beta ignores the added input outright; expanding its shape to
+    # the product's needs an analysis this check does not carry, so the
+    # non-CUDA side keeps the fused form.
+    if beta == 0 and value.device.type != "cuda":
+        return False
+    output = match.output_node()
+    if not _is_bias_like_addmm_input(inp, output):
+        return False
+    return all(is_pointwise_use(use) for use in output.users)
+
+
+@register_graph_pattern(
+    CallFunction(
+        tp_ops.addmm.default,
+        KeywordArg("inp"),
+        Arg(),
+        Arg(),
+        beta=KeywordArg("beta"),
+        alpha=KeywordArg("alpha"),
+    ),
+    extra_check=should_prefer_unfused_addmm,
+    pass_dict=pass_patterns[2],
+)
+def unfuse_bias_add_to_pointwise(match: Match, mat1, mat2, *, inp, alpha, beta):
+    def repl(inp, x1, x2, alpha, beta):
+        mm_result = x1 @ x2
+        if alpha != 1:
+            mm_result = alpha * mm_result
+        if beta != 1:
+            inp = beta * inp
+        return inp + mm_result
+
+    match.replace_by_example(repl, [inp, mat1, mat2, alpha, beta])
+
+
+def should_prefer_unfused_baddbmm(match: Match) -> bool:
+    inp = match.kwargs["inp"]
+    value = inp.meta.get("val")
+    if value is None or not is_gpu(_match_device_type(value)):
+        return False
+    mat1, mat2 = match.args
+    keys = {
+        (getattr(v, "dtype", None), getattr(v, "device", None))
+        for v in (value, mat1.meta.get("val"), mat2.meta.get("val"))
+    }
+    if len(keys) != 1:
+        return False
+    output = match.output_node()
+    if not _is_bias_like_addmm_input(inp, output):
+        return False
+    return all(is_pointwise_use(use) for use in output.users)
+
+
+@register_graph_pattern(
+    CallFunction(
+        tp_ops.baddbmm.default,
+        KeywordArg("inp"),
+        Arg(),
+        Arg(),
+        beta=KeywordArg("beta"),
+        alpha=KeywordArg("alpha"),
+    ),
+    extra_check=should_prefer_unfused_baddbmm,
+    pass_dict=pass_patterns[2],
+)
+def unfuse_bias_baddbmm_to_pointwise(match: Match, mat1, mat2, *, inp, alpha, beta):
+    def repl(inp, x1, x2, alpha, beta):
+        bmm_result = x1 @ x2
+        if alpha != 1:
+            bmm_result = alpha * bmm_result
+        if beta != 1:
+            inp = beta * inp
+        return inp + bmm_result
+
+    match.replace_by_example(repl, [inp, mat1, mat2, alpha, beta])
 
 
 #: The two ways a value is cut into pieces of given sizes: one takes the sizes
@@ -700,6 +856,13 @@ def post_grad_passes(gm, is_inference: bool, input_device=None) -> None:
     # Registration is shared with the joint-graph rewrites: one table per
     # family, filled once however either side reaches it first.
     lazy_init(input_device)
+    # The values the patterns match against are stand-ins on the meta device;
+    # decisions that depend on where kernels would run read this instead.
+    global _region_input_device
+    if input_device is not None:
+        _region_input_device = str(getattr(input_device, "type", input_device))
+    elif _region_input_device is None:
+        _region_input_device = "cuda" if tp.cuda.is_available() else "cpu"
     graph = gm.graph
 
     if config.dce:
@@ -729,8 +892,12 @@ def post_grad_passes(gm, is_inference: bool, input_device=None) -> None:
         # must not stand between a producer and the rewrites that want to
         # move it.
         remove_assert_ops(graph)
+        # The product's add is pointwise; the fusion wants to see it as one.
         for patterns in pass_patterns:
             patterns.apply(graph)
+        # One name for one shape change: readers behind the fusions and the
+        # serialized form both want reshape, not view.
+        view_to_reshape(graph)
         # The rewrites a program asks for by name are registered on first use,
         # so a program that asks for none pays nothing for them.
         requested = config.post_grad_fusion_options

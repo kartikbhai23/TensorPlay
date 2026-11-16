@@ -235,3 +235,56 @@ def test_cat_prefix_rewrite_handles_mixed_types():
     expected = fn(a, b)
     assert actual.dtype == expected.dtype
     assert actual.tolist() == expected.tolist()
+
+
+def test_a_view_is_renamed_to_a_reshape():
+    def fn(x):
+        return (x.view(6) + 1).view(2, 3)
+
+    result, seen = _compiled_order(fn, tp.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+
+    assert seen
+    targets = seen[-1]
+    assert tp.ops.tp.view.default not in targets
+    assert tp.ops.tp.reshape.default in targets
+    assert result.tolist() == [[2.0, 3.0, 4.0], [5.0, 6.0, 7.0]]
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_an_addmm_with_a_bias_like_input_is_read_as_a_product_and_an_add(device):
+    if device == "cuda" and not tp.cuda.is_available():
+        pytest.skip("cuda not available")
+
+    def fn(x, w, b):
+        return (tp.addmm(b, x, w) * 2).relu()
+
+    x = tp.randn(4, 5, device=device)
+    w = tp.randn(5, 3, device=device)
+    b = tp.randn(3, device=device)
+    eager = fn(x, w, b)
+
+    result, seen = _compiled_order(fn, x, w, b)
+    if device == "cuda":
+        assert tp.ops.tp.addmm.default not in seen[-1]
+        assert tp.ops.tp.mm.default in seen[-1]
+    assert tp.allclose(result, eager)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_an_addmm_outside_the_fusion_range_stays_fused(device):
+    if device == "cuda" and not tp.cuda.is_available():
+        pytest.skip("cuda not available")
+
+    def fn(x, w):
+        # 加进来的值是算出来的，不是捕获直接读到的形状：解融的判定不收，
+        # 乘积保持融合形态。
+        bias = x.sum(1)
+        return tp.relu(tp.addmm(bias, x, w)) * 2
+
+    x = tp.randn(4, 4, device=device)
+    w = tp.randn(4, 4, device=device)
+    eager = fn(x, w)
+
+    result, seen = _compiled_order(fn, x, w)
+    assert tp.ops.tp.addmm.default in seen[-1]
+    assert tp.allclose(result, eager)
