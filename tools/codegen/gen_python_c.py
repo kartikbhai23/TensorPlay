@@ -525,19 +525,63 @@ def _arity_max(f, variant: str) -> int | None:
 
 
 def _unique_keyword_probes(funcs, variant: str):
-    """Return keyword names that identify one overload in a group."""
-    names = [
-        {a.name for a in f.args
-         if not (variant == "method" and a.name == "self")}
-        | ({"requires_grad"} if _takes_requires_grad(f, variant) else set())
+    """Return the keyword tests that settle one overload of a group.
+
+    Each entry is ``(index, present, absent)``: the call names every keyword
+    in ``present`` and none of ``absent``.  A test of that shape is
+    sufficient, never merely necessary, so the dispatcher gives up on the
+    candidate-by-candidate walk only where the call cannot belong anywhere
+    else.
+
+    A name the other candidates never mention settles its overload on its
+    own.  When every candidate shares all of its names -- a ``correction``
+    spelling shadowed by the ``out=`` one that repeats it -- the shared name
+    still settles the candidate, provided each rival that accepts it also
+    demands a name this candidate does not have: an unknown keyword is
+    rejected by the candidate's own parser, and a rival's required name can
+    simply be tested for absence.
+    """
+    is_method = variant == "method"
+    argsets = [
+        [a for a in f.args if not (is_method and a.name == "self")]
         for f in funcs
+    ]
+    names = [
+        {a.name for a in args}
+        | ({"requires_grad"} if _takes_requires_grad(f, variant) else set())
+        for f, args in zip(funcs, argsets)
+    ]
+    required = [
+        {a.name for a in args if a.kwonly and a.default is None}
+        for args in argsets
     ]
     probes = []
     for index, own_names in enumerate(names):
         other_names = set().union(*(names[:index] + names[index + 1:]))
         unique = sorted(own_names - other_names)
         if unique:
-            probes.append((index, unique))
+            probes.append((index, unique, []))
+            continue
+        positional = {a.name for a in argsets[index] if not a.kwonly}
+        leading = next(
+            (a.name for a in argsets[index] if not a.kwonly), None)
+        for keyword in sorted(own_names):
+            # The receiver and the first positional are spelled by name only
+            # in hand-written calls; they do not earn a test ahead of the
+            # ordinary walk.
+            if keyword == leading:
+                continue
+            rivals = [j for j in range(len(funcs))
+                      if j != index and keyword in names[j]]
+            if not rivals:
+                continue
+            missing = [required[j] - own_names for j in rivals]
+            if any(not names_ for names_ in missing):
+                continue
+            absent = sorted(set().union(*missing) - own_names)
+            if absent:
+                probes.append((index, [keyword], absent))
+                break
     return probes
 
 
@@ -1143,11 +1187,21 @@ def _gen_python_capi(ctx: CodegenContext) -> None:
                 out.append(
                     "    if (kwnames != nullptr && "
                     "PyTuple_GET_SIZE(kwnames) != 0) {")
-                for k, names in unique_keyword_probes:
-                    checks = " || ".join(
-                        f'tpx_py_kwnames_has(kwnames, "{name}")'
-                        for name in names
-                    )
+                for k, present, absent in unique_keyword_probes:
+                    if absent:
+                        checks = " && ".join(
+                            [f'tpx_py_kwnames_has(kwnames, "{name}")'
+                             for name in present]
+                            + [f'!tpx_py_kwnames_has(kwnames, "{name}")'
+                               for name in absent]
+                        )
+                    else:
+                        # Any one of the names only this overload declares
+                        # settles it.
+                        checks = " || ".join(
+                            f'tpx_py_kwnames_has(kwnames, "{name}")'
+                            for name in present
+                        )
                     out.extend([
                         f"        if ({checks}) {{",
                         "            try {",
