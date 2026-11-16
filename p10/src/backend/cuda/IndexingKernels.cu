@@ -641,7 +641,7 @@ __global__ void nonzero_flag_kernel(int64_t n, const T* x, int64_t ndim,
                                     const int64_t* dim_sizes, int64_t* out,
                                     const int32_t* block_base,
                                     const int32_t* segment_base,
-                                    int32_t seg_shift) {
+                                    int32_t seg_shift, bool wide_index) {
     using Vec = NonZeroVec<T, ITEMS>;
     constexpr int kWarps = BLOCK / 32;
     __shared__ int warp_totals[kWarps];
@@ -705,6 +705,22 @@ __global__ void nonzero_flag_kernel(int64_t n, const T* x, int64_t ndim,
 #pragma unroll
         for (int i = 0; i < ITEMS; ++i) {
             if (nz[i]) out[slot++] = idx[i];
+        }
+    } else if (!wide_index) {
+        // Every axis and the flat index fit in 32 bits, so the coordinate
+        // split uses the native 32-bit divide; the 64-bit form is emulated.
+#pragma unroll
+        for (int i = 0; i < ITEMS; ++i) {
+            if (nz[i]) {
+                int32_t rem = static_cast<int32_t>(idx[i]);
+                int64_t* row = out + slot * ndim;
+                for (int64_t d = ndim - 1; d >= 0; --d) {
+                    const int32_t ds = static_cast<int32_t>(dim_sizes[d]);
+                    row[d] = rem % ds;
+                    rem /= ds;
+                }
+                ++slot;
+            }
         }
     } else {
 #pragma unroll
@@ -1117,6 +1133,11 @@ Tensor nonzero_cuda(const Tensor& self) {
     // per-axis coordinates: a match's slot is its global ordinal, so the rows
     // are written in place with no intermediate position list.
     std::vector<int64_t> h_sizes(static_cast<std::vector<int64_t>>(self_c.shape()));
+    // The coordinate split divides by each axis length.  When every axis and
+    // the flat index fit in 32 bits the divide is native; otherwise it has to
+    // stay in 64 bits to hold the values.
+    bool wide_index = n > static_cast<int64_t>(INT32_MAX);
+    for (int64_t s : h_sizes) wide_index = wide_index || s > INT32_MAX;
     Tensor sizes_d = Tensor::empty({nd}, DType::Int64, self.device());
     CUDA_CHECK(cudaMemcpyAsync(sizes_d.data_ptr<int64_t>(), h_sizes.data(),
                                nd * sizeof(int64_t), cudaMemcpyHostToDevice, stream));
@@ -1133,7 +1154,7 @@ Tensor nonzero_cuda(const Tensor& self) {
         <<<blocks, kFlagBlock, 0, stream>>>(                                  \
             n, self_c.data_ptr<ctype>(), nd, sizes_d.data_ptr<int64_t>(),      \
             result.data_ptr<int64_t>(), block_counts.data_ptr<int32_t>(),     \
-            segment_bases.data_ptr<int32_t>(), kScanShift);                    \
+            segment_bases.data_ptr<int32_t>(), kScanShift, wide_index);        \
         break;                                                             \
     }
     switch (self_c.dtype()) {
