@@ -4392,19 +4392,15 @@ def max_pool1d_with_indices(
 
     See :class:`~tensorplay.nn.MaxPool1d` for details.
     """
-    unbatched = input.dim() == 2
-    x = input.unsqueeze(0) if unbatched else input
     k = _single(kernel_size)[0]
     s = k if stride is None else _single(stride)[0]
     p = _single(padding)[0]
     d = _single(dilation)[0]
-    values, indices = max_pool2d_with_indices(
-        x.unsqueeze(3), (k, 1), (s, 1), (p, 0), (d, 1), ceil_mode
+    values, indices = _C.max_pool1d_with_indices(
+        input, [k], [s], [p], [d], ceil_mode
     )
-    values = values.squeeze(3)
-    indices = indices.squeeze(3)
-    if unbatched:
-        return values.squeeze(0), indices.squeeze(0)
+    if not return_indices:
+        return values
     return values, indices
 
 
