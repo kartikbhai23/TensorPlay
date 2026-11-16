@@ -1145,7 +1145,9 @@ def _module_attribute_names(module: Any, *, assigned: bool = False) -> set[str]:
     return names
 
 
-def _captured_constant_component(program: Any) -> tuple[Any, ...]:
+def _captured_constant_component(
+    modules: list[Any], functions: list[types.FunctionType]
+) -> tuple[Any, ...]:
     """Values outside the argument list that a capture may have baked in.
 
     A global number, a closure cell or a module attribute read while tracing
@@ -1155,7 +1157,6 @@ def _captured_constant_component(program: Any) -> tuple[Any, ...]:
     call, not an input to it.
     """
 
-    modules, functions = _state_roots(program)
     entries: list[tuple[Any, ...]] = []
     for function in functions:
         label = f"{function.__module__}.{function.__qualname__}"
@@ -1200,7 +1201,7 @@ def _module_state_component(program: Any) -> tuple[Any, ...]:
     bakes them into the program it produces.
     """
 
-    modules, _ = _state_roots(program)
+    modules, functions = _state_roots(program)
     return (
         tuple(
             (
@@ -1214,7 +1215,7 @@ def _module_state_component(program: Any) -> tuple[Any, ...]:
             )
             for index, module in enumerate(modules)
         ),
-        _captured_constant_component(program),
+        _captured_constant_component(modules, functions),
     )
 
 
