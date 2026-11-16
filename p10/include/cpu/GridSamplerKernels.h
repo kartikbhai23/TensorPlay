@@ -28,6 +28,24 @@ using grid_sample2d_cl_fn = void (*)(const void* in, const void* grid, void* out
 
 DECLARE_DISPATCH(grid_sample2d_cl_fn, grid_sample2d_cl_stub)
 
+// Strided-channel frame for grid_sampler_2d: input and output are standard
+// contiguous (N, C, H, W), so the channel axis is a plane apart and cannot
+// carry a contiguous vector.  The pixel axis does instead: a block of output
+// pixels is resolved once (source indices, tap weights, in-bounds masks), and
+// the channel walk replays that block for every channel with one masked gather
+// per tap.  One block therefore reads its taps from the same handful of lines
+// for all channels, instead of revisiting the channel planes once per pixel.
+//
+// The block's coordinate and weight arithmetic uses the scalar frame's own
+// helpers in the element type, so the values are the scalar frame's.
+using grid_sample2d_nchw_fn = void (*)(const void* in, const void* grid, void* out,
+                                      int64_t N, int64_t C, int64_t H, int64_t W,
+                                      int64_t oH, int64_t oW,
+                                      int interpolation_mode, int padding_mode,
+                                      int align_corners, int dtype);
+
+DECLARE_DISPATCH(grid_sample2d_nchw_fn, grid_sample2d_nchw_stub)
+
 // Backward variant. grad_output and input are channels-last; grad_input is
 // written channels-last (pre-zeroed by the caller); grad_grid is standard
 // contiguous (N, oH, oW, 2). need_grad_input / need_grad_grid gate which

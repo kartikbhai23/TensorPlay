@@ -561,6 +561,26 @@ Tensor grid_sampler_2d_cpu(const Tensor& input, const Tensor& grid,
                               static_cast<int>(input.dtype()));
         return result;
     }
+    // Strided-channel frame: the pixel axis is the contiguous one, so the
+    // tier-compiled kernel (cpu/GridSamplerKernels.h) resolves a block of
+    // output pixels once and replays it for every channel.
+    if (input.numel() > 0 && grid.numel() > 0 &&
+        grid.size(1) > 0 && grid.size(2) > 0 &&
+        input.is_contiguous() && grid.is_contiguous() &&
+        input.dtype() == grid.dtype() &&
+        (input.dtype() == DType::Float32 || input.dtype() == DType::Float64)) {
+        const int64_t N = input.size(0), C = input.size(1);
+        const int64_t H = input.size(2), W = input.size(3);
+        const int64_t oH = grid.size(1), oW = grid.size(2);
+        Tensor result = Tensor::empty({N, C, oH, oW}, input.dtype(), input.device());
+        grid_sample2d_nchw_stub(DeviceType::CPU, input.data_ptr(), grid.data_ptr(),
+                                result.data_ptr(), N, C, H, W, oH, oW,
+                                static_cast<int>(interpolation_mode),
+                                static_cast<int>(padding_mode),
+                                align_corners ? 1 : 0,
+                                static_cast<int>(input.dtype()));
+        return result;
+    }
     const Tensor ic = input.contiguous();
     const Tensor gc = grid.contiguous();
     const int im = static_cast<int>(interpolation_mode);
@@ -681,6 +701,7 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_cpu(
 
 DEFINE_DISPATCH(grid_sample2d_cl_stub);
 DEFINE_DISPATCH(grid_sample2d_backward_cl_stub);
+DEFINE_DISPATCH(grid_sample2d_nchw_stub);
 
 TENSORPLAY_LIBRARY_IMPL(CPU, GridSamplerKernels) {
     m.impl("grid_sampler_2d", grid_sampler_2d_cpu);

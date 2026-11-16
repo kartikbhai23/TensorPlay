@@ -18,6 +18,7 @@ namespace cpu {
 namespace {
 
 using tensorplay::vec::Vectorized;
+using tensorplay::vec::int_same_size_t;
 using tensorplay::parallel::parallel_for;
 using gridsampler::Interp;
 using gridsampler::Pad;
@@ -709,6 +710,292 @@ void grid_sample2d_backward_cl_impl(const void* gout, const void* in, const void
     }
 }
 
+// ---------------------------------------------------------------------------
+// Strided-channel (N, C, H, W) frame
+// ---------------------------------------------------------------------------
+//
+// The channel axis is a plane apart, so no contiguous vector runs along it. The
+// pixel axis is contiguous, and it carries the vector instead: a block of
+// `step` output pixels is resolved once -- source indices, tap weights and
+// in-bounds flags -- and the channel walk replays that block for every channel
+// with one masked gather per tap.  A block therefore reads its taps from the
+// same few lines for all channels, where a per-pixel walk revisits the channel
+// planes once per pixel.
+
+template <typename T>
+inline void nchw_set_tap(int_same_size_t<T>& off, int_same_size_t<T>& mask,
+                         int64_t ih, int64_t iw, int64_t H, int64_t W) {
+    if (gridsampler::within_bounds_2d(ih, iw, H, W)) {
+        off = static_cast<int_same_size_t<T>>(ih * W + iw);
+        mask = static_cast<int_same_size_t<T>>(-1);
+    } else {
+        off = 0;
+        mask = 0;
+    }
+}
+
+template <typename T, int PADDING>
+TP_NO_FP_CONTRACT
+void grid_sample2d_nchw_bilinear(const T* inp, const T* grid, T* out,
+                                 int64_t N, int64_t C, int64_t H, int64_t W,
+                                 int64_t oH, int64_t oW, bool ac) {
+    using Vec = Vectorized<T>;
+    using iVec = Vectorized<int_same_size_t<T>>;
+    using it = int_same_size_t<T>;
+    constexpr int64_t S = Vec::size();
+    const int64_t spatial = oH * oW;
+    const int64_t blocks = (spatial + S - 1) / S;
+    const int64_t plane = H * W;
+
+    parallel_for(0, N * blocks, 1, [&](int64_t b0, int64_t b1) {
+        alignas(64) it o_nw[S], o_ne[S], o_sw[S], o_se[S];
+        alignas(64) it m_nw[S], m_ne[S], m_sw[S], m_se[S];
+        alignas(64) T w_nw[S], w_ne[S], w_sw[S], w_se[S];
+        for (int64_t task = b0; task < b1; ++task) {
+            const int64_t n = task / blocks;
+            const int64_t first = (task - n * blocks) * S;
+            const int64_t len = std::min<int64_t>(S, spatial - first);
+            const T* g = grid + n * spatial * 2 + first * 2;
+            // A block that fills the vector needs no zeroed lanes, so the
+            // clear pass only runs for the last, partial block.
+            for (int64_t k = 0; k < len; ++k) {
+                const T x = gridsampler::compute_source_index<T>(g[2 * k], W, PADDING, ac);
+                const T y = gridsampler::compute_source_index<T>(g[2 * k + 1], H, PADDING, ac);
+                const int64_t iw = static_cast<int64_t>(std::floor(x));
+                const int64_t ih = static_cast<int64_t>(std::floor(y));
+                const T e = static_cast<T>(iw + 1) - x;
+                const T w = x - static_cast<T>(iw);
+                const T s = static_cast<T>(ih + 1) - y;
+                const T nn = y - static_cast<T>(ih);
+                w_nw[k] = e * s;
+                w_ne[k] = w * s;
+                w_sw[k] = e * nn;
+                w_se[k] = w * nn;
+                nchw_set_tap<T>(o_nw[k], m_nw[k], ih, iw, H, W);
+                nchw_set_tap<T>(o_ne[k], m_ne[k], ih, iw + 1, H, W);
+                nchw_set_tap<T>(o_sw[k], m_sw[k], ih + 1, iw, H, W);
+                nchw_set_tap<T>(o_se[k], m_se[k], ih + 1, iw + 1, H, W);
+            }
+            for (int64_t k = len; k < S; ++k) {
+                o_nw[k] = o_ne[k] = o_sw[k] = o_se[k] = it(0);
+                m_nw[k] = m_ne[k] = m_sw[k] = m_se[k] = it(0);
+                w_nw[k] = w_ne[k] = w_sw[k] = w_se[k] = T(0);
+            }
+            const iVec iv_nw = iVec::loadu(o_nw), iv_ne = iVec::loadu(o_ne);
+            const iVec iv_sw = iVec::loadu(o_sw), iv_se = iVec::loadu(o_se);
+            const Vec wv_nw = Vec::loadu(w_nw), wv_ne = Vec::loadu(w_ne);
+            const Vec wv_sw = Vec::loadu(w_sw), wv_se = Vec::loadu(w_se);
+            const T* in_n = inp + n * C * plane;
+            T* out_n = out + n * C * spatial + first;
+            for (int64_t c = 0; c < C; ++c) {
+                const T* p = in_n + c * plane;
+                Vec mv_nw = Vec::loadu(static_cast<const void*>(m_nw));
+                Vec mv_ne = Vec::loadu(static_cast<const void*>(m_ne));
+                Vec mv_sw = Vec::loadu(static_cast<const void*>(m_sw));
+                Vec mv_se = Vec::loadu(static_cast<const void*>(m_se));
+                Vec acc = mask_gather<sizeof(T)>(Vec(T(0)), p, iv_nw, mv_nw) * wv_nw;
+                acc = acc + mask_gather<sizeof(T)>(Vec(T(0)), p, iv_ne, mv_ne) * wv_ne;
+                acc = acc + mask_gather<sizeof(T)>(Vec(T(0)), p, iv_sw, mv_sw) * wv_sw;
+                acc = acc + mask_gather<sizeof(T)>(Vec(T(0)), p, iv_se, mv_se) * wv_se;
+                acc.store(out_n + c * spatial, static_cast<int>(len));
+            }
+        }
+    });
+}
+
+template <typename T, int PADDING>
+TP_NO_FP_CONTRACT
+void grid_sample2d_nchw_nearest(const T* inp, const T* grid, T* out,
+                                int64_t N, int64_t C, int64_t H, int64_t W,
+                                int64_t oH, int64_t oW, bool ac) {
+    using Vec = Vectorized<T>;
+    using iVec = Vectorized<int_same_size_t<T>>;
+    using it = int_same_size_t<T>;
+    constexpr int64_t S = Vec::size();
+    const int64_t spatial = oH * oW;
+    const int64_t blocks = (spatial + S - 1) / S;
+    const int64_t plane = H * W;
+
+    parallel_for(0, N * blocks, 1, [&](int64_t b0, int64_t b1) {
+        alignas(64) it o_px[S], m_px[S];
+        for (int64_t task = b0; task < b1; ++task) {
+            const int64_t n = task / blocks;
+            const int64_t first = (task - n * blocks) * S;
+            const int64_t len = std::min<int64_t>(S, spatial - first);
+            const T* g = grid + n * spatial * 2 + first * 2;
+            for (int64_t k = 0; k < len; ++k) {
+                const T x = gridsampler::compute_source_index<T>(g[2 * k], W, PADDING, ac);
+                const T y = gridsampler::compute_source_index<T>(g[2 * k + 1], H, PADDING, ac);
+                nchw_set_tap<T>(o_px[k], m_px[k],
+                                static_cast<int64_t>(std::nearbyint(y)),
+                                static_cast<int64_t>(std::nearbyint(x)), H, W);
+            }
+            for (int64_t k = len; k < S; ++k) {
+                o_px[k] = it(0);
+                m_px[k] = it(0);
+            }
+            const iVec iv_px = iVec::loadu(o_px);
+            const T* in_n = inp + n * C * plane;
+            T* out_n = out + n * C * spatial + first;
+            for (int64_t c = 0; c < C; ++c) {
+                Vec mv = Vec::loadu(static_cast<const void*>(m_px));
+                mask_gather<sizeof(T)>(Vec(T(0)), in_n + c * plane, iv_px, mv)
+                    .store(out_n + c * spatial, static_cast<int>(len));
+            }
+        }
+    });
+}
+
+template <typename T, int PADDING>
+TP_NO_FP_CONTRACT
+void grid_sample2d_nchw_bicubic(const T* inp, const T* grid, T* out,
+                                int64_t N, int64_t C, int64_t H, int64_t W,
+                                int64_t oH, int64_t oW, bool ac) {
+    using Vec = Vectorized<T>;
+    using iVec = Vectorized<int_same_size_t<T>>;
+    using it = int_same_size_t<T>;
+    constexpr int64_t S = Vec::size();
+    const int64_t spatial = oH * oW;
+    const int64_t blocks = (spatial + S - 1) / S;
+    const int64_t plane = H * W;
+
+    parallel_for(0, N * blocks, 1, [&](int64_t b0, int64_t b1) {
+        alignas(64) it o_tap[16][S], m_tap[16][S];
+        alignas(64) T w_h[4][S], w_v[4][S];
+        for (int64_t task = b0; task < b1; ++task) {
+            const int64_t n = task / blocks;
+            const int64_t first = (task - n * blocks) * S;
+            const int64_t len = std::min<int64_t>(S, spatial - first);
+            const T* g = grid + n * spatial * 2 + first * 2;
+            for (int64_t k = 0; k < len; ++k) {
+                T hc[4], vc[4];
+                // Only the base coordinate is unnormalized; every tap is
+                // padding-adjusted on its own, in the scalar frame's order.
+                const T x = gridsampler::unnormalize<T>(g[2 * k], W, ac);
+                const T y = gridsampler::unnormalize<T>(g[2 * k + 1], H, ac);
+                const T fx = std::floor(x);
+                const T fy = std::floor(y);
+                gridsampler::get_cubic_upsampling_coefficients<T>(hc, x - fx);
+                gridsampler::get_cubic_upsampling_coefficients<T>(vc, y - fy);
+                for (int i = 0; i < 4; ++i) {
+                    w_h[i][k] = hc[i];
+                    w_v[i][k] = vc[i];
+                }
+                for (int j = 0; j < 4; ++j) {
+                    for (int i = 0; i < 4; ++i) {
+                        const T xc = gridsampler::compute_coordinates<T>(
+                            fx - T(1) + T(i), W, PADDING, ac);
+                        const T yc = gridsampler::compute_coordinates<T>(
+                            fy - T(1) + T(j), H, PADDING, ac);
+                        nchw_set_tap<T>(o_tap[j * 4 + i][k], m_tap[j * 4 + i][k],
+                                        static_cast<int64_t>(yc),
+                                        static_cast<int64_t>(xc), H, W);
+                    }
+                }
+            }
+            for (int64_t k = len; k < S; ++k) {
+                for (int i = 0; i < 4; ++i) {
+                    w_h[i][k] = T(0);
+                    w_v[i][k] = T(0);
+                }
+                for (int t = 0; t < 16; ++t) {
+                    o_tap[t][k] = it(0);
+                    m_tap[t][k] = it(0);
+                }
+            }
+            iVec iv_tap[16];
+            Vec wv_h[4], wv_v[4];
+            for (int t = 0; t < 16; ++t) iv_tap[t] = iVec::loadu(o_tap[t]);
+            for (int i = 0; i < 4; ++i) {
+                wv_h[i] = Vec::loadu(w_h[i]);
+                wv_v[i] = Vec::loadu(w_v[i]);
+            }
+            const T* in_n = inp + n * C * plane;
+            T* out_n = out + n * C * spatial + first;
+            for (int64_t c = 0; c < C; ++c) {
+                const T* p = in_n + c * plane;
+                Vec row[4];
+                for (int j = 0; j < 4; ++j) {
+                    Vec acc = Vec(T(0));
+                    for (int i = 0; i < 4; ++i) {
+                        Vec mv = Vec::loadu(static_cast<const void*>(m_tap[j * 4 + i]));
+                        acc = acc + mask_gather<sizeof(T)>(Vec(T(0)), p, iv_tap[j * 4 + i], mv) * wv_h[i];
+                    }
+                    row[j] = acc;
+                }
+                Vec v = row[0] * wv_v[0];
+                v = v + row[1] * wv_v[1];
+                v = v + row[2] * wv_v[2];
+                v = v + row[3] * wv_v[3];
+                v.store(out_n + c * spatial, static_cast<int>(len));
+            }
+        }
+    });
+}
+
+template <typename T, int PADDING>
+void grid_sample2d_nchw_mode(const T* inp, const T* grid, T* out,
+                             int64_t N, int64_t C, int64_t H, int64_t W,
+                             int64_t oH, int64_t oW, int interpolation_mode,
+                             bool ac) {
+    switch (interpolation_mode) {
+        case Interp::Bilinear:
+            grid_sample2d_nchw_bilinear<T, PADDING>(inp, grid, out, N, C, H, W, oH, oW, ac);
+            break;
+        case Interp::Nearest:
+            grid_sample2d_nchw_nearest<T, PADDING>(inp, grid, out, N, C, H, W, oH, oW, ac);
+            break;
+        default:
+            grid_sample2d_nchw_bicubic<T, PADDING>(inp, grid, out, N, C, H, W, oH, oW, ac);
+            break;
+    }
+}
+
+template <typename T>
+void grid_sample2d_nchw_typed(const T* inp, const T* grid, T* out,
+                              int64_t N, int64_t C, int64_t H, int64_t W,
+                              int64_t oH, int64_t oW, int interpolation_mode,
+                              int padding_mode, bool ac) {
+    switch (padding_mode) {
+        case Pad::Zeros:
+            grid_sample2d_nchw_mode<T, Pad::Zeros>(inp, grid, out, N, C, H, W, oH, oW,
+                                                   interpolation_mode, ac);
+            break;
+        case Pad::Border:
+            grid_sample2d_nchw_mode<T, Pad::Border>(inp, grid, out, N, C, H, W, oH, oW,
+                                                    interpolation_mode, ac);
+            break;
+        default:
+            grid_sample2d_nchw_mode<T, Pad::Reflection>(inp, grid, out, N, C, H, W, oH, oW,
+                                                        interpolation_mode, ac);
+            break;
+    }
+}
+
+void grid_sample2d_nchw_impl(const void* in, const void* grid, void* out,
+                             int64_t N, int64_t C, int64_t H, int64_t W,
+                             int64_t oH, int64_t oW, int interpolation_mode,
+                             int padding_mode, int align_corners, int dtype) {
+    const bool ac = align_corners != 0;
+    switch (static_cast<DType>(dtype)) {
+        case DType::Float32:
+            grid_sample2d_nchw_typed<float>(static_cast<const float*>(in),
+                                            static_cast<const float*>(grid),
+                                            static_cast<float*>(out), N, C, H, W, oH, oW,
+                                            interpolation_mode, padding_mode, ac);
+            return;
+        case DType::Float64:
+            grid_sample2d_nchw_typed<double>(static_cast<const double*>(in),
+                                             static_cast<const double*>(grid),
+                                             static_cast<double*>(out), N, C, H, W, oH, oW,
+                                             interpolation_mode, padding_mode, ac);
+            return;
+        default:
+            TP_THROW(NotImplementedError,
+                     "grid_sampler_2d strided-channel frame: unsupported dtype");
+    }
+}
+
 }  // namespace
 
 // DEFAULT/AVX2 tier copies take the REGISTER_DISPATCH slots; the AVX512 tier
@@ -716,9 +1003,11 @@ void grid_sample2d_backward_cl_impl(const void* gout, const void* in, const void
 #ifndef CPU_CAPABILITY_AVX512
 REGISTER_DISPATCH(grid_sample2d_cl_stub, &grid_sample2d_cl_impl);
 REGISTER_DISPATCH(grid_sample2d_backward_cl_stub, &grid_sample2d_backward_cl_impl);
+REGISTER_DISPATCH(grid_sample2d_nchw_stub, &grid_sample2d_nchw_impl);
 #else
 ALSO_REGISTER_AVX512_DISPATCH(grid_sample2d_cl_stub, &grid_sample2d_cl_impl);
 ALSO_REGISTER_AVX512_DISPATCH(grid_sample2d_backward_cl_stub, &grid_sample2d_backward_cl_impl);
+ALSO_REGISTER_AVX512_DISPATCH(grid_sample2d_nchw_stub, &grid_sample2d_nchw_impl);
 #endif
 
 }  // namespace cpu
