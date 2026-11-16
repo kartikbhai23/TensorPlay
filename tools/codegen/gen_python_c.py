@@ -1275,8 +1275,15 @@ def _gen_python_capi(ctx: CodegenContext) -> None:
                     conds = [f"tpx_probe_{k} >= {p['required']}",
                              f"tpx_probe_{k} <= {p['arity']}"]
                     out.append(f"        if ({' && '.join(conds)})"
-                               f" {{ pick = {k}; ++matches; }}")
-                out.append("        if (matches == 1) {")
+                               f" {{ if (matches == 0) pick = {k}; ++matches; }}")
+                # Take the first compatible overload rather than demanding a
+                # unique one.  A kind can be lenient (an int is a valid
+                # one-element int list), so two candidates may both accept the
+                # same call; the first in declaration order is the one the
+                # candidate-by-candidate path below would have settled on, so
+                # picking it here skips the throw-and-format round trip that
+                # path pays for every rejected candidate.
+                out.append("        if (matches >= 1) {")
                 out.append("            try {")
                 out.append("                switch (pick) {")
                 for k, ovn in enumerate(ovfns):
