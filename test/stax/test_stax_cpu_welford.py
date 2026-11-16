@@ -7,6 +7,7 @@ balanced pairs.  Each case is lowered strictly -- a kernel that did not build
 fails here -- and compared with float64.
 """
 
+import numpy as np
 import pytest
 
 import tensorplay as tp
@@ -39,3 +40,24 @@ def test_layer_norm_model_builds_both_halves():
     ref(x).sum().backward()
     for p, q in zip(model.parameters(), ref.parameters()):
         assert tp.allclose(p.grad, q.grad, atol=1e-5, rtol=1e-4)
+
+
+@pytest.mark.parametrize("width", [64, 1024, 1025])
+@pytest.mark.parametrize("offset", [0.0, 1000.0])
+def test_layer_norm_rows_keep_values_and_gradients(width, offset):
+    tp.manual_seed(3)
+    x = tp.randn(4, width) + offset
+    x.requires_grad_(True)
+    values = x.detach().numpy().astype(np.float64)
+    centered = values - values.mean(axis=1, keepdims=True)
+    variance = (centered * centered).mean(axis=1, keepdims=True)
+    reference = centered / np.sqrt(variance + 1e-5)
+    expected_grad = 2e-5 * centered / (variance + 1e-5) ** 2
+
+    def fn(value):
+        return tp.nn.functional.layer_norm(value, (width,))
+
+    actual = tp.compile(fn, strict_native=True)(x)
+    np.testing.assert_allclose(actual.detach().numpy(), reference, atol=8e-4, rtol=8e-4)
+    (actual * actual).sum().backward()
+    np.testing.assert_allclose(x.grad.numpy(), expected_grad, atol=2e-3, rtol=2e-3)

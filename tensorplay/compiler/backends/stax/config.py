@@ -288,6 +288,9 @@ class _CppConfig:
     #: the thread is more than the work it does.
     min_chunk_size = 512
 
+    #: Largest row for which two reductions compute the mean and variance.
+    use_two_step_variance_threshold = 1024
+
     #: How many threads the kernels are written for, when the count is fixed.
     #: A negative value asks the runtime for its thread count, so compiled
     #: kernels use every available core by default.

@@ -3486,16 +3486,42 @@ def lower_native_layer_norm(x, normalized_shape, weight, bias, eps):
     def element(row, col):
         return ops.to_dtype(x_l(view.full(row, col)), acc)
 
-    mean, m2, _weight = ir.WelfordReduction.create(
-        device=device,
-        dtype=acc,
-        inner_fns=(lambda index, rindex: element(index[0], rindex[0]),),
-        ranges=[view.rows],
-        reduction_ranges=[view.cols],
-        reduction_type="welford_reduce",
-    )
-    mean.realize()
-    m2.realize()
+    if (
+        device.type == "cpu"
+        and view.rows > 1
+        and view.cols <= config.cpp.use_two_step_variance_threshold
+    ):
+        total = _reduce_rows(device, acc, view.rows, view.cols, element, "sum")
+        total_l = total.make_loader()
+        mean = Pointwise.create(
+            device=device,
+            dtype=acc,
+            inner_fn=lambda index: ops.truediv(
+                total_l(index), ops.constant(float(view.cols), acc)
+            ),
+            ranges=[view.rows],
+        )
+        mean.realize()
+        mean_loader = mean.make_loader()
+
+        def squared_difference(row, col):
+            difference = ops.sub(element(row, col), mean_loader([row]))
+            return ops.mul(difference, difference)
+
+        m2 = _reduce_rows(
+            device, acc, view.rows, view.cols, squared_difference, "sum"
+        )
+    else:
+        mean, m2, _weight = ir.WelfordReduction.create(
+            device=device,
+            dtype=acc,
+            inner_fns=(lambda index, rindex: element(index[0], rindex[0]),),
+            ranges=[view.rows],
+            reduction_ranges=[view.cols],
+            reduction_type="welford_reduce",
+        )
+        mean.realize()
+        m2.realize()
     m2_l = m2.make_loader()
     mean_l = mean.make_loader()
     rstd = Pointwise.create(
@@ -3658,9 +3684,25 @@ def _softmax_like(x, dim, out_dtype, log):
         lambda r, c: ops.to_dtype(x_l(full(r, c)), acc), "max",
     )
     peak_l = peak.make_loader()
+    unnormalized_l = None
+    if device.type == "cpu" and not log:
+        unnormalized = Pointwise.create(
+            device=device,
+            dtype=acc,
+            inner_fn=lambda index: ops.exp(
+                ops.sub(ops.to_dtype(x_l(index), acc), peak_l([row_of(index)]))
+            ),
+            ranges=size,
+        )
+        unnormalized.realize()
+        unnormalized_l = unnormalized.make_loader()
     total = _reduce_rows(
         device, acc, view_rows, size[d],
-        lambda r, c: ops.exp(ops.sub(ops.to_dtype(x_l(full(r, c)), acc), peak_l([r]))),
+        lambda r, c: (
+            unnormalized_l(full(r, c))
+            if unnormalized_l is not None
+            else ops.exp(ops.sub(ops.to_dtype(x_l(full(r, c)), acc), peak_l([r])))
+        ),
         "sum",
     )
     total_l = total.make_loader()
@@ -3671,7 +3713,8 @@ def _softmax_like(x, dim, out_dtype, log):
         if log:
             value = ops.sub(shifted, ops.log(total_l(row)))
         else:
-            value = ops.truediv(ops.exp(shifted), total_l(row))
+            numerator = unnormalized_l(index) if unnormalized_l else ops.exp(shifted)
+            value = ops.truediv(numerator, total_l(row))
         return ops.to_dtype(value, out_dtype)
 
     return Pointwise.create(device=device, dtype=out_dtype, inner_fn=fn, ranges=size)
