@@ -4811,6 +4811,28 @@ inline std::optional<Tensor> review_permuted_reduction(
     if (dense_dims.empty()) return std::nullopt;
 
     Tensor held = run(dense, dense_dims);
+    // The kept dimensions in the order the dense layout holds them.  When they
+    // already run in the original order the answer is the dense result re-cut
+    // to the shape the caller asked for: no second walk of the memory to put
+    // the axes back, and no copy to make the result contiguous.
+    std::vector<int64_t> kept;
+    kept.reserve(static_cast<size_t>(ndim));
+    for (int64_t k = 0; k < ndim; ++k) {
+        const int64_t rank = order[static_cast<size_t>(k)];
+        if (!reduced[static_cast<size_t>(rank)]) {
+            kept.push_back(rank);
+        }
+    }
+    if (std::is_sorted(kept.begin(), kept.end())) {
+        std::vector<int64_t> shape;
+        shape.reserve(kept.size());
+        for (int64_t i = 0; i < ndim; ++i) {
+            const bool gone = reduced[static_cast<size_t>(i)];
+            if (gone && !keepdim) continue;
+            shape.push_back(gone ? 1 : self.size(i));
+        }
+        return held.reshape(shape);
+    }
     std::vector<int64_t> back_order(static_cast<size_t>(ndim), 0);
     for (int64_t k = 0; k < ndim; ++k) {
         back_order[static_cast<size_t>(order[static_cast<size_t>(k)])] = k;
