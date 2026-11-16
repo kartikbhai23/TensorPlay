@@ -3068,7 +3068,7 @@ inline double hmax_f64_512(__m512d v) {
         _mm512_castpd512_pd256(v), _mm512_extractf64x4_pd(v, 1)));
 }
 
-#define TP_SOFTMAX_ROW_F32(fn_suffix, vec_t, width, exp_fn, mm_add, mm_sub, mm_mul, mm_max, mm_load, mm_store, mm_set1, mm_zero) \
+#define TP_SOFTMAX_ROW_F32(fn_suffix, vec_t, width, exp_fn, nn_log, mm_add, mm_sub, mm_mul, mm_max, mm_load, mm_store, mm_set1, mm_zero) \
 __attribute__((target("avx512f")))                                       \
 inline float row_max_##fn_suffix(const float* x, int64_t n) {            \
     vec_t m = mm_set1(x[0]);                                             \
@@ -3130,17 +3130,24 @@ inline void row_logmode_##fn_suffix(const float* x, float* out, float m, float l
     for (; i + width <= n; i += width)                                   \
         mm_store(out + i, mm_sub(mm_sub(mm_load(x + i), vm), vl));       \
     for (; i < n; ++i) out[i] = (x[i] - m) - lse;                        \
+}                                                                        \
+__attribute__((target("avx512f")))                                       \
+inline void row_log_##fn_suffix(float* x, int64_t n) {                   \
+    int64_t i = 0;                                                       \
+    for (; i + width <= n; i += width)                                   \
+        mm_store(x + i, nn_log(mm_load(x + i)));                         \
+    for (; i < n; ++i) x[i] = std::log(x[i]);                            \
 }
 
 TP_SOFTMAX_ROW_F32(f32_512, __m512, 16, tensorplay::tpsleef::exp,
-                   _mm512_add_ps, _mm512_sub_ps, _mm512_mul_ps, _mm512_max_ps,
+                   tensorplay::tpsleef::log, _mm512_add_ps, _mm512_sub_ps, _mm512_mul_ps, _mm512_max_ps,
                    _mm512_loadu_ps, _mm512_storeu_ps, _mm512_set1_ps, _mm512_setzero_ps)
 TP_SOFTMAX_ROW_F32(f32_256, __m256, 8, tensorplay::tpsleef::exp,
-                   _mm256_add_ps, _mm256_sub_ps, _mm256_mul_ps, _mm256_max_ps,
+                   tensorplay::tpsleef::log, _mm256_add_ps, _mm256_sub_ps, _mm256_mul_ps, _mm256_max_ps,
                    _mm256_loadu_ps, _mm256_storeu_ps, _mm256_set1_ps, _mm256_setzero_ps)
 #undef TP_SOFTMAX_ROW_F32
 
-#define TP_SOFTMAX_ROW_F64(fn_suffix, vec_t, width, exp_fn, mm_add, mm_sub, mm_mul, mm_max, mm_load, mm_store, mm_set1, mm_zero) \
+#define TP_SOFTMAX_ROW_F64(fn_suffix, vec_t, width, exp_fn, nn_log, mm_add, mm_sub, mm_mul, mm_max, mm_load, mm_store, mm_set1, mm_zero) \
 __attribute__((target("avx512f")))                                       \
 inline double row_max_##fn_suffix(const double* x, int64_t n) {          \
     vec_t m = mm_set1(x[0]);                                             \
@@ -3202,13 +3209,20 @@ inline void row_logmode_##fn_suffix(const double* x, double* out, double m, doub
     for (; i + width <= n; i += width)                                   \
         mm_store(out + i, mm_sub(mm_sub(mm_load(x + i), vm), vl));       \
     for (; i < n; ++i) out[i] = (x[i] - m) - lse;                        \
+}                                                                        \
+__attribute__((target("avx512f")))                                       \
+inline void row_log_##fn_suffix(double* x, int64_t n) {                  \
+    int64_t i = 0;                                                       \
+    for (; i + width <= n; i += width)                                   \
+        mm_store(x + i, nn_log(mm_load(x + i)));                         \
+    for (; i < n; ++i) x[i] = std::log(x[i]);                            \
 }
 
 TP_SOFTMAX_ROW_F64(f64_512, __m512d, 8, tensorplay::tpsleef::exp,
-                   _mm512_add_pd, _mm512_sub_pd, _mm512_mul_pd, _mm512_max_pd,
+                   tensorplay::tpsleef::log, _mm512_add_pd, _mm512_sub_pd, _mm512_mul_pd, _mm512_max_pd,
                    _mm512_loadu_pd, _mm512_storeu_pd, _mm512_set1_pd, _mm512_setzero_pd)
 TP_SOFTMAX_ROW_F64(f64_256, __m256d, 4, tensorplay::tpsleef::exp,
-                   _mm256_add_pd, _mm256_sub_pd, _mm256_mul_pd, _mm256_max_pd,
+                   tensorplay::tpsleef::log, _mm256_add_pd, _mm256_sub_pd, _mm256_mul_pd, _mm256_max_pd,
                    _mm256_loadu_pd, _mm256_storeu_pd, _mm256_set1_pd, _mm256_setzero_pd)
 #undef TP_SOFTMAX_ROW_F64
 
@@ -3541,13 +3555,63 @@ static Tensor softmax_fused_kernel_impl(const Tensor& self, int64_t dim, DType o
                 softmax_row::row_scale_##suffix(orow_, ctype(1) / sum, size); \
             } \
         }
+    // The logarithmic row reads its input twice and writes once, and the only
+    // thing between the two reads is one logarithm per row.  Rows are taken a
+    // block at a time so that the logarithms of the block are one vector pass
+    // over the block's sums instead of one scalar call per row.
+    #define SOFTMAX_LOG_ROWS(ns, suffix, ctype) \
+        { \
+            constexpr int64_t kBlock = 64; \
+            ctype maxes[kBlock]; \
+            ctype lses[kBlock]; \
+            parallel_for(0, rows, kBlock, [&](int64_t r_begin, int64_t r_end) { \
+                for (int64_t r0 = r_begin; r0 < r_end; r0 += kBlock) { \
+                    const int64_t len = std::min<int64_t>(kBlock, r_end - r0); \
+                    for (int64_t j = 0; j < len; ++j) { \
+                        maxes[j] = ns::row_max_##suffix(in + (r0 + j) * size, size); \
+                    } \
+                    for (int64_t j = 0; j < len; ++j) { \
+                        lses[j] = ns::row_expsum_##suffix<false>( \
+                            in + (r0 + j) * size, maxes[j], nullptr, size); \
+                    } \
+                    ns::row_log_##suffix(lses, len); \
+                    for (int64_t j = 0; j < len; ++j) { \
+                        ns::row_logmode_##suffix(in + (r0 + j) * size, \
+                                                 out + (r0 + j) * size, \
+                                                 maxes[j], lses[j], size); \
+                    } \
+                } \
+            }); \
+        }
 #else
     // No AVX vector rows on this architecture: the CASE macro's use512 /
     // use256 probes return false, so only the scalar row body is ever taken.
     // Bare block, not do/while: the call sites carry no trailing semicolon.
     #define SOFTMAX_ROW_VEC(ns, suffix, ctype, row_, orow_) \
         { (void)row_; (void)orow_; }
+    #define SOFTMAX_LOG_ROWS(ns, suffix, ctype) \
+        { }
 #endif
+
+    // One row at a time: the scalar body, and the vector row below the width
+    // that would fill one vector.  The two width thresholds and the two
+    // probes are handed in by the caller's case block.
+    #define SOFTMAX_ROWS_SCALAR(ctype, s512, s256, t512, t256) \
+        { \
+            parallel_for(0, rows, 1, [&](int64_t begin, int64_t end) { \
+                for (int64_t r = begin; r < end; ++r) { \
+                    const ctype* row = in + r * size; \
+                    ctype* orow = out + r * size; \
+                    if (use512 && size >= t512) { \
+                        SOFTMAX_ROW_VEC(softmax_row, s512, ctype, row, orow) \
+                    } else if (use256 && size >= t256) { \
+                        SOFTMAX_ROW_VEC(softmax_row, s256, ctype, row, orow) \
+                    } else { \
+                        SOFTMAX_SCALAR_ROW(ctype) \
+                    } \
+                } \
+            }); \
+        }
 
     #define SOFTMAX_CASE(ctype, name, s512, s256, t512, t256) \
     case DType::name: { \
@@ -3555,19 +3619,17 @@ static Tensor softmax_fused_kernel_impl(const Tensor& self, int64_t dim, DType o
         ctype* out = result.data_ptr<ctype>(); \
         const bool use512 = vecunary::avx512_available(); \
         const bool use256 = vecunary::avx2_available(); \
-        parallel_for(0, rows, 1, [&](int64_t begin, int64_t end) { \
-            for (int64_t r = begin; r < end; ++r) { \
-                const ctype* row = in + r * size; \
-                ctype* orow = out + r * size; \
-                if (use512 && size >= t512) { \
-                    SOFTMAX_ROW_VEC(softmax_row, s512, ctype, row, orow) \
-                } else if (use256 && size >= t256) { \
-                    SOFTMAX_ROW_VEC(softmax_row, s256, ctype, row, orow) \
-                } else { \
-                    SOFTMAX_SCALAR_ROW(ctype) \
-                } \
+        if constexpr (LogMode) { \
+            if (use512 && size >= t512) { \
+                SOFTMAX_LOG_ROWS(softmax_row, s512, ctype) \
+            } else if (use256 && size >= t256) { \
+                SOFTMAX_LOG_ROWS(softmax_row, s256, ctype) \
+            } else { \
+                SOFTMAX_ROWS_SCALAR(ctype, s512, s256, t512, t256) \
             } \
-        }); \
+        } else { \
+            SOFTMAX_ROWS_SCALAR(ctype, s512, s256, t512, t256) \
+        } \
         break; \
     }
     switch (out_dtype) {
@@ -3580,6 +3642,8 @@ static Tensor softmax_fused_kernel_impl(const Tensor& self, int64_t dim, DType o
         default: TP_THROW(TypeError, "softmax: unsupported dtype");
     }
     #undef SOFTMAX_CASE
+    #undef SOFTMAX_ROWS_SCALAR
+    #undef SOFTMAX_LOG_ROWS
     #undef SOFTMAX_ROW_VEC
     #undef SOFTMAX_SCALAR_ROW
     return result;
