@@ -7767,6 +7767,20 @@ bool fold_leading_extrema(Tensor& result, const Tensor& self, int64_t ndim,
         }
         return true;
     }
+    // A slice whose whole width fits the register file is held there over the
+    // whole row range, however long that range is: the totals are never written
+    // back between rows, so the walk pays one load and one compare per element
+    // and nothing else.  Only a slice too wide for the registers has to be cut
+    // into blocks, which is what the walk below does.
+    if (serial && cols <= 8 * static_cast<int64_t>(Vectorized<ctype>::size())) {
+        ctype* out = result.data_ptr<ctype>();
+        if (maximum_value) {
+            fold_leading_thin<ctype, true>(data, out, rows, cols, 0, cols);
+        } else {
+            fold_leading_thin<ctype, false>(data, out, rows, cols, 0, cols);
+        }
+        return true;
+    }
     // A slice wider than the level-one cache cannot be held in registers over
     // the whole run.  An eight-byte integral width then folds a block of
     // columns at a time, each block walking the rows with its totals in
