@@ -66,6 +66,7 @@ def measure(device, warmup, iterations, rounds, selected):
                 return operation(torch, x, y, z)
 
         try:
+            torch._dynamo.reset()
             compiled = tp.compile(tp_region, strict_native=True, fullgraph=True)
             reference = torch.compile(reference_region, fullgraph=True)
             result = compiled(*tp_args)
