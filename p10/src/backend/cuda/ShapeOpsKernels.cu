@@ -513,7 +513,17 @@ Tensor flip_cuda(const Tensor& self, const std::vector<int64_t>& dims) {
 #define TP_FL1(ctype, name_) \
         case DType::name_: { \
             const ctype* source = sc.data_ptr<ctype>(); \
+            const bool use32 = n <= static_cast<int64_t>(INT32_MAX); \
             gpu_kernel_with_index(out, [=] GPU_LAMBDA(int64_t linear_index) -> ctype { \
+                if (use32) { \
+                    const int32_t li = static_cast<int32_t>(linear_index); \
+                    const int32_t st = static_cast<int32_t>(stride); \
+                    const int32_t sz = static_cast<int32_t>(size); \
+                    const int32_t dim_index = (li / st) % sz; \
+                    const int32_t source_index = \
+                        li + (sz - 1 - 2 * dim_index) * st; \
+                    return source[source_index]; \
+                } \
                 const int64_t dim_index = (linear_index / stride) % size; \
                 const int64_t source_index = \
                     linear_index + (size - 1 - 2 * dim_index) * stride; \
