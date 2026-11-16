@@ -2032,19 +2032,29 @@ Tensor add_kernel(const Tensor& self, const Tensor& other, const Scalar& alpha) 
     // Operands that share one dense layout stream flat in storage order:
     // allocate the result with the same strides so a permuted pair (e.g.
     // two transposes) runs one unit-stride pass instead of gathering a
-    // cache line per element.
+    // cache line per element.  A pair that is already packed needs neither
+    // the stride list nor the re-view: the canonical strides the answer is
+    // allocated with are the ones its operands are read with.
     if (plain_layout && (cpu_has_avx512() || cpu_has_avx2f()) &&
         (self.dtype() == DType::Float32 || self.dtype() == DType::Float64) &&
         other.dtype() == self.dtype() && self.shape() == other.shape() &&
         !alpha.isComplex()) {
         const std::vector<int64_t> sizes =
             static_cast<std::vector<int64_t>>(self.shape());
-        const std::vector<int64_t> strides =
-            static_cast<std::vector<int64_t>>(self.strides());
-        if (strides == static_cast<std::vector<int64_t>>(other.strides()) &&
-            SizesAndStrides::is_non_overlapping_and_dense(sizes, strides)) {
+        const bool packed = self.is_contiguous() && other.is_contiguous();
+        std::vector<int64_t> strides;
+        bool shared_layout = packed;
+        if (!packed) {
+            strides = static_cast<std::vector<int64_t>>(self.strides());
+            shared_layout =
+                strides == static_cast<std::vector<int64_t>>(other.strides()) &&
+                SizesAndStrides::is_non_overlapping_and_dense(sizes, strides);
+        }
+        if (shared_layout) {
             Tensor result = Tensor::empty(sizes, self.dtype(), self.device());
-            result = result.as_strided(sizes, strides, 0);
+            if (!packed) {
+                result = result.as_strided(sizes, strides, 0);
+            }
             const int64_t n = self.numel();
             // One unit-stride pass over the whole extent still has to be cut
             // into per-thread ranges: the flat loop saturates a single core's
@@ -2706,7 +2716,9 @@ Tensor mul_kernel(const Tensor& self, const Tensor& other) {
     // Operands that share one dense layout stream flat in storage order:
     // allocate the result with the same strides so a permuted pair (e.g.
     // two transposes) runs one unit-stride pass instead of gathering a
-    // cache line per element.
+    // cache line per element.  A pair that is already packed needs neither
+    // the stride list nor the re-view: the canonical strides the answer is
+    // allocated with are the ones its operands are read with.
     bool plain_layout = true;
 #ifdef USE_ONEDNN
     plain_layout =
@@ -2718,12 +2730,20 @@ Tensor mul_kernel(const Tensor& self, const Tensor& other) {
         other.dtype() == self.dtype() && self.shape() == other.shape()) {
         const std::vector<int64_t> sizes =
             static_cast<std::vector<int64_t>>(self.shape());
-        const std::vector<int64_t> strides =
-            static_cast<std::vector<int64_t>>(self.strides());
-        if (strides == static_cast<std::vector<int64_t>>(other.strides()) &&
-            SizesAndStrides::is_non_overlapping_and_dense(sizes, strides)) {
+        const bool packed = self.is_contiguous() && other.is_contiguous();
+        std::vector<int64_t> strides;
+        bool shared_layout = packed;
+        if (!packed) {
+            strides = static_cast<std::vector<int64_t>>(self.strides());
+            shared_layout =
+                strides == static_cast<std::vector<int64_t>>(other.strides()) &&
+                SizesAndStrides::is_non_overlapping_and_dense(sizes, strides);
+        }
+        if (shared_layout) {
             Tensor result = Tensor::empty(sizes, self.dtype(), self.device());
-            result = result.as_strided(sizes, strides, 0);
+            if (!packed) {
+                result = result.as_strided(sizes, strides, 0);
+            }
             const int64_t n = self.numel();
             if (self.dtype() == DType::Float32) {
                 const float* self_ptr = self.data_ptr<float>();
@@ -2909,7 +2929,9 @@ Tensor div_kernel(const Tensor& self, const Tensor& other) {
     // Operands that share one dense layout stream flat in storage order:
     // allocate the result with the same strides so a permuted pair (e.g.
     // two transposes) runs one unit-stride pass instead of gathering a
-    // cache line per element.
+    // cache line per element.  A pair that is already packed needs neither
+    // the stride list nor the re-view: the canonical strides the answer is
+    // allocated with are the ones its operands are read with.
     bool plain_layout = true;
 #ifdef USE_ONEDNN
     plain_layout =
@@ -2921,12 +2943,20 @@ Tensor div_kernel(const Tensor& self, const Tensor& other) {
         other.dtype() == self.dtype() && self.shape() == other.shape()) {
         const std::vector<int64_t> sizes =
             static_cast<std::vector<int64_t>>(self.shape());
-        const std::vector<int64_t> strides =
-            static_cast<std::vector<int64_t>>(self.strides());
-        if (strides == static_cast<std::vector<int64_t>>(other.strides()) &&
-            SizesAndStrides::is_non_overlapping_and_dense(sizes, strides)) {
+        const bool packed = self.is_contiguous() && other.is_contiguous();
+        std::vector<int64_t> strides;
+        bool shared_layout = packed;
+        if (!packed) {
+            strides = static_cast<std::vector<int64_t>>(self.strides());
+            shared_layout =
+                strides == static_cast<std::vector<int64_t>>(other.strides()) &&
+                SizesAndStrides::is_non_overlapping_and_dense(sizes, strides);
+        }
+        if (shared_layout) {
             Tensor result = Tensor::empty(sizes, self.dtype(), self.device());
-            result = result.as_strided(sizes, strides, 0);
+            if (!packed) {
+                result = result.as_strided(sizes, strides, 0);
+            }
             const int64_t n = self.numel();
             if (self.dtype() == DType::Float32) {
                 const float* self_ptr = self.data_ptr<float>();
