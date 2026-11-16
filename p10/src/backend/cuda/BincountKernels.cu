@@ -70,6 +70,71 @@ __global__ void minmax_reduce_kernel(int64_t n, const T* x, T* min_out,
     }
 }
 
+// Vectorized form of the minmax reduction for 8-byte values: each thread
+// folds four 16-byte loads per grid stride into min/max updates, so the
+// input is read with a quarter of the load instructions of the scalar loop
+// and several loads stay in flight per thread.  Requires the base pointer to
+// be 16-byte aligned; the caller picks this kernel only when that holds, and
+// the scalar kernel remains the fallback.
+template <typename T>
+__global__ void minmax_reduce_vec_kernel(int64_t n, const T* x, T* min_out,
+                                         T* max_out) {
+    const int64_t nthreads = static_cast<int64_t>(blockDim.x) * gridDim.x;
+    T local_min = std::numeric_limits<T>::max();
+    T local_max = std::numeric_limits<T>::lowest();
+    if constexpr (sizeof(T) == 8) {
+        const long4* x4 = reinterpret_cast<const long4*>(x);
+        const int64_t n4 = n / 4;
+        for (int64_t base = (static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x) * 4;
+             base < n4; base += nthreads * 4) {
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const int64_t at = base + static_cast<int64_t>(j) * blockDim.x;
+                if (at < n4) {
+                    const long4 v = x4[at];
+                    local_min = ::min(local_min, static_cast<T>(v.x));
+                    local_min = ::min(local_min, static_cast<T>(v.y));
+                    local_min = ::min(local_min, static_cast<T>(v.z));
+                    local_min = ::min(local_min, static_cast<T>(v.w));
+                    local_max = ::max(local_max, static_cast<T>(v.x));
+                    local_max = ::max(local_max, static_cast<T>(v.y));
+                    local_max = ::max(local_max, static_cast<T>(v.z));
+                    local_max = ::max(local_max, static_cast<T>(v.w));
+                }
+            }
+        }
+        const int64_t tail = n4 * 4;
+        for (int64_t i = tail + static_cast<int64_t>(threadIdx.x); i < n;
+             i += static_cast<int64_t>(blockDim.x)) {
+            local_min = ::min(local_min, x[i]);
+            local_max = ::max(local_max, x[i]);
+        }
+    } else {
+        for (int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+             i < n; i += nthreads) {
+            local_min = ::min(local_min, x[i]);
+            local_max = ::max(local_max, x[i]);
+        }
+    }
+    __shared__ T min_shm[kThreads];
+    __shared__ T max_shm[kThreads];
+    const int tid = threadIdx.x;
+    min_shm[tid] = local_min;
+    max_shm[tid] = local_max;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            min_shm[tid] = ::min(min_shm[tid], min_shm[tid + s]);
+            max_shm[tid] = ::max(max_shm[tid], max_shm[tid + s]);
+        }
+        __syncthreads();
+    }
+    if (tid == 0) {
+        min_out[blockIdx.x] = min_shm[0];
+        max_out[blockIdx.x] = max_shm[0];
+    }
+}
+
 // Folds the per-block partials of minmax_reduce_kernel into the final pair.
 template <typename T>
 __global__ void minmax_combine_kernel(int64_t nblocks, const T* min_in,
@@ -177,9 +242,24 @@ Tensor bincount_cuda(const Tensor& self, const std::optional<Tensor>& weights_op
     partial_blocks = std::min<int64_t>(std::max<int64_t>(partial_blocks, 1), 4096);
     Tensor partial = Tensor::empty({partial_blocks * 2}, DType::Int64, self.device());
     Tensor bounds_d = Tensor::empty({2}, DType::Int64, self.device());
-    minmax_reduce_kernel<int64_t><<<static_cast<unsigned>(partial_blocks), kThreads, 0, stream>>>(
-        n, inp.data_ptr<int64_t>(), partial.data_ptr<int64_t>(),
-        partial.data_ptr<int64_t>() + partial_blocks);
+    const int64_t* xp = inp.data_ptr<int64_t>();
+    const bool aligned16 = (reinterpret_cast<uintptr_t>(xp) & 0xf) == 0;
+    if (aligned16) {
+        const int64_t n4 = n / 4;
+        const int64_t vec_blocks =
+            (n4 + kThreads * 4 - 1) / (kThreads * 4);
+        partial_blocks = std::min<int64_t>(
+            std::max<int64_t>(vec_blocks, 1), 4096);
+        minmax_reduce_vec_kernel<int64_t>
+            <<<static_cast<unsigned>(partial_blocks), kThreads, 0, stream>>>(
+                n, xp, partial.data_ptr<int64_t>(),
+                partial.data_ptr<int64_t>() + partial_blocks);
+    } else {
+        minmax_reduce_kernel<int64_t>
+            <<<static_cast<unsigned>(partial_blocks), kThreads, 0, stream>>>(
+                n, xp, partial.data_ptr<int64_t>(),
+                partial.data_ptr<int64_t>() + partial_blocks);
+    }
     minmax_combine_kernel<int64_t><<<1, kThreads, 0, stream>>>(
         partial_blocks, partial.data_ptr<int64_t>(),
         partial.data_ptr<int64_t>() + partial_blocks, bounds_d.data_ptr<int64_t>(),
