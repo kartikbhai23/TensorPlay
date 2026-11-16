@@ -893,6 +893,7 @@ set(TP_CPU_KERNEL_SRCS
     src/backend/cpu/PoolingKernelsImpl.cpp
     src/backend/cpu/UpsampleKernelsImpl.cpp
     src/backend/cpu/GridSamplerKernelsImpl.cpp
+    src/backend/cpu/ShapeOpsKernelsImpl.cpp
     src/backend/cpu/SparseBlasKernelsImpl.cpp
     src/backend/cpu/SpmmReduceKernelsImpl.cpp
     src/backend/cpu/SoftmaxStridedKernelsImpl.cpp

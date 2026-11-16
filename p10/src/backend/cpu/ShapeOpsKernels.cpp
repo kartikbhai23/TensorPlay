@@ -1,4 +1,5 @@
 #include "QuantTensorOperators.h"
+#include "cpu/ShapeOpsKernels.h"
 // Tensor shape and layout operators - CPU kernels.
 #include "Tensor.h"
 #include "Dispatcher.h"
@@ -661,6 +662,49 @@ Tensor block_diag_cpu(const std::vector<Tensor>& tensors) {
     return out;
 }
 
+// One channel group per task.  The group's input planes are contiguous in the
+// group (channel c of the group is the group's r^2 consecutive planes) and its
+// output rows are contiguous, so carrying the group index forward needs no
+// division: the group's base is its flat index times the group size on both
+// sides.  Within a group, an output row (h, ih) is the interleave of the r input
+// rows that share its height, each of them contributing W consecutive elements
+// to a run of r consecutive output columns.
+template <typename T>
+static void pixel_shuffle_rows(const T* in, T* out, int64_t prefix, int64_t C,
+                               int64_t H, int64_t W, int64_t r) {
+    const int64_t OH = H * r;
+    const int64_t OW = W * r;
+    const int64_t r2 = r * r;
+    const int64_t plane = H * W;
+    const int64_t groups = prefix * C;
+    parallel_for(0, groups, 1, [&](int64_t b, int64_t e) {
+        for (int64_t g = b; g < e; ++g) {
+            const T* in_g = in + g * r2 * plane;
+            T* out_g = out + g * OH * OW;
+            for (int64_t h = 0; h < H; ++h) {
+                for (int64_t ih = 0; ih < r; ++ih) {
+                    T* dst = out_g + (h * r + ih) * OW;
+                    const T* row = in_g + ih * r * plane + h * W;
+                    if (r <= 8) {
+                        const T* srcs[8];
+                        for (int64_t iw = 0; iw < r; ++iw) srcs[iw] = row + iw * plane;
+                        for (int64_t k = 0; k < W; ++k) {
+                            T* d = dst + k * r;
+                            for (int64_t iw = 0; iw < r; ++iw) d[iw] = srcs[iw][k];
+                        }
+                    } else {
+                        for (int64_t iw = 0; iw < r; ++iw) {
+                            const T* src = row + iw * plane;
+                            T* d = dst + iw;
+                            for (int64_t k = 0; k < W; ++k) d[k * r] = src[k];
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
 Tensor pixel_shuffle_cpu(const Tensor& self, int64_t upscale_factor) {
     if (self.dim() < 3) {
         TP_THROW(RuntimeError, "pixel_shuffle expects input to have at least 3 dimensions, but got input with ",
@@ -686,27 +730,27 @@ Tensor pixel_shuffle_cpu(const Tensor& self, int64_t upscale_factor) {
     int64_t r = upscale_factor;
     int64_t C = input_channels / factor_squared;
     int64_t H = self.size(-2), W = self.size(-1);
-    int64_t n = self.numel();
-    auto wk = [&](int64_t b, int64_t e) {
-        // li walks the output (bn, c, h, w) over [.., C, H * r, W * r].
-        const int64_t OH = H * r, OW = W * r;
-        for (int64_t li = b; li < e; ++li) {
-            int64_t rem = li;
-            int64_t w = rem % OW; rem /= OW;
-            int64_t h = rem % OH; rem /= OH;
-            int64_t c = rem % C; rem /= C;
-            int64_t bn = rem;
-            int64_t ih = h % r, iw = w % r;
-            int64_t src = (((bn * (C * r * r) + c * r * r + ih * r + iw) * H + (h / r)) * W + (w / r));
-            switch (self.dtype()) {
-#define TP_PS_W(ctype, name_) case DType::name_: reinterpret_cast<ctype*>(out.data_ptr())[li] = reinterpret_cast<const ctype*>(sc.data_ptr())[src]; break;
-                TENSORPLAY_FORALL_SCALAR_TYPES_WITH_COMPLEX(TP_PS_W)
-#undef TP_PS_W
-                default: break;
-            }
-        }
-    };
-    parallel_for(0, n, GRAIN_SIZE, wk);
+    // The factor-2 case, which models use, writes each output row as the
+    // interleave of two input rows, so it goes to the tier-compiled core
+    // (cpu/ShapeOpsKernels.h) where the interleave has the tier's width.
+    if (r == 2 && (self.dtype() == DType::Float32 || self.dtype() == DType::Float64)) {
+        const int64_t groups = self.numel() / (factor_squared * H * W);
+        pixel_shuffle_r2_stub(DeviceType::CPU, sc.data_ptr(), out.data_ptr(),
+                              groups, H, W, static_cast<int>(self.dtype()));
+        return out;
+    }
+    const int64_t prefix = self.numel() / (C * factor_squared * H * W);
+    switch (self.dtype()) {
+#define TP_PS_ROW(ctype, name_) \
+        case DType::name_: \
+            pixel_shuffle_rows<ctype>( \
+                reinterpret_cast<const ctype*>(sc.data_ptr()), \
+                reinterpret_cast<ctype*>(out.data_ptr()), prefix, C, H, W, r); \
+            break;
+        TENSORPLAY_FORALL_SCALAR_TYPES_WITH_COMPLEX(TP_PS_ROW)
+#undef TP_PS_ROW
+        default: break;
+    }
     return out;
 }
 
@@ -943,6 +987,8 @@ TENSORPLAY_LIBRARY_IMPL(Composite, ShapeOpsComposites) {
     m.impl("diag", diag_composite);
     m.impl("meshgrid", meshgrid_composite);
 }
+
+DEFINE_DISPATCH(pixel_shuffle_r2_stub);
 
 TENSORPLAY_LIBRARY_IMPL(CPU, ShapeOpsKernels) {
     m.impl("trace", trace_cpu);
