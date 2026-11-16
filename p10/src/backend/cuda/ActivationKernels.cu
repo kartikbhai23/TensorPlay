@@ -1,5 +1,6 @@
 #include "QuantTensorOperators.h"
 #include "OpsPointwiseCommon.cuh"
+#include "PointwiseCommon.cuh"
 #include "Tensor.h"
 #include "Dispatcher.h"
 #include "CUDARuntime.h"
@@ -536,22 +537,62 @@ inline void check_shrink_dtype(const Tensor& self, const char* name) {
     }
 }
 
-// Activation operators carried over from the pointwise families:
+// The shrink maps and threshold compute in the element width rather than
+// widening to double, but only for the full-precision floats.  A double
+// compare and double add run on the device's double-precision units, which
+// consumer cards expose at a fraction of the single-precision rate, so the
+// shrink maps -- pure compares and adds -- ran well behind the reference even
+// though their arithmetic is trivial.  A reduced-precision float instead keeps
+// the widening path: the scalar has to be rounded to the element type before it
+// is compared, and rounding it to float first would move the boundary.
+inline bool full_precision_float(DType dtype) {
+    return dtype == DType::Float32 || dtype == DType::Float64;
+}
+
+struct HardshrinkFunctor {
+    double l_;
+    __device__ HardshrinkFunctor(double l) : l_(l) {}
+    template <typename T> __device__ T operator()(T x) const {
+        const T l = static_cast<T>(l_);
+        return (x >= -l && x <= l) ? static_cast<T>(0) : x;
+    }
+};
+struct SoftshrinkFunctor {
+    double l_;
+    __device__ SoftshrinkFunctor(double l) : l_(l) {}
+    template <typename T> __device__ T operator()(T x) const {
+        const T l = static_cast<T>(l_);
+        if (x > l) return static_cast<T>(x - l);
+        if (x < -l) return static_cast<T>(x + l);
+        return static_cast<T>(x * static_cast<T>(0));
+    }
+};
+struct ThresholdFunctor {
+    double t_;
+    double v_;
+    __device__ ThresholdFunctor(double t, double v) : t_(t), v_(v) {}
+    template <typename T> __device__ T operator()(T x) const {
+        return x <= static_cast<T>(t_) ? static_cast<T>(v_) : x;
+    }
+};
+
 Tensor hardshrink_cuda(const Tensor& self, const Scalar& lambd) {
     check_shrink_dtype(self, "hardshrink");
     double l = lambd.toDouble();
-    // lambd.to<scalar_t>(), so float32 boundary values compare exactly.
-    return dtype_unary_cuda(self,
-                            HFn54{l},
-                            "hardshrink");
+    if (full_precision_float(self.dtype())) {
+        // lambd.to<scalar_t>(), so float32 boundary values compare exactly.
+        return unary_float_op_kernel_v2(self, HardshrinkFunctor{l});
+    }
+    return dtype_unary_cuda(self, HFn54{l}, "hardshrink");
 }
 Tensor softshrink_cuda(const Tensor& self, const Scalar& lambd) {
     check_shrink_dtype(self, "softshrink");
     double l = lambd.toDouble();
-    // (a < -l ? a+l : 0)); the v*0 middle branch keeps NaN propagating.
-    return dtype_unary_cuda(self,
-                            HFn55{l},
-                            "softshrink");
+    if (full_precision_float(self.dtype())) {
+        // (a < -l ? a+l : 0)); the x*0 middle branch keeps NaN propagating.
+        return unary_float_op_kernel_v2(self, SoftshrinkFunctor{l});
+    }
+    return dtype_unary_cuda(self, HFn55{l}, "softshrink");
 }
 // hard/soft): grad passes through where self is outside the inclusive
 // [-lambd, lambd] band.
@@ -586,6 +627,12 @@ Tensor threshold_cuda(const Tensor& self, const Scalar& threshold, const Scalar&
     if (isQuantizedType(self.dtype())) return quantized::activation(self, 6, threshold.toDouble(), value.toDouble());
 
     double t = threshold.toDouble(), val = value.toDouble();
+    // The full-precision floats take the single-precision compare; reduced
+    // floats and integral operands keep the element-typed widening path, where
+    // the scalar is rounded to the element width before it is compared.
+    if (full_precision_float(self.dtype())) {
+        return unary_float_op_kernel_v2(self, ThresholdFunctor{t, val});
+    }
     return dtype_unary_cuda(self,
                             HFn61{t, val},
                             "threshold");
@@ -600,6 +647,9 @@ Tensor& threshold_out_cuda(const Tensor& self, const Scalar& threshold,
                                                     value.toDouble()));
     }
     double t = threshold.toDouble(), val = value.toDouble();
+    if (full_precision_float(self.dtype())) {
+        return unary_float_op_kernel_out(self, out, ThresholdFunctor{t, val});
+    }
     return dtype_unary_out(self, out, HFn61{t, val}, "threshold");
 }
 Tensor prelu_forward_common(const Tensor& self, const Tensor& weight) {
