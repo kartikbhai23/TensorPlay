@@ -3137,6 +3137,14 @@ __attribute__((target("avx512f")))                                       \
 inline float row_expsum_##fn_suffix(const float* x, float m, float* out, int64_t n) { \
     vec_t vm = mm_set1(m);                                               \
     vec_t a0 = mm_zero(), a1 = mm_zero(), a2 = mm_zero(), a3 = mm_zero();\
+    /* The row ends in a partial block, which is answered by reading the    \
+       last full block again.  When the answer lands on the row it reads,   \
+       that block is already the exponentials by the time the walk reaches  \
+       it, so it is read here, before the walk stores anything. */          \
+    const int64_t tail_base = n - width;                                 \
+    const bool has_tail = (n % width) != 0;                              \
+    vec_t tail_e = mm_zero();                                            \
+    if (has_tail) tail_e = exp_fn(mm_sub(mm_load(x + tail_base), vm));   \
     int64_t i = 0;                                                       \
     for (; i + 4 * width <= n; i += 4 * width) {                         \
         vec_t e0 = exp_fn(mm_sub(mm_load(x + i), vm));                   \
@@ -3161,12 +3169,10 @@ inline float row_expsum_##fn_suffix(const float* x, float m, float* out, int64_t
         acc = mm_add(acc, e);                                            \
     }                                                                    \
     float s = hsum_##fn_suffix(acc);                                     \
-    if (i < n) {                                                         \
-        const int64_t base = n - width;                                  \
-        const vec_t e = exp_fn(mm_sub(mm_load(x + base), vm));           \
-        if constexpr (Store) mm_store(out + base, e);                    \
+    if (has_tail) {                                                      \
+        if constexpr (Store) mm_store(out + tail_base, tail_e);          \
         s += hsum_##fn_suffix(                                           \
-            mm_and(e, tail_mask_##fn_suffix(i - base)));                 \
+            mm_and(tail_e, tail_mask_##fn_suffix(i - tail_base)));       \
     }                                                                    \
     return s;                                                            \
 }                                                                        \
@@ -3218,6 +3224,14 @@ __attribute__((target("avx512f")))                                       \
 inline double row_expsum_##fn_suffix(const double* x, double m, double* out, int64_t n) { \
     vec_t vm = mm_set1(m);                                               \
     vec_t a0 = mm_zero(), a1 = mm_zero(), a2 = mm_zero(), a3 = mm_zero();\
+    /* The row ends in a partial block, which is answered by reading the    \
+       last full block again.  When the answer lands on the row it reads,   \
+       that block is already the exponentials by the time the walk reaches  \
+       it, so it is read here, before the walk stores anything. */          \
+    const int64_t tail_base = n - width;                                 \
+    const bool has_tail = (n % width) != 0;                              \
+    vec_t tail_e = mm_zero();                                            \
+    if (has_tail) tail_e = exp_fn(mm_sub(mm_load(x + tail_base), vm));   \
     int64_t i = 0;                                                       \
     for (; i + 4 * width <= n; i += 4 * width) {                         \
         vec_t e0 = exp_fn(mm_sub(mm_load(x + i), vm));                   \
@@ -3242,12 +3256,10 @@ inline double row_expsum_##fn_suffix(const double* x, double m, double* out, int
         acc = mm_add(acc, e);                                            \
     }                                                                    \
     double s = hsum_##fn_suffix(acc);                                    \
-    if (i < n) {                                                         \
-        const int64_t base = n - width;                                  \
-        const vec_t e = exp_fn(mm_sub(mm_load(x + base), vm));           \
-        if constexpr (Store) mm_store(out + base, e);                    \
+    if (has_tail) {                                                      \
+        if constexpr (Store) mm_store(out + tail_base, tail_e);          \
         s += hsum_##fn_suffix(                                           \
-            mm_and(e, tail_mask_##fn_suffix(i - base)));                 \
+            mm_and(tail_e, tail_mask_##fn_suffix(i - tail_base)));       \
     }                                                                    \
     return s;                                                            \
 }                                                                        \
