@@ -24,6 +24,7 @@ def test_device_exchange_only_switches_when_needed(monkeypatch):
 
 def test_generated_guard_uses_an_integer_device():
     assert CudaDeviceOpOverrides().device_guard(0) == "tp.cuda._DeviceGuard(0)"
+    assert CudaDeviceOpOverrides().set_device(0) == "tp.cuda._lcuda.set_device(0)"
 
 
 @pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA is unavailable")

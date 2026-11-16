@@ -148,7 +148,7 @@ class CudaDeviceOpOverrides(DeviceOpOverrides):
         return f"from tensorplay._C import _cuda_getCurrentRawStream as {name}"
 
     def set_device(self, device_idx) -> str:
-        return f"tp.cuda.set_device({device_idx})"
+        return f"tp.cuda._lcuda.set_device({device_idx})"
 
     def synchronize(self) -> str:
         return "tp.cuda.synchronize()"
