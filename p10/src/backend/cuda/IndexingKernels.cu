@@ -696,16 +696,28 @@ __global__ void nonzero_flag_kernel(int64_t n, const T* x, int64_t ndim,
     }
     __syncthreads();
     int64_t slot = slot_base + warp_prefix + inclusive - mine;
+    // A flat input needs no coordinate arithmetic at all: the match's ordinal
+    // is its only coordinate.  Splitting a flat index back into per-axis
+    // coordinates would spend a 64-bit division per match on a runtime divisor,
+    // which the emulated path makes expensive; the reference keeps the flat
+    // positions and only decomposes when there is more than one axis.
+    if (ndim == 1) {
 #pragma unroll
-    for (int i = 0; i < ITEMS; ++i) {
-        if (nz[i]) {
-            int64_t rem = idx[i];
-            int64_t* row = out + slot * ndim;
-            for (int64_t d = ndim - 1; d >= 0; --d) {
-                row[d] = rem % dim_sizes[d];
-                rem /= dim_sizes[d];
+        for (int i = 0; i < ITEMS; ++i) {
+            if (nz[i]) out[slot++] = idx[i];
+        }
+    } else {
+#pragma unroll
+        for (int i = 0; i < ITEMS; ++i) {
+            if (nz[i]) {
+                int64_t rem = idx[i];
+                int64_t* row = out + slot * ndim;
+                for (int64_t d = ndim - 1; d >= 0; --d) {
+                    row[d] = rem % dim_sizes[d];
+                    rem /= dim_sizes[d];
+                }
+                ++slot;
             }
-            ++slot;
         }
     }
     __syncthreads();
