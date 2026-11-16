@@ -532,31 +532,31 @@ __attribute__((target("avx2,fma,f16c"), always_inline)) inline
 void keep_totals_in_range(__m256& a, __m256i& shiftv) {
     // A column is scaled by its own magnitude: a negative column of ordinary
     // size is not small, and a column that is already zero stays there.
-    const __m256 magnitude =
-        _mm256_andnot_ps(_mm256_set1_ps(-0.f), a);
+    const __m256 magnitude = _mm256_andnot_ps(_mm256_set1_ps(-0.f), a);
     const __m256 small = _mm256_and_ps(
         _mm256_cmp_ps(magnitude, _mm256_set1_ps(0x1p-64f), _CMP_LT_OQ),
         _mm256_cmp_ps(magnitude, _mm256_setzero_ps(), _CMP_GT_OQ));
+    // The ordinary walk holds a total that is neither small nor carried, and
+    // it answers that case without the compare that asks whether a carried
+    // total has grown past the range it would be brought back from.
+    const bool is_small = _mm256_movemask_ps(small) != 0;
+    const bool is_live = _mm256_testz_si256(shiftv, shiftv) == 0;
+    if (!is_small && !is_live) return;
+    const __m256i sixty_four = _mm256_set1_epi32(64);
+    if (is_small) {
+        a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_set1_ps(0x1p64f)),
+                             small);
+        shiftv = _mm256_add_epi32(
+            shiftv, _mm256_and_si256(_mm256_castps_si256(small), sixty_four));
+    }
     const __m256i grown = _mm256_and_si256(
         _mm256_castps_si256(
             _mm256_cmp_ps(magnitude, _mm256_set1_ps(0x1p60f), _CMP_GT_OQ)),
         _mm256_cmpgt_epi32(shiftv, _mm256_setzero_si256()));
-    if ((_mm256_movemask_ps(small) |
-         _mm256_movemask_ps(_mm256_castsi256_ps(grown))) == 0) {
-        return;
-    }
-    const __m256i sixty_four = _mm256_set1_epi32(64);
-    if (_mm256_movemask_ps(small) != 0) {
-        a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_set1_ps(0x1p64f)),
-                            small);
-        shiftv = _mm256_add_epi32(
-            shiftv, _mm256_and_si256(_mm256_castps_si256(small), sixty_four));
-    }
     if (_mm256_movemask_ps(_mm256_castsi256_ps(grown)) != 0) {
         a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_set1_ps(0x1p-64f)),
-                            _mm256_castsi256_ps(grown));
-        shiftv = _mm256_sub_epi32(
-            shiftv, _mm256_and_si256(grown, sixty_four));
+                             _mm256_castsi256_ps(grown));
+        shiftv = _mm256_sub_epi32(shiftv, _mm256_and_si256(grown, sixty_four));
     }
 }
 
