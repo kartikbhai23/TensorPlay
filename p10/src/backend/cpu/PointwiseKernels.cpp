@@ -3003,6 +3003,71 @@ namespace softmax_row {
 
 #if defined(__x86_64__)
 
+// Across-the-lanes answers.  A lane-count fold that halves the width each
+// step keeps every add in a register, where unpacking the lanes into a
+// buffer and walking them one at a time pays a store-to-load forward and a
+// serial chain of adds per row -- which is what a narrow normalization unit
+// spends most of its time on.
+__attribute__((target("avx512f")))
+inline float hsum_f32_256(__m256 v) {
+    __m128 s = _mm_add_ps(_mm256_castps256_ps128(v),
+                          _mm256_extractf128_ps(v, 1));
+    s = _mm_add_ps(s, _mm_movehl_ps(s, s));
+    s = _mm_add_ss(s, _mm_shuffle_ps(s, s, 0x55));
+    return _mm_cvtss_f32(s);
+}
+
+__attribute__((target("avx512f")))
+inline float hmax_f32_256(__m256 v) {
+    __m128 s = _mm_max_ps(_mm256_castps256_ps128(v),
+                          _mm256_extractf128_ps(v, 1));
+    s = _mm_max_ps(s, _mm_movehl_ps(s, s));
+    s = _mm_max_ss(s, _mm_shuffle_ps(s, s, 0x55));
+    return _mm_cvtss_f32(s);
+}
+
+__attribute__((target("avx512f")))
+inline float hsum_f32_512(__m512 v) {
+    return hsum_f32_256(_mm256_add_ps(
+        _mm512_castps512_ps256(v),
+        _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(v), 1))));
+}
+
+__attribute__((target("avx512f")))
+inline float hmax_f32_512(__m512 v) {
+    return hmax_f32_256(_mm256_max_ps(
+        _mm512_castps512_ps256(v),
+        _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(v), 1))));
+}
+
+__attribute__((target("avx512f")))
+inline double hsum_f64_256(__m256d v) {
+    __m128d s = _mm_add_pd(_mm256_castpd256_pd128(v),
+                           _mm256_extractf128_pd(v, 1));
+    s = _mm_add_sd(s, _mm_unpackhi_pd(s, s));
+    return _mm_cvtsd_f64(s);
+}
+
+__attribute__((target("avx512f")))
+inline double hmax_f64_256(__m256d v) {
+    __m128d s = _mm_max_pd(_mm256_castpd256_pd128(v),
+                           _mm256_extractf128_pd(v, 1));
+    s = _mm_max_sd(s, _mm_unpackhi_pd(s, s));
+    return _mm_cvtsd_f64(s);
+}
+
+__attribute__((target("avx512f")))
+inline double hsum_f64_512(__m512d v) {
+    return hsum_f64_256(_mm256_add_pd(
+        _mm512_castpd512_pd256(v), _mm512_extractf64x4_pd(v, 1)));
+}
+
+__attribute__((target("avx512f")))
+inline double hmax_f64_512(__m512d v) {
+    return hmax_f64_256(_mm256_max_pd(
+        _mm512_castpd512_pd256(v), _mm512_extractf64x4_pd(v, 1)));
+}
+
 #define TP_SOFTMAX_ROW_F32(fn_suffix, vec_t, width, exp_fn, mm_add, mm_sub, mm_mul, mm_max, mm_load, mm_store, mm_set1, mm_zero) \
 __attribute__((target("avx512f")))                                       \
 inline float row_max_##fn_suffix(const float* x, int64_t n) {            \
@@ -3010,13 +3075,11 @@ inline float row_max_##fn_suffix(const float* x, int64_t n) {            \
     int64_t i = 1;                                                       \
     for (; i + width <= n; i += width)                                   \
         m = mm_max(mm_load(x + i), m);                                   \
-    alignas(64) float buf[width];                                        \
-    mm_store(buf, m);                                                    \
-    float best = buf[0];                                                 \
-    for (int64_t k = 1; k < width; ++k) best = std::max(best, buf[k]);   \
+    float best = hmax_##fn_suffix(m);                                    \
     for (; i < n; ++i) best = std::max(best, x[i]);                      \
     return best;                                                         \
 }                                                                        \
+template <bool Store>                                                    \
 __attribute__((target("avx512f")))                                       \
 inline float row_expsum_##fn_suffix(const float* x, float m, float* out, int64_t n) { \
     vec_t vm = mm_set1(m);                                               \
@@ -3027,23 +3090,27 @@ inline float row_expsum_##fn_suffix(const float* x, float m, float* out, int64_t
         vec_t e1 = exp_fn(mm_sub(mm_load(x + i + width), vm));           \
         vec_t e2 = exp_fn(mm_sub(mm_load(x + i + 2 * width), vm));       \
         vec_t e3 = exp_fn(mm_sub(mm_load(x + i + 3 * width), vm));       \
-        mm_store(out + i, e0);                                           \
-        mm_store(out + i + width, e1);                                   \
-        mm_store(out + i + 2 * width, e2);                               \
-        mm_store(out + i + 3 * width, e3);                               \
+        if constexpr (Store) {                                           \
+            mm_store(out + i, e0);                                       \
+            mm_store(out + i + width, e1);                               \
+            mm_store(out + i + 2 * width, e2);                           \
+            mm_store(out + i + 3 * width, e3);                           \
+        }                                                                \
         a0 = mm_add(a0, e0);                                             \
         a1 = mm_add(a1, e1);                                             \
         a2 = mm_add(a2, e2);                                             \
         a3 = mm_add(a3, e3);                                             \
     }                                                                    \
     vec_t acc = mm_add(mm_add(a0, a1), mm_add(a2, a3));                  \
-    alignas(64) float buf[width];                                        \
-    mm_store(buf, acc);                                                  \
-    float s = 0.f;                                                       \
-    for (int64_t k = 0; k < width; ++k) s += buf[k];                     \
+    for (; i + width <= n; i += width) {                                 \
+        vec_t e = exp_fn(mm_sub(mm_load(x + i), vm));                    \
+        if constexpr (Store) mm_store(out + i, e);                       \
+        acc = mm_add(acc, e);                                            \
+    }                                                                    \
+    float s = hsum_##fn_suffix(acc);                                     \
     for (; i < n; ++i) {                                                 \
         float e = std::exp(x[i] - m);                                    \
-        out[i] = e;                                                      \
+        if constexpr (Store) out[i] = e;                                 \
         s += e;                                                          \
     }                                                                    \
     return s;                                                            \
@@ -3080,13 +3147,11 @@ inline double row_max_##fn_suffix(const double* x, int64_t n) {          \
     int64_t i = 1;                                                       \
     for (; i + width <= n; i += width)                                   \
         m = mm_max(mm_load(x + i), m);                                   \
-    alignas(64) double buf[width];                                       \
-    mm_store(buf, m);                                                    \
-    double best = buf[0];                                                \
-    for (int64_t k = 1; k < width; ++k) best = std::max(best, buf[k]);   \
+    double best = hmax_##fn_suffix(m);                                   \
     for (; i < n; ++i) best = std::max(best, x[i]);                      \
     return best;                                                         \
 }                                                                        \
+template <bool Store>                                                    \
 __attribute__((target("avx512f")))                                       \
 inline double row_expsum_##fn_suffix(const double* x, double m, double* out, int64_t n) { \
     vec_t vm = mm_set1(m);                                               \
@@ -3097,23 +3162,27 @@ inline double row_expsum_##fn_suffix(const double* x, double m, double* out, int
         vec_t e1 = exp_fn(mm_sub(mm_load(x + i + width), vm));           \
         vec_t e2 = exp_fn(mm_sub(mm_load(x + i + 2 * width), vm));       \
         vec_t e3 = exp_fn(mm_sub(mm_load(x + i + 3 * width), vm));       \
-        mm_store(out + i, e0);                                           \
-        mm_store(out + i + width, e1);                                   \
-        mm_store(out + i + 2 * width, e2);                               \
-        mm_store(out + i + 3 * width, e3);                               \
+        if constexpr (Store) {                                           \
+            mm_store(out + i, e0);                                       \
+            mm_store(out + i + width, e1);                               \
+            mm_store(out + i + 2 * width, e2);                           \
+            mm_store(out + i + 3 * width, e3);                           \
+        }                                                                \
         a0 = mm_add(a0, e0);                                             \
         a1 = mm_add(a1, e1);                                             \
         a2 = mm_add(a2, e2);                                             \
         a3 = mm_add(a3, e3);                                             \
     }                                                                    \
     vec_t acc = mm_add(mm_add(a0, a1), mm_add(a2, a3));                  \
-    alignas(64) double buf[width];                                       \
-    mm_store(buf, acc);                                                  \
-    double s = 0.0;                                                      \
-    for (int64_t k = 0; k < width; ++k) s += buf[k];                     \
+    for (; i + width <= n; i += width) {                                 \
+        vec_t e = exp_fn(mm_sub(mm_load(x + i), vm));                    \
+        if constexpr (Store) mm_store(out + i, e);                       \
+        acc = mm_add(acc, e);                                            \
+    }                                                                    \
+    double s = hsum_##fn_suffix(acc);                                    \
     for (; i < n; ++i) {                                                 \
         double e = std::exp(x[i] - m);                                   \
-        out[i] = e;                                                      \
+        if constexpr (Store) out[i] = e;                                 \
         s += e;                                                          \
     }                                                                    \
     return s;                                                            \
@@ -3450,7 +3519,7 @@ static Tensor softmax_fused_kernel_impl(const Tensor& self, int64_t dim, DType o
         ctype sum = ctype(0); \
         for (int64_t j = 0; j < size; ++j) { \
             ctype e = std::exp(row[j] - m); \
-            orow[j] = e; \
+            if constexpr (!LogMode) orow[j] = e; \
             sum += e; \
         } \
         if constexpr (LogMode) { \
@@ -3465,7 +3534,7 @@ static Tensor softmax_fused_kernel_impl(const Tensor& self, int64_t dim, DType o
     #define SOFTMAX_ROW_VEC(ns, suffix, ctype, row_, orow_) \
         { \
             ctype m = softmax_row::row_max_##suffix(row_, size); \
-            ctype sum = softmax_row::row_expsum_##suffix(row_, m, orow_, size); \
+            ctype sum = softmax_row::row_expsum_##suffix<!LogMode>(row_, m, orow_, size); \
             if constexpr (LogMode) { \
                 softmax_row::row_logmode_##suffix(row_, orow_, m, std::log(sum), size); \
             } else { \
@@ -3502,8 +3571,12 @@ static Tensor softmax_fused_kernel_impl(const Tensor& self, int64_t dim, DType o
         break; \
     }
     switch (out_dtype) {
-        SOFTMAX_CASE(float, Float32, f32_512, f32_256, 64, 32)
-        SOFTMAX_CASE(double, Float64, f64_512, f64_256, 32, 16)
+        // A width that fills one vector already pays for the vector row: the
+        // lane fold is a handful of register operations and the remainder is
+        // still walked one element at a time, so the scalar body is only the
+        // answer below a single vector.
+        SOFTMAX_CASE(float, Float32, f32_512, f32_256, 16, 8)
+        SOFTMAX_CASE(double, Float64, f64_512, f64_256, 8, 4)
         default: TP_THROW(TypeError, "softmax: unsupported dtype");
     }
     #undef SOFTMAX_CASE
