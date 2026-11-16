@@ -398,12 +398,35 @@ Tensor _embedding_bag_per_sample_weights_backward_cpu(
     return output;
 }
 
+// The public spellings dispatch through the same forward as the internal one;
+// the no-padding form pins the sentinel the default argument carries, and the
+// padding form maps an absent index to the same sentinel.
+std::tuple<Tensor, Tensor, Tensor, Tensor> embedding_bag_cpu(
+        const Tensor& weight, const Tensor& indices, const Tensor& offsets,
+        bool scale_grad_by_freq, int64_t mode, bool sparse,
+        const std::optional<Tensor>& per_sample_weights, bool include_last_offset) {
+    return _embedding_bag_cpu(weight, indices, offsets, scale_grad_by_freq, mode,
+                              sparse, per_sample_weights, include_last_offset, -1);
+}
+
+std::tuple<Tensor, Tensor, Tensor, Tensor> embedding_bag_padding_idx_cpu(
+        const Tensor& weight, const Tensor& indices, const Tensor& offsets,
+        bool scale_grad_by_freq, int64_t mode, bool sparse,
+        const std::optional<Tensor>& per_sample_weights, bool include_last_offset,
+        std::optional<int64_t> padding_idx) {
+    return _embedding_bag_cpu(weight, indices, offsets, scale_grad_by_freq, mode,
+                              sparse, per_sample_weights, include_last_offset,
+                              padding_idx.value_or(-1));
+}
+
 TENSORPLAY_LIBRARY_IMPL(CPU, EmbeddingBagKernels) {
     m.impl("_embedding_bag", _embedding_bag_cpu);
     m.impl("_embedding_bag_forward_only", _embedding_bag_forward_only_cpu);
     m.impl("_embedding_bag_dense_backward", _embedding_bag_dense_backward_cpu);
     m.impl("_embedding_bag_per_sample_weights_backward",
            _embedding_bag_per_sample_weights_backward_cpu);
+    m.impl("embedding_bag", embedding_bag_cpu);
+    m.impl("embedding_bag.padding_idx", embedding_bag_padding_idx_cpu);
 }
 
 } // namespace cpu
