@@ -151,27 +151,132 @@ inline PadNdPlan pad_plan(const Tensor& self, const std::vector<int64_t>& pad) {
     return p;
 }
 
+// The part of one output row this call is asked to write.  Every padded
+// dimension maps monotone over the interior of the row -- the source element
+// at output position ow is the source element at ow - left -- so the interior
+// is one contiguous copy and only the two edges need a coordinate map.  A row
+// narrower than its pads, or cropped past its source row, stays inside the two
+// edge loops, which then tile the whole range.
 template <typename T, PadIndexMode mode>
-static void pad_gather_kernel(const T* src, T* dst, const PadNdPlan& p) {
-    const int64_t total =
-        p.dst_strides.empty() ? 1
-                              : p.dst_strides.front() * p.dst_sizes.front();
-    parallel_for(0, total, GRAIN_SIZE, [&](int64_t begin, int64_t end) {
-        for (int64_t idx = begin; idx < end; ++idx) {
-            int64_t rem = idx;
-            int64_t src_off = 0;
-            for (int64_t d = 0; d < p.ndim; ++d) {
-                const int64_t q = rem / p.dst_strides[d];
-                rem -= q * p.dst_strides[d];
-                int64_t s = q;
-                if (d >= p.ndim - p.k_padded) {
-                    const int64_t pair = p.ndim - 1 - d;
-                    s = pad_map_coord(q, p.pad_pairs[2 * pair], p.src_sizes[d], mode);
-                }
-                src_off += s * p.src_strides[d];
-            }
-            dst[idx] = src[src_off];
+static inline void pad_fill_row(const T* in, T* out, int64_t first, int64_t last,
+                                int64_t left, int64_t src_w) {
+    const int64_t inner_lo = std::max(first, left);
+    const int64_t inner_hi = std::min(last, left + src_w);
+    for (int64_t ow = first; ow < inner_lo; ++ow)
+        out[ow] = in[pad_map_coord(ow, left, src_w, mode)];
+    const int64_t inner_n = inner_hi - inner_lo;
+    if (inner_n > 0) {
+        const T* inner_in = in + (inner_lo - left);
+        // A short row is one register copy; the library call only pays off
+        // once the row no longer fits a handful of vectors.
+        if (inner_n <= 32) {
+            for (int64_t k = 0; k < inner_n; ++k) out[inner_lo + k] = inner_in[k];
+        } else {
+            std::memcpy(out + inner_lo, inner_in,
+                        static_cast<size_t>(inner_n) * sizeof(T));
         }
+    }
+    for (int64_t ow = std::max(inner_hi, inner_lo); ow < last; ++ow)
+        out[ow] = in[pad_map_coord(ow, left, src_w, mode)];
+}
+
+// One output row per task, resolving the source row of each output row from
+// its index and leaving the row itself as the two mapped edges around one
+// contiguous copy.
+template <typename T, PadIndexMode mode>
+static void pad_rows_independent(const T* src, T* dst, const PadNdPlan& p,
+                                 int64_t rows, int64_t src_w, int64_t dst_w,
+                                 int64_t left) {
+    const int64_t last = p.ndim - 1;
+    parallel_for(0, rows, 1, [&](int64_t begin, int64_t end) {
+        for (int64_t row = begin; row < end; ++row) {
+            int64_t rem = row;
+            int64_t src_row = 0;
+            for (int64_t d = last - 1; d >= 0; --d) {
+                const int64_t q = rem % p.dst_sizes[d];
+                rem /= p.dst_sizes[d];
+                int64_t s = q;
+                if (d >= p.ndim - p.k_padded)
+                    s = pad_map_coord(q, p.pad_pairs[2 * (p.ndim - 1 - d)],
+                                      p.src_sizes[d], mode);
+                src_row += s * p.src_strides[d];
+            }
+            pad_fill_row<T, mode>(src + src_row, dst + row * dst_w, 0, dst_w,
+                                  left, src_w);
+        }
+    });
+}
+
+// The same rows, but each one advances the coordinates of the row before it by
+// a single counter step -- the innermost axis moves by one and carries
+// outward -- so a run of rows pays one increment per row instead of one
+// division per axis per row.
+template <typename T, PadIndexMode mode>
+static void pad_rows_stepped(const T* src, T* dst, const PadNdPlan& p,
+                             int64_t rows, int64_t src_w, int64_t dst_w,
+                             int64_t left) {
+    const int64_t last = p.ndim - 1;
+    const int64_t k0 = p.ndim - p.k_padded;
+    parallel_for(0, rows, 1, [&](int64_t begin, int64_t end) {
+        std::vector<int64_t> coord(static_cast<size_t>(last), 0);
+        std::vector<int64_t> scoord(static_cast<size_t>(last), 0);
+        auto map_axis = [&](int64_t d, int64_t q) {
+            if (d < k0) return q;
+            return pad_map_coord(q, p.pad_pairs[2 * (p.ndim - 1 - d)],
+                                 p.src_sizes[d], mode);
+        };
+        int64_t rem = begin;
+        int64_t src_row = 0;
+        for (int64_t d = last - 1; d >= 0; --d) {
+            coord[d] = rem % p.dst_sizes[d];
+            rem /= p.dst_sizes[d];
+            scoord[d] = map_axis(d, coord[d]);
+            src_row += scoord[d] * p.src_strides[d];
+        }
+        for (int64_t row = begin; row < end; ++row) {
+            pad_fill_row<T, mode>(src + src_row, dst + row * dst_w, 0, dst_w,
+                                  left, src_w);
+            for (int64_t d = last - 1; d >= 0; --d) {
+                const bool carries = coord[d] + 1 >= p.dst_sizes[d];
+                coord[d] = carries ? 0 : coord[d] + 1;
+                const int64_t next = map_axis(d, coord[d]);
+                src_row += (next - scoord[d]) * p.src_strides[d];
+                scoord[d] = next;
+                if (!carries) break;
+            }
+        }
+    });
+}
+
+// A row narrower than this is bookkeeping with almost no copy behind it, and
+// the carried walk is the cheaper bookkeeping; a wider row is a copy the
+// machine can overlap with resolving later rows one at a time, which is worth
+// more than the divisions the carried walk saves.
+constexpr int64_t kSteppedRowBytes = 192;
+
+template <typename T, PadIndexMode mode>
+static void pad_rows_kernel(const T* src, T* dst, const PadNdPlan& p) {
+    const int64_t last = p.ndim - 1;
+    const int64_t src_w = p.src_sizes[last];
+    const int64_t dst_w = p.dst_sizes[last];
+    const int64_t left = p.k_padded > 0 ? p.pad_pairs[0] : 0;
+    int64_t rows = 1;
+    for (int64_t d = 0; d < last; ++d) rows *= p.dst_sizes[d];
+    if (rows <= 0 || dst_w <= 0) return;
+    if (rows > 1) {
+        const int64_t row_bytes = dst_w * static_cast<int64_t>(sizeof(T));
+        if (row_bytes < kSteppedRowBytes) {
+            pad_rows_stepped<T, mode>(src, dst, p, rows, src_w, dst_w, left);
+        } else {
+            pad_rows_independent<T, mode>(src, dst, p, rows, src_w, dst_w, left);
+        }
+        return;
+    }
+    // A pad that only widens the last dimension leaves a single row: spread
+    // that row across the team instead.
+    constexpr int64_t kWidthChunk = 4096;
+    parallel_for(0, dst_w, kWidthChunk, [&](int64_t begin, int64_t end) {
+        pad_fill_row<T, mode>(src, dst, begin, end, left, src_w);
     });
 }
 
@@ -245,9 +350,9 @@ void pad_scatter_dispatch(const T* go, T* gi, const PadNdPlan& p, PadIndexMode m
 template <typename T>
 void pad_gather_dispatch(const T* src, T* dst, const PadNdPlan& p, PadIndexMode mode) {
     switch (mode) {
-        case PadIndexMode::Reflect: pad_gather_kernel<T, PadIndexMode::Reflect>(src, dst, p); break;
-        case PadIndexMode::Replicate: pad_gather_kernel<T, PadIndexMode::Replicate>(src, dst, p); break;
-        case PadIndexMode::Circular: pad_gather_kernel<T, PadIndexMode::Circular>(src, dst, p); break;
+        case PadIndexMode::Reflect: pad_rows_kernel<T, PadIndexMode::Reflect>(src, dst, p); break;
+        case PadIndexMode::Replicate: pad_rows_kernel<T, PadIndexMode::Replicate>(src, dst, p); break;
+        case PadIndexMode::Circular: pad_rows_kernel<T, PadIndexMode::Circular>(src, dst, p); break;
     }
 }
 
