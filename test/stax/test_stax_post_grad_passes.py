@@ -288,3 +288,42 @@ def test_an_addmm_outside_the_fusion_range_stays_fused(device):
     result, seen = _compiled_order(fn, x, w)
     assert tp.ops.tp.addmm.default in seen[-1]
     assert tp.allclose(result, eager)
+
+
+def test_a_filled_run_sums_as_a_ramp():
+    def fn(x):
+        return tp.cumsum(tp.full((4, 6), 2.0), 1) + x
+
+    x = tp.randn(4, 6)
+    eager = fn(x)
+    result, seen = _compiled_order(fn, x)
+
+    assert tp.ops.tp.full.default in seen[-1]
+    # The scan itself is answered by the ramp: only the fill remains.
+    assert tp.ops.tp.cumsum.default not in seen[-1]
+    assert tp.allclose(result, eager)
+
+
+def test_a_filled_run_sums_as_a_ramp_for_integers():
+    def fn(x):
+        filled = tp.full((3, 4), 2)
+        return tp.cumsum(filled, 1).to(x.dtype) + x
+
+    x = tp.randn(3, 4)
+    eager = fn(x)
+    result, seen = _compiled_order(fn, x)
+
+    assert tp.ops.tp.cumsum.default not in seen[-1]
+    assert tp.allclose(result, eager)
+
+
+def test_a_cumsum_of_program_data_stays_a_cumsum():
+    def fn(x):
+        return tp.cumsum(x, 1) + 1
+
+    x = tp.randn(3, 4)
+    eager = fn(x)
+    result, seen = _compiled_order(fn, x)
+
+    assert tp.ops.tp.cumsum.default in seen[-1]
+    assert tp.allclose(result, eager)

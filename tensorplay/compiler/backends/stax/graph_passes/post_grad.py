@@ -7,7 +7,7 @@ from tensorplay.graph import Graph, Node, map_arg
 from tensorplay.graph.experimental.symbolic_shapes import statically_known_true, sym_eq
 from tensorplay.graph.experimental.sympy_functions import OrderedSet
 from tensorplay._decomp import register_decomposition
-from tensorplay.primitives.common import is_integer_dtype
+from tensorplay.primitives.common import is_boolean_dtype, is_integer_dtype
 
 from .. import config
 from ..fx_utils import get_fake_args_kwargs, get_node_storage
@@ -345,6 +345,94 @@ def cat_slice_cat(match, cat_input, size):
 
 
 cat_slice_cat._tp_cache_key = "cat_slice_cat_v2"
+
+
+def _pointless_cumsum_non_scalar(match: Match) -> bool:
+    # A cumsum over zero dimensions answers the filled value itself, which
+    # the lowering already answers without a walk.
+    return len(match.kwargs["shape"]) > 0
+
+
+@register_graph_pattern(
+    CallFunction(
+        tp_ops.cumsum.default,
+        CallFunction(
+            tp_ops.full.default,
+            KeywordArg("shape"),
+            KeywordArg("fill_value"),
+            dtype=Ignored(),
+            device=KeywordArg("device"),
+            pin_memory=Ignored(),
+            _users=MULTIPLE,
+        ),
+        KeywordArg("dim"),
+        # The dtype the scan records itself with rides along as a trailing
+        # optional argument; the rewrite answers it through the output node.
+        Ignored(),
+        _users=MULTIPLE,
+    ),
+    extra_check=_pointless_cumsum_non_scalar,
+    pass_dict=pass_patterns[1],
+)
+def pointless_cumsum(match: Match, shape, fill_value, device, dim):
+    """A ramp of the fill value is what a filled run sums to.
+
+    Reading the pattern from OPTForCausalLM: every row of the filled tensor
+    holds one value repeated, so the running total along the summed axis is
+    the value times 1..dim_size -- writable as a multiply on an arange, which
+    is one kernel instead of a fill followed by a sequential scan.
+    """
+
+    filled = match.output_node().args[0]
+    dtype = filled.kwargs.get("dtype")
+    if dtype is None or not hasattr(dtype, "name"):
+        dtype = fill_value.dtype if isinstance(fill_value, tp.Tensor) else tp.float32
+    if is_integer_dtype(dtype) or is_boolean_dtype(dtype):
+        fill_value = int(bool(fill_value) if is_boolean_dtype(dtype) else fill_value)
+        # The running total promotes every integral input to int64.
+        dtype = tp.int64
+
+    out_dtype = match.output_node().kwargs.get("dtype") or dtype
+    bool_out = out_dtype == tp.bool
+    integral_out = bool_out or is_integer_dtype(out_dtype)
+    if integral_out:
+        fill_value = int(bool(fill_value) if bool_out else fill_value)
+    acc_dtype = tp.int64 if integral_out else tp.float64
+
+    # Every ingredient is a constant of the capture -- the shape, the fill,
+    # the device -- but the ramp cannot be traced as a factory call (the
+    # shape walks refuse symbolic sizes) nor handed over as a constant (the
+    # replacement join wants nodes).  It is built as a chain of registered
+    # operations inside the graph; the stand-in values the chain needs are
+    # refreshed by the propagation at the end of the pass.
+    node = match.output_node()
+    graph = node.graph
+    inter_shape = [1] * len(shape)
+    inter_shape[dim] = shape[dim]
+    ops = tp.ops.tp
+    with graph.inserting_before(node):
+        idx = graph.create_node(
+            "call_function", ops.arange.start_step,
+            (1, shape[dim] + 1),
+            kwargs={"device": device, "dtype": acc_dtype},
+        )
+        mul = graph.create_node(
+            "call_function", ops.mul.Tensor, (idx, fill_value)
+        )
+        view = graph.create_node(
+            "call_function", ops.view.default, (mul, inter_shape)
+        )
+        expanded = graph.create_node(
+            "call_function", ops.expand.default, (view, shape)
+        )
+        if bool_out or integral_out:
+            replaced = graph.create_node(
+                "call_function", ops.to.dtype, (expanded, out_dtype)
+            )
+        else:
+            replaced = expanded
+    node.replace_all_uses_with(replaced)
+    graph.erase_node(node)
 
 
 def view_to_reshape(graph: Graph) -> None:
@@ -922,3 +1010,4 @@ def post_grad_passes(gm, is_inference: bool, input_device=None) -> None:
 
     for custom_pass in get_custom_graph_passes(config.post_grad_custom_post_pass):
         custom_pass(graph)
+
