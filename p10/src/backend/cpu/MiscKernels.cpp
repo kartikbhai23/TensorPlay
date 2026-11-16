@@ -28,11 +28,10 @@ namespace tensorplay {
 namespace cpu {
 
 // Declared in ComparisonKernels.cpp; reused for masked_fill's broadcast
-// select and one_hot's equality.  Lives at namespace scope so it resolves to
-// the ComparisonKernels definition (an anonymous-namespace declaration would
-// be a distinct, undefined symbol).
+// select.  Lives at namespace scope so it resolves to the ComparisonKernels
+// definition (an anonymous-namespace declaration would be a distinct,
+// undefined symbol).
 Tensor where_cpu(const Tensor& condition, const Tensor& self, const Tensor& other);
-Tensor eq_tensor_kernel(const Tensor& self, const Tensor& other);
 
 // Defined below the registration table.
 Tensor& resize__cpu(Tensor& self, const std::vector<int64_t>& size);
@@ -161,13 +160,15 @@ Tensor one_hot_cpu(const Tensor& self, int64_t num_classes) {
         TP_THROW(RuntimeError, "Class values must be smaller than num_classes.");
     }
 
-    // Onehot.cpp functional branch: eq(self.unsqueeze(-1), arange(num_classes))
-    Tensor index = Tensor::arange(Scalar(static_cast<int64_t>(0)), Scalar(num_classes),
-                                  Scalar(static_cast<int64_t>(1)), DType::Int64, self.device());
+    // A zero canvas with one set position per row.  Building it as a comparison
+    // against a class range costs two passes over the answer (the comparison
+    // canvas, then its widened copy); a zeroed buffer costs one pass, and each
+    // class position lands in the row that was just streamed through cache.
     auto sizes = static_cast<std::vector<int64_t>>(self.shape());
-    sizes.push_back(1);
-    Tensor eq = eq_tensor_kernel(self.view(sizes), index).to(DType::Int64);
-    return eq;
+    sizes.push_back(num_classes);
+    Tensor result = Tensor::zeros(sizes, DType::Int64, self.device());
+    result.scatter_(-1, self.unsqueeze(-1), Scalar(static_cast<int64_t>(1)));
+    return result;
 }
 
 // ---------------------------------------------------------------------------
