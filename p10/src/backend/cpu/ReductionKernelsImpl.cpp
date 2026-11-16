@@ -7147,6 +7147,36 @@ void fold_integral_rows_reg(const ctype* in, int64_t run, int64_t begin,
     }
 }
 
+// A trailing run shorter than four chains: one or two vectors hold the whole
+// row, so the fold needs no loop over the row at all and no staging slice.
+// The tail past the last whole vector is compared scalar-wise against the
+// answer reduced from the registers, which keeps the result exact.
+template <typename ctype, bool WantMax>
+__attribute__((target("avx2"), noinline))
+void fold_integral_rows_narrow(const ctype* in, int64_t run, int64_t begin,
+                               int64_t end, ctype* out) {
+    constexpr int64_t W = 32 / sizeof(ctype);
+    for (int64_t r = begin; r < end; ++r) {
+        const ctype* p = in + r * run;
+        int64_t i = 0;
+        __m256i acc = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+        i = W;
+        int64_t vectors = 1;
+        for (; vectors < 4 && i + W <= run; ++vectors, i += W) {
+            const __m256i v =
+                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p + i));
+            acc = extrema_reg_step<ctype, WantMax>(acc, v);
+        }
+        __m256i a0 = acc;
+        ctype best = integral_horizontal<ctype, WantMax>(a0);
+        for (; i < run; ++i) {
+            const ctype v = p[i];
+            best = WantMax ? (best < v ? v : best) : (v < best ? v : best);
+        }
+        out[r] = best;
+    }
+}
+
 
 // The rows of a run answered with four accumulators so that the compare is not
 // a single dependent chain; the lanes are combined once per row and the
@@ -7314,13 +7344,26 @@ bool fold_trailing_extrema(Tensor& result, const Tensor& self, int64_t ndim,
         // staging slice, so a run of wide elements streams at the speed of its
         // compares.  A run too short to fill four chains keeps the memory
         // fold, which then touches no stack at all.
-        const bool short_run = run < 8 * (32 / sizeof(ctype));
+        const int64_t W = 32 / sizeof(ctype);
+        const bool narrow_run = run >= W && run < 8 * W;
         auto fold_rows = [&](int64_t begin, int64_t end) {
-            if (short_run) {
+            if (run < W) {
                 if (maximum_value) {
                     fold_integral_rows<ctype, true>(data, run, begin, end, out);
                 } else {
                     fold_integral_rows<ctype, false>(data, run, begin, end, out);
+                }
+                return;
+            }
+            // Up to four whole vectors are folded without a loop over the
+            // vectors; past that the four-chain walk pays for itself.
+            if (narrow_run) {
+                if (maximum_value) {
+                    fold_integral_rows_narrow<ctype, true>(data, run, begin, end,
+                                                           out);
+                } else {
+                    fold_integral_rows_narrow<ctype, false>(data, run, begin, end,
+                                                            out);
                 }
                 return;
             }
