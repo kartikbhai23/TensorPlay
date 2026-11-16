@@ -798,7 +798,12 @@ inline ReduceConfig make_reduce_config(const TensorIterator& iter) {
             const int64_t output_step = config.step_output * config.output_vec_size;
             const int64_t grid_x = (config.num_outputs + output_step - 1) / output_step;
             const int64_t ctas_per_output1 = (target_grid + grid_x - 1) / grid_x;
-            const int64_t ctas_per_output2 = (values_per_thread_elems + 15) / 16;
+            // A contiguous walk over the reduced extent tolerates a short
+            // per-thread run, so it splits harder; a column walk revisits every
+            // row and only pays the staging traffic, so it keeps a longer run.
+            const int64_t ctas_per_output2 = reduction_on_fastest_dimension
+                ? (values_per_thread_elems + 7) / 8
+                : (values_per_thread_elems + 15) / 16;
             const int64_t ctas_per_output3 = (values_per_thread_elems + 255) / 256;
             int64_t ctas = ctas_per_output1;
             if (ctas < ctas_per_output3) ctas = ctas_per_output3;
