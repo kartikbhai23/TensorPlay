@@ -5218,6 +5218,93 @@ inline std::optional<Tensor> try_sum_lastdim_int(
     return out;
 }
 
+// A middle axis of an integral tensor summed into the wide integer its answer
+// is kept in.  A block of outer indices is a contiguous plane of rows, so each
+// plane is summed where it lies, one band of columns at a time, instead of
+// through a converted copy of the whole input.
+template <typename T>
+__attribute__((target("avx2"), noinline))
+static void sum_middle_int_span(const T* in, int64_t* outp, int64_t red,
+                                int64_t inner, int64_t begin, int64_t end) {
+    for (int64_t o = begin; o < end; ++o) {
+        sum_cols_int_span<T>(in + o * red * inner, red, inner, 0, inner,
+                             outp + o * inner);
+    }
+}
+
+template <typename T>
+static void sum_middle_int(const Tensor& input, int64_t* outp, int64_t outer,
+                           int64_t red, int64_t inner) {
+    const T* in = reinterpret_cast<const T*>(input.data_ptr());
+    const int64_t grain =
+        std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(red * inner, 1));
+    if (get_num_threads() == 1 || in_parallel_region() ||
+        outer * red * inner < GRAIN_SIZE) {
+        sum_middle_int_span<T>(in, outp, red, inner, 0, outer);
+        return;
+    }
+    parallel_for(0, outer, grain, [&](int64_t b, int64_t e) {
+        sum_middle_int_span<T>(in, outp, red, inner, b, e);
+    });
+}
+
+// Guards: a band pass touches one cache line of every row of the plane, so a
+// plane that stays in the first-level cache pays that traffic once.  Beyond it,
+// only a plane whose rows already fill a cache line is summed this way, so every
+// pass consumes whole lines instead of re-reading them for a fragment.
+inline std::optional<Tensor> try_sum_middle_int(
+        const Tensor& input, const std::vector<int64_t>& out_shape,
+        int64_t axis) {
+    const DType dt = input.dtype();
+    if (!input.is_contiguous() || !isIntegralType(dt, true)) {
+        return std::nullopt;
+    }
+    const int64_t rank = input.dim();
+    if (rank < 3 || axis <= 0 || axis >= rank - 1) return std::nullopt;
+    int64_t outer = 1;
+    int64_t inner = 1;
+    for (int64_t i = 0; i < axis; ++i) outer *= input.size(i);
+    for (int64_t i = axis + 1; i < rank; ++i) inner *= input.size(i);
+    const int64_t red = input.size(axis);
+    if (outer < 1 || red < 1 || inner < 1) return std::nullopt;
+    const int64_t itemsize = static_cast<int64_t>(elementSize(dt));
+    if (red * inner * itemsize > 32768 && inner * itemsize < 64) {
+        return std::nullopt;
+    }
+    Tensor out = Tensor::empty(out_shape, DType::Int64, input.device());
+    int64_t* outp = out.data_ptr<int64_t>();
+    switch (dt) {
+        case DType::UInt8:
+        case DType::Bool:
+            sum_middle_int<uint8_t>(input, outp, outer, red, inner);
+            break;
+        case DType::Int8:
+            sum_middle_int<int8_t>(input, outp, outer, red, inner);
+            break;
+        case DType::Int16:
+            sum_middle_int<int16_t>(input, outp, outer, red, inner);
+            break;
+        case DType::UInt16:
+            sum_middle_int<uint16_t>(input, outp, outer, red, inner);
+            break;
+        case DType::Int32:
+            sum_middle_int<int32_t>(input, outp, outer, red, inner);
+            break;
+        case DType::UInt32:
+            sum_middle_int<uint32_t>(input, outp, outer, red, inner);
+            break;
+        case DType::Int64:
+            sum_middle_int<int64_t>(input, outp, outer, red, inner);
+            break;
+        case DType::UInt64:
+            sum_middle_int<uint64_t>(input, outp, outer, red, inner);
+            break;
+        default:
+            return std::nullopt;
+    }
+    return out;
+}
+
 Tensor sum_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims, bool keepdim, DType dtype) {
     DType out_dtype = dtype;
     if (out_dtype == DType::Undefined) {
@@ -5513,6 +5600,11 @@ Tensor sum_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims,
         } else if (axis == 0 && self.is_contiguous()) {
             if (std::optional<Tensor> direct =
                     try_sum_leading_int(self, out_shape)) {
+                return std::move(*direct);
+            }
+        } else if (self.is_contiguous()) {
+            if (std::optional<Tensor> direct =
+                    try_sum_middle_int(self, out_shape, axis)) {
                 return std::move(*direct);
             }
         }
