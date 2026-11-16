@@ -3068,7 +3068,60 @@ inline double hmax_f64_512(__m512d v) {
         _mm512_castpd512_pd256(v), _mm512_extractf64x4_pd(v, 1)));
 }
 
-#define TP_SOFTMAX_ROW_F32(fn_suffix, vec_t, width, exp_fn, nn_log, mm_add, mm_sub, mm_mul, mm_max, mm_load, mm_store, mm_set1, mm_zero) \
+// Which lanes of the last block of a row hold an element.  A row whose width
+// is not a multiple of the vector width finishes that block by reading the
+// last full block again, which is always inside the row, and keeping only the
+// lanes at or past the overlap with the blocks already walked -- so the
+// leftover elements are answered in vectors instead of one scalar exponential
+// each.  The lanes the mask drops are the ones the previous block already
+// accounted for, so the block's own exponentials can be stored as they are:
+// they are the same values that block wrote.
+__attribute__((target("avx512f")))
+inline __m512 band_f32_512(__m512 a, __m512 b) {
+    return _mm512_castsi512_ps(_mm512_and_si512(
+        _mm512_castps_si512(a), _mm512_castps_si512(b)));
+}
+
+__attribute__((target("avx512f")))
+inline __m512d band_f64_512(__m512d a, __m512d b) {
+    return _mm512_castsi512_pd(_mm512_and_si512(
+        _mm512_castpd_si512(a), _mm512_castpd_si512(b)));
+}
+
+__attribute__((target("avx512f")))
+inline __m256 tail_mask_f32_256(int64_t overlap) {
+    const __m256i lanes = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+    return _mm256_castsi256_ps(_mm256_cmpgt_epi32(
+        lanes, _mm256_set1_epi32(static_cast<int>(overlap) - 1)));
+}
+
+__attribute__((target("avx512f")))
+inline __m512 tail_mask_f32_512(int64_t overlap) {
+    const __m512i lanes =
+        _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    const __mmask16 keep = _mm512_cmpgt_epi32_mask(
+        lanes, _mm512_set1_epi32(static_cast<int>(overlap) - 1));
+    return _mm512_castsi512_ps(
+        _mm512_maskz_mov_epi32(keep, _mm512_set1_epi32(-1)));
+}
+
+__attribute__((target("avx512f")))
+inline __m256d tail_mask_f64_256(int64_t overlap) {
+    const __m256i lanes = _mm256_setr_epi64x(0, 1, 2, 3);
+    return _mm256_castsi256_pd(_mm256_cmpgt_epi64(
+        lanes, _mm256_set1_epi64x(overlap - 1)));
+}
+
+__attribute__((target("avx512f")))
+inline __m512d tail_mask_f64_512(int64_t overlap) {
+    const __m512i lanes = _mm512_setr_epi64(0, 1, 2, 3, 4, 5, 6, 7);
+    const __mmask8 keep = _mm512_cmpgt_epi64_mask(
+        lanes, _mm512_set1_epi64(overlap - 1));
+    return _mm512_castsi512_pd(
+        _mm512_maskz_mov_epi64(keep, _mm512_set1_epi64(-1)));
+}
+
+#define TP_SOFTMAX_ROW_F32(fn_suffix, vec_t, width, exp_fn, nn_log, mm_add, mm_sub, mm_mul, mm_max, mm_and, mm_load, mm_store, mm_set1, mm_zero) \
 __attribute__((target("avx512f")))                                       \
 inline float row_max_##fn_suffix(const float* x, int64_t n) {            \
     vec_t m = mm_set1(x[0]);                                             \
@@ -3108,10 +3161,12 @@ inline float row_expsum_##fn_suffix(const float* x, float m, float* out, int64_t
         acc = mm_add(acc, e);                                            \
     }                                                                    \
     float s = hsum_##fn_suffix(acc);                                     \
-    for (; i < n; ++i) {                                                 \
-        float e = std::exp(x[i] - m);                                    \
-        if constexpr (Store) out[i] = e;                                 \
-        s += e;                                                          \
+    if (i < n) {                                                         \
+        const int64_t base = n - width;                                  \
+        const vec_t e = exp_fn(mm_sub(mm_load(x + base), vm));           \
+        if constexpr (Store) mm_store(out + base, e);                    \
+        s += hsum_##fn_suffix(                                           \
+            mm_and(e, tail_mask_##fn_suffix(i - base)));                 \
     }                                                                    \
     return s;                                                            \
 }                                                                        \
@@ -3141,13 +3196,13 @@ inline void row_log_##fn_suffix(float* x, int64_t n) {                   \
 
 TP_SOFTMAX_ROW_F32(f32_512, __m512, 16, tensorplay::tpsleef::exp,
                    tensorplay::tpsleef::log, _mm512_add_ps, _mm512_sub_ps, _mm512_mul_ps, _mm512_max_ps,
-                   _mm512_loadu_ps, _mm512_storeu_ps, _mm512_set1_ps, _mm512_setzero_ps)
+                   band_f32_512, _mm512_loadu_ps, _mm512_storeu_ps, _mm512_set1_ps, _mm512_setzero_ps)
 TP_SOFTMAX_ROW_F32(f32_256, __m256, 8, tensorplay::tpsleef::exp,
                    tensorplay::tpsleef::log, _mm256_add_ps, _mm256_sub_ps, _mm256_mul_ps, _mm256_max_ps,
-                   _mm256_loadu_ps, _mm256_storeu_ps, _mm256_set1_ps, _mm256_setzero_ps)
+                   _mm256_and_ps, _mm256_loadu_ps, _mm256_storeu_ps, _mm256_set1_ps, _mm256_setzero_ps)
 #undef TP_SOFTMAX_ROW_F32
 
-#define TP_SOFTMAX_ROW_F64(fn_suffix, vec_t, width, exp_fn, nn_log, mm_add, mm_sub, mm_mul, mm_max, mm_load, mm_store, mm_set1, mm_zero) \
+#define TP_SOFTMAX_ROW_F64(fn_suffix, vec_t, width, exp_fn, nn_log, mm_add, mm_sub, mm_mul, mm_max, mm_and, mm_load, mm_store, mm_set1, mm_zero) \
 __attribute__((target("avx512f")))                                       \
 inline double row_max_##fn_suffix(const double* x, int64_t n) {          \
     vec_t m = mm_set1(x[0]);                                             \
@@ -3187,10 +3242,12 @@ inline double row_expsum_##fn_suffix(const double* x, double m, double* out, int
         acc = mm_add(acc, e);                                            \
     }                                                                    \
     double s = hsum_##fn_suffix(acc);                                    \
-    for (; i < n; ++i) {                                                 \
-        double e = std::exp(x[i] - m);                                   \
-        if constexpr (Store) out[i] = e;                                 \
-        s += e;                                                          \
+    if (i < n) {                                                         \
+        const int64_t base = n - width;                                  \
+        const vec_t e = exp_fn(mm_sub(mm_load(x + base), vm));           \
+        if constexpr (Store) mm_store(out + base, e);                    \
+        s += hsum_##fn_suffix(                                           \
+            mm_and(e, tail_mask_##fn_suffix(i - base)));                 \
     }                                                                    \
     return s;                                                            \
 }                                                                        \
@@ -3220,10 +3277,10 @@ inline void row_log_##fn_suffix(double* x, int64_t n) {                  \
 
 TP_SOFTMAX_ROW_F64(f64_512, __m512d, 8, tensorplay::tpsleef::exp,
                    tensorplay::tpsleef::log, _mm512_add_pd, _mm512_sub_pd, _mm512_mul_pd, _mm512_max_pd,
-                   _mm512_loadu_pd, _mm512_storeu_pd, _mm512_set1_pd, _mm512_setzero_pd)
+                   band_f64_512, _mm512_loadu_pd, _mm512_storeu_pd, _mm512_set1_pd, _mm512_setzero_pd)
 TP_SOFTMAX_ROW_F64(f64_256, __m256d, 4, tensorplay::tpsleef::exp,
                    tensorplay::tpsleef::log, _mm256_add_pd, _mm256_sub_pd, _mm256_mul_pd, _mm256_max_pd,
-                   _mm256_loadu_pd, _mm256_storeu_pd, _mm256_set1_pd, _mm256_setzero_pd)
+                   _mm256_and_pd, _mm256_loadu_pd, _mm256_storeu_pd, _mm256_set1_pd, _mm256_setzero_pd)
 #undef TP_SOFTMAX_ROW_F64
 
 // The logarithmic row of a reduced width: the row is widened a step at a
