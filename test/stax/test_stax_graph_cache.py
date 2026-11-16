@@ -178,6 +178,51 @@ def test_a_rewritten_region_is_reused_in_a_new_process(isolated_artifacts):
     assert run({**environment, "FAIL_LOWER": "1"}) == expected
 
 
+def test_a_cached_row_kernel_loads_in_a_new_process(isolated_artifacts):
+    if not tp.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    from tensorplay.compiler.backends.stax.op_lowerings import _row_kernels_loadable
+
+    if not _row_kernels_loadable():
+        pytest.skip("row kernels are unavailable")
+    script = textwrap.dedent(
+        """
+        import os
+        import tensorplay as tp
+        from tensorplay.compiler.backends.stax import graph_lowering
+
+        if os.environ.get("FAIL_LOWER"):
+            def unreachable(self, *args, **kwargs):
+                raise AssertionError("a stored artifact was not used")
+            graph_lowering.GraphLowering.run = unreachable
+
+        def region(x):
+            return tp.softmax(x, -1)
+
+        x = tp.ones((2, 32), device="cuda")
+        output = tp.compile(region, strict_native=True)(x)
+        print(output.cpu().tolist())
+        """
+    )
+    environment = {**os.environ, "TP_CACHE_DIR": str(isolated_artifacts)}
+    environment.pop("FAIL_LOWER", None)
+    repo = Path(__file__).resolve().parents[2]
+
+    def run(env):
+        return subprocess.run(
+            [sys.executable, "-c", script], cwd=repo, env=env,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    expected = run(environment)
+    assert _artifact_files(isolated_artifacts)
+    assert any(
+        "cutedsl.kernels._extern.softmax_forward" in path.read_text()
+        for path in Path(isolated_artifacts).rglob("*.py")
+    )
+    assert run({**environment, "FAIL_LOWER": "1"}) == expected
+
+
 def test_a_value_the_region_reads_is_part_of_the_key():
     """An artifact built for one buffer is not reused for another.
 

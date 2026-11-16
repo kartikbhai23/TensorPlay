@@ -2366,6 +2366,10 @@ class PythonWrapperCodegen(CodeGen):
         output_name = extern_kernel.get_name()
         origin_node = extern_kernel.get_origin_node()
         kernel_name = extern_kernel.get_kernel_name()
+        if kernel_name.startswith("tp.compiler.backends.stax.codegen.cutedsl.kernels."):
+            self.add_import_once(
+                "import tensorplay.compiler.backends.stax.codegen.cutedsl.kernels._extern"
+            )
         ending = self.ending
         if config.memory_planning and "view_as_complex" in kernel_name:
             # view operation fallbacks cause issues since the compiler
