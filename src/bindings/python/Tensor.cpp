@@ -426,9 +426,16 @@ Tensor create_tensor(py::object data, std::optional<DType> dtype, std::optional<
          // 1. dtypes match
          // 2. target device is CPU (since numpy is on CPU)
          // 3. no explicit device move requested to non-CPU
+         // 4. the NumPy buffer is 64-byte aligned.  A shared unaligned buffer
+         //    drags every SIMD walk that later runs on the tensor down to the
+         //    cache-line-crossing rate, so an unaligned source is copied into
+         //    the aligned allocator instead (the copy answers the same
+         //    alignment guarantee a fresh allocation gives).
          bool is_cpu = !device.has_value() || device->type() == DeviceType::CPU;
-         
-         if (final_dtype == inferred_dtype && is_cpu) {
+         bool buffer_aligned =
+             (reinterpret_cast<uintptr_t>(array.data()) & 63) == 0;
+
+         if (final_dtype == inferred_dtype && is_cpu && buffer_aligned) {
              // ZERO-COPY IMPLEMENTATION
              // We use the raw pointer from numpy and keep the numpy object alive via deleter
              
