@@ -7594,7 +7594,7 @@ bool fold_leading_extrema(Tensor& result, const Tensor& self, int64_t ndim,
         // registers over the whole row range and the bands are what the team
         // splits instead.
         const int64_t block = std::max<int64_t>(
-            4 * static_cast<int64_t>(Vectorized<ctype>::size()),
+            8 * static_cast<int64_t>(Vectorized<ctype>::size()),
             GRAIN_SIZE / rows);
         ctype* out = result.data_ptr<ctype>();
         auto fold_band = [&](int64_t begin, int64_t end) {
@@ -7626,7 +7626,7 @@ bool fold_leading_extrema(Tensor& result, const Tensor& self, int64_t ndim,
                       !std::is_same_v<ctype, bool> && sizeof(ctype) == 8) {
             ctype* out = result.data_ptr<ctype>();
             const int64_t block = std::max<int64_t>(
-                4 * static_cast<int64_t>(Vectorized<ctype>::size()),
+                8 * static_cast<int64_t>(Vectorized<ctype>::size()),
                 GRAIN_SIZE / rows);
             auto fold_band = [&](int64_t begin, int64_t end) {
                 for (int64_t b = begin; b < end; b += block) {
@@ -7904,6 +7904,7 @@ inline void extrema_narrow_real(const T* in, T* out, int64_t outer, int64_t red,
     }
 }
 
+
 template <typename T, bool WantMax>
 inline void extrema_narrow_real_dispatch(const T* in, T* out, int64_t outer,
                                          int64_t red, int64_t inner) {
@@ -7918,6 +7919,68 @@ inline void extrema_narrow_real_dispatch(const T* in, T* out, int64_t outer,
 }
 
 #if defined(__x86_64__)
+// A band of columns kept in registers over a whole run of rows: the walk
+// streams the rows once and never writes a total back between them, which is
+// what the staging slice of a general reduction cannot avoid.  The last band
+// pads a short row from its own first lane so no identity value is compared.
+template <typename T, bool WantMax, int64_t NB>
+__attribute__((target("avx2"), noinline))
+void extrema_leading_banded(const T* in, T* out, int64_t outer, int64_t red,
+                            int64_t inner) {
+    using Vec = Vectorized<T>;
+    constexpr int64_t W = Vec::size();
+    const int64_t keep = inner - (NB - 1) * W;
+    for (int64_t o = 0; o < outer; ++o) {
+        const T* base = in + o * red * inner;
+        T* dst = out + o * inner;
+        alignas(64) T copy[W];
+        Vec acc[NB];
+        for (int64_t b = 0; b < NB; ++b) {
+            const T* p = base + b * W;
+            if (b == NB - 1 && keep < W) {
+                std::memcpy(copy, p, static_cast<size_t>(keep) * sizeof(T));
+                for (int64_t k = keep; k < W; ++k) copy[k] = copy[0];
+                p = copy;
+            }
+            acc[b] = Vec::loadu(p);
+        }
+        for (int64_t r = 1; r < red; ++r) {
+            const T* row = base + r * inner;
+            for (int64_t b = 0; b < NB; ++b) {
+                const T* p = row + b * W;
+                if (b == NB - 1 && keep < W) {
+                    std::memcpy(copy, p, static_cast<size_t>(keep) * sizeof(T));
+                    for (int64_t k = keep; k < W; ++k) copy[k] = copy[0];
+                    p = copy;
+                }
+                acc[b] = extremum_vec_step<T, WantMax>(acc[b], Vec::loadu(p));
+            }
+        }
+        for (int64_t b = 0; b < NB; ++b) {
+            const int64_t lanes = b == NB - 1 ? keep : W;
+            if (lanes >= W) {
+                acc[b].store(dst + b * W);
+            } else {
+                acc[b].store(copy);
+                std::memcpy(dst + b * W, copy,
+                            static_cast<size_t>(lanes) * sizeof(T));
+            }
+        }
+    }
+}
+
+template <typename T, bool WantMax>
+inline void extrema_leading_banded_dispatch(const T* in, T* out, int64_t outer,
+                                            int64_t red, int64_t inner) {
+    constexpr int64_t W = Vectorized<T>::size();
+    switch ((inner + W - 1) / W) {
+        case 1: extrema_leading_banded<T, WantMax, 1>(in, out, outer, red, inner); return;
+        case 2: extrema_leading_banded<T, WantMax, 2>(in, out, outer, red, inner); return;
+        case 3: extrema_leading_banded<T, WantMax, 3>(in, out, outer, red, inner); return;
+        default: extrema_leading_banded<T, WantMax, 4>(in, out, outer, red, inner); return;
+    }
+}
+
 // The same walk over a packed width: a band of eight columns is widened once
 // per row and compared in single precision, and the packed value is formed
 // only when the band is written back.
@@ -7995,7 +8058,14 @@ inline void extrema_narrow_packed_dispatch(const uint16_t* in, uint16_t* out,
 
 // One named axis between two kept ones, answered without the reduction
 // iterator: the inner run is short enough that its bands stay in registers for
-// the whole reduced axis.
+// the whole reduced axis.  A register band of columns widened out of a wide
+// element.
+#if defined(__x86_64__)
+constexpr int64_t kExtremaBand = 8 * static_cast<int64_t>(
+    Vectorized<int64_t>::size());
+#else
+constexpr int64_t kExtremaBand = 8;
+#endif
 template <typename ctype>
 bool fold_narrow_extrema(Tensor& result, const Tensor& self, int64_t ndim,
                          const std::vector<int64_t>& resolved,
@@ -8029,11 +8099,11 @@ bool fold_narrow_extrema(Tensor& result, const Tensor& self, int64_t ndim,
             }
             return true;
         }
-        // A slice wider than four registers is walked one block of outer
-        // indices at a time: every element of the slice is read once and its
-        // column totals stay in registers over a group of rows, which the
-        // iterator only approaches after building its own layout.
-        if (red * inner * static_cast<int64_t>(sizeof(ctype)) > 32768) {
+        // A slice wider than four registers keeps its column totals in one
+        // accumulator slice, so the walk reads every element of the plane
+        // exactly once.  That slice has to stay in the first-level cache while
+        // the rows stream past it, which is what the bound below checks.
+        if (inner * static_cast<int64_t>(sizeof(ctype)) > 32768) {
             return false;
         }
         for (int64_t o = 0; o < outer; ++o) {
@@ -8053,7 +8123,7 @@ bool fold_narrow_extrema(Tensor& result, const Tensor& self, int64_t ndim,
             // cache is folded a whole block of outer indices at a time, one
             // band of widened columns at a time.
             if (!tensorplay::cpu::vecreduced::f16c_available()) return false;
-            if (red * inner * 2 > 32768) return false;
+            if (inner * 2 > 32768) return false;
             constexpr bool kBFloat = std::is_same_v<ctype, tensorplay::BFloat16>;
             const uint16_t* bits = reinterpret_cast<const uint16_t*>(data);
             uint16_t* obits = reinterpret_cast<uint16_t*>(out);
@@ -8085,6 +8155,20 @@ bool fold_narrow_extrema(Tensor& result, const Tensor& self, int64_t ndim,
 #endif
     } else if constexpr (std::is_integral_v<ctype> &&
                          !std::is_same_v<ctype, bool>) {
+        // A leading axis wide enough to hold four registers is folded with the
+        // column totals in registers across the whole run, instead of through
+        // a staging slice the iterator would have to build first.
+        if (inner == 1 && red > 4 * Vectorized<ctype>::size() &&
+            red * static_cast<int64_t>(sizeof(ctype)) <= 32768) {
+            if (maximum_value) {
+                extrema_leading_banded_dispatch<ctype, true>(data, out, outer,
+                                                             red, inner);
+            } else {
+                extrema_leading_banded_dispatch<ctype, false>(data, out, outer,
+                                                              red, inner);
+            }
+            return true;
+        }
         // Under one outer block the middle slice is a leading axis of its own:
         // its columns keep their totals over the whole run and are read once.
         // A slice that fits the first-level cache is walked row after row, which
