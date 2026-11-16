@@ -1392,8 +1392,12 @@ inline std::optional<Tensor> try_sum_leading_reduced(
     const int64_t cols = rows > 0 ? input.numel() / rows : 0;
     // A narrow column count leaves too little work between the column totals
     // being read back and written again; the four-rows-in-one-register walk
-    // keeps the totals in flight instead and answers that case faster.
-    if (rows == 0 || cols < 128) return std::nullopt;
+    // keeps the totals in flight instead and answers that case faster.  A
+    // column count that is a whole number of bands is left to the other walks:
+    // the read-back per band is amortised there, while a partial band pays for
+    // the scalar tail on every row.
+    if (rows == 0 || cols < 8) return std::nullopt;
+    if (cols % 8 == 0) return std::nullopt;
     const bool half_width = input.dtype() == DType::Float16;
     const uint16_t* in = half_width
         ? reinterpret_cast<const uint16_t*>(input.data_ptr<tensorplay::Half>())
