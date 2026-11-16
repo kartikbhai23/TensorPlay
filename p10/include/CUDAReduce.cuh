@@ -1451,6 +1451,45 @@ reduce_output_kernel(Reduction op) {
     op.template run<OutputVecSize>();
 }
 
+// Specialized kernel for the most common reduction shape: a single reduced
+// dimension that is also the contiguous fastest axis, with vector-aligned row
+// starts and a row length that is a multiple of the vector width.  The
+// generic reduce_kernel carries the full ReduceOp -- config arrays, staging
+// branches, second-output support -- even when the launch uses none of it,
+// and that body costs several microseconds on a medium row reduction.  This
+// kernel is the stripped-down version: one warp reduces one row with vector
+// loads, a shuffle fold, and a single store.  It is only selected when the
+// generic path would also use a full warp per row and needs none of the
+// staging machinery, so the two paths agree on geometry and semantics.
+template <typename InputT, typename AccT, typename OutputT, typename Ops,
+          int VecSize, int RowsPerBlock>
+__global__ void __launch_bounds__(kWarpSize * RowsPerBlock)
+simple_row_reduce_kernel(
+        int64_t num_rows, int64_t row_len, int64_t row_stride,
+        const InputT* __restrict__ input, int64_t out_stride,
+        OutputT* __restrict__ output, AccT identity, Ops ops) {
+    const int64_t row =
+        static_cast<int64_t>(blockIdx.x) * RowsPerBlock + threadIdx.y;
+    if (row >= num_rows) return;
+    const InputT* r = input + row * row_stride;
+    const int64_t units = row_len / VecSize;
+    AccT acc = identity;
+    for (int64_t u = threadIdx.x; u < units; u += kWarpSize) {
+        using Vec = aligned_vector<InputT, VecSize>;
+        const Vec v = *reinterpret_cast<const Vec*>(r + u * VecSize);
+        #pragma unroll
+        for (int j = 0; j < VecSize; ++j) {
+            acc = ops.reduce(acc, v.val[j], u * VecSize + j);
+        }
+    }
+    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+        acc = ops.combine(acc, reduce_warp_shuffle_down(acc, 0xffffffffu, offset));
+    }
+    if (threadIdx.x == 0) {
+        output[row * out_stride] = ops.project(acc);
+    }
+}
+
 // Flattened offset of a 32-bit sub-iterator's start inside the original
 // reduction index space.  Reduced dims are reordered to the front, so the
 // base is the sum over reduced dims of view_offset * product of faster
@@ -1511,6 +1550,63 @@ inline void launch_reduce(
     }
 
     const auto stream = getCurrentCUDAStream().stream();
+
+    // Fast path for the common contiguous row reduction.  The checks pin the
+    // case to: one reduced dim on the fastest axis, fully vectorized with no
+    // head or tail, a full warp per row (row long enough), a contiguous input
+    // so the flattened output index scales directly by the row stride, and no
+    // staging machinery (no second output, no 64-bit split, no accumulator
+    // buffer, no global-reduce CTAs).  The generic path below remains the
+    // fallback for every other shape.
+    bool input_contiguous = true;
+    {
+        int64_t expected = static_cast<int64_t>(sizeof(InputT));
+        for (int d = 0; d < iter.ndim(); ++d) {
+            if (iter.strides(1)[d] != expected) {
+                input_contiguous = false;
+                break;
+            }
+            expected *= iter.shape()[d];
+        }
+    }
+    const bool simple_row_reduce =
+        config.index32 &&
+        config.num_reduce_dims == 1 &&
+        config.vectorize_input &&
+        config.input_vec_size == InputVecSize &&
+        config.input_head == 0 &&
+        config.input_strides[0] == 1 &&
+        config.num_inputs % InputVecSize == 0 &&
+        config.num_inputs >= static_cast<int64_t>(kWarpSize) * InputVecSize &&
+        config.block_width == kWarpSize &&
+        config.output_vec_size == 1 &&
+        config.output_strides[1] == 1 &&
+        config.ctas_per_output == 1 &&
+        config.num_outputs >= 32 &&
+        input_contiguous &&
+        output2 == nullptr &&
+        acc_buf == nullptr &&
+        base_idx == 0 &&
+        !iter.should_accumulate() &&
+        iter.is_final_output() &&
+        std::is_arithmetic_v<AccT>;
+    if (simple_row_reduce) {
+        constexpr int kRowsPerBlock = 4;
+        const int64_t num_rows = config.num_outputs;
+        const dim3 block(kWarpSize, kRowsPerBlock);
+        const dim3 grid(static_cast<unsigned>(
+            (num_rows + kRowsPerBlock - 1) / kRowsPerBlock));
+        simple_row_reduce_kernel<InputT, AccT, OutputT, Ops, InputVecSize,
+                                 kRowsPerBlock>
+            <<<grid, block, 0, stream>>>(
+                num_rows, config.num_inputs, config.input_strides[1],
+                static_cast<const InputT*>(iter.data_ptr(1)),
+                config.output_strides[1],
+                static_cast<OutputT*>(iter.data_ptr(0)), identity, ops);
+        checkCuda(cudaGetLastError(), "CUDA simple row reduction kernel launch");
+        return;
+    }
+
     DataPtr dimension_buffer;
     if (config.ndim > kInlineReduceDims) {
         const size_t bytes = 3 * static_cast<size_t>(config.ndim - kInlineReduceDims) *
