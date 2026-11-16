@@ -3112,7 +3112,7 @@ template <bool IsMax>
 static bool try_extremum_lastdim_real(
     const void* xv, void* vv, int64_t* indices, int64_t outer,
     int64_t d_size, DType dt) {
-    if (d_size < 32 || outer <= 0) return false;
+    if (d_size < 8 || outer <= 0) return false;
     const int64_t row_grain = std::max<int64_t>(
         1, GRAIN_SIZE / std::max<int64_t>(d_size, 1));
     if (dt == DType::Float32) {
