@@ -2955,10 +2955,11 @@ def pixel_shuffle(input: Tensor, upscale_factor: int) -> Tensor:
         raise ValueError(
             f"pixel_shuffle expects input channel to be divisible by square of upscale_factor, "
             f"but got C={C} and upscale_factor={r}")
-    Cc = C // (r * r)
-    x = input.reshape(N, Cc, r, r, H, W)
-    x = x.permute(0, 1, 4, 2, 5, 3).contiguous()
-    return x.reshape(N, Cc, H * r, W * r)
+    # The op writes the rearranged layout directly; expressing it as a
+    # reshape/permute/contiguous here made the copy a generic strided walk over
+    # the permuted view, which cannot interleave two rows into full-width
+    # stores the way the op's own core does.
+    return tensorplay.pixel_shuffle(input, r)
 
 
 def pixel_unshuffle(input: Tensor, downscale_factor: int) -> Tensor:
