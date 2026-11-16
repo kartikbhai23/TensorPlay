@@ -7611,16 +7611,17 @@ bool fold_whole_extrema(Tensor& result, const Tensor& self, int64_t ndim,
     return true;
 }
 
-// One band of eight widened columns written back in the packed width.
+// A band of eight single-precision answers left at the reduced width in one
+// store: the crossing and the move that puts the answers where they lie are
+// the two instructions the packed layout costs, instead of one crossing per
+// answer through a call that cannot be inlined.
 template <bool BFloat>
 __attribute__((target("avx2,fma,f16c"), always_inline)) inline
 void store_band_hw(uint16_t* acc, int64_t j, const __m256& a) {
-    alignas(32) float lanes[8];
-    _mm256_store_ps(lanes, a);
-    for (int64_t k = 0; k < 8; ++k) {
-        acc[j + k] = BFloat
-            ? tensorplay::cpu::vecreduced::narrow_bf16_one(lanes[k])
-            : tensorplay::cpu::vecreduced::narrow_one_hw(lanes[k]);
+    if constexpr (BFloat) {
+        tensorplay::cpu::vecreduced::store_bf16_8(acc + j, a);
+    } else {
+        tensorplay::cpu::vecreduced::lay_f16_8<false>(acc + j, a);
     }
 }
 
