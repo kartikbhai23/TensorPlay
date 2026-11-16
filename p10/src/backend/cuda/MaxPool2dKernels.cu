@@ -84,39 +84,64 @@ Tensor& write_pooling_out(const char* op, Tensor value, Tensor& out) {
     return out;
 }
 
-template <typename T, typename M>
+template <typename T, typename M, typename I>
 __global__ void max_pool2d_wi_fwd_kernel(
-    int64_t total, int64_t H_in, int64_t W_in, int64_t H_out, int64_t W_out,
-    int64_t kH, int64_t kW, int64_t sH, int64_t sW,
-    int64_t pH, int64_t pW, int64_t dH, int64_t dW,
+    I total, I H_in, I W_in, I H_out, I W_out,
+    I kH, I kW, I sH, I sW,
+    I pH, I pW, I dH, I dW,
     const T* __restrict__ input, T* __restrict__ output,
     int64_t* __restrict__ indices) {
-    int64_t i = blockIdx.x * (int64_t)blockDim.x + threadIdx.x;
     const int64_t stride = (int64_t)blockDim.x * gridDim.x;
-    const int64_t out_spatial = H_out * W_out;
-    for (; i < total; i += stride) {
-        const int64_t w = i % W_out;
-        const int64_t h = (i / W_out) % H_out;
-        const int64_t nc = i / out_spatial;
-        const T* plane = input + nc * H_in * W_in;
+    const I out_spatial = H_out * W_out;
+    for (int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+         i < (int64_t)total; i += stride) {
+        const I ii = (I)i;
+        const I w = ii % W_out;
+        const I h = (ii / W_out) % H_out;
+        const I nc = ii / out_spatial;
+        const T* plane = input + (int64_t)nc * H_in * W_in;
         M max_val = -std::numeric_limits<M>::infinity();
         int64_t max_idx = -1;
-        for (int64_t kh = 0; kh < kH; ++kh) {
-            const int64_t hi = h * sH - pH + kh * dH;
+        for (I kh = 0; kh < kH; ++kh) {
+            const I hi = h * sH - pH + kh * dH;
             if (hi < 0 || hi >= H_in) continue;
-            for (int64_t kw = 0; kw < kW; ++kw) {
-                const int64_t wi = w * sW - pW + kw * dW;
+            for (I kw = 0; kw < kW; ++kw) {
+                const I wi = w * sW - pW + kw * dW;
                 if (wi < 0 || wi >= W_in) continue;
-                const int64_t idx = hi * W_in + wi;
+                const I idx = hi * W_in + wi;
                 const M val = static_cast<M>(plane[idx]);
                 if ((val > max_val) || ::isnan(val)) {
                     max_val = val;
-                    max_idx = idx;
+                    max_idx = (int64_t)idx;
                 }
             }
         }
-        output[i] = static_cast<T>(max_val);
-        indices[i] = max_idx;
+        output[ii] = static_cast<T>(max_val);
+        indices[ii] = max_idx;
+    }
+}
+
+// Index arithmetic is markedly cheaper in 32 bits -- the 64-bit integer
+// division and modulo that decompose the output index are emulated rather than
+// native -- so use it whenever the output fits, and keep the 64-bit path for
+// the (rare) outputs that do not.
+template <typename T, typename M>
+void launch_max_pool2d_fwd(
+    int64_t total, int64_t H_in, int64_t W_in, int64_t H_out, int64_t W_out,
+    int64_t kH, int64_t kW, int64_t sH, int64_t sW,
+    int64_t pH, int64_t pW, int64_t dH, int64_t dW,
+    int64_t blocks, int threads, cudaStream_t stream,
+    const T* input, T* output, int64_t* indices) {
+    if (total <= (int64_t)INT32_MAX) {
+        max_pool2d_wi_fwd_kernel<T, M, int32_t><<<blocks, threads, 0, stream>>>(
+            (int32_t)total, (int32_t)H_in, (int32_t)W_in, (int32_t)H_out,
+            (int32_t)W_out, (int32_t)kH, (int32_t)kW, (int32_t)sH, (int32_t)sW,
+            (int32_t)pH, (int32_t)pW, (int32_t)dH, (int32_t)dW,
+            input, output, indices);
+    } else {
+        max_pool2d_wi_fwd_kernel<T, M, int64_t><<<blocks, threads, 0, stream>>>(
+            total, H_in, W_in, H_out, W_out, kH, kW, sH, sW, pH, pW, dH, dW,
+            input, output, indices);
     }
 }
 
@@ -192,25 +217,25 @@ std::tuple<Tensor, Tensor> max_pool2d_with_indices_cuda(
 
     switch (input.dtype()) {
         POOL_CUDA_DISPATCH(float, Float32,
-            max_pool2d_wi_fwd_kernel<float, M><<<blocks, threads, 0, stream>>>(
+            launch_max_pool2d_fwd<float, M>(
                 total, H_in, W_in, H_out, W_out, kH, kW, sH, sW, pH, pW,
-                dH, dW, input_c.data_ptr<float>(), out.data_ptr<float>(),
-                indices.data_ptr<int64_t>()))
+                dH, dW, blocks, threads, stream, input_c.data_ptr<float>(),
+                out.data_ptr<float>(), indices.data_ptr<int64_t>()))
         POOL_CUDA_DISPATCH(double, Float64,
-            max_pool2d_wi_fwd_kernel<double, M><<<blocks, threads, 0, stream>>>(
+            launch_max_pool2d_fwd<double, M>(
                 total, H_in, W_in, H_out, W_out, kH, kW, sH, sW, pH, pW,
-                dH, dW, input_c.data_ptr<double>(), out.data_ptr<double>(),
-                indices.data_ptr<int64_t>()))
+                dH, dW, blocks, threads, stream, input_c.data_ptr<double>(),
+                out.data_ptr<double>(), indices.data_ptr<int64_t>()))
         POOL_CUDA_DISPATCH(tensorplay::Half, Float16,
-            (max_pool2d_wi_fwd_kernel<tensorplay::Half, M><<<blocks, threads, 0, stream>>>(
+            launch_max_pool2d_fwd<tensorplay::Half, M>(
                 total, H_in, W_in, H_out, W_out, kH, kW, sH, sW, pH, pW,
-                dH, dW, input_c.data_ptr<tensorplay::Half>(),
-                out.data_ptr<tensorplay::Half>(), indices.data_ptr<int64_t>())))
+                dH, dW, blocks, threads, stream, input_c.data_ptr<tensorplay::Half>(),
+                out.data_ptr<tensorplay::Half>(), indices.data_ptr<int64_t>()))
         POOL_CUDA_DISPATCH(tensorplay::BFloat16, BFloat16,
-            (max_pool2d_wi_fwd_kernel<tensorplay::BFloat16, M><<<blocks, threads, 0, stream>>>(
+            launch_max_pool2d_fwd<tensorplay::BFloat16, M>(
                 total, H_in, W_in, H_out, W_out, kH, kW, sH, sW, pH, pW,
-                dH, dW, input_c.data_ptr<tensorplay::BFloat16>(),
-                out.data_ptr<tensorplay::BFloat16>(), indices.data_ptr<int64_t>())))
+                dH, dW, blocks, threads, stream, input_c.data_ptr<tensorplay::BFloat16>(),
+                out.data_ptr<tensorplay::BFloat16>(), indices.data_ptr<int64_t>()))
         default:
             TP_THROW(NotImplementedError,
                      "max_pool2d_with_indices CUDA supports Float32/Float64/Float16/BFloat16 only");
