@@ -180,7 +180,15 @@ inline int64_t axis_index(const NearestAxis& ax, int64_t i) {
 template <typename T>
 inline void nearest_row(const T* src, T* dst, const NearestAxis& ax) {
     if (ax.run == 1) {
-        std::memcpy(dst, src, static_cast<size_t>(ax.src_size) * sizeof(T));
+        const int64_t n = ax.src_size;
+        // A narrow row is a handful of registers: the library call costs more
+        // than the copy itself, and its setup is a fixed cost the row walk pays
+        // once per row.
+        if (n <= 64) {
+            for (int64_t i = 0; i < n; ++i) dst[i] = src[i];
+        } else {
+            std::memcpy(dst, src, static_cast<size_t>(n) * sizeof(T));
+        }
         return;
     }
     if (ax.run > 1) {
