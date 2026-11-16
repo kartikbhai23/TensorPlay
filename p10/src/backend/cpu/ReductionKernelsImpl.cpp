@@ -9497,20 +9497,27 @@ Tensor prod_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims
                 }
             }
         }
-        // A leading axis of real rows is multiplied where it lies: the rows
-        // stream once into per-column totals, so no output element is walked a
-        // second time to reach its own column.
+        // A leading axis of rows is multiplied where it lies: the rows stream
+        // once into per-column totals, so no output element is walked a second
+        // time to reach its own column.  An integral tensor is kept in the wide
+        // integer its answer is stored in, where the product wraps modulo that
+        // width -- which is the answer a product of any narrower width gives.
         if (dim == 0 && input.dtype() == out_dtype &&
-            (out_dtype == DType::Float32 || out_dtype == DType::Float64) &&
+            (out_dtype == DType::Float32 || out_dtype == DType::Float64 ||
+             out_dtype == DType::Int64) &&
             d_size >= 2) {
             if (out_dtype == DType::Float32) {
                 product_band_tree_rows<float>(input.data_ptr<float>(),
                                               out.data_ptr<float>(), outer,
                                               d_size, inner);
-            } else {
+            } else if (out_dtype == DType::Float64) {
                 product_band_tree_rows<double>(input.data_ptr<double>(),
                                                out.data_ptr<double>(), outer,
                                                d_size, inner);
+            } else {
+                product_band_tree_rows<int64_t>(
+                    input.data_ptr<int64_t>(), out.data_ptr<int64_t>(), outer,
+                    d_size, inner);
             }
             return out;
         }
