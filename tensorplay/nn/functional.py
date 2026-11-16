@@ -1180,6 +1180,7 @@ def interpolate(
     if ndim < 3:
         raise ValueError(f"interpolate expects at least 3D input, got {ndim}D")
     spatial = ndim - 2
+    scales = None
     align_corners_provided = align_corners is not None
     # mode branches can operate on a concrete size.
     if size is None and scale_factor is not None:
@@ -1196,6 +1197,12 @@ def interpolate(
             raise ValueError("scale_factor values must be positive")
         size = [int(math.floor(float(input.size(2 + i)) * s))
                 for i, s in enumerate(scale_list)]
+        # The native frames take the reciprocal of the given scale factor, which
+        # is not the same value as input_size/output_size: a nearest sample
+        # lands one pixel earlier or later for most non-integer factors, and the
+        # linear frames weight their taps differently.  Keep the factors so the
+        # ops can use them; a size taken from the caller keeps them undefined.
+        scales = [float(s) for s in scale_list]
     elif isinstance(size, int):
         size = [size] * spatial
     else:
@@ -1221,11 +1228,17 @@ def interpolate(
                 return _functional._upsample_nearest_exact3d(input, size, None)
             raise ValueError(f"Expected 3D, 4D or 5D input, got {ndim}D")
         if ndim == 3:
-            return tensorplay.upsample_nearest1d(input, size)
+            return tensorplay.upsample_nearest1d(
+                input, size, None if scales is None else scales[0])
         elif ndim == 4:
-            return tensorplay.upsample_nearest2d(input, size)
+            return tensorplay.upsample_nearest2d(
+                input, size, None if scales is None else scales[0],
+                None if scales is None else scales[1])
         elif ndim == 5:
-            return tensorplay.upsample_nearest3d(input, size)
+            return tensorplay.upsample_nearest3d(
+                input, size, None if scales is None else scales[0],
+                None if scales is None else scales[1],
+                None if scales is None else scales[2])
         raise ValueError(f"Expected 3D, 4D or 5D input, got {ndim}D")
 
     if align_corners is None:
@@ -1260,25 +1273,36 @@ def interpolate(
             raise ValueError("linear interpolation expects 3D input")
         if antialias:
             raise NotImplementedError("interpolate: antialias is not supported with mode='linear'")
-        return tensorplay.upsample_linear1d(input, size, align_corners)
+        return tensorplay.upsample_linear1d(
+            input, size, align_corners, None if scales is None else scales[0])
     elif mode == 'bilinear':
         if ndim != 4:
             raise ValueError("bilinear interpolation expects 4D input")
         if antialias:
             return _C._upsample_bilinear2d_aa(input, size, align_corners, None)
-        return tensorplay.upsample_bilinear2d(input, size, align_corners)
+        return tensorplay.upsample_bilinear2d(
+            input, size, align_corners,
+            None if scales is None else scales[0],
+            None if scales is None else scales[1])
     elif mode == 'bicubic':
         if ndim != 4:
             raise ValueError("bicubic interpolation expects 4D input")
         if antialias:
             return _C._upsample_bicubic2d_aa(input, size, align_corners, None)
-        return tensorplay.upsample_bicubic2d(input, size, align_corners)
+        return tensorplay.upsample_bicubic2d(
+            input, size, align_corners,
+            None if scales is None else scales[0],
+            None if scales is None else scales[1])
     elif mode == 'trilinear':
         if ndim != 5:
             raise ValueError("trilinear interpolation expects 5D input")
         if antialias:
             raise NotImplementedError("interpolate: antialias is not supported with mode='trilinear'")
-        return tensorplay.upsample_trilinear3d(input, size, align_corners)
+        return tensorplay.upsample_trilinear3d(
+            input, size, align_corners,
+            None if scales is None else scales[0],
+            None if scales is None else scales[1],
+            None if scales is None else scales[2])
     raise ValueError(f"interpolate: mode '{mode}' is not supported")
 
 
