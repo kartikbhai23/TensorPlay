@@ -5340,6 +5340,38 @@ __m256i load_widen_i64(const T* p) {
     }
 }
 
+// Four consecutive elements of any integral width widened into one register.
+template <typename T>
+__attribute__((target("avx2"), always_inline)) inline
+__m256i load_widen4_i64(const T* p) {
+    if constexpr (sizeof(T) == 8) {
+        return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+    } else if constexpr (sizeof(T) == 4) {
+        const __m128i raw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+        if constexpr (std::is_unsigned_v<T>) {
+            return _mm256_cvtepu32_epi64(raw);
+        } else {
+            return _mm256_cvtepi32_epi64(raw);
+        }
+    } else if constexpr (sizeof(T) == 2) {
+        const __m128i raw = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(p));
+        if constexpr (std::is_unsigned_v<T>) {
+            return _mm256_cvtepu16_epi64(raw);
+        } else {
+            return _mm256_cvtepi16_epi64(raw);
+        }
+    } else {
+        int32_t word;
+        std::memcpy(&word, p, sizeof(word));
+        const __m128i raw = _mm_cvtsi32_si128(word);
+        if constexpr (std::is_unsigned_v<T>) {
+            return _mm256_cvtepu8_epi64(raw);
+        } else {
+            return _mm256_cvtepi8_epi64(raw);
+        }
+    }
+}
+
 // The low 64 bits of each lane's product: the low halves multiplied as 32-bit
 // unsigned products plus the two cross terms shifted into place.
 __attribute__((target("avx2"), always_inline)) inline
@@ -5349,6 +5381,127 @@ __m256i mul_i64_low(const __m256i& a, const __m256i& b) {
         _mm256_add_epi64(_mm256_mul_epu32(_mm256_srli_epi64(a, 32), b),
                          _mm256_mul_epu32(a, _mm256_srli_epi64(b, 32)));
     return _mm256_add_epi64(low, _mm256_slli_epi64(cross, 32));
+}
+
+template <typename T>
+__attribute__((target("avx2"), noinline))
+static void prod_lastdim_int_span(const T* in, int64_t* outp, int64_t begin,
+                                  int64_t end, int64_t d_size) {
+    int64_t r = begin;
+    for (; d_size >= 4 && r + 4 <= end; r += 4) {
+        const T* p0 = in + r * d_size;
+        const T* p1 = p0 + d_size;
+        const T* p2 = p1 + d_size;
+        const T* p3 = p2 + d_size;
+        __m256i a0 = load_widen4_i64(p0);
+        __m256i a1 = load_widen4_i64(p1);
+        __m256i a2 = load_widen4_i64(p2);
+        __m256i a3 = load_widen4_i64(p3);
+        int64_t k = 4;
+        for (; k + 4 <= d_size; k += 4) {
+            a0 = mul_i64_low(a0, load_widen4_i64(p0 + k));
+            a1 = mul_i64_low(a1, load_widen4_i64(p1 + k));
+            a2 = mul_i64_low(a2, load_widen4_i64(p2 + k));
+            a3 = mul_i64_low(a3, load_widen4_i64(p3 + k));
+        }
+        alignas(32) int64_t l0[4], l1[4], l2[4], l3[4];
+        _mm256_store_si256(reinterpret_cast<__m256i*>(l0), a0);
+        _mm256_store_si256(reinterpret_cast<__m256i*>(l1), a1);
+        _mm256_store_si256(reinterpret_cast<__m256i*>(l2), a2);
+        _mm256_store_si256(reinterpret_cast<__m256i*>(l3), a3);
+        {
+            uint64_t t0 = static_cast<uint64_t>(l0[0]) * static_cast<uint64_t>(l0[1]) *
+                              static_cast<uint64_t>(l0[2]) * static_cast<uint64_t>(l0[3]);
+            uint64_t t1 = static_cast<uint64_t>(l1[0]) * static_cast<uint64_t>(l1[1]) *
+                              static_cast<uint64_t>(l1[2]) * static_cast<uint64_t>(l1[3]);
+            uint64_t t2 = static_cast<uint64_t>(l2[0]) * static_cast<uint64_t>(l2[1]) *
+                              static_cast<uint64_t>(l2[2]) * static_cast<uint64_t>(l2[3]);
+            uint64_t t3 = static_cast<uint64_t>(l3[0]) * static_cast<uint64_t>(l3[1]) *
+                              static_cast<uint64_t>(l3[2]) * static_cast<uint64_t>(l3[3]);
+            for (; k < d_size; ++k) {
+                t0 *= static_cast<uint64_t>(p0[k]);
+                t1 *= static_cast<uint64_t>(p1[k]);
+                t2 *= static_cast<uint64_t>(p2[k]);
+                t3 *= static_cast<uint64_t>(p3[k]);
+            }
+            outp[r] = static_cast<int64_t>(t0);
+            outp[r + 1] = static_cast<int64_t>(t1);
+            outp[r + 2] = static_cast<int64_t>(t2);
+            outp[r + 3] = static_cast<int64_t>(t3);
+        }
+    }
+    for (; r < end; ++r) {
+        const T* row = in + r * d_size;
+        uint64_t acc = static_cast<uint64_t>(row[0]);
+        for (int64_t k = 1; k < d_size; ++k) {
+            acc *= static_cast<uint64_t>(row[k]);
+        }
+        outp[r] = static_cast<int64_t>(acc);
+    }
+}
+
+// The last axis of an integral tensor multiplied where it lies, one row at a
+// time, instead of through a converted copy of the whole input.
+template <typename T>
+static void prod_lastdim_int(const Tensor& input, int64_t* outp, int64_t rows,
+                             int64_t d_size) {
+    const T* in = reinterpret_cast<const T*>(input.data_ptr());
+    const int64_t grain =
+        std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(d_size, 1));
+    if (get_num_threads() == 1 || in_parallel_region() ||
+        rows * d_size < GRAIN_SIZE) {
+        prod_lastdim_int_span<T>(in, outp, 0, rows, d_size);
+        return;
+    }
+    parallel_for(0, rows, grain, [&](int64_t b, int64_t e) {
+        prod_lastdim_int_span<T>(in, outp, b, e, d_size);
+    });
+}
+
+// Guards: the row is read once, so any length is worth answering here, but a
+// row so short that the call costs more than the multiply keeps the iterator.
+inline std::optional<Tensor> try_prod_lastdim_int(
+        const Tensor& input, const std::vector<int64_t>& out_shape) {
+    const DType dt = input.dtype();
+    if (!input.is_contiguous() || !isIntegralType(dt, true)) {
+        return std::nullopt;
+    }
+    if (input.dim() < 1) return std::nullopt;
+    const int64_t d_size = input.size(input.dim() - 1);
+    if (d_size < 2 || input.numel() == 0) return std::nullopt;
+    Tensor out = Tensor::empty(out_shape, DType::Int64, input.device());
+    int64_t* outp = out.data_ptr<int64_t>();
+    const int64_t rows = input.numel() / d_size;
+    switch (dt) {
+        case DType::UInt8:
+        case DType::Bool:
+            prod_lastdim_int<uint8_t>(input, outp, rows, d_size);
+            break;
+        case DType::Int8:
+            prod_lastdim_int<int8_t>(input, outp, rows, d_size);
+            break;
+        case DType::Int16:
+            prod_lastdim_int<int16_t>(input, outp, rows, d_size);
+            break;
+        case DType::UInt16:
+            prod_lastdim_int<uint16_t>(input, outp, rows, d_size);
+            break;
+        case DType::Int32:
+            prod_lastdim_int<int32_t>(input, outp, rows, d_size);
+            break;
+        case DType::UInt32:
+            prod_lastdim_int<uint32_t>(input, outp, rows, d_size);
+            break;
+        case DType::Int64:
+            prod_lastdim_int<int64_t>(input, outp, rows, d_size);
+            break;
+        case DType::UInt64:
+            prod_lastdim_int<uint64_t>(input, outp, rows, d_size);
+            break;
+        default:
+            return std::nullopt;
+    }
+    return out;
 }
 
 // A middle axis of an integral tensor multiplied into the wide integer its
@@ -9263,6 +9416,19 @@ Tensor prod_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims
     }
     
     std::vector<int64_t> out_shape = compute_reduction_shape(self, dims, keepdim);
+
+    // An integral tensor reduced over the last axis keeps each row contiguous,
+    // so the rows are multiplied where they lie.
+    if (dims.size() == 1 && out_dtype == DType::Int64) {
+        const int64_t rank = self.dim();
+        const int64_t axis = dims[0] < 0 ? dims[0] + rank : dims[0];
+        if (rank >= 1 && axis == rank - 1 && self.is_contiguous()) {
+            if (std::optional<Tensor> direct =
+                    try_prod_lastdim_int(self, out_shape)) {
+                return std::move(*direct);
+            }
+        }
+    }
 
     // An integral tensor reduced over a middle axis keeps each plane of rows
     // contiguous, so the planes are multiplied where they lie instead of
