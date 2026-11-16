@@ -98,6 +98,46 @@ def test_side_effecting_global_does_not_force_recapture(monkeypatch):
     assert len(compiled._tensorplay_cache) == 1
 
 
+_LIST_SCALE = [2.0]
+
+
+def _list_scaled(x):
+    return x * _LIST_SCALE[0]
+
+
+def test_global_list_edited_in_place_recompiles(monkeypatch):
+    value = tp.ones(3)
+    monkeypatch.setattr(_THIS, "_LIST_SCALE", [2.0])
+    compiled = tp.compile(_list_scaled, fullgraph=True)
+    assert compiled(value).tolist() == [2.0, 2.0, 2.0]
+
+    entry = compiled._tensorplay_cache
+    before = len(entry)
+    _LIST_SCALE[0] = 3.0
+    assert compiled(value).tolist() == [3.0, 3.0, 3.0]
+    _LIST_SCALE.append(9.0)
+    assert compiled(value).tolist() == [3.0, 3.0, 3.0]
+    assert len(entry) > before
+
+
+_TABLE = {"scale": 2.0}
+
+
+def _table_scaled(x):
+    return x * _TABLE["scale"]
+
+
+def test_global_dict_edited_in_place_recompiles(monkeypatch):
+    table = {"scale": 2.0}
+    monkeypatch.setattr(_THIS, "_TABLE", table)
+    compiled = tp.compile(_table_scaled, fullgraph=True)
+    value = tp.ones(3)
+    assert compiled(value).tolist() == [2.0, 2.0, 2.0]
+
+    table["scale"] = 4.0
+    assert compiled(value).tolist() == [4.0, 4.0, 4.0]
+
+
 class _Scaled(tp.nn.Module):
     def __init__(self):
         super().__init__()

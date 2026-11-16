@@ -1033,18 +1033,44 @@ def _freeze_immutable_constant(value: Any) -> Any:
 def _constant_entry(value: Any) -> Any:
     """A hashable description of a value a capture may have baked, or None.
 
-    Immutable values are compared by content.  A mutable container or a
-    callable is described by the object itself: a container's contents may be
-    edited in place while the capture only reads the object, a container the
-    captured call fills in would otherwise look like a new specialization on
-    every call, and a rebinding to another function changes which operations
-    the captured program would have recorded.  Rebinding a name to another
-    object is caught; in-place edits of a container are not.
+    Immutable values are compared by content.  A mutable container is
+    described by a snapshot of its contents: an in-place edit (`list.append`,
+    a dict update, an element write) changes the snapshot, so the next call
+    builds a new specialization instead of reusing one that baked the old
+    contents.  A callable is described by the object itself: a rebinding to
+    another function changes which operations the captured program would have
+    recorded.  A container the captured call fills in makes the key change on
+    every call; that is the same recompile pressure the guard-based approach
+    accepts, bounded by the recompile limit.
     """
 
     if _is_immutable_constant(value):
         return _freeze_immutable_constant(value)
-    if isinstance(value, (list, dict, set)) or callable(value):
+    if isinstance(value, (list, tuple)):
+        return (
+            "contents",
+            type(value).__name__,
+            tuple(_constant_entry(item) for item in value),
+        )
+    if isinstance(value, dict):
+        return (
+            "contents",
+            "dict",
+            tuple(sorted(
+                ((_constant_entry(key), _constant_entry(item))
+                 for key, item in value.items()),
+                key=repr,
+            )),
+        )
+    if isinstance(value, set):
+        return (
+            "contents",
+            "set",
+            tuple(sorted(
+                (_constant_entry(item) for item in value), key=repr
+            )),
+        )
+    if callable(value):
         return ("reference", id(value))
     return None
 
@@ -1090,6 +1116,67 @@ def _loaded_attribute_names_of_code(code: types.CodeType) -> frozenset[str]:
     """The attribute names ``code``, and code defined inside it, reads."""
 
     return _dependency_names(code, ("LOAD_ATTR", "LOAD_METHOD"))
+
+
+_IN_PLACE_METHODS = frozenset({
+    "append", "extend", "insert", "pop", "remove", "clear", "reverse", "sort",
+    "update", "add", "discard", "setdefault", "popitem", "increment_",
+})
+
+
+@functools.lru_cache(maxsize=1024)
+def _in_place_mutated_names_of_code(code: types.CodeType) -> tuple[
+    frozenset[str], frozenset[str], frozenset[str],
+]:
+    """Names whose object ``code`` (and code inside it) mutates in place.
+
+    Returns (globals, closure-cell names, attributes).  A mutating method
+    call attributes itself to the nearest name or attribute load that
+    precedes it: ``_CALLS.append(1)`` reads the global ``_CALLS`` and calls
+    ``append`` on it, so ``_CALLS`` is reported as mutated.  The contents of
+    a container the captured call itself fills in are part of the call's
+    effect, not of its key; such names are left out of the key entirely.
+    """
+
+    globals_: set[str] = set()
+    cells: set[str] = set()
+    attrs: set[str] = set()
+
+    def walk(current: types.CodeType) -> None:
+        window: list[tuple[str, Any]] = []
+        for instruction in dis.get_instructions(current):
+            # 3.12+ has no LOAD_METHOD; a method load is a LOAD_ATTR whose
+            # arg may carry a "method" flag bit, so one opcode covers both.
+            is_method_load = (
+                instruction.opname == "LOAD_METHOD"
+                or (
+                    instruction.opname == "LOAD_ATTR"
+                    and instruction.argval in _IN_PLACE_METHODS
+                )
+            )
+            if instruction.opname in ("LOAD_GLOBAL", "LOAD_NAME", "LOAD_DEREF", "LOAD_ATTR"):
+                if is_method_load and instruction.argval in _IN_PLACE_METHODS:
+                    for opname, argval in reversed(window):
+                        if opname == "LOAD_GLOBAL" or opname == "LOAD_NAME":
+                            globals_.add(argval)
+                            break
+                        if opname == "LOAD_DEREF":
+                            cells.add(argval)
+                            break
+                        if opname == "LOAD_ATTR":
+                            attrs.add(argval)
+                            break
+                    window.clear()
+                    continue
+                window.append((instruction.opname, instruction.argval))
+                if len(window) > 8:
+                    window.pop(0)
+        for const in current.co_consts:
+            if isinstance(const, types.CodeType):
+                walk(const)
+
+    walk(code)
+    return frozenset(globals_), frozenset(cells), frozenset(attrs)
 
 
 def _module_running_functions(module: Any) -> list[types.FunctionType]:
@@ -1165,14 +1252,19 @@ def _captured_constant_component(
         label = f"{function.__module__}.{function.__qualname__}"
         code = function.__code__
         written = _assigned_names_of_code(code)
+        mutated_globals, mutated_cells, mutated_attrs = (
+            _in_place_mutated_names_of_code(code)
+        )
         scope = function.__globals__
-        for name in sorted(_loaded_global_names(function) - written):
+        for name in sorted(_loaded_global_names(function) - written - mutated_globals):
             entry = _constant_entry(scope.get(name))
             if entry is not None:
                 entries.append(("global", label, name, entry))
         freevars = code.co_freevars
         for index, cell in enumerate(function.__closure__ or ()):
             if index < len(freevars) and freevars[index] in written:
+                continue
+            if index < len(freevars) and freevars[index] in mutated_cells:
                 continue
             try:
                 value = cell.cell_contents
@@ -1183,7 +1275,11 @@ def _captured_constant_component(
                 entries.append(("closure", label, index, entry))
     for module in modules:
         assigned = _module_attribute_names(module, assigned=True)
-        for name in sorted(_module_attribute_names(module) - assigned):
+        mutated = set()
+        for function in _module_running_functions(module):
+            _, _, mutated_attrs = _in_place_mutated_names_of_code(function.__code__)
+            mutated |= mutated_attrs
+        for name in sorted(_module_attribute_names(module) - assigned - mutated):
             value = module.__dict__.get(name, _MISSING)
             if value is _MISSING:
                 value = type(module).__dict__.get(name, _MISSING)
@@ -1642,6 +1738,74 @@ def _shape_spec_for_examples(
     return filtered
 
 
+def _overlapping_input_groups(
+    inputs: list[Any],
+) -> list[tuple[int, int]]:
+    """Pairs of tensor inputs whose storages share a byte range.
+
+    Identity, not shape: a view and its base, or two slices of one tensor,
+    overlap; two independent tensors never do, whatever their contents.
+    """
+
+    import tensorplay
+
+    ranges: list[tuple[int, int, int, int]] = []
+    for index, value in enumerate(inputs):
+        if not isinstance(value, tensorplay.Tensor):
+            continue
+        try:
+            pointer = value.untyped_storage().data_ptr()
+            item = value.element_size()
+            start = value.storage_offset() * item
+            end = start + value.numel() * item
+        except RuntimeError:
+            continue
+        ranges.append((index, pointer, start, end))
+    pairs: list[tuple[int, int]] = []
+    for position, (i, pi, si, ei) in enumerate(ranges):
+        for j, pj, sj, ej in ranges[position + 1:]:
+            if pi == pj and si < ej and sj < ei:
+                pairs.append((i, j))
+    return pairs
+
+
+def _graph_writes_a_value(graph_module: Any) -> bool:
+    """Whether the graph contains any in-place operation.
+
+    A view-like chain from a placeholder to an in-place target cannot be
+    ruled out cheaply, so an overlap plus *any* in-place operation is enough
+    to refuse: refusing a compilable region is a lost optimization, while
+    compiling one that shares a written buffer can produce the wrong answer.
+    """
+
+    for node in graph_module.graph.nodes:
+        if node.op not in ("call_function", "call_method"):
+            continue
+        target = node.target
+        name = getattr(target, "__name__", None) or (target if isinstance(target, str) else "")
+        if isinstance(name, str) and name.endswith("_") and not name.endswith("__"):
+            return True
+    return False
+
+
+def _reject_overlapping_written_inputs(
+    graph_module: Any, backend_inputs: list[Any]
+) -> None:
+    """Refuse a region whose aliased inputs it may write through."""
+
+    pairs = _overlapping_input_groups(backend_inputs)
+    if not pairs or not _graph_writes_a_value(graph_module):
+        return
+    first, second = pairs[0]
+    raise GraphCaptureError(
+        "inputs "
+        f"#{first} and #{second} share storage and the region contains "
+        "in-place operations; a write through one alias would change what "
+        "the other reads, which this capture cannot order. Make the "
+        "arguments independent or functionalize the writes."
+    )
+
+
 def _compile_region(
     model: Callable[..., Any],
     compiler_fn: CompilerFn,
@@ -1769,6 +1933,8 @@ def _compile_region(
                             f"missing sample value for graph placeholder {node.name!r}"
                         ) from None
                     backend_inputs.append(bound.arguments[node.name])
+
+            _reject_overlapping_written_inputs(graph_module, backend_inputs)
 
             # Advisory shape/value metadata for backends and visualization; never a
             # reason to reject an otherwise compilable region.

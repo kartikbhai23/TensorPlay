@@ -307,3 +307,35 @@ def test_training_cache_with_fresh_and_keyword_inputs():
         net.eval()
         assert compiled(x=tp.tensor([4.0])).tolist() == [4.0]
     assert len(compiled._tensorplay_cache) == 2
+
+
+def test_aliased_inputs_written_in_place_are_refused():
+    def fn(a, b):
+        a.add_(1.0)
+        return b * 2
+
+    compiled = tp.compile(fn, backend="stax")
+    x = tp.zeros(4)
+    with pytest.raises(Exception, match="share storage"):
+        compiled(x, x)
+
+
+def test_read_only_aliased_inputs_still_compile():
+    def fn(a, b):
+        return (a + b) * 2
+
+    compiled = tp.compile(fn, backend="stax")
+    x = tp.ones(4)
+    assert compiled(x, x).tolist() == [4.0, 4.0, 4.0, 4.0]
+
+
+def test_independent_inputs_with_in_place_writes_still_compile():
+    def fn(a, b):
+        a.add_(1.0)
+        return b * 2
+
+    compiled = tp.compile(fn, backend="stax")
+    x = tp.zeros(4)
+    y = tp.ones(4)
+    assert compiled(x, y).tolist() == [2.0, 2.0, 2.0, 2.0]
+    assert x.tolist() == [1.0, 1.0, 1.0, 1.0]
