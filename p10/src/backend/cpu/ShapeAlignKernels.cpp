@@ -333,8 +333,8 @@ Tensor& tpsa_column_stack_out(const std::vector<Tensor>& tensors, Tensor& out) {
 // _tensor_split_indices; hsplit/vsplit/dsplit are fixed-dim aliases.
 // ---------------------------------------------------------------------------
 
-// The pieces are sliced through the dispatcher, so each is a view autograd
-// knows of and a gradient taken through one reaches the input.
+// The pieces are direct strided views of the input, so a gradient taken
+// through one reaches the input storage like any other view operation.
 std::vector<Tensor> tpsa_tensor_split_sections(const Tensor& self, int64_t sections, int64_t dim) {
     if (self.dim() <= 0) {
         TP_THROW(RuntimeError,
@@ -352,7 +352,7 @@ std::vector<Tensor> tpsa_tensor_split_sections(const Tensor& self, int64_t secti
     int64_t start = 0;
     for (int64_t i = 0; i < sections; ++i) {
         const int64_t len = min_split + (i < one_extra ? 1 : 0);
-        splits[static_cast<size_t>(i)] = tpx::ops::slice(self, d, start, start + len, 1);
+        splits[static_cast<size_t>(i)] = self.slice(d, start, start + len, 1);
         start += len;
     }
     return splits;
@@ -365,10 +365,10 @@ std::vector<Tensor> tensor_split_indices_impl(const Tensor& self,
     std::vector<Tensor> splits(static_cast<size_t>(num) + 1);
     int64_t start = 0;
     for (int64_t i = 0; i < num; ++i) {
-        splits[static_cast<size_t>(i)] = tpx::ops::slice(self, d, start, indices[static_cast<size_t>(i)], 1);
+        splits[static_cast<size_t>(i)] = self.slice(d, start, indices[static_cast<size_t>(i)], 1);
         start = indices[static_cast<size_t>(i)];
     }
-    splits[static_cast<size_t>(num)] = tpx::ops::slice(self, d, start, self.size(d), 1);
+    splits[static_cast<size_t>(num)] = self.slice(d, start, self.size(d), 1);
     return splits;
 }
 
