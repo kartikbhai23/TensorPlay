@@ -6,6 +6,7 @@ receives the graph at the end of that pipeline.  Compilation happens on the
 first call, which is therefore made while the hook is still installed.
 """
 
+import pytest
 import tensorplay as tp
 
 from tensorplay.compiler.backends.stax import config
@@ -176,3 +177,36 @@ def test_a_split_of_a_cat_that_cuts_elsewhere_is_left_alone():
 
     assert tp.ops.tp.cat.default in seen[-1]
     assert tp.ops.tp.split.sizes in seen[-1]
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("width", [0, 3, 5])
+def test_cat_with_a_prefix_of_its_first_input_is_joined_once(device, width):
+    if device == "cuda" and not tp.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+
+    def fn(a, b):
+        joined = tp.cat([a, b], 1)
+        return tp.cat([joined, joined[:, :width]], 1)
+
+    a = tp.arange(10, device=device, dtype=tp.float32).reshape(2, 5)
+    b = tp.ones((2, 4), device=device)
+    expected = fn(a, b)
+    actual, seen = _compiled_order(fn, a, b)
+    assert actual.tolist() == expected.tolist()
+    assert tp.ops.tp.cat.default not in seen[-1]
+    assert any(getattr(target, "_tp_lowering_function", False) for target in seen[-1])
+
+
+@pytest.mark.parametrize("width", [6, -1])
+def test_cat_prefix_outside_first_input_keeps_both_joins(width):
+    def fn(a, b):
+        joined = tp.cat([a, b], 1)
+        return tp.cat([joined, joined[:, :width]], 1)
+
+    a = tp.arange(10, dtype=tp.float32).reshape(2, 5)
+    b = tp.ones((2, 4))
+    expected = fn(a, b)
+    actual, seen = _compiled_order(fn, a, b)
+    assert actual.tolist() == expected.tolist()
+    assert seen[-1].count(tp.ops.tp.cat.default) == 2

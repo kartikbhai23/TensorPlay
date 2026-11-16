@@ -69,9 +69,10 @@ def _arg_digest(value: object, depth: int = 0) -> object:
 def _node_digest(node: object) -> dict:
     args = [_arg_digest(v) for v in getattr(node, "args", ()) or ()]
     kwargs = {k: _arg_digest(v) for k, v in (getattr(node, "kwargs", None) or {}).items()}
+    cache_key = getattr(node.target, "_tp_cache_key", None)
     return {
         "op": node.op,
-        "target": repr(node.target),
+        "target": {"lowering": cache_key} if cache_key else repr(node.target),
         "name": node.name,
         "args": args,
         "kwargs": kwargs,

@@ -141,6 +141,43 @@ def test_a_stored_region_is_reused_in_a_new_process(isolated_artifacts):
     assert run({**environment, "FAIL_LOWER": "1"}).stdout.strip() == "[3.0, 7.0]"
 
 
+def test_a_rewritten_region_is_reused_in_a_new_process(isolated_artifacts):
+    script = textwrap.dedent(
+        """
+        import os
+        import tensorplay as tp
+        from tensorplay.compiler.backends.stax import graph_lowering
+
+        if os.environ.get("FAIL_LOWER"):
+            def unreachable(self, *args, **kwargs):
+                raise AssertionError("a stored artifact was not used")
+            graph_lowering.GraphLowering.run = unreachable
+
+        def region(a, b):
+            joined = tp.cat([a, b], 1)
+            return tp.cat([joined, joined[:, :2]], 1)
+
+        a = tp.tensor([[1.0, 2.0, 3.0]])
+        b = tp.tensor([[4.0, 5.0]])
+        print(tp.compile(region, strict_native=True)(a, b).tolist())
+        """
+    )
+    environment = {**os.environ, "TP_CACHE_DIR": str(isolated_artifacts)}
+    environment.pop("FAIL_LOWER", None)
+    repo = Path(__file__).resolve().parents[2]
+
+    def run(env):
+        return subprocess.run(
+            [sys.executable, "-c", script], cwd=repo, env=env,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    expected = "[[1.0, 2.0, 3.0, 4.0, 5.0, 1.0, 2.0]]"
+    assert run(environment) == expected
+    assert _artifact_files(isolated_artifacts)
+    assert run({**environment, "FAIL_LOWER": "1"}) == expected
+
+
 def test_a_value_the_region_reads_is_part_of_the_key():
     """An artifact built for one buffer is not reused for another.
 

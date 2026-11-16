@@ -2449,6 +2449,7 @@ class GraphLowering(Interpreter):
         lowering = (
             user_lowerings.get(node)
             or user_lowerings.get(target)
+            or (target if getattr(target, "_tp_lowering_function", False) else None)
             or find_lowering(name)
         )
         if lowering is not None and fallback_node_due_to_unsupported_type(node):

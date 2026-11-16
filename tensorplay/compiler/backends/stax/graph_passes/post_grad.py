@@ -11,6 +11,7 @@ from tensorplay.primitives.common import is_integer_dtype
 from .. import config
 from ..fx_utils import get_fake_args_kwargs, get_node_storage
 from ..pattern_matcher import (
+    Arg,
     CallFunction,
     Ignored,
     KeywordArg,
@@ -291,6 +292,49 @@ def reciprocal_sqrt_to_rsqrt(match: Match, value):
         return tp_ops.rsqrt.default(argument)
 
     match.replace_by_example(replacement, [value])
+
+
+_cat_before_prefix = CallFunction(tp_ops.cat.default, Arg(), 1, _users=2)
+
+
+def _prefix_fits_first_cat_input(match: Match) -> bool:
+    size = match.kwargs["size"]
+    first = match.args[0][0]
+    value = first.meta.get("val")
+    return (
+        isinstance(size, int)
+        and size >= 0
+        and value is not None
+        and statically_known_true(size <= value.size(1))
+    )
+
+
+@register_lowering_pattern(
+    CallFunction(
+        tp_ops.cat.default,
+        [
+            _cat_before_prefix,
+            CallFunction(
+                tp_ops.slice.Tensor,
+                _cat_before_prefix,
+                1,
+                0,
+                KeywordArg("size"),
+                1,
+            ),
+        ],
+        1,
+    ),
+    extra_check=_prefix_fits_first_cat_input,
+)
+def cat_slice_cat(match, cat_input, size):
+    from ..op_lowerings import lower_cat, slice_
+
+    first, *rest = cat_input
+    return lower_cat([first, *rest, slice_(first, 1, 0, size)], 1)
+
+
+cat_slice_cat._tp_cache_key = "cat_slice_cat_v1"
 
 
 #: The two ways a value is cut into pieces of given sizes: one takes the sizes
