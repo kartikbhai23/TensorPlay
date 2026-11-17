@@ -308,7 +308,7 @@ class CudaGraphManager:
         self._entries[key] = entry
         return entry
 
-    def replay(self, key: str, *args: Any) -> List[Any]:
+    def replay(self, key: str, *args: Any, verify: bool = True) -> List[Any]:
         entry = self._entries.get(key)
         if entry is None:
             raise CudaGraphError(f"no captured graph under key {key!r}")
@@ -316,24 +316,27 @@ class CudaGraphManager:
             raise CudaGraphInputDrift(
                 f"entry {key!r} expects {len(entry.static_inputs)} inputs, got {len(args)}"
             )
-        signature = _shape_signature(args)
-        if signature != entry.signature:
-            raise CudaGraphInputDrift(
-                f"entry {key!r} captured for {entry.signature}, replay args are {signature}"
-            )
-        # The executable reads the captured input storage directly, so every
-        # replay verifies the tensors still live there.  A drifted tensor
-        # cannot be seen by the graph - copying it onto the captured storage
-        # is not an option, that storage is the caller's own tensor.
-        for position, recorded in zip(entry.tensor_positions, entry.input_ptrs):
-            actual = _input_data_ptr(args[position])
-            if actual != recorded:
+        if verify:
+            signature = _shape_signature(args)
+            if signature != entry.signature:
                 raise CudaGraphInputDrift(
-                    f"entry {key!r} input at position {position} lives at "
-                    f"{actual!r}, but the graph was captured against "
-                    f"{recorded!r}; run the artifact directly for drifted "
-                    "inputs"
+                    f"entry {key!r} captured for {entry.signature}, replay args are {signature}"
                 )
+            # The executable reads the captured input storage directly, so
+            # every replay verifies the tensors still live there.  A drifted
+            # tensor cannot be seen by the graph - copying it onto the
+            # captured storage is not an option, that storage is the caller's
+            # own tensor.  A call whose arguments are the very objects the
+            # last call passed, unchanged, is already known to live there.
+            for position, recorded in zip(entry.tensor_positions, entry.input_ptrs):
+                actual = _input_data_ptr(args[position])
+                if actual != recorded:
+                    raise CudaGraphInputDrift(
+                        f"entry {key!r} input at position {position} lives at "
+                        f"{actual!r}, but the graph was captured against "
+                        f"{recorded!r}; run the artifact directly for drifted "
+                        "inputs"
+                    )
         entry.graph.replay()
         entry.replays += 1
         return list(entry.static_outputs)
@@ -384,6 +387,10 @@ _UNSAFE_OPS = frozenset(
 )
 
 _OUT_OF_PLACE_EXCEPTIONS = frozenset({"requires_grad_", "retain_grad_"})
+
+#: Consecutive input drifts after which a compiled artifact stops replaying
+#: against the caller's storage and starts staging its inputs instead.
+_DRIFT_LIMIT = 2
 
 
 def format_default_skip_message(reason: str) -> str:
@@ -783,15 +790,38 @@ def cudagraphs(
 # Where the ``cudagraphs`` backend above captures the Python executor, the
 # ``stax`` backend with ``mode="reduce-overhead"`` (or ``"max-autotune"``)
 # wraps its own compiled artifact: the region's kernels are warmed up,
-# recorded into a CUDA graph once, and afterwards only replayed.  With
-# ``triton.cudagraph_trees`` (the default) recordings live in a tree of input
-# paths over one memory pool: a call's tensors are copied onto the
-# recording's own inputs, so a moved tensor costs a copy instead of a fall
-# back to the artifact, and every call receives results of its own.  With
-# trees off the graph reads the caller's storage directly, outputs alias the
-# graph-private pool and are overwritten by the next replay.  Regions that
+# recorded into a CUDA graph once, and afterwards only replayed.  The wrapper
+# records against the caller's own tensors by default, because an artifact's
+# arguments are its parameters plus the input buffers: parameters never move,
+# so a steady-state call needs no copy at all.  A caller whose inputs move
+# every call switches the wrapper to staged replay after repeated drift; with
+# ``triton.cudagraph_trees`` on, recordings live in a tree of input paths over
+# one memory pool from the first call, copying every call's tensors onto the
+# recording's own inputs.  Regions that
 # cannot be replayed safely are left unwrapped with a reason attached to the
 # graph module, mirroring the skip checks of the backend runner.
+
+
+def _visible_output_indices(gm: Any) -> tuple[int, ...] | None:
+    """Positions of a region's results that its caller reads.
+
+    A region hands back every value its consumer needs, which includes the
+    partition's saved values; only the marked prefix belongs to the caller.
+    ``None`` means the graph does not say, and every result must be treated
+    as kept.
+    """
+
+    graph = getattr(gm, "graph", None)
+    find_nodes = getattr(graph, "find_nodes", None)
+    if find_nodes is None:
+        return None
+    output_nodes = find_nodes(op="output")
+    if not output_nodes:
+        return None
+    marked = output_nodes[0].meta.get("user_visible_output_idxs")
+    if marked is None:
+        return None
+    return tuple(int(index) for index in marked)
 
 
 def wrap_skip_reason(
@@ -810,8 +840,12 @@ def wrap_skip_reason(
         if _is_tensor(value):
             if not value.device.is_cuda():
                 return format_default_skip_message("input on a non-CUDA device")
-            if value.requires_grad:
-                return format_default_skip_message("input requires grad")
+            # A tensor that demands grad does not rule the capture out: a
+            # replay writes no autograd history, so the wrapper only replays
+            # while autograd is off and hands a recording call to the artifact
+            # itself (see CudagraphCompiledCallable).  Refusing here instead
+            # would keep parameters--which demand grad by construction--from
+            # ever running behind a graph, even in inference.
             saw_cuda_tensor = True
         elif not isinstance(value, (int, float, bool, type(None))):
             return format_default_skip_message(
@@ -839,14 +873,14 @@ def _cudagraph_trees_enabled() -> bool:
     """Whether recordings are kept as a tree of input paths.
 
     The switch lives with the region compiler's settings; a build without
-    that package still gets the tree behaviour, which needs nothing from it.
+    that package still gets the direct behaviour, which needs nothing from it.
     """
 
     try:
         from .stax import config as stax_config
     except Exception:  # noqa: BLE001 - the switch belongs to that package
-        return True
-    return bool(getattr(stax_config.triton, "cudagraph_trees", True))
+        return False
+    return bool(getattr(stax_config.triton, "cudagraph_trees", False))
 
 
 class CudagraphCompiledCallable:
@@ -864,16 +898,41 @@ class CudagraphCompiledCallable:
     """
 
     def __init__(
-        self, compiled: Any, native: Any = None, *, trees: Optional[bool] = None
+        self,
+        compiled: Any,
+        native: Any = None,
+        *,
+        trees: Optional[bool] = None,
+        visible_outputs: Optional[Sequence[int]] = None,
     ) -> None:
         self._compiled = compiled
+        self._native = native
         if trees is None:
+            # The staging switch is off by default: a compiled artifact's
+            # arguments are its parameters plus the input buffers, parameters
+            # never move, and a steady-state call then needs no copy at all.
+            # Repeated drift switches the wrapper to staged replay (see
+            # _switch_to_staging), which is what the tree mode does from the
+            # start.
             trees = _cudagraph_trees_enabled()
         self._trees = bool(trees)
+        # Which results the program's caller reads.  Every other result a
+        # region hands back is an intermediate for a consumer that is not the
+        # caller (the partition's saved values); copying them out on every
+        # replay costs an allocation per value, so only the read ones are
+        # copied and the rest are handed over where the graph wrote them.
+        self._visible: Optional[frozenset[int]] = (
+            None if visible_outputs is None
+            else frozenset(int(index) for index in visible_outputs)
+        )
         if self._trees:
             from .cudagraph_trees import CUDAGraphTreeManager
 
-            self._manager: Any = CUDAGraphTreeManager(native=native)
+            # The wrapper owns copying, so the manager hands every result back
+            # as recorded and the wrapper copies just the read ones.
+            self._manager: Any = CUDAGraphTreeManager(
+                native=native, copy_outputs=()
+            )
         else:
             self._manager = CudaGraphManager(native=native)
         CudagraphsBackend._managers.add(self._manager)
@@ -882,10 +941,29 @@ class CudagraphCompiledCallable:
         self._lock = threading.Lock()
         self._single_output = True
         self._arity = 0
+        # A replay writes no autograd history.  When the recording was taken
+        # with inputs that demand grad -- parameters do by construction -- a
+        # call that is recording must run the artifact instead, or the caller
+        # would silently receive tensors with no history.
+        self._needs_eager_when_grad = False
+        # Resolution of the last call's arguments: their identities and
+        # versions, and the layout key resolved from them.  See _layout_matches.
+        self._layout_memo: Optional[Tuple[Tuple, Tuple]] = None
+        self._layout_key_cache: Optional[str] = None
+        self._drifts = 0
         self.__name__ = getattr(compiled, "__name__", "cudagraph_compiled")
 
+    def _records_autograd(self, args: Sequence[Any]) -> bool:
+        """Whether this call is recording history a replay cannot supply."""
+
+        if not any(_is_tensor(value) and value.requires_grad for value in args):
+            return False
+        import tensorplay
+
+        return bool(tensorplay.is_grad_enabled())
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        if kwargs or self._state == "fallback":
+        if kwargs or self._state == "fallback" or self._records_autograd(args):
             return self._compiled(*args, **kwargs)
         if self._state == "live":
             return self._replay(args)
@@ -905,10 +983,47 @@ class CudagraphCompiledCallable:
 
         return f"{self._key}:{_shape_signature(args)!r}"
 
+    def _layout_matches(self, args: Tuple[Any, ...]) -> bool:
+        """Whether these are the objects the last call passed, unchanged.
+
+        A region's arguments include every parameter it reads, so both the
+        layout signature and the address check cost a scan of hundreds of
+        values.  Identical objects with unchanged versions describe the same
+        layout at the same storage, which is what those checks establish.
+        """
+
+        ids = tuple(map(id, args))
+        versions = tuple(getattr(value, "_version", None) for value in args)
+        memo = self._layout_memo
+        if (
+            memo is not None
+            and memo[0] == ids
+            and memo[1] == versions
+            and all(_looks_tensor(value) for value in args)
+        ):
+            return True
+        self._layout_memo = (ids, versions)
+        self._layout_key_cache = None
+        return False
+
+    def _resolve_layout(self, args: Tuple[Any, ...]) -> Tuple[str, bool]:
+        """The node key for this call, and whether the layout is certified."""
+
+        if self._layout_matches(args) and self._layout_key_cache is not None:
+            return self._layout_key_cache, True
+        key = self._layout_key(args)
+        self._layout_key_cache = key
+        return key, False
+
     def _capture(self, args: Tuple[Any, ...], key: Optional[str] = None) -> Any:
         if key is None:
             key = self._layout_key(args) if self._trees else self._key
         first = self._state != "live"
+        # Remembered for the C trampoline, which replays without passing
+        # through ``__call__`` again: it needs the same autograd guard.
+        self._needs_eager_when_grad = any(
+            _is_tensor(value) and value.requires_grad for value in args
+        )
         try:
             node = self._manager.capture(key, self._compiled, *args)
         except (CudaGraphError, NotImplementedError, RuntimeError, TypeError) as exc:
@@ -935,19 +1050,29 @@ class CudagraphCompiledCallable:
     def _replay(
         self, args: Tuple[Any, ...], *, key: Optional[str] = None, retry: bool = True
     ) -> Any:
+        certified = False
         if key is None:
-            key = self._layout_key(args) if self._trees else self._key
+            if self._trees:
+                key, certified = self._resolve_layout(args)
+            else:
+                key = self._key
+                certified = self._layout_matches(args)
         if self._trees and not self._manager.has(key):
             return self._capture(args, key=key)
         try:
-            outputs = self._manager.replay(key, *args)
+            outputs = self._manager.replay(key, *args, verify=not certified)
         except CudaGraphInputDrift:
             if self._trees:
                 # The layout is new (e.g. a different arity): record it.
-                return self._capture(args, key=key)
-            # Trees off: inputs moved, so the graph cannot see them, but the
-            # artifact itself still runs them fine.  Transient - the next call
-            # whose tensors match the captured addresses replays again.
+                if retry:
+                    return self._capture(args, key=key)
+                return self._compiled(*args)
+            # A direct recording replays from the caller's own storage, so a
+            # call whose tensors moved cannot use it.  Once that repeats, the
+            # caller clearly moves its inputs every call: switch to staging.
+            self._drifts += 1
+            if self._drifts >= _DRIFT_LIMIT:
+                return self._switch_to_staging(args)
             return self._compiled(*args)
         except (CudaGraphError, RuntimeError, TypeError) as exc:
             if self._trees and retry:
@@ -960,9 +1085,42 @@ class CudagraphCompiledCallable:
                 "cudagraph replay failed; running the artifact directly: %s", exc
             )
             return self._compiled(*args)
+        self._drifts = 0
+        outputs = [
+            value.clone()
+            if _looks_tensor(value)
+            and (self._visible is None or index in self._visible)
+            else value
+            for index, value in enumerate(outputs)
+        ]
         if self._single_output:
             return outputs[0]
         return tuple(outputs)
+
+    def _switch_to_staging(self, args: Tuple[Any, ...]) -> Any:
+        """Re-record against private buffers after repeated input drift.
+
+        The staged manager copies each call's tensors onto buffers the
+        recording reads, so a moved input costs a copy instead of the whole
+        uncaptured artifact.  That only pays off when inputs move every call,
+        which the drift count has established by now.
+        """
+
+        from .cudagraph_trees import CUDAGraphTreeManager
+
+        CudagraphsBackend._managers.discard(self._manager)
+        self._manager.clear()
+        self._manager = CUDAGraphTreeManager(copy_outputs=(), native=self._native)
+        CudagraphsBackend._managers.add(self._manager)
+        self._trees = True
+        self._state = "cold"
+        self._drifts = 0
+        self._layout_memo = None
+        self._layout_key_cache = None
+        log.info(
+            "cudagraph inputs moved on every call; switching to staged replay"
+        )
+        return self._capture(args)
 
     def _install_fast_call(self) -> None:
         """Bind the steady-state replay into the C call trampoline.
@@ -980,6 +1138,14 @@ class CudagraphCompiledCallable:
             return
 
         def replay_flat(values: List[Any]) -> List[Any]:
+            if self._needs_eager_when_grad and self._records_autograd(values):
+                # This call is recording; a replay would drop that history.
+                # The artifact returns the caller's own shape of result, which
+                # the trampoline expects flattened into a list.
+                result = self._compiled(*values)
+                if isinstance(result, (list, tuple)):
+                    return list(result)
+                return [result]
             if self._trees:
                 key = self._layout_key(tuple(values))
                 if not self._manager.has(key):
@@ -1020,4 +1186,10 @@ def cudagraph_wrap(
     if reason is not None:
         log.warning(reason)
         return compiled, reason
-    return CudagraphCompiledCallable(compiled, native=native, trees=trees), None
+    return (
+        CudagraphCompiledCallable(
+            compiled, native=native, trees=trees,
+            visible_outputs=_visible_output_indices(gm),
+        ),
+        None,
+    )

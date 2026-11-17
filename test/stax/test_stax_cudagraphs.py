@@ -179,11 +179,13 @@ def test_skip_reason_cpu_input():
     assert reason == "skipping cudagraphs due to input on a non-CUDA device"
 
 
-def test_skip_reason_requires_grad(fake_cuda_probe):
+def test_grad_demanding_input_is_capturable(fake_cuda_probe):
+    # Parameters demand grad by construction, so refusing capture on that
+    # would keep every inference call off the graph.  The wrapper guards the
+    # replay against recording calls instead.
     gm = _clean_gm()
     value = FakeTensor(tp.tensor([1.0], requires_grad=True))
-    reason = wrap_skip_reason(_capture_stub(1), gm, [value])
-    assert reason == "skipping cudagraphs due to input requires grad"
+    assert wrap_skip_reason(_capture_stub(1), gm, [value]) is None
 
 
 def test_skip_reason_non_tensor_input(fake_cuda_probe):
@@ -221,7 +223,7 @@ def test_skip_reason_clean_region_is_none(fake_cuda_probe):
 # --------------------------------------------------------------------------
 
 
-def test_wrapped_call_stages_values_into_the_recording(fake_cuda_probe):
+def test_replay_reads_the_caller_storage(fake_cuda_probe):
     gm = _clean_gm()
     graph = FakeGraph()
     native = SimpleNamespace(CUDAGraph=lambda: graph)
@@ -230,13 +232,14 @@ def test_wrapped_call_stages_values_into_the_recording(fake_cuda_probe):
         artifact, gm, [FakeTensor(tp.tensor([1.0]))], native=native
     )
     assert reason is None and isinstance(wrapped, CudagraphCompiledCallable)
+    assert not wrapped._trees
 
     held = FakeTensor(tp.tensor([3.0]))
     out1 = wrapped(held)
     assert out1.tolist() == [6.0]
     held.data.copy_(tp.tensor([-4.0]))  # fresh data, same storage
     out2 = wrapped(held)
-    # the replay re-reads the recording's own inputs: same graph, new values
+    # the recording reads the caller's storage, so new values reach the graph
     assert out2.tolist() == [-8.0]
     # steady state is a replay, not an artifact call: one launch per call
     assert graph.replays == 2  # first call replays once after capture
@@ -260,7 +263,9 @@ def test_drifted_input_is_staged_onto_the_recording(fake_cuda_probe):
             graph.recompute = recompute
         return out
 
-    wrapped, _ = cudagraph_wrap(artifact, gm, [FakeTensor(tp.tensor([1.0]))], native=native)
+    wrapped, _ = cudagraph_wrap(
+        artifact, gm, [FakeTensor(tp.tensor([1.0]))], native=native, trees=True
+    )
     held = FakeTensor(tp.tensor([3.0]))
     assert wrapped(held).tolist() == [6.0]
     assert graph.replays == 1  # capture + same-storage replay
@@ -275,7 +280,7 @@ def test_drifted_input_is_staged_onto_the_recording(fake_cuda_probe):
     assert wrapped._state == "live"
 
 
-def test_direct_binding_when_trees_disabled(fake_cuda_probe):
+def test_direct_binding_runs_the_artifact_for_drifted_inputs(fake_cuda_probe):
     gm = _clean_gm()
     graph = FakeGraph()
     native = SimpleNamespace(CUDAGraph=lambda: graph)
@@ -324,7 +329,68 @@ def test_returned_outputs_survive_later_replays(fake_cuda_probe):
     assert again.tolist() == [10.0]
 
 
-def test_each_layout_records_its_own_node(fake_cuda_probe):
+def test_recording_call_runs_the_artifact(fake_cuda_probe):
+    gm = _clean_gm()
+    graph = FakeGraph()
+    native = SimpleNamespace(CUDAGraph=lambda: graph)
+    calls = []
+
+    def artifact(x):
+        calls.append(x.data.tolist())
+        return FakeTensor(x.data * 2)
+
+    wrapped, _ = cudagraph_wrap(
+        artifact, gm, [FakeTensor(tp.tensor([1.0]))], native=native
+    )
+    with tp.enable_grad():
+        out = wrapped(FakeTensor(tp.tensor([2.0], requires_grad=True)))
+    assert out.tolist() == [4.0]
+    # A replay writes no autograd history, so a call that is recording runs
+    # the artifact and the graph is never recorded.
+    assert calls == [[2.0]]
+    assert not graph.captured
+
+    with tp.no_grad():
+        assert wrapped(FakeTensor(tp.tensor([3.0]))).tolist() == [6.0]
+    assert graph.captured
+
+
+def test_only_visible_outputs_are_copied(fake_cuda_probe):
+    graph = FakeGraph()
+    native = SimpleNamespace(CUDAGraph=lambda: graph)
+
+    def artifact(x):
+        return (FakeTensor(x.data * 2), FakeTensor(x.data + 1))
+
+    wrapped = CudagraphCompiledCallable(
+        artifact, native=native, visible_outputs=(1,)
+    )
+    first = wrapped(FakeTensor(tp.tensor([2.0])))
+    recorded = next(iter(wrapped._manager._entries.values())).static_outputs
+    # the result the caller reads is its own buffer; the intermediate the
+    # region also handed back is left where the graph wrote it
+    assert first[1] is not recorded[1]
+    assert first[1].tolist() == [3.0]
+    assert first[0] is recorded[0]
+    assert first[0].tolist() == [4.0]
+
+    # the next replay may overwrite the intermediate, and the value the
+    # caller kept is unaffected
+    wrapped(FakeTensor(tp.tensor([5.0])))
+    assert first[1].tolist() == [3.0]
+
+
+def test_visible_output_indices_come_from_the_region_meta():
+    from tensorplay._stax.cudagraphs import _visible_output_indices
+
+    gm = _clean_gm()
+    output = gm.graph.find_nodes(op="output")[0]
+    assert _visible_output_indices(gm) is None
+    output.meta["user_visible_output_idxs"] = [0]
+    assert _visible_output_indices(gm) == (0,)
+
+
+def test_repeated_drift_switches_to_staged_replay(fake_cuda_probe):
     gm = _clean_gm()
     graphs = []
 
@@ -348,6 +414,45 @@ def test_each_layout_records_its_own_node(fake_cuda_probe):
 
     wrapped, _ = cudagraph_wrap(
         artifact, gm, [FakeTensor(tp.tensor([1.0]))], native=native
+    )
+    assert wrapped(FakeTensor(tp.tensor([1.0]))).tolist() == [2.0]
+    assert not wrapped._trees
+    # a moved tensor cannot be read by a recording made against the caller's
+    # storage; the first one runs the artifact, the repeat switches to staging
+    assert wrapped(FakeTensor(tp.tensor([3.0]))).tolist() == [6.0]
+    assert not wrapped._trees
+    assert wrapped(FakeTensor(tp.tensor([4.0]))).tolist() == [8.0]
+    assert wrapped._trees
+    assert len(wrapped._manager._nodes) == 1
+    # staged replay answers a moved input without running the artifact again
+    assert wrapped(FakeTensor(tp.tensor([5.0]))).tolist() == [10.0]
+    assert len(graphs) == 2
+
+
+def test_each_layout_records_its_own_node(fake_cuda_probe):
+    gm = _clean_gm()
+    graphs = []
+
+    def new_graph():
+        graph = FakeGraph()
+        graphs.append(graph)
+        return graph
+
+    native = SimpleNamespace(CUDAGraph=new_graph)
+
+    def artifact(x):
+        out = FakeTensor(x.data * 2)
+        for graph in graphs:
+            if graph.in_capture:
+                def recompute(source=x, result=out):
+                    result.data = source.data * 2
+
+                graph.recompute = recompute
+                break
+        return out
+
+    wrapped, _ = cudagraph_wrap(
+        artifact, gm, [FakeTensor(tp.tensor([1.0]))], native=native, trees=True
     )
     assert wrapped(FakeTensor(tp.tensor([1.0]))).tolist() == [2.0]
     # A different shape has no node yet: it is recorded below the path that
@@ -432,7 +537,8 @@ def test_reset_releases_wrapped_graphs(fake_cuda_probe):
     graph = FakeGraph()
     native = SimpleNamespace(CUDAGraph=lambda: graph)
     wrapped, _ = cudagraph_wrap(
-        _twice_artifact(graph), gm, [FakeTensor(tp.tensor([1.0]))], native=native
+        _twice_artifact(graph), gm, [FakeTensor(tp.tensor([1.0]))], native=native,
+        trees=True,
     )
     wrapped(FakeTensor(tp.tensor([1.0])))
     manager = wrapped._manager

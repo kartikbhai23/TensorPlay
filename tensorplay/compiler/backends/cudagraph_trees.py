@@ -21,7 +21,7 @@ reclaimed when a node is evicted.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from .cudagraphs import (
     CudaGraphError,
@@ -124,9 +124,21 @@ class CUDAGraphTreeManager:
     names one recording: capturing it again returns the node recorded first.
     """
 
-    def __init__(self, native: Optional[Any] = None, max_entries: int = 8) -> None:
+    def __init__(
+        self,
+        native: Optional[Any] = None,
+        max_entries: int = 8,
+        copy_outputs: Optional[Sequence[int]] = None,
+    ) -> None:
         self._native_module = native
         self.max_entries = max_entries
+        # Which results a caller keeps: ``None`` copies every one (the safe
+        # default for a caller that hands them all out), a sequence names the
+        # positions that must survive the next replay, and an empty sequence
+        # leaves the caller to take its own copies of what it keeps.
+        self._copy_outputs: Optional[frozenset[int]] = (
+            None if copy_outputs is None else frozenset(int(i) for i in copy_outputs)
+        )
         self._nodes: dict[str, GraphNode] = {}
         self._root = GraphNode("", (), None, None, [], [], (), ())
         self._last: Optional[GraphNode] = None
@@ -241,7 +253,7 @@ class CUDAGraphTreeManager:
         self._last = node
         return node
 
-    def replay(self, key: str, *args: Any) -> list[Any]:
+    def replay(self, key: str, *args: Any, verify: bool = True) -> list[Any]:
         node = self._nodes.get(key)
         if node is None:
             raise CudaGraphError(f"no recorded graph under key {key!r}")
@@ -250,12 +262,13 @@ class CUDAGraphTreeManager:
                 f"node {key!r} expects {len(node.static_inputs)} inputs, "
                 f"got {len(args)}"
             )
-        signature = _shape_signature(args)
-        if signature != node.signature:
-            raise CudaGraphInputDrift(
-                f"node {key!r} recorded for {node.signature}, replay args "
-                f"are {signature}"
-            )
+        if verify:
+            signature = _shape_signature(args)
+            if signature != node.signature:
+                raise CudaGraphInputDrift(
+                    f"node {key!r} recorded for {node.signature}, replay args "
+                    f"are {signature}"
+                )
         static = [node.static_inputs[i] for i in node.tensor_positions]
         tensors = [args[i] for i in node.tensor_positions]
         stage = getattr(node.graph, "stage_and_launch", None)
@@ -269,11 +282,17 @@ class CUDAGraphTreeManager:
         node.replays += 1
         node.last_used = self._next_tick()
         self._last = node
-        # The recording's own outputs are written by the next replay, so a
-        # caller gets buffers of its own to keep.
+        # The recording's own outputs are overwritten by the next replay, so a
+        # caller that keeps a value gets a buffer of its own.  A caller that
+        # knows which of the results are read (see ``copy_outputs``) can have
+        # the rest handed over as they lie: they are dead once the call ends.
+        if self._copy_outputs is None:
+            copy = range(len(node.static_outputs))
+        else:
+            copy = self._copy_outputs
         return [
-            value.clone() if _looks_tensor(value) else value
-            for value in node.static_outputs
+            value.clone() if _looks_tensor(value) and index in copy else value
+            for index, value in enumerate(node.static_outputs)
         ]
 
     def clear(self, key: Optional[str] = None) -> None:
