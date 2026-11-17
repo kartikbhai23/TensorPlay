@@ -692,7 +692,9 @@ class CudagraphsBackend:
     """``backend="cudagraphs"``: capture the region once, then replay it."""
 
     compiler_name = "cudagraphs"
-    _managers: "weakref.WeakSet[CudaGraphManager]" = weakref.WeakSet()
+    # Both managers (direct-binding and trees) record graphs that ``reset``
+    # must tear down, each through its own ``clear``.
+    _managers: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
     @staticmethod
     def reset() -> None:
@@ -781,12 +783,15 @@ def cudagraphs(
 # Where the ``cudagraphs`` backend above captures the Python executor, the
 # ``stax`` backend with ``mode="reduce-overhead"`` (or ``"max-autotune"``)
 # wraps its own compiled artifact: the region's kernels are warmed up,
-# recorded into a CUDA graph once, and afterwards only replayed.  Unlike the
-# backend runner, outputs are returned without copying - they alias the
-# graph-private pool and are overwritten by the next replay, so a caller
-# keeping outputs across calls must clone them.  Regions that cannot be
-# replayed safely are left unwrapped with a reason attached to the graph
-# module, mirroring the skip checks of the backend runner.
+# recorded into a CUDA graph once, and afterwards only replayed.  With
+# ``triton.cudagraph_trees`` (the default) recordings live in a tree of input
+# paths over one memory pool: a call's tensors are copied onto the
+# recording's own inputs, so a moved tensor costs a copy instead of a fall
+# back to the artifact, and every call receives results of its own.  With
+# trees off the graph reads the caller's storage directly, outputs alias the
+# graph-private pool and are overwritten by the next replay.  Regions that
+# cannot be replayed safely are left unwrapped with a reason attached to the
+# graph module, mirroring the skip checks of the backend runner.
 
 
 def wrap_skip_reason(
@@ -830,20 +835,47 @@ def wrap_skip_reason(
     return None
 
 
+def _cudagraph_trees_enabled() -> bool:
+    """Whether recordings are kept as a tree of input paths.
+
+    The switch lives with the region compiler's settings; a build without
+    that package still gets the tree behaviour, which needs nothing from it.
+    """
+
+    try:
+        from .stax import config as stax_config
+    except Exception:  # noqa: BLE001 - the switch belongs to that package
+        return True
+    return bool(getattr(stax_config.triton, "cudagraph_trees", True))
+
+
 class CudagraphCompiledCallable:
     """Capture a compiled artifact once and replay it against its inputs.
 
-    The first call warms up the artifact and records it against the caller's
-    own tensors; steady-state calls whose tensors live at the captured
-    addresses replay with no input staging at all, and calls whose tensors
-    drifted run the artifact directly for that round.  Outputs alias the
-    graph-private pool: each replay overwrites the tensors returned by the
-    previous one.
+    With trees (the default) every input layout is a node below the path that
+    produced it, all recordings share one allocator pool, and a call's tensors
+    are copied onto the recording's private inputs: a moved tensor replays
+    normally, and the results returned to a caller stay valid across later
+    calls.  With trees off the first call records against the caller's own
+    tensors, steady-state calls replay with no input staging at all, and calls
+    whose tensors drifted run the artifact directly for that round; outputs
+    alias the graph-private pool and each replay overwrites the tensors
+    returned by the previous one.
     """
 
-    def __init__(self, compiled: Any, native: Any = None) -> None:
+    def __init__(
+        self, compiled: Any, native: Any = None, *, trees: Optional[bool] = None
+    ) -> None:
         self._compiled = compiled
-        self._manager = CudaGraphManager(native=native)
+        if trees is None:
+            trees = _cudagraph_trees_enabled()
+        self._trees = bool(trees)
+        if self._trees:
+            from .cudagraph_trees import CUDAGraphTreeManager
+
+            self._manager: Any = CUDAGraphTreeManager(native=native)
+        else:
+            self._manager = CudaGraphManager(native=native)
         CudagraphsBackend._managers.add(self._manager)
         self._key = f"artifact-{id(self):x}"
         self._state = "cold"
@@ -864,37 +896,69 @@ class CudagraphCompiledCallable:
                 return self._replay(args)
             return self._compiled(*args)
 
-    def _capture(self, args: Tuple[Any, ...]) -> Any:
+    def _layout_key(self, args: Tuple[Any, ...]) -> str:
+        """The node key for one argument layout.
+
+        The signature names the layout, so alternating between two layouts
+        reuses both recordings instead of recording a new node per call.
+        """
+
+        return f"{self._key}:{_shape_signature(args)!r}"
+
+    def _capture(self, args: Tuple[Any, ...], key: Optional[str] = None) -> Any:
+        if key is None:
+            key = self._layout_key(args) if self._trees else self._key
+        first = self._state != "live"
         try:
-            self._manager.capture(self._key, self._compiled, *args)
+            node = self._manager.capture(key, self._compiled, *args)
         except (CudaGraphError, NotImplementedError, RuntimeError, TypeError) as exc:
-            self._state = "fallback"
-            log.warning("cudagraph capture failed; running the artifact directly: %s", exc)
-            return self._compiled(*args)
-        entry = self._manager._entries[self._key]
-        if entry.warmup_structure[0] == "unsupported":
-            self._state = "fallback"
+            if first:
+                self._state = "fallback"
             log.warning(
-                format_default_skip_message("unsupported output structure")
+                "cudagraph capture failed; running the artifact directly: %s", exc
             )
             return self._compiled(*args)
-        self._single_output = entry.warmup_structure == ("single",)
+        if node.warmup_structure[0] == "unsupported":
+            if first:
+                self._state = "fallback"
+                log.warning(
+                    format_default_skip_message("unsupported output structure")
+                )
+            return self._compiled(*args)
+        self._single_output = node.warmup_structure == ("single",)
         self._arity = len(args)
         self._state = "live"
-        self._install_fast_call()
-        return self._replay(args)
+        if first:
+            self._install_fast_call()
+        return self._replay(args, key=key, retry=False)
 
-    def _replay(self, args: Tuple[Any, ...]) -> Any:
+    def _replay(
+        self, args: Tuple[Any, ...], *, key: Optional[str] = None, retry: bool = True
+    ) -> Any:
+        if key is None:
+            key = self._layout_key(args) if self._trees else self._key
+        if self._trees and not self._manager.has(key):
+            return self._capture(args, key=key)
         try:
-            outputs = self._manager.replay(self._key, *args)
+            outputs = self._manager.replay(key, *args)
         except CudaGraphInputDrift:
-            # Inputs moved or changed layout: the graph cannot see them, but
-            # the artifact itself still runs them fine.  Transient - the next
-            # call whose tensors match the captured addresses replays again.
+            if self._trees:
+                # The layout is new (e.g. a different arity): record it.
+                return self._capture(args, key=key)
+            # Trees off: inputs moved, so the graph cannot see them, but the
+            # artifact itself still runs them fine.  Transient - the next call
+            # whose tensors match the captured addresses replays again.
             return self._compiled(*args)
         except (CudaGraphError, RuntimeError, TypeError) as exc:
+            if self._trees and retry:
+                # An evicted or failed node: drop what is left of it and
+                # record the layout again.
+                self._manager.clear(key)
+                return self._capture(args, key=key)
             self._state = "fallback"
-            log.warning("cudagraph replay failed; running the artifact directly: %s", exc)
+            log.warning(
+                "cudagraph replay failed; running the artifact directly: %s", exc
+            )
             return self._compiled(*args)
         if self._single_output:
             return outputs[0]
@@ -916,6 +980,11 @@ class CudagraphCompiledCallable:
             return
 
         def replay_flat(values: List[Any]) -> List[Any]:
+            if self._trees:
+                key = self._layout_key(tuple(values))
+                if not self._manager.has(key):
+                    return self._replay(tuple(values), key=key)
+                return self._manager.replay(key, *values)
             return self._manager.replay(self._key, *values)
 
         try:
@@ -940,6 +1009,7 @@ def cudagraph_wrap(
     *,
     dynamic: bool | None = None,
     native: Any = None,
+    trees: Optional[bool] = None,
 ) -> tuple[Any, str | None]:
     """Wrap a compiled CUDA artifact for reduce-overhead replay.
 
@@ -950,4 +1020,4 @@ def cudagraph_wrap(
     if reason is not None:
         log.warning(reason)
         return compiled, reason
-    return CudagraphCompiledCallable(compiled, native=native), None
+    return CudagraphCompiledCallable(compiled, native=native, trees=trees), None

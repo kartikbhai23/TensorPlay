@@ -221,7 +221,7 @@ def test_skip_reason_clean_region_is_none(fake_cuda_probe):
 # --------------------------------------------------------------------------
 
 
-def test_wrap_and_replay_reads_captured_storage(fake_cuda_probe):
+def test_wrapped_call_stages_values_into_the_recording(fake_cuda_probe):
     gm = _clean_gm()
     graph = FakeGraph()
     native = SimpleNamespace(CUDAGraph=lambda: graph)
@@ -236,14 +236,14 @@ def test_wrap_and_replay_reads_captured_storage(fake_cuda_probe):
     assert out1.tolist() == [6.0]
     held.data.copy_(tp.tensor([-4.0]))  # fresh data, same storage
     out2 = wrapped(held)
-    # the replay re-reads the captured storage live: same graph, new values
+    # the replay re-reads the recording's own inputs: same graph, new values
     assert out2.tolist() == [-8.0]
     # steady state is a replay, not an artifact call: one launch per call
     assert graph.replays == 2  # first call replays once after capture
     assert graph.captured
 
 
-def test_drifted_input_runs_artifact_directly(fake_cuda_probe):
+def test_drifted_input_is_staged_onto_the_recording(fake_cuda_probe):
     gm = _clean_gm()
     graph = FakeGraph()
     native = SimpleNamespace(CUDAGraph=lambda: graph)
@@ -251,27 +251,62 @@ def test_drifted_input_runs_artifact_directly(fake_cuda_probe):
 
     def artifact(x):
         calls.append(x.data.tolist())
-        return FakeTensor(x.data * 2)
+        out = FakeTensor(x.data * 2)
+        if graph.in_capture:
+
+            def recompute(source=x, result=out):
+                result.data = source.data * 2
+
+            graph.recompute = recompute
+        return out
 
     wrapped, _ = cudagraph_wrap(artifact, gm, [FakeTensor(tp.tensor([1.0]))], native=native)
     held = FakeTensor(tp.tensor([3.0]))
     assert wrapped(held).tolist() == [6.0]
     assert graph.replays == 1  # capture + same-storage replay
-    # a tensor at a different address cannot be seen by the graph: the call
-    # runs the artifact directly instead
+    # A tensor at a different address is copied onto the recording's own
+    # input; the graph never reads the caller's storage.
     other = FakeTensor(tp.tensor([-4.0]))
     assert wrapped(other).tolist() == [-8.0]
-    assert graph.replays == 1
-    # warmup and the capture window both ran on the first call's tensor
-    assert calls == [[3.0], [3.0], [-4.0]]
-    # drift is transient: the wrapper stays live and replays again for the
-    # captured storage
+    assert graph.replays == 2
+    # only the warmup and the capture window ran the artifact; the moved
+    # input replayed like any other call
+    assert calls == [[3.0], [3.0]]
     assert wrapped._state == "live"
+
+
+def test_direct_binding_when_trees_disabled(fake_cuda_probe):
+    gm = _clean_gm()
+    graph = FakeGraph()
+    native = SimpleNamespace(CUDAGraph=lambda: graph)
+    calls = []
+
+    def artifact(x):
+        calls.append(x.data.tolist())
+        out = FakeTensor(x.data * 2)
+        if graph.in_capture:
+
+            def recompute(source=x, result=out):
+                result.data = source.data * 2
+
+            graph.recompute = recompute
+        return out
+
+    wrapped, _ = cudagraph_wrap(
+        artifact, gm, [FakeTensor(tp.tensor([1.0]))], native=native, trees=False
+    )
+    held = FakeTensor(tp.tensor([3.0]))
+    assert wrapped(held).tolist() == [6.0]
+    # With direct binding a moved tensor cannot be seen by the graph, so the
+    # call runs the artifact uncaptured for that round.
+    assert wrapped(FakeTensor(tp.tensor([-4.0]))).tolist() == [-8.0]
+    assert graph.replays == 1
+    assert calls == [[3.0], [3.0], [-4.0]]
     assert wrapped(held).tolist() == [6.0]
     assert graph.replays == 2
 
 
-def test_replayed_outputs_alias_static_buffers(fake_cuda_probe):
+def test_returned_outputs_survive_later_replays(fake_cuda_probe):
     gm = _clean_gm()
     graph = FakeGraph()
     native = SimpleNamespace(CUDAGraph=lambda: graph)
@@ -282,9 +317,49 @@ def test_replayed_outputs_alias_static_buffers(fake_cuda_probe):
     first = wrapped(held)
     held.data.copy_(tp.tensor([5.0]))
     again = wrapped(held)
-    assert first is again
-    # the previous output is overwritten by the next replay
-    assert first.tolist() == [10.0]
+    assert first is not again
+    # the earlier result is a buffer of its own, not the recording's static
+    # output overwritten by the next replay
+    assert first.tolist() == [2.0]
+    assert again.tolist() == [10.0]
+
+
+def test_each_layout_records_its_own_node(fake_cuda_probe):
+    gm = _clean_gm()
+    graphs = []
+
+    def new_graph():
+        graph = FakeGraph()
+        graphs.append(graph)
+        return graph
+
+    native = SimpleNamespace(CUDAGraph=new_graph)
+
+    def artifact(x):
+        out = FakeTensor(x.data * 2)
+        for graph in graphs:
+            if graph.in_capture:
+                def recompute(source=x, result=out):
+                    result.data = source.data * 2
+
+                graph.recompute = recompute
+                break
+        return out
+
+    wrapped, _ = cudagraph_wrap(
+        artifact, gm, [FakeTensor(tp.tensor([1.0]))], native=native
+    )
+    assert wrapped(FakeTensor(tp.tensor([1.0]))).tolist() == [2.0]
+    # A different shape has no node yet: it is recorded below the path that
+    # produced this call.
+    assert wrapped(FakeTensor(tp.tensor([2.0, 3.0]))).tolist() == [4.0, 6.0]
+    assert len(graphs) == 2
+    paths = sorted(len(path) for path in wrapped._manager.tree())
+    assert paths == [1, 2]
+    # Coming back to the first layout reuses its recording instead of
+    # recording a third node.
+    assert wrapped(FakeTensor(tp.tensor([7.0]))).tolist() == [14.0]
+    assert len(graphs) == 2
 
 
 def test_capture_failure_falls_back_permanently(fake_cuda_probe):
@@ -345,7 +420,7 @@ def test_reset_releases_wrapped_graphs(fake_cuda_probe):
     manager = wrapped._manager
     assert manager in CudagraphsBackend._managers
     CudagraphsBackend.reset()
-    assert not manager._entries
+    assert not manager._nodes
     assert graph.resets == 1
 
 
@@ -402,10 +477,12 @@ def test_reduce_overhead_replays_compiled_region():
         second = compiled(x)
         expected2 = (x * 2).relu().sum(dim=-1)
         assert (second - expected2).abs().max().item() < 1e-5
-        # outputs alias the graph pool: the second replay overwrote the first
-        assert first is second
-        # a tensor at a new address cannot be seen by the captured graph;
-        # the call still computes correctly, running the artifact directly
+        # outputs are buffers of their own: the second replay does not
+        # overwrite the first result
+        assert first is not second
+        assert (first - expected1).abs().max().item() < 1e-5
+        # a tensor at a new address is staged onto the recording's own input
+        # and replayed; it does not fall back to the uncaptured artifact
         y = tp.randn(4, 8, device="cuda")
         third = compiled(y)
         assert (third - (y * 2).relu().sum(dim=-1)).abs().max().item() < 1e-5

@@ -35,6 +35,7 @@ _ALIASES: dict[str, str] = {
     "debugging": "tensorplay.compiler.backends.debugging",
     "tvm": "tensorplay.compiler.backends.tvm",
     "cudagraphs": "tensorplay.compiler.backends.cudagraphs",
+    "cudagraph_trees": "tensorplay.compiler.backends.cudagraph_trees",
     "onnxrt": "tensorplay.compiler.backends.onnxrt",
     # stax backend internals
     "stax": "tensorplay.compiler.backends.stax.backend",
@@ -65,6 +66,10 @@ _HISTORICAL_SURFACE = {
         "CudaGraphInputDrift",
     ),
     "CudaGraphManager": ("tensorplay.compiler.backends.cudagraphs", "CudaGraphManager"),
+    "CUDAGraphTreeManager": (
+        "tensorplay.compiler.backends.cudagraph_trees",
+        "CUDAGraphTreeManager",
+    ),
     "Guard": ("tensorplay.compiler._core.guards", "Guard"),
     "GuardChain": ("tensorplay.compiler._core.guards", "GuardChain"),
     "format_recompile_reasons": (

@@ -1186,6 +1186,14 @@ class _TritonConfig:
     #: since what to capture cannot be said before the shapes are.
     cudagraph_skip_dynamic_graphs = False
 
+    #: Whether recordings are kept as a tree of input paths over one memory
+    #: pool.  A call whose tensors moved is then answered by copying them onto
+    #: the recording's own inputs, instead of leaving the capture for the
+    #: uncaptured artifact; a new layout records a node below the path it
+    #: arrived from.  Off restores replay against the caller's storage, which
+    #: is only possible while the tensors stay where they were captured.
+    cudagraph_trees = True
+
     #: How much more memory a partition may take than it saves, as a multiple,
     #: for capture to be worth what it costs.
     cudagraph_partition_memory_budget: float = 1.1
