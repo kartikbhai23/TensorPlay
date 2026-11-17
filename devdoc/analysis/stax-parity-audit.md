@@ -25,6 +25,7 @@
 | P1 | post-grad 缺 `reorder_for_locality` / `remove_assert_ops` / `reciprocal_sqrt_to_rsqrt`，`split_cat` 表无人调用 | 能力缺失，已核实 | 已补 |
 | P1 | `record_function` span 不进图，因此 post-grad 的 span 删除规则没有作用对象 | 能力缺失，已核实 | 已对齐（§4.6） |
 | P1 | 切分与合并互为逆运算时两个算子都不必留下，此前只有点名 `split_cat` 表才处理 | 能力缺失，已核实 | 已补（§4.2） |
+| P1 | 乘积与其加数分两次调用；分解成三节点链的 `addcdiv` 失去单次调用的融合 | 能力缺失，已核实 | 已补（§4.2、§13） |
 | P1 | 前端无字节码帧求值/图中断/恢复，Python 副作用只发生一次 | 架构差异，已复现 | 未修（架构选择） |
 | P1 | `dynamic_shapes` 只接受 bool，无自动 dynamic、无 `Dim`、`mark_static` 为空操作 | 能力缺失，已核实 | 已修复（§3.2、§13） |
 | P0 | 反向扫描按输入值聚合贡献，`x*x`、`x+x`、两路汇到同一值时只保留一项，梯度错误 | 正确性 bug，已复现 | 已修复（§3.4、§13） |
@@ -40,7 +41,8 @@
 | P2 | `export(strict=...)` 接受两种取值后 `del` 掉，docstring 自称两模式一致 | 静默失效，已核实 | 已拒绝（§8.4、§13） |
 | P0 | 捕获时读到的非张量全局/闭包/模块属性改变后仍复用旧程序，结果陈旧 | 正确性 bug，已复现 | 已修复（§3.3、§13） |
 | P1 | AOT 的 `memory_budget` 与 `keep_inference_input_mutations` 接收后丢弃 | 静默失效，已核实 | 已修复（§3.4、§13） |
-| P1 | 无 AOTInductor 部署包、无 cudagraph trees、无 oneDNN/MKLDNN/quantized/freezing | 子系统缺失，静态确认 | 未修 |
+| P1 | 无 AOTInductor 部署包、无 oneDNN/MKLDNN/quantized/freezing | 子系统缺失，静态确认 | 未修 |
+| P1 | cudagraph 只有单层录制：输入一换地址就回退到未捕获工件，输出被下次回放覆盖 | 能力缺失，静态确认 | 已实现树式录制：按布局分节点、共享一个内存池、copy-in/copy-back（§8.2、§13） |
 | P1 | 无 CPU GEMM 模板；`config.cpp.max_autotune_gemm_backends` 里的 "CPP" 无人消费 | 能力缺失，静态确认 | 已实现 `CppGemmTemplate`（f32/bf16/f16，静态 M/N/K，不预打包权重） |
 | P1 | 设备只注册 cpu/cuda；MPS/XPU/MTIA/ROCm 无代码生成 | 设备覆盖缺口，静态确认 | 未修 |
 | P1 | 分布式 overlap、bucketing 未接线 | 运行时能力缺口，静态确认 | 未修 |
@@ -52,7 +54,10 @@
 `pytest test/stax` 实测（修复前）：**1568 passed, 2 failed, 1 skipped**（1571 项，约 2 分 4 秒）。
 其中一个失败是确定性的 P0 正确性 bug；另一个是容差/顺序相关的偶发（单独运行通过）。
 
-`pytest test/stax -q` 实测（本轮修复后）：**1756 passed, 1 skipped**，
+`pytest test/stax -q -p no:randomly` 实测（本轮修复后）：**1833 passed, 1 skipped**（1834 项，约 3 分 49 秒）。
+此前一轮曾记录 `1806 passed, 5 failed`：5 项失败里 3 项是工作区里进行中的前端/内核改动（`upsample_nearest2d`
+同时收到尺寸与缩放、`one_hot` 走回退），已分别修掉（§13），剩下 2 项是随机顺序导致的偶发，会话级
+缓存隔离后不再复现（§8.3）。
 `pytest test/fx test/test_public_surface.py test/higher_order_ops test/export`：**376 passed**。
 原先那两个失败都已不再是失败：确定性那个随 §2.1 修好；偶发那个是 bf16 容差写死 `2e-4` 造成的，
 现在按 dtype 的机器精度取容差。
@@ -67,7 +72,7 @@
 | 图/前端 | `tensorplay/graph/` 35,577 行 | `torch/_dynamo/` 130,241 行 + `torch/fx/` |
 | stax 后端文件数 | 239 个 `.py` | 379 个 `.py` |
 | post-grad pass | `graph_passes/post_grad.py` 378 行 | `fx_passes/post_grad.py` 2,521 行 |
-| 配置面 | `stax/config.py` 1,894 行 / 195 顶层项 | 3,204 行 / 306 顶层项 |
+| 配置面 | `stax/config.py` 1,920 行 / 195 顶层项 | 3,204 行 / 306 顶层项 |
 
 核心文件行数并不落后，部分还略多：
 
@@ -332,7 +337,7 @@ for _ in range(3):
 4. `group_batch_fusion_passes(graph, pre_grad=False)`；
 5. `remove_noop_ops(graph)`；
 6. `remove_assert_ops(graph)`：删掉 `_assert_tensor_metadata`（它是承诺、不是计算，留着会挡融合）；
-7. `pass_patterns` 逐张表 `apply`（新增 `reciprocal(sqrt(x)) → rsqrt(x)`；`pass_patterns[2]` 新增两条无条件重写：`cat` 把一次切分的全部片段按原序拼回时整对删除，`split` 恰好沿合并的接缝切开一个 `cat` 时把每个 `getitem` 直接接到对应的片段上。两条都同时认 `split.sizes` 与 `split_with_sizes`：前端把列表切分记为前者，而移植来的表只写了后者。`fuse_attention` 的 SDPA 模式与 `pad_mm` 注册在 `joint_graph.patterns`，只在联合图上生效）；
+7. `pass_patterns` 逐张表 `apply`（新增 `reciprocal(sqrt(x)) → rsqrt(x)`；`pass_patterns[2]` 新增两条无条件重写：`cat` 把一次切分的全部片段按原序拼回时整对删除，`split` 恰好沿合并的接缝切开一个 `cat` 时把每个 `getitem` 直接接到对应的片段上。两条都同时认 `split.sizes` 与 `split_with_sizes`：前端把列表切分记为前者，而移植来的表只写了后者。同一张表还新增两条乘积改写：`mm` 的结果与一个可广播、同类型的加数相加时合成一次 `addmm` 调用；分解成 `div → mul → add` 的 `addcdiv` 在 CUDA/XPU 上重新合成一次调用，单次舍入与 FMA 只有合成后才用得上。加数直接来自捕获且结果全部喂给逐点算子的 GPU 乘积保持不合成，留给乘积收尾的逐点融合。`fuse_attention` 的 SDPA 模式与 `pad_mm` 注册在 `joint_graph.patterns`，只在联合图上生效）；
 8. `config.post_grad_fusion_options` 里点名的表逐张 `apply`（`split_cat.py` 的 8 张表；默认空表，因此与上游默认一样不跑，用户点名才跑）；
 9. `config.post_grad_custom_post_pass`（新增开关，默认 `None`）。
 
@@ -360,11 +365,12 @@ for _ in range(3):
 - `decompose_scan_to_while_loop` / `decompose_map_to_while_loop`
 - `fix_auto_functionalized_dtype_views`
 - ~~`splitwithsizes_cat` / `cat_splitwithsizes`~~：本轮补齐，见 §4.2；
-- `cat_slice_cat`（`cat([a, a[:, :n]], 1)` 折成一次 `cat`）；
-- `pointless_cumsum`（常量填充的 `cumsum` 写成 ramp）：仿写过一版，卡在“替换节点要在 post-grad 里新造 `arange`/`reshape`/`expand`”。此时区域跑在只描述值的模式里，新造工厂算子的 `meta["val"]` 落在 meta 设备上；降级把它们当 meta 常量，运行期报设备不匹配。要等假值元数据刷新（`fx_utils.FakeTensorUpdater` 已存在但 `post_grad_passes` 尚未调用）接进来之后再做；
-- `view_to_reshape`（只服务 C++ 部署形态）
-- `unfuse_bias_add` / `unfuse_bias_baddbmm`
-- addmm / addcdiv FMA 融合
+- ~~`cat_slice_cat`（`cat([a, a[:, :n]], 1)` 折成一次 `cat`）~~：复核时已在（上一轮接线时随 `split_cat` 一起落地，本条原记录过时）；
+- ~~`view_to_reshape`（只服务 C++ 部署形态）~~：本轮补齐。`view.default` 的 target 在 post-grad 里改成 `reshape.default`（方法拼写的 `view` 一并改写），降低产物只看到一个形状改变的名字；
+- ~~`unfuse_bias_add` / `unfuse_bias_baddbmm`~~：本轮补齐。`addmm` / `baddbmm` 的加数是占位符或常量、各操作数同型同设备、且输出的所有使用者都是逐点算子时，把融合乘积改写成逐点链（`mm → alpha 缩放 → beta*inp → 加`），GPU 上才有意义；`beta=0` 仅在 CUDA 上丢弃加数（非 CUDA 需要 expandability 分析，保持融合）。判定用的设备读自区域的真实设备——模式看到的值是 meta 设备的替身，读不到 kernel 会跑在哪里。`beta=0` 的 expandability 分支与半精度 XPU 特例未移植（后者本仓库无 XPU）；
+- ~~`view_to_reshape`~~ / ~~`unfuse_bias_add` / `unfuse_bias_baddbmm`~~：见上，均已补齐；
+- ~~`pointless_cumsum`（常量填充的 `cumsum` 写成 ramp）~~：本轮补齐。原判的阻塞（新造工厂算子的 `meta["val"]` 落在 meta 设备上）不靠全图假值刷新解决：上游把 `FakeTensorUpdater.incremental_update()` 接在 pass 管线末尾，其无害前提是图上的假值本就是准确的真实设备 fake tensor，刷新幂等；本仓库的值在此构建上报 meta 设备，无条件刷新的净效果无法与进行中的其他改动区分开（见下）。实际上降级前的 `ShapeProp`（以真设备模式跑）本就会给新造节点填假值，ramp 的节点链（arange→mul→view→expand→to）直接以注册算子拼写构造进图即可，替换掉 fill+scan 两步。若后续接入刷新，应限定在真正新造的节点上，而不是整图。
+- ~~addmm / addcdiv FMA 融合~~：本轮补齐，见 §4.2；
 - `ConstructorMoverPass` / `move_constructors_to_gpu`
 - partitioned scatter、WOQ `concat_linear_woq_int4`、mkldnn grouped GEMM
 
@@ -374,6 +380,8 @@ for _ in range(3):
 - `reorder_for_locality` 默认在推理区域生效：生产者被挪到读者之前，随机数算子不挪。实测 `(...).relu()` 与 `(...).sin()` 相加再乘第三条分支时，第三条分支的计算被挪到加法之后；带 `randn` 的同类图里 `randn` 保持原位。
 - SDPA（`fuse_attention`，30 个模式）与 `pad_mm` 的决策注册在 `joint_graph.patterns` 里，因此只在**联合图**（训练 / 走 AOT 的区域）上生效；纯推理区域不会命中——这与上游把这两族模式只注册进 joint graph 的做法一致。实测：训练区域可编译并通过；推理区域的手写 attention 数值正确但不会改写成融合注意力。
 - 切分与合并互为逆运算的整对（`x.split([...])` 的每个片段按原序 `cat` 回来、`split` 恰好沿 `cat` 的接缝切开）默认就会被删掉，不需要点名；只有**部分**片段的重建才需要用户在 `config.post_grad_fusion_options` 里点名 `split_cat` 表。乱序重拼、位置不同的切分都会保留原样。
+- `mm` 的结果与一个可广播、同类型的加数相加时，改写为一次带偏置的乘积调用：中间结果不再存在，GPU 上偏置进入乘积收尾。加数不同型、不可广播、或加法带非 1 的缩放时保持两次调用。GPU 上“加数来自占位符/常量且输出只被逐点算子读”的区域仍由 `unfuse_bias_add` 拆回逐点链；两条规则的判定互斥，同一张图不会来回改写。
+- 分解成 `div → mul → add` 的 `addcdiv` 在 CUDA/XPU 上重新合成一次调用：商只舍入一次，乘积与加和在支持 FMA 的设备上一步完成；其它设备、带舍入模式的除法、张量缩放仍保留逐点链。
 - 内存受限 `mm` 分解仍未接线。
 
 ### 4.5 剩余修复方向
@@ -537,17 +545,30 @@ cpp_wrapper=use_cuda_codegen,
 
 ### 8.2 cudagraphs
 
-- 只有单层 manager：按输入布局录制，最多 8 个条目；输入地址漂移抛 `CudaGraphInputDrift`。
-- `dynamic=True` 跳过；训练（参数 requires_grad）跳过；原地修改/输出别名跳过。
-- 独立后端此前只在 stax 的 wrap 路径上检查 `dynamic`，后端入口把该参数丢掉；两条路现在一致。
-- 没有树式内存池、跨重编译复用、copy-back 语义。
+录制有两条路径，由 `triton.cudagraph_trees` 选择（默认开）：
+
+- 树关（`CudaGraphManager`）：按输入布局录制，最多 8 个条目；图直接读调用者存储，地址漂移抛
+  `CudaGraphInputDrift`，该次调用走未捕获工件。
+- 树开（`CUDAGraphTreeManager`）：每个输入布局一个节点，挂在上一次运行所到节点之下；录制持有
+  私有输入副本，回放先把调用者的张量抄进去再启动，因此地址漂移不再是回退理由。所有节点录制进
+  同一个分配器池（`_C.graph_pool_handle()`）；回放产生的输出克隆后返回，前一次的结果不会被
+  下一次回放覆盖。超过上限按最近最少使用淘汰。
+
+有批量入口时回放走 `stage_and_launch`（一次原生调用完成全部输入拷贝与启动），没有时逐张量
+`copy_` 再 `replay`。
+
+`dynamic=True` 跳过；训练（输入 requires_grad）跳过；原地修改/输出别名跳过。独立后端此前只在
+stax 的 wrap 路径上检查 `dynamic`，后端入口把该参数丢掉；两条路现在一致。
+
+仍未做：分配器侧 checkpoint（活节点把不再读的中间内存还给共享池、而输出仍可读）、跨重编译复用、
+把树接进独立 `cudagraphs` 后端（那里本身只做回放，不含 worker 分配语义）。
 
 ### 8.3 测试
 
 ```
-pytest test/stax -q
+pytest test/stax -q -p no:randomly
 # 修复前：1568 passed, 2 failed, 1 skipped
-# 本轮修复后：1756 passed, 1 skipped
+# 本轮修复后：1833 passed, 1 skipped
 pytest test/fx test/test_public_surface.py test/higher_order_ops test/export -q
 # 376 passed
 ```
@@ -573,13 +594,14 @@ pytest test/fx test/test_public_surface.py test/higher_order_ops test/export -q
 - 配置面此前无测试，本轮补 `test/stax/test_stax_config_surface.py`（12 项，见 §8.5）；
 - 整图缓存补 `test/stax/test_stax_graph_cache.py`（7 项）：键随程序/输入/模块状态/设置/包版本变化、命中时不降级、符号形状不入缓存；
 - CPU 分块乘积补 `test/stax/test_stax_cpu_gemm_template.py`（13 项）：`mm`/`addmm`（行偏置与二维偏置）落成模板 kernel 且与 eager 一致、尾块形状、bf16/f16、其它类型不提供、不说话的后端列表不提供、两种 `mm`/`addmm` 拼写都指向同一 lowering、外部 kernel 名接受目标缓冲、边界符号的尺寸提示、读名不触发 store；
+- cudagraph 树补 `test/stax/test_cudagraph_trees.py`（17 项）：按布局分节点、交替布局复用、节点共享池、最近最少使用淘汰、树路径、批量入口与逐张量拷贝两条回放路径、输出独立，以及真实 CUDA 上的换地址回放与跨布局录制；
 - 无 fuzzer / `test_operators`。
 
 ### 8.4 文档声明 vs 实际
 
 | 声明 | 位置 | 实际 |
 | --- | --- | --- |
-| `reduce-overhead` 折叠启动开销 | 白皮书 `08c:52` | 仅无梯度/无原地/非动态/≤8 布局时；无树复用 |
+| `reduce-overhead` 折叠启动开销 | 白皮书 `08c:52` | 仅无梯度/无原地/非动态/≤8 布局时；树式录制下输入漂移靠拷贝吸收，输出各自独立（§8.2） |
 | Triton 内核并入缓存条目 | `config.py:1310` | `triton_bundler.py` 无调用者 |
 | 计算/通信 overlap + bucketing | `config.py:1710`；`config_comms.py` | 配置存在，IR/调度未接线 |
 | `NOT_COVERED` 算子“到达即抛” | `operator_coverage.py:15` | 实际走 eager extern fallback；`index_add`/`index_copy`/`scatter_add` 等 6 个已有 lowering 的名字已从表里删除，声明的可覆盖集不再与实表矛盾（§13） |
@@ -615,7 +637,7 @@ pytest test/fx test/test_public_surface.py test/higher_order_ops test/export -q
 （数、串、布尔、`None` 及其容器），跨进程比较才有意义；设置里的可调用对象写成全限定名，换掉它会
 改变快照；本模块自己的辅助函数不算设置；私有名默认不写。
 
-快照 293 项，含私有名 298 项，均可 `json.dumps`。
+快照 298 项，含私有名 303 项，均可 `json.dumps`。
 
 反方向的核对（定义在 `config.py`、却没有任何读者）又发现三个“设置了也没用”的项：
 
@@ -636,7 +658,9 @@ pytest test/fx test/test_public_surface.py test/higher_order_ops test/export -q
   - 没有调用者，纯文档性。
 - `LOWERINGS` 实际约 850 个算子名，`_TEMPLATE_OPERATORS` 8 个（conv/matmul/linear/addmv 等）。
 - `tensorplay/_decomp` 注册约 480 个分解，上游 `torch/_decomp` 约 180 个 + inductor 专属表；本仓库在分解数量上是超集，但缺少 inductor 侧的一些 lowering/pattern 组合。
-- 无 `fft`、`linalg_*`、`embedding_bag`、`histogram`、`unique_dim`、`segment_reduce`、`index_reduce`、稀疏 COO/CSR、jagged 的原生 lowering，主要靠 library call/fallback。
+- ~~`fft`、`linalg_*`~~：复核为已有。`_decomp/decompositions.py` 注册了 20 个 fft 分解（一维 `fft`/`ifft`/`rfft`/`irfft`、n 维与 2 维族、`fftshift` 族），落在 `prims.fft_r2c/c2c/c2r` 原语上（prims 已有 `_tp_functional` 实现）；`linalg.vector_norm`/`inv`/`svd` 编译结果正确且图中无 fallback。
+- ~~`embedding_bag` 的缺口在算子层~~：复核为**注册缺口**而非 kernel 缺失。CPU kernel（`EmbeddingBagKernels.cpp`）一直存在，但只注册了 `_embedding_bag*` 内部拼写，公开 overload `embedding_bag` / `embedding_bag.padding_idx` 无注册，eager 直接报 `Kernel not found`。已修复：两个公开 overload 注册为委托同一前向的包装。移植时注意到生成签名（`KernelSignatures.h`）里 `int?` 参数**按值**传 `std::optional<int64_t>`，wrapper 写成 `const&` 会 ABI 不匹配段错误——这正是段错误的来源。回归测试 `test/nn/test_embedding_bag_cpu.py`（4 项：默认/padding/mean 对照手写参考、编译路径与 eager 对拍）。
+- `histogram`、`unique_dim`、`segment_reduce`、`index_reduce`、稀疏 COO/CSR、jagged 的原生 lowering，主要靠 library call/fallback。其中 histogram / unique 族 / segment_reduce / index_reduce / scatter_reduce_ 是**刻意**的 fallback（`op_lowerings.py` 尾部逐一注明理由：答案的形状就是答案本身，无法按已知长度的范围写出遍历；散布归约的胜者是语义选择），不是遗漏。
 
 ---
 
@@ -821,6 +845,15 @@ pytest test/stax -q -p no:randomly
 | `3961b439` `fix(compiler)` | 带偏置的乘积接受函数写法记录的位置参数（先加数系数、后乘积系数，见 §13.1） |
 | `a6a6951e` `docs(compiler)` | 审计报告记录整图缓存与 CPU 分块乘积，并把刻意不做的部分（预打包、整数路径、运行期才知道的行数）写在旁边 |
 | 本轮 `fix(compiler)` | 全局/闭包/模块属性中的可变容器按内容快照进入特化键，原地编辑（`list.append`、`dict[k]=v`）触发重捕；捕获代码自己原地修改的名字经字节码扫描排除出键（见 §3.3）。别名输入（同 storage）且图内含原地写时，捕获期以 `GraphCaptureError` 明确拒绝；只读别名与独立输入的原地写照常编译。新增用例：`test_stax_captured_values.py` 2 项、`test_guards.py` 3 项 |
+| 本轮 `feat(compiler)` | post-grad 补 `view_to_reshape`（`view.default` 在产物里统一为 `reshape.default`）与 `unfuse_bias_add` / `unfuse_bias_baddbmm`（bias 类加数 + 全逐点使用者的 GPU 区域改写成逐点链；判定设备读自区域真实设备，模式替身报的是 meta 设备）。新增用例：`test_stax_post_grad_passes.py` 3 项（view 改名、CUDA 解融、非 bias 加数保持融合）；§4.3 的 `cat_slice_cat` 条目复核为已有，记录更正 |
+| 本轮 `docs(compiler)` | §9 复核更正：fft（20 个分解落 `prims.fft_r2c/c2c/c2r`）与 `linalg.vector_norm`/`inv`/`svd` 编译正确且无 fallback，原条目过时；histogram / unique 族 / segment_reduce / index_reduce / scatter_reduce_ 确认为刻意 fallback 并注明理由 |
+| 本轮 `fix(kernels)` | `embedding_bag` 公开 overload 注册到 CPU（用户指出算子存在后复核发现）：kernel 一直在，缺的是 `embedding_bag` / `embedding_bag.padding_idx` 的 `m.impl` 注册；`int?` 参数按生成签名以值传 `std::optional<int64_t>`，写成 `const&` 会 ABI 段错误。新增 `test/nn/test_embedding_bag_cpu.py`（4 项） |
+| 本轮 `feat(compiler)` | `pointless_cumsum` 落地：`cumsum(full(v), dim)` 的扫描改写为常量 ramp 的节点链（arange→mul→view→expand→to），fill 有其他读者时保留 fill；标量 `cumsum` 不归此 pass。上游的 `FakeTensorUpdater.incremental_update()` 接到 pass 末尾在本构建上无法验证为无害（rms_norm 的 row kernel 选择丢失，但二分证明该失败在会话前的 pass 版本上同样出现，来源是进行中的 p10 内核改动与构建漂移，不是刷新本身）；本仓库降级前的 `ShapeProp` 以真设备模式给新造节点填假值，`pointless_cumsum` 不依赖全图刷新。新增用例：`test_stax_post_grad_passes.py` 3 项（浮点、整数、程序数据的 cumsum 保留） |
+| `13664739` `feat(compiler)` | post-grad 新增加数与乘积、缩放商与加和的合成：`add(mm(a, b), x)` / `add(x, mm(a, b))` 合成一次带偏置乘积（加数可广播、三方同型、`alpha == 1`，且不抢 `unfuse_bias_add` 的 GPU 逐点链）；分解成 `div → mul → add` 的 `addcdiv` 在 CUDA/XPU 上合成一次带缩放商调用（商只舍入一次、乘积与加和走 FMA；带舍入模式或张量缩放不合成）。新增用例 6 项 |
+| `25da76a7` `test(compiler)` | `test/stax` 会话级隔离 `TP_CACHE_DIR` 并默认关闭整图工件缓存，`test_stax_graph_cache.py` 自行开启：观察降级过程的用例不再因同会话前一个用例写入的工件命中而误报 |
+| `5a0dc3e4` `fix(compiler)` | `upsample_nearest{1,2,3}d` 接受与输出尺寸一致的缩放提示（此前一律视为边界，`F.interpolate(scale_factor=…)` 区域因此回退到图执行器）；缩放与尺寸矛盾时仍回退，符号尺寸无法核对时按尺寸比例映射 |
+| `72503adf` `fix(compiler)` | `one_hot` 补分解为 `unsqueeze → eq(arange) → to(int64)`，范围检查作为不参与死代码删除的调用保留；`_assert_async.msg` 的 lowering 改为接受 `(cond, msg)`；分解注册表补 `one_hot.default` 样例 |
+| CUDA Graph Trees | 新增 `backends/cudagraph_trees.py` 与 `triton.cudagraph_trees`（默认开）：按输入布局分节点记录在一条树上，节点共享一个分配器池；录制持有私有输入副本，回放经 `stage_and_launch`（无该入口时逐张量 `copy_`）写入后启动；输出克隆返回，调用者结果跨回放有效；上限按最近最少使用淘汰。`CudagraphCompiledCallable` 按布局派生节点键，布局变化录制子节点而不是回退到未捕获工件；树关时保留原直连路径。新增 `test/stax/test_cudagraph_trees.py`（17 项），改写的 wrapper 用例覆盖换地址回放、输出独立与跨布局录制（§8.2） |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 
