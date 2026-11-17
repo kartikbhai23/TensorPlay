@@ -665,14 +665,16 @@ Tensor solve_from_factors(const Tensor& LU_cm, const Tensor& pivots,
     const int64_t b_ms = matrix_stride_of(B_cm);
     const int64_t ldb = B_cm.size(-2);
     auto stream = getCurrentCUDAStream().stream();
-    Tensor routes = Tensor::empty({2 * n}, DType::Int32, B_cm.device());
+    // Per-matrix route tables: a shared buffer would be overwritten by every
+    // permutation kernel in the batch, leaving all solves with the last
+    // matrix's row permutation.
+    Tensor routes = Tensor::empty({bs * 2 * n}, DType::Int32, B_cm.device());
     auto* route_data = routes.data_ptr<int32_t>();
-    auto* rows_data = route_data;
-    auto* inverse_data = route_data + n;
     const auto* piv = pivots.data_ptr<int32_t>();
     for (int64_t i = 0; i < bs; ++i) {
         row_permutation_kernel<<<1, 1, 0, stream>>>(
-            n, &piv[i * n], rows_data, transpose ? inverse_data : nullptr);
+            n, &piv[i * n], route_data + i * 2 * n,
+            transpose ? route_data + i * 2 * n + n : nullptr);
     }
     Tensor solved = empty_column_major(
         static_cast<std::vector<int64_t>>(B_cm.shape()), B_cm.dtype(),
@@ -683,7 +685,6 @@ Tensor solve_from_factors(const Tensor& LU_cm, const Tensor& pivots,
     const auto handle = CUDAContext::getCublasHandle();
     const unsigned row_blocks =
         static_cast<unsigned>((n + kRowsPerBlock - 1) / kRowsPerBlock);
-    const int32_t* routes_used = transpose ? inverse_data : rows_data;
     for (int64_t i = 0; i < bs; ++i) {
         scalar_t* moved = dst + i * b_ms;
         if (!transpose) {
@@ -693,8 +694,8 @@ Tensor solve_from_factors(const Tensor& LU_cm, const Tensor& pivots,
                 gather_rows_kernel<scalar_t><<<
                     dim3(row_blocks, static_cast<unsigned>(cols)),
                     kRowsPerBlock, 0, stream>>>(
-                    src + i * b_ms + c0 * ldb, moved + c0 * ldb, rows_data,
-                    ldb, n, cols);
+                    src + i * b_ms + c0 * ldb, moved + c0 * ldb,
+                    route_data + i * 2 * n, ldb, n, cols);
             }
             apply_one_trsm<scalar_t>(handle, lu + i * lu_ms, n, moved, ldb, n,
                                      nrhs, CUBLAS_FILL_MODE_LOWER,
@@ -717,8 +718,8 @@ Tensor solve_from_factors(const Tensor& LU_cm, const Tensor& pivots,
                 gather_rows_kernel<scalar_t><<<
                     dim3(row_blocks, static_cast<unsigned>(cols)),
                     kRowsPerBlock, 0, stream>>>(
-                    work + c0 * ldb, moved + c0 * ldb, routes_used, ldb, n,
-                    cols);
+                    work + c0 * ldb, moved + c0 * ldb,
+                    route_data + i * 2 * n + n, ldb, n, cols);
             }
         }
     }
