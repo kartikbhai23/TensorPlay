@@ -120,7 +120,44 @@ Tensor& celu_inplace_kernel(Tensor& self, const Scalar& alpha) {
 
 Tensor& clip_inplace_kernel(Tensor& self, const std::optional<Scalar>& min, const std::optional<Scalar>& max) {
     NoGradGuard __tp_nograd;
-    self.copy_(self.clamp(min, max));
+    // Single in-place sweep; the optional bounds each stay unset or clamp.
+    if (!self.is_contiguous() || !isFloatingType(self.dtype())) {
+        self.copy_(self.clamp(min, max));
+        return self;
+    }
+    int64_t n = self.numel();
+    bool has_min = min.has_value(), has_max = max.has_value();
+    switch (self.dtype()) {
+    case DType::Float32: {
+        float* dp = self.data_ptr<float>();
+        float lo = has_min ? static_cast<float>(min->toDouble()) : -std::numeric_limits<float>::infinity();
+        float hi = has_max ? static_cast<float>(max->toDouble()) : std::numeric_limits<float>::infinity();
+        using tensorplay::parallel::parallel_for; tensorplay::parallel::parallel_for(0, n, tensorplay::parallel::GRAIN_SIZE, [&](int64_t b, int64_t e) {
+            for (int64_t i = b; i < e; ++i) {
+                float v = dp[i];
+                v = v < lo ? lo : v;
+                dp[i] = v > hi ? hi : v;
+            }
+        });
+        break;
+    }
+    case DType::Float64: {
+        double* dp = self.data_ptr<double>();
+        double lo = has_min ? min->toDouble() : -std::numeric_limits<double>::infinity();
+        double hi = has_max ? max->toDouble() : std::numeric_limits<double>::infinity();
+        using tensorplay::parallel::parallel_for; tensorplay::parallel::parallel_for(0, n, tensorplay::parallel::GRAIN_SIZE, [&](int64_t b, int64_t e) {
+            for (int64_t i = b; i < e; ++i) {
+                double v = dp[i];
+                v = v < lo ? lo : v;
+                dp[i] = v > hi ? hi : v;
+            }
+        });
+        break;
+    }
+    default:
+        self.copy_(self.clamp(min, max));
+        break;
+    }
     return self;
 }
 

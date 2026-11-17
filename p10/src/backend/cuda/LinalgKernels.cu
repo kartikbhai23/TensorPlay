@@ -1357,6 +1357,45 @@ void apply_syevj_batched(const Tensor& values, const Tensor& vectors,
     CUSOLVER_CHECK(cusolverDnDestroySyevjInfo(params));
 }
 
+// 64-bit batched driver: same Jacobi semantics as the legacy syevjBatched,
+// but computes through the typed-params entry point that the current
+// cuSOLVER optimizes for large batches.
+template <typename scalar_t>
+void apply_xsyev_batched(const Tensor& values, const Tensor& vectors,
+                         const Tensor& infos, bool upper,
+                         bool compute_eigenvectors) {
+    const int n = static_cast<int>(vectors.size(-1));
+    const int lda = std::max(1, n);
+    const int64_t batch = static_cast<int64_t>(batch_count_of(vectors));
+    auto* vectors_data = vectors.data_ptr<scalar_t>();
+    auto* values_data = values.data_ptr<scalar_t>();
+    auto* infos_data = infos.data_ptr<int32_t>();
+    const auto handle = CUDAContext::getCusolverDnHandle();
+    const cublasFillMode_t uplo = upper ? CUBLAS_FILL_MODE_UPPER
+                                        : CUBLAS_FILL_MODE_LOWER;
+    const cusolverEigMode_t jobz =
+            compute_eigenvectors ? CUSOLVER_EIG_MODE_VECTOR
+                                  : CUSOLVER_EIG_MODE_NOVECTOR;
+    const cudaDataType dtype = std::is_same_v<scalar_t, float>
+            ? CUDA_R_32F : CUDA_R_64F;
+
+    cusolverDnParams_t params = nullptr;
+    CUSOLVER_CHECK(cusolverDnCreateParams(&params));
+    size_t ws_dev = 0, ws_host = 0;
+    CUSOLVER_CHECK(cusolverDnXsyevBatched_bufferSize(
+            handle, params, jobz, uplo, n, dtype, vectors_data, lda, dtype,
+            values_data, dtype, &ws_dev, &ws_host, batch));
+    Tensor work = Tensor::empty(
+            {static_cast<int64_t>((ws_dev + sizeof(scalar_t) - 1) / sizeof(scalar_t) + 1)},
+            vectors.dtype(), vectors.device());
+    std::vector<char> work_host(ws_host);
+    CUSOLVER_CHECK(cusolverDnXsyevBatched(
+            handle, params, jobz, uplo, n, dtype, vectors_data, lda, dtype,
+            values_data, dtype, work.data_ptr<scalar_t>(), ws_dev,
+            work_host.data(), ws_host, infos_data, batch));
+    CUSOLVER_CHECK(cusolverDnDestroyParams(params));
+}
+
 std::tuple<Tensor, Tensor> eigh_impl_cuda(const Tensor& A, bool upper,
                                           bool compute_eigenvectors) {
     square_check_inputs(A, "linalg.eigh");
@@ -1373,42 +1412,12 @@ std::tuple<Tensor, Tensor> eigh_impl_cuda(const Tensor& A, bool upper,
     Tensor vectors = clone_batched_column_major(A);
     Tensor values = Tensor::empty(cat_batch(batch, {n}), A.dtype(), A.device());
     Tensor info = Tensor::zeros(batch, DType::Int32, A.device());
-    // n >= 32: per-matrix divide-and-conquer syevd beats the batched Jacobi
-    // pass; small matrices keep the batched Jacobi driver.
-    if (n >= 32) {
-        run_real(A.dtype(), [&](auto tag) {
-            using T = std::remove_pointer_t<decltype(tag)>;
-            using Tr = CusolverTraits<T>;
-            auto* vectors_data = vectors.data_ptr<T>();
-            auto* values_data = values.data_ptr<T>();
-            auto* infos_data = info.data_ptr<int32_t>();
-            const auto handle = CUDAContext::getCusolverDnHandle();
-            const cusolverEigMode_t jobz = compute_eigenvectors
-                    ? CUSOLVER_EIG_MODE_VECTOR : CUSOLVER_EIG_MODE_NOVECTOR;
-            const cublasFillMode_t uplo = upper ? CUBLAS_FILL_MODE_UPPER
-                                                : CUBLAS_FILL_MODE_LOWER;
-            const char uplo_char = upper ? 'U' : 'L';
-            const int lda = std::max(1, static_cast<int>(n));
-            const int batch_count = static_cast<int>(batch_count_of(vectors));
-            int lwork = 0;
-            Tr::syevd_bufferSize(handle, jobz, uplo_char, n, vectors_data, lda,
-                                 values_data, &lwork);
-            Tensor work = Tensor::empty({std::max(lwork, 1)}, A.dtype(),
-                                        A.device());
-            auto* work_data = work.data_ptr<T>();
-            for (int64_t i = 0; i < batch_count; ++i) {
-                Tr::syevd(handle, jobz, uplo, n,
-                          vectors_data + i * n * lda, lda,
-                          values_data + i * n, work_data, lwork,
-                          infos_data + i);
-            }
-        });
-        check_infos(info, "linalg.eigh", A.dim() == 2);
-        return {values.contiguous(), vectors.contiguous()};
-    }
+    // The 64-bit typed-params batched driver is the entry point the current
+    // cuSOLVER optimizes for batched eigensolves; it replaces both the
+    // per-matrix syevd loop and the legacy syevjBatched pass.
     run_real(A.dtype(), [&](auto tag) {
         using T = std::remove_pointer_t<decltype(tag)>;
-        apply_syevj_batched<T>(values, vectors, info, upper,
+        apply_xsyev_batched<T>(values, vectors, info, upper,
                                compute_eigenvectors);
     });
     check_infos(info, "linalg.eigh", A.dim() == 2);
