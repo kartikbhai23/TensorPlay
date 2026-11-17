@@ -550,7 +550,9 @@ Tensor remainder_tensor_cpu(const Tensor& self, const Tensor& other) {
         (self.dtype() == DType::Float32 || self.dtype() == DType::Float64) &&
         isFloatingType(other.dtype())) {
         const int64_t n = self.numel();
-        const double yd = other.data_ptr<double>()[0];
+        const double yd = other.dtype() == DType::Float64
+                              ? other.data_ptr<double>()[0]
+                              : static_cast<double>(other.data_ptr<float>()[0]);
         Tensor out = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
                                    self.dtype(), self.device());
         if (self.dtype() == DType::Float32) {
@@ -559,9 +561,10 @@ Tensor remainder_tensor_cpu(const Tensor& self, const Tensor& other) {
             const float y = static_cast<float>(yd);
             for (int64_t i = 0; i < n; ++i) {
                 const float x = sp[i];
-                float r = x - std::trunc(x / y) * y;
-                if (r != 0.0f && ((r < 0.0f) != (y < 0.0f))) r += y;
-                dp[i] = r;
+                const float q = std::trunc(x / y);
+                float r = x - q * y;
+                const bool fix = r != 0.0f && ((r < 0.0f) != (y < 0.0f));
+                dp[i] = fix ? r + y : r;
             }
         } else {
             const double* sp = self.data_ptr<double>();
@@ -569,9 +572,10 @@ Tensor remainder_tensor_cpu(const Tensor& self, const Tensor& other) {
             const double y = yd;
             for (int64_t i = 0; i < n; ++i) {
                 const double x = sp[i];
-                double r = x - std::trunc(x / y) * y;
-                if (r != 0.0 && ((r < 0.0) != (y < 0.0))) r += y;
-                dp[i] = r;
+                const double q = std::trunc(x / y);
+                double r = x - q * y;
+                const bool fix = r != 0.0 && ((r < 0.0) != (y < 0.0));
+                dp[i] = fix ? r + y : r;
             }
         }
         return out;
@@ -612,7 +616,7 @@ Tensor remainder_scalar_cpu(const Tensor& self, const Scalar& other) {
             const float y = other.to<float>();
             for (int64_t i = 0; i < self.numel(); ++i) {
                 const float x = sp[i];
-                float r = x - std::trunc(x / y) * y;
+                float r = x - __builtin_truncf(x / y) * y;
                 if (r != 0.0f && ((r < 0.0f) != (y < 0.0f))) r += y;
                 dp[i] = r;
             }
