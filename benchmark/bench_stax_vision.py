@@ -26,6 +26,7 @@ import statistics
 import sys
 import time
 import traceback
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -41,6 +42,7 @@ import torchvision
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import tensorplay as tp  # noqa: E402
+import tensorplay.compiler as tp_compiler  # noqa: E402
 import tensorplay.nn.functional as tp_F  # noqa: E402
 from tensorplay.vision import models as tp_models  # noqa: E402
 
@@ -183,10 +185,22 @@ def time_call(fn: Callable[[], Any], device: str, warmup: int, repeats: int) -> 
 
 
 def to_tensorplay_state(state: dict[str, Any]) -> dict[str, Any]:
-    converted = {}
-    for key, value in state.items():
-        array = np.ascontiguousarray(value.detach().cpu().numpy())
-        converted[key] = tp.from_numpy(array.copy())
+    """The reference state as this package's tensors, metadata included.
+
+    The per-module version a state dict carries is what a loader consults to
+    migrate older parameter layouts; dropping it makes models whose loader
+    validates the version refuse an otherwise current checkpoint.
+    """
+
+    converted = OrderedDict(
+        (key, tp.from_numpy(np.ascontiguousarray(value.detach().cpu().numpy()).copy()))
+        for key, value in state.items()
+    )
+    metadata = getattr(state, "_metadata", None)
+    if metadata is not None:
+        converted._metadata = {
+            prefix: dict(entries) for prefix, entries in metadata.items()
+        }
     return converted
 
 
@@ -255,6 +269,42 @@ def tolerance(dtype: torch.dtype) -> float:
     return {torch.float32: 5e-3, torch.float16: 2e-2, torch.bfloat16: 3e-2}[dtype]
 
 
+def matches(
+    actual: np.ndarray,
+    reference: np.ndarray,
+    tol: float,
+    scale: float,
+) -> bool:
+    """Whether two results agree within a tolerance that follows their scale.
+
+    ``tol`` is a relative tolerance; the absolute part is one more ``tol`` of
+    the answer's own magnitude, so a result expressed in large units is not
+    failed for the rounding its scale implies.
+    """
+
+    return bool(
+        np.allclose(actual, reference, atol=tol * max(scale, 1.0), rtol=tol)
+    )
+
+
+def release_case_memory(device: str) -> None:
+    """Drop a finished case's compiled artifacts and their private memory.
+
+    A captured graph owns an allocator pool of its own, which the caching
+    allocator cannot reuse, and each compiled reference module keeps its
+    recording alive through the compile machinery.  Both are released only
+    when the objects go away, and both are reachable through reference
+    cycles, so a sweep needs an explicit pass between cases.
+    """
+
+    gc.collect()
+    tp_compiler.reset()
+    torch.compiler.reset()
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+
+
 def run_case(
     case: Case,
     device: str,
@@ -276,6 +326,12 @@ def run_case(
         "batch": batch,
         "input_size": case.input_size,
     }
+    # The previous case's artifacts are unreachable by now but may sit in
+    # reference cycles holding their CUDA memory: a captured graph's pool is
+    # not part of the caching allocator, and the reference stack keeps its
+    # own recordings alive through the compile machinery.  Reclaim both before
+    # this case allocates, so a sweep of models fits in one device.
+    release_case_memory(device)
     try:
         tp_model, reference_model = build_pair(case, device, dtype)
         if tasks == {"infer"}:
@@ -296,16 +352,19 @@ def run_case(
             tp_eager_logits = model_logits(tp_model(tp_input)).float().cpu().numpy()
         with torch.no_grad():
             reference_eager_logits = model_logits(reference_model(reference_input)).float().cpu().numpy()
+        # A deep network on random parameters can produce outputs spanning many
+        # orders of magnitude, so the absolute error is only meaningful against
+        # the scale of the answer it describes.
+        reference_scale = float(np.max(np.abs(reference_eager_logits)))
+        record["reference_logits_scale"] = reference_scale
         record["max_abs_error_eager"] = float(
             np.max(np.abs(tp_eager_logits - reference_eager_logits))
         )
-        record["eager_matches"] = bool(
-            np.allclose(
-                tp_eager_logits,
-                reference_eager_logits,
-                atol=tolerance(dtype),
-                rtol=tolerance(dtype),
-            )
+        record["relative_error_eager"] = (
+            record["max_abs_error_eager"] / max(reference_scale, 1.0)
+        )
+        record["eager_matches"] = matches(
+            tp_eager_logits, reference_eager_logits, tolerance(dtype), reference_scale
         )
 
         if "infer" in tasks:
@@ -329,13 +388,14 @@ def run_case(
             record["max_abs_error_compiled"] = float(
                 np.max(np.abs(compiled_logits - reference_eager_logits))
             )
-            record["compiled_matches"] = bool(
-                np.allclose(
-                    compiled_logits,
-                    reference_eager_logits,
-                    atol=tolerance(dtype),
-                    rtol=tolerance(dtype),
-                )
+            record["relative_error_compiled"] = (
+                record["max_abs_error_compiled"] / max(reference_scale, 1.0)
+            )
+            record["compiled_matches"] = matches(
+                compiled_logits,
+                reference_eager_logits,
+                tolerance(dtype),
+                reference_scale,
             )
             record["stax_codegens"] = codegens(stax)
             with tp.no_grad():
@@ -353,10 +413,20 @@ def run_case(
                 reference, reference_compile = compile_reference(reference_model, mode)
                 started = time.perf_counter()
                 with torch.no_grad():
-                    reference(reference_input)
+                    reference_logits = model_logits(reference(reference_input)).float().cpu().numpy()
                 record["reference_compile_seconds"] = reference_compile
                 record["reference_compile_first_call_seconds"] = (
                     time.perf_counter() - started
+                )
+                # How far the reference's own compiled execution stands from
+                # its eager execution: the same comparison the compiled stax
+                # result is held to, recorded so a difference between two
+                # compiled paths is not mistaken for a wrong answer.
+                record["reference_compiled_max_abs_error"] = float(
+                    np.max(np.abs(reference_logits - reference_eager_logits))
+                )
+                record["compiled_vs_reference_compiled_max_abs_error"] = float(
+                    np.max(np.abs(compiled_logits - reference_logits))
                 )
                 with torch.no_grad():
                     record["reference_compiled_infer_ms"] = time_call(
