@@ -221,6 +221,32 @@ def test_package_holds_a_matrix_multiply_over_a_bias(tmp_path):
     assert tp.allclose(module(x), fn(x))
 
 
+def test_package_holds_a_convolution(tmp_path):
+    """A convolution, and a second one reading what the first wrote.
+
+    The extents are written as the caller wrote them -- a padding of one is a
+    number, not a list -- and the package spells them into the entry point as
+    the vectors the call takes.
+    """
+
+    first = tp.arange(108, dtype=tp.float32).reshape(4, 3, 3, 3) / 11
+    bias = tp.arange(4, dtype=tp.float32) / 5
+    second = tp.arange(16, dtype=tp.float32).reshape(4, 4, 1, 1) / 7
+
+    def network(a):
+        hidden = tp.nn.functional.relu(tp.conv2d(a, first, bias, padding=1))
+        return tp.conv2d(hidden, second)
+
+    x = tp.randn(1, 3, 8, 8)
+    path = _build(tmp_path / _PKG, network, [x])
+    with open(os.path.join(path, "metadata.json")) as fp:
+        spec = PackageSpec.from_metadata(json.load(fp))
+    roles = [slot.role for slot in spec.slots]
+    assert roles.count("constant") == 3
+    module = load_package(path)
+    assert tp.allclose(module(x), network(x), atol=1e-4)
+
+
 def test_region_that_returns_a_view_is_refused(tmp_path):
     # A package lays out storage of its own, so there is nowhere for a view to
     # sit: the result would name a window onto nothing.
@@ -235,12 +261,10 @@ def test_region_that_returns_a_view_is_refused(tmp_path):
 
 
 def test_region_without_a_cpp_wrapper_is_refused(tmp_path):
-    # A convolution is written as a Triton kernel on this device, so there is
-    # no host form to put in a package.
-    weight = tp.randn(2, 3, 3, 3)
-    fn = lambda a: tp.conv2d(a, weight)
+    # A sort has no host form to put in a package: its schedule is a kernel
+    # this device runs as a Triton program.
     with pytest.raises(PackageError, match=r"no C\+\+ wrapper"):
-        _build(tmp_path / _PKG, fn, [tp.randn(1, 3, 8, 8)])
+        _build(tmp_path / _PKG, lambda a: tp.sort(a, dim=-1), [tp.randn(4)])
 
 
 def test_non_tensor_argument_is_refused(tmp_path):

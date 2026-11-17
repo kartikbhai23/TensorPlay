@@ -241,3 +241,56 @@ def test_two_results_that_are_views_of_one_buffer():
 
 def test_view_of_a_graph_input_is_returned():
     _check(lambda a: a.transpose(0, 1), [tp.tensor([[1.0, 2.0, 3.0]])])
+
+
+# --------------------------------------------------------------------------
+# a convolution: the call whose extents are lists rather than buffers
+# --------------------------------------------------------------------------
+
+
+def _conv_weight():
+    return tp.arange(54, dtype=tp.float32).reshape(2, 3, 3, 3) / 7
+
+
+def test_convolution():
+    _check(lambda a: tp.conv2d(a, _conv_weight()), [tp.randn(1, 3, 8, 8)])
+
+
+def test_convolution_with_a_bias():
+    _check(
+        lambda a: tp.conv2d(a, _conv_weight(), tp.arange(2, dtype=tp.float32) / 5),
+        [tp.randn(1, 3, 8, 8)],
+    )
+
+
+def test_convolution_with_padding_and_stride():
+    weight = _conv_weight()
+    _check(
+        lambda a: tp.conv2d(a, weight, padding=1),
+        [tp.randn(1, 3, 8, 8)],
+    )
+    _check(
+        lambda a: tp.conv2d(a, weight, stride=2),
+        [tp.randn(1, 3, 8, 8)],
+    )
+
+
+def test_convolution_then_pointwise():
+    weight = _conv_weight()
+    _check(
+        lambda a: tp.conv2d(a, weight, padding=1).relu(),
+        [tp.randn(1, 3, 8, 8)],
+    )
+
+
+def test_two_convolutions():
+    """A hand-written network: the second call reads what the first wrote."""
+
+    first = _conv_weight()
+    second = tp.arange(8, dtype=tp.float32).reshape(4, 2, 1, 1) / 7
+
+    def network(a):
+        hidden = tp.nn.functional.relu(tp.conv2d(a, first, padding=1))
+        return tp.conv2d(hidden, second)
+
+    _check(network, [tp.randn(1, 3, 8, 8)])

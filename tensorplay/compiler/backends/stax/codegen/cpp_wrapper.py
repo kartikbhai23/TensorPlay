@@ -4,13 +4,14 @@ The Python wrapper calls kernels through Python objects; the C++ wrapper
 compiles the same schedule into a single translation unit that exposes one
 entry point:
 
-    extern "C" void call(void** tensor_data, long* sizevars);
+    extern "C" void call(TpTensorBuffer* tensor_data, long* sizevars);
 
-``tensor_data`` holds the data pointer of every buffer the graph touches
-(graph inputs, outputs and intermediates), addressed by an index assigned
-during codegen.  ``sizevars`` holds the value of every symbolic size in the
-graph.  The Python runtime allocates the buffers, fills ``tensor_data`` and
-``sizevars``, and invokes ``call`` through the loaded shared object.
+``tensor_data`` holds one descriptor per buffer the graph touches -- graph
+inputs, outputs, intermediates and views -- addressed by an index assigned
+during codegen, and each descriptor says where the bytes are and how they are
+read.  ``sizevars`` holds the value of every symbolic size in the graph.  The
+Python runtime allocates the buffers, fills ``tensor_data`` and ``sizevars``,
+and invokes ``call`` through the loaded shared object.
 """
 
 from __future__ import annotations
@@ -316,6 +317,34 @@ _DISPATCH_LINEAR_TEMPLATE = (
     "tensorplay::DispatchKey::CPU, {0}, {1}, {2})"
 )
 
+#: The same call without the optional argument: what goes in its place is
+#: written as one of the literals, so the form is the same shape of call with a
+#: different argument where the absent one would be.
+_DISPATCH_LINEAR_NO_BIAS_TEMPLATE = _DISPATCH_LINEAR_TEMPLATE.replace(
+    "{2})", "{s0})"
+)
+
+_CONVOLUTION_DISPATCH = (
+    "tensorplay::DispatchStub<tensorplay::Tensor, "
+    "const tensorplay::Tensor&, const tensorplay::Tensor&, "
+    "const std::optional<tensorplay::Tensor>&, "
+    "const std::vector<int64_t>&, const std::vector<int64_t>&, "
+    "const std::vector<int64_t>&, bool, const std::vector<int64_t>&, "
+    "int64_t>::call("
+    'tensorplay::Dispatcher::singleton().findHandle("convolution"), '
+    "tensorplay::DispatchKey::CPU, "
+)
+
+#: A convolution, and the same call with the bias written where it stands
+#: instead of handed over as a buffer.
+_DISPATCH_CONVOLUTION_TEMPLATE = _CONVOLUTION_DISPATCH + (
+    "{0}, {1}, {2}, {s0}, {s1}, {s2}, {s3}, {s4}, {s5})"
+)
+
+_DISPATCH_CONVOLUTION_NO_BIAS_TEMPLATE = _CONVOLUTION_DISPATCH + (
+    "{0}, {1}, {s0}, {s1}, {s2}, {s3}, {s4}, {s5}, {s6})"
+)
+
 _EXTERN_KERNEL_SHIMS: dict[str, tuple[str, str]] = {
     "matmul": (
         "tp_cpu_matmul",
@@ -341,31 +370,60 @@ _EXTERN_KERNEL_SHIMS: dict[str, tuple[str, str]] = {
     "neg": ("tp_cpu_neg", _DISPATCH_UNARY_TEMPLATE.replace("{op}", "neg")),
 }
 
+#: The arguments a convolution is given beyond its operands, in the order the
+#: operation declares them.  A convolution's bias may or may not be there, and
+#: which of the two forms the call takes is which of them it is.
+_CONVOLUTION_LITERALS: tuple[tuple[str, str], ...] = (
+    ("stride", "ints"),
+    ("padding", "ints"),
+    ("dilation", "ints"),
+    ("transposed", "flag"),
+    ("output_padding", "ints"),
+    ("groups", "int"),
+)
+
+_CONVOLUTION_NO_BIAS_LITERALS: tuple[tuple[str, str], ...] = (
+    (("bias", "optional_tensor"),) + _CONVOLUTION_LITERALS
+)
+
 #: Shims for an operation that takes an argument which may be absent, keyed by
 #: the number of tensors the call hands over.  Such an operation has one form
 #: per way it can be called -- a linear layer's bias may or may not be there --
 #: and the forms are separate entries because the C++ functions behind them
-#: take different arguments.  The last item of each entry is what the template
-#: splices in where the optional argument goes.
+#: take different arguments.  Each entry is the C++ function to call, the call
+#: as it is spelled, and the arguments that are not buffers and how to write
+#: each of them.
 _EXTERN_KERNEL_ARITY_SHIMS: dict[
-    str, dict[int, tuple[str, str, tuple[str, ...]]]
+    str, dict[int, tuple[str, str, tuple[tuple[str, str], ...]]]
 ] = {
     "linear": {
-        2: ("tp_cpu_linear", _DISPATCH_LINEAR_TEMPLATE, ("std::nullopt",)),
+        2: (
+            "tp_cpu_linear",
+            _DISPATCH_LINEAR_NO_BIAS_TEMPLATE,
+            (("bias", "optional_tensor"),),
+        ),
         3: ("tp_cpu_linear_bias", _DISPATCH_LINEAR_TEMPLATE, ()),
+    },
+    "convolution": {
+        2: (
+            "tp_cpu_convolution",
+            _DISPATCH_CONVOLUTION_NO_BIAS_TEMPLATE,
+            _CONVOLUTION_NO_BIAS_LITERALS,
+        ),
+        3: (
+            "tp_cpu_convolution_bias",
+            _DISPATCH_CONVOLUTION_TEMPLATE,
+            _CONVOLUTION_LITERALS,
+        ),
     },
 }
 
 
-#: Shims for an operation that also takes a number.  Such an argument is not a
-#: buffer and has no slot, so it is written into the call as it was written in
-#: the program: the template names each one, and the entry point's call is
-#: given the value.  Writing the value rather than passing it through the
-#: table is what keeps its type -- an integral ``beta`` is spelled as an
-#: integer, a fractional one as a real -- which is part of what the operation
-#: means.
-_EXTERN_KERNEL_SCALAR_SHIMS: dict[
-    str, tuple[str, str, tuple[str, ...]]
+#: Shims for an operation whose extra arguments do not change its shape, keyed
+#: by the operation: the same template serves however many tensors it is
+#: handed, and the literals are written where the template names them.
+_EXTERN_KERNEL_LITERAL_SHIMS: dict[
+    str, tuple[str, str, tuple[tuple[str, str], ...]]
 ] = {
     "addmm": (
         "tp_cpu_addmm",
@@ -375,37 +433,139 @@ _EXTERN_KERNEL_SCALAR_SHIMS: dict[
         'tensorplay::Dispatcher::singleton().findHandle("addmm"), '
         "tensorplay::DispatchKey::CPU, {0}, {1}, {2}, "
         "tensorplay::Scalar({s0}), tensorplay::Scalar({s1}))",
-        ("beta", "alpha"),
+        (("beta", "real"), ("alpha", "real")),
     ),
 }
 
 
+
+#: How each kind of literal is written.  Each is given the text the program
+#: used and returns the C++ that spells the same value.
+_LITERAL_WRITERS: dict[str, Any] = {}
+
+
+def _literal_writer(kind: str):
+    """Name a way of writing one kind of literal, for the table above."""
+
+    def register(fn):
+        _LITERAL_WRITERS[kind] = fn
+        return fn
+
+    return register
+
+
+@_literal_writer("int")
+def _write_int(text: str) -> str:
+    return _scalar_literal(text)
+
+
+@_literal_writer("real")
+def _write_real(text: str) -> str:
+    return _scalar_literal(text)
+
+
+@_literal_writer("flag")
+def _write_flag(text: str) -> str:
+    if text == "True":
+        return "true"
+    if text == "False":
+        return "false"
+    raise NotImplementedError(
+        f"C++ wrapper cannot write the flag {text!r}"
+    )
+
+
+@_literal_writer("ints")
+def _write_ints(text: str) -> str:
+    """A list of extents, as the vector the call takes.
+
+    An empty list is an empty vector, which is not the same as a list holding
+    nothing: the distinction is the number of axes the operation walks.
+    """
+
+    body = text.strip()
+    if body.startswith("(") and body.endswith(")"):
+        body = body[1:-1]
+    elif body.startswith("[") and body.endswith("]"):
+        body = body[1:-1]
+    else:
+        raise NotImplementedError(
+            f"C++ wrapper cannot write the list {text!r}"
+        )
+    items = [item.strip() for item in body.split(",") if item.strip()]
+    return "std::vector<int64_t>{" + ", ".join(items) + "}"
+
+
+@_literal_writer("optional_tensor")
+def _write_optional_tensor(text: str) -> str:
+    """A value that was not supplied, where the call takes an optional one."""
+
+    if text != "None":
+        raise NotImplementedError(
+            f"C++ wrapper cannot write the argument {text!r}"
+        )
+    return "std::nullopt"
+
+
+def _literal_value(kind: str, text: str) -> str:
+    """One literal, spelled for C++ in the way its kind requires."""
+
+    writer = _LITERAL_WRITERS.get(kind)
+    if writer is None:
+        raise NotImplementedError(
+            f"C++ wrapper does not know how to write a {kind!r} argument"
+        )
+    return writer(text)
+
+
+def _extern_literals(name: str) -> tuple[tuple[str, str], ...]:
+    """Every argument an operation may pass that is not a buffer.
+
+    Which of them a particular call has depends on how many tensors it hands
+    over -- a call without a bias names an absent one -- so this is the union,
+    and the form the call takes is what says which of them it is given.
+    """
+
+    found = _EXTERN_KERNEL_LITERAL_SHIMS.get(name)
+    if found is not None:
+        return found[2]
+    by_arity = _EXTERN_KERNEL_ARITY_SHIMS.get(name)
+    if by_arity is None:
+        return ()
+    names: list[tuple[str, str]] = []
+    for _, _, literals in by_arity.values():
+        for item in literals:
+            if item not in names:
+                names.append(item)
+    return tuple(names)
+
+
 def _extern_shim(
     name: str, arity: int
-) -> tuple[str | None, str | None, tuple[str, ...], tuple[str, ...]]:
+) -> tuple[str | None, str | None, tuple[tuple[str, str], ...]]:
     """The C++ function an extern call is written as, and how it is spelled.
 
     ``name`` is the operation, ``arity`` how many tensors the call hands over.
-    The third item is what the template splices in beyond the tensors, and the
-    fourth names the numbers the template also expects.
+    The last item names the arguments that are not buffers and how to write
+    each of them.
     """
 
     by_arity = _EXTERN_KERNEL_ARITY_SHIMS.get(name)
     if by_arity is not None:
         found = by_arity.get(arity)
         if found is None:
-            return None, None, (), ()
-        shim_name, template, extra_exprs = found
-        return shim_name, template, extra_exprs, ()
+            return None, None, ()
+        shim_name, template, literals = found
+        return shim_name, template, literals
     found = _EXTERN_KERNEL_SHIMS.get(name)
     if found is not None:
         shim_name, template = found
-        return shim_name, template, (), ()
-    found = _EXTERN_KERNEL_SCALAR_SHIMS.get(name)
+        return shim_name, template, ()
+    found = _EXTERN_KERNEL_LITERAL_SHIMS.get(name)
     if found is None:
-        return None, None, (), ()
-    shim_name, template, scalar_names = found
-    return shim_name, template, (), scalar_names
+        return None, None, ()
+    shim_name, template, literals = found
+    return shim_name, template, literals
 
 
 def _split_named(arg: Any) -> tuple[str | None, str, str]:
@@ -421,11 +581,10 @@ def _split_named(arg: Any) -> tuple[str | None, str, str]:
     return None, "", arg
 
 
-def _extern_scalar_names(name: str) -> tuple[str, ...]:
-    """The numbers the shim for an operation expects, if it takes any."""
+def _extern_literal_names(name: str) -> tuple[str, ...]:
+    """The arguments the shim for an operation expects as literals."""
 
-    found = _EXTERN_KERNEL_SCALAR_SHIMS.get(name)
-    return found[2] if found is not None else ()
+    return tuple(arg_name for arg_name, _ in _extern_literals(name))
 
 
 def _scalar_literal(value: str) -> str:
@@ -454,8 +613,7 @@ def _build_extern_shim_impl(
     shim_name: str,
     template: str,
     n_tensors: int,
-    extra_exprs: tuple[str, ...] = (),
-    scalar_values: tuple[str, ...] = (),
+    literal_values: tuple[str, ...] = (),
 ) -> str:
     params = ", ".join(
         [f"TpTensorBuffer* arg{i}" for i in range(n_tensors)]
@@ -468,10 +626,10 @@ def _build_extern_shim_impl(
         )
     substitutions = {str(i): f"t{i}" for i in range(n_tensors)}
     substitutions.update(
-        {f"s{i}": value for i, value in enumerate(scalar_values)}
+        {f"s{i}": value for i, value in enumerate(literal_values)}
     )
     expr = template.format(
-        *[f"t{i}" for i in range(n_tensors)], *extra_exprs, **substitutions
+        *[f"t{i}" for i in range(n_tensors)], **substitutions
     )
     lines.append(f"tensorplay::Tensor result = {expr};")
     lines.append(
@@ -508,6 +666,12 @@ class CppWrapperCodegen(PythonWrapperCodegen):
         self._kernel_decls: list[str] = []
         self._kernel_sources: list[str] = []
         self._extern_shim_sources: list[str] = []
+        #: Which shim each distinct call got, and which names are taken.  Two
+        #: calls of one operation can differ in the arguments that are not
+        #: buffers, and each is written into a shim of its own, so a name is
+        #: only reused for the call it was written for.
+        self._extern_shim_keys: dict[Any, str] = {}
+        self._extern_shim_names: set[str] = set()
         super().__init__()
         self.declare = "auto "
         self.declare_maybe_reference = "decltype(auto) "
@@ -850,22 +1014,17 @@ class CppWrapperCodegen(PythonWrapperCodegen):
                 getattr(extern_kernel, "kernel", None) or extern_kernel.op_overload
             )
             name = getattr(target, "__name__", None)
-        shim_name, template, extra_exprs, scalar_names = _extern_shim(
-            name, len(tensor_args)
-        )
+        shim_name, template, literals = _extern_shim(name, len(tensor_args))
         if shim_name is None:
             raise NotImplementedError(
                 f"C++ wrapper has no shim for extern kernel {name!r}"
             )
-        impl = _build_extern_shim_impl(
+        shim_name = self._extern_shim_source(
             shim_name,
             template,
             len(tensor_args),
-            extra_exprs,
-            self._extern_scalars_of(name, scalar_names, args),
+            self._extern_literals_of(name, literals, args),
         )
-        if impl not in self._extern_shim_sources:
-            self._extern_shim_sources.append(impl)
 
         arg_refs = [
             self._tensor_slot(self._tensor_arg_name(t, self.wrapper_call))
@@ -877,31 +1036,69 @@ class CppWrapperCodegen(PythonWrapperCodegen):
             f'"extern kernel {shim_name} failed");'
         )
 
-    def _extern_scalars_of(
-        self, op_name: str, scalar_names, args
-    ) -> tuple[str, ...]:
-        """The numbers an extern call was given, in the order it named them.
+    def _extern_shim_source(
+        self,
+        shim_name: str,
+        template: str,
+        n_tensors: int,
+        literal_values: tuple[str, ...] = (),
+    ) -> str:
+        """Write a shim for one call of an operation, and name it.
 
-        A number reaches the call as text next to the name it was passed
-        under; the operation's own argument names are what says which is
-        which, and a form that expects one and was not given it is an error
-        rather than a default that was never asked for.
+        The same operation can be called with different arguments that are not
+        buffers -- a convolution with a padding of one and one with a padding
+        of zero -- and each of those is a different call, so each needs a shim
+        of its own.  Two calls that agree share one.
         """
 
-        if not scalar_names:
+        key = (template, n_tensors, tuple(literal_values))
+        named = self._extern_shim_keys.get(key)
+        if named is not None:
+            return named
+        name = shim_name
+        index = 2
+        while name in self._extern_shim_names:
+            name = f"{shim_name}_{index}"
+            index += 1
+        self._extern_shim_names.add(name)
+        self._extern_shim_keys[key] = name
+        self._extern_shim_sources.append(
+            _build_extern_shim_impl(name, template, n_tensors, literal_values)
+        )
+        return name
+
+    def _extern_literals_of(
+        self, op_name: str, literals, args
+    ) -> tuple[str, ...]:
+        """The arguments an extern call was given that are not buffers.
+
+        Each arrives as text next to the name it was passed under; the
+        operation's own argument names are what says which is which, and a form
+        that expects one and was not given it is an error rather than a default
+        that was never asked for.
+        """
+
+        if not literals:
             return ()
         by_name = {}
         for arg in args:
             name, _, value = _split_named(arg)
             if name is not None:
                 by_name[name] = value
-        missing = [name for name in scalar_names if name not in by_name]
-        if missing:
-            raise NotImplementedError(
-                f"C++ wrapper extern kernel {op_name!r} was called without "
-                f"its {missing[0]!r} argument"
-            )
-        return tuple(_scalar_literal(by_name[name]) for name in scalar_names)
+        values = []
+        for name, kind in literals:
+            if name not in by_name:
+                if kind == "optional_tensor":
+                    # An argument that was not passed at all is the absent
+                    # value, which is what an optional argument is for.
+                    values.append("std::nullopt")
+                    continue
+                raise NotImplementedError(
+                    f"C++ wrapper extern kernel {op_name!r} was called "
+                    f"without its {name!r} argument"
+                )
+            values.append(_literal_value(kind, by_name[name]))
+        return tuple(values)
 
     def _generate_extern_kernel_out_helper(
         self,
@@ -923,7 +1120,7 @@ class CppWrapperCodegen(PythonWrapperCodegen):
                 tensor_refs.append(self._tensor_slot(arg))
                 continue
             name, _, _ = _split_named(arg)
-            if name in _extern_scalar_names(op_name):
+            if name in _extern_literal_names(op_name):
                 # A number is written into the call where it stands, so it is
                 # left to the shim's own template to spell it.
                 continue
@@ -934,22 +1131,19 @@ class CppWrapperCodegen(PythonWrapperCodegen):
         # The arity is the number of tensors the call hands over: the result
         # is passed separately, and an operation with an optional argument has
         # a form for each of the ways it can be called without it.
-        shim_name, template, extra_exprs, scalar_names = _extern_shim(
+        shim_name, template, literals = _extern_shim(
             op_name, len(tensor_refs)
         )
         if shim_name is None:
             raise NotImplementedError(
                 f"C++ wrapper has no shim for extern kernel {op_name!r}"
             )
-        impl = _build_extern_shim_impl(
+        shim_name = self._extern_shim_source(
             shim_name,
             template,
             len(tensor_refs),
-            extra_exprs,
-            self._extern_scalars_of(op_name, scalar_names, args),
+            self._extern_literals_of(op_name, literals, args),
         )
-        if impl not in self._extern_shim_sources:
-            self._extern_shim_sources.append(impl)
         out_ref = self._tensor_buf_ref(output_name)
         self.writeline(
             f"TP_CHECK({shim_name}({', '.join(tensor_refs + [out_ref])}) == 0, "

@@ -1517,6 +1517,20 @@ def conv2d(
     )
 
 
+def _extents(value) -> tuple:
+    """A per-axis argument as the call takes it.
+
+    The caller may write a single number where the call wants one per axis, and
+    the call is recorded as it was written rather than as it was understood, so
+    the number arrives here.  A list is taken as it stands: how many axes it
+    covers is the caller's business, and the operation answers for both forms.
+    """
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        return (value,)
+    return tuple(value)
+
+
 @register_lowering(framework.convolution)
 def convolution(
     x,
@@ -1539,10 +1553,14 @@ def convolution(
     same one, and a measurement would be measuring the wrong thing.
     """
 
-    stride = tuple(stride)
-    padding = tuple(padding)
-    dilation = tuple(dilation)
-    output_padding = tuple(output_padding)
+    # A single number stands for every axis, as the caller wrote it: the call
+    # is recorded with the arguments it was given, so a padding of 1 arrives
+    # here as a number rather than as a list, and the one form the operation
+    # takes has to be made from it.
+    stride = _extents(stride)
+    padding = _extents(padding)
+    dilation = _extents(dilation)
+    output_padding = _extents(output_padding)
     if not isinstance(groups, int):
         groups = V.graph.sizevars.guard_int(groups)
     if not isinstance(groups, int):
@@ -1784,10 +1802,10 @@ def convolution_backward_lowering(
     than a slow answer.
     """
 
-    stride = tuple(stride)
-    padding = tuple(padding)
-    dilation = tuple(dilation)
-    output_padding = tuple(output_padding)
+    stride = _extents(stride)
+    padding = _extents(padding)
+    dilation = _extents(dilation)
+    output_padding = _extents(output_padding)
     if not isinstance(groups, int):
         groups = V.graph.sizevars.guard_int(groups)
     out_chan, in_chan, *kernel_shape = V.graph.sizevars.guard_int_seq(
