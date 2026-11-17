@@ -30,6 +30,10 @@ def isolated_artifacts(tmp_path, monkeypatch):
 
     monkeypatch.setenv("TP_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(kernel_cache, "_default_caches", {})
+    # The suite leaves the artifact cache off so that a test which watches a
+    # region being lowered always sees the lowering; this file is about the
+    # cache itself.
+    monkeypatch.setattr(config, "cache_graph_artifacts", True)
     return tmp_path
 
 
