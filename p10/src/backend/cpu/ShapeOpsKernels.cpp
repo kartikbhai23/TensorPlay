@@ -774,31 +774,29 @@ Tensor pixel_unshuffle_cpu(const Tensor& self, int64_t downscale_factor) {
     output_shape.push_back(C * factor_squared);
     output_shape.push_back(H);
     output_shape.push_back(W);
-    Tensor out = Tensor::empty(output_shape, self.dtype(), self.device());
-    if (out.numel() == 0) return out;
+    // Composite path: view the input as (..., C, H, r, W, r), permute to
+    // (..., c, ih, iw, h, w) so the channel axis flattens as c*r*r + ih*r + iw,
+    // then reshape (which copies through the optimized elementwise kernels).
+    // Leading dims are preserved, so both 4-D and 5-D inputs follow the same
+    // channel-unfolding rule on the third-to-last axis.
     Tensor sc = self.contiguous();
-    int64_t n = out.numel();
-    auto wk = [&](int64_t b, int64_t e) {
-        for (int64_t li = b; li < e; ++li) {
-            int64_t rem = li;
-            int64_t w = rem % W; rem /= W;
-            int64_t h = rem % H; rem /= H;
-            int64_t cc = rem % (C * r * r); rem /= (C * r * r);
-            int64_t bn = rem;
-            int64_t c = cc / (r * r);
-            int64_t ij = cc % (r * r);
-            int64_t ih = ij / r, iw = ij % r;
-            int64_t src = ((((bn * C + c) * (H * r) + h * r + ih) * (W * r)) + w * r + iw);
-            switch (self.dtype()) {
-#define TP_PU_W(ctype, name_) case DType::name_: reinterpret_cast<ctype*>(out.data_ptr())[li] = reinterpret_cast<const ctype*>(sc.data_ptr())[src]; break;
-                TENSORPLAY_FORALL_SCALAR_TYPES_WITH_COMPLEX(TP_PU_W)
-#undef TP_PU_W
-                default: break;
-            }
-        }
-    };
-    parallel_for(0, n, GRAIN_SIZE, wk);
-    return out;
+    std::vector<int64_t> vshape = static_cast<std::vector<int64_t>>(self.shape());
+    vshape.resize(vshape.size() - 3);
+    vshape.push_back(C);
+    vshape.push_back(H);
+    vshape.push_back(r);
+    vshape.push_back(W);
+    vshape.push_back(r);
+    Tensor v = sc.view(vshape);
+    const int64_t D = vshape.size();
+    std::vector<int64_t> perm;
+    for (int64_t i = 0; i + 5 < D; ++i) perm.push_back(i);
+    perm.push_back(D - 5);
+    perm.push_back(D - 3);
+    perm.push_back(D - 1);
+    perm.push_back(D - 4);
+    perm.push_back(D - 2);
+    return v.permute(perm).contiguous().view(output_shape);
 }
 
 Tensor channel_shuffle_cpu(const Tensor& self, int64_t groups) {
@@ -821,27 +819,29 @@ Tensor channel_shuffle_cpu(const Tensor& self, int64_t groups) {
     Tensor out = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()), self.dtype(), self.device());
     int64_t n = self.numel();
     if (n == 0) return out;
+    // Output channel c = j * groups + gi reads input channel gi * cg + j: the
+    // (groups, cg) channel grid transposed.  The map is fixed for the whole
+    // walk, so each (outer, channel) row of `inner` contiguous elements is one
+    // block copy instead of a per-element division chain.
+    std::vector<int64_t> src_of_out(C);
+    for (int64_t c = 0; c < C; ++c) {
+        int64_t j = c / groups, gi = c % groups;
+        src_of_out[c] = gi * cg + j;
+    }
+    const char* in_base = static_cast<const char*>(sc.data_ptr());
+    char* out_base = static_cast<char*>(out.data_ptr());
+    const int64_t esize = self.itemsize();
+    const int64_t row_bytes = inner * esize;
     auto wk = [&](int64_t b, int64_t e) {
         for (int64_t li = b; li < e; ++li) {
-            // li layout: (outer * C + c) * inner + tail
-            int64_t tail = li % inner;
-            int64_t rest = li / inner;
-            int64_t c = rest % C;
-            int64_t o = rest / C;
-            // Output channel c = j * groups + gi reads input channel
-            // gi * cg + j: the (groups, cg) channel grid transposed.
-            int64_t j = c / groups, gi = c % groups;
-            int64_t src_c = gi * cg + j;
-            int64_t src = ((o * C) + src_c) * inner + tail;
-            switch (self.dtype()) {
-#define TP_CS_W(ctype, name_) case DType::name_: reinterpret_cast<ctype*>(out.data_ptr())[li] = reinterpret_cast<const ctype*>(sc.data_ptr())[src]; break;
-                TENSORPLAY_FORALL_SCALAR_TYPES_WITH_COMPLEX(TP_CS_W)
-#undef TP_CS_W
-                default: break;
+            for (int64_t c = 0; c < C; ++c) {
+                std::memcpy(out_base + (li * C + c) * row_bytes,
+                            in_base + (li * C + src_of_out[c]) * row_bytes,
+                            row_bytes);
             }
         }
     };
-    parallel_for(0, n, GRAIN_SIZE, wk);
+    parallel_for(0, outer, GRAIN_SIZE, wk);
     return out;
 }
 

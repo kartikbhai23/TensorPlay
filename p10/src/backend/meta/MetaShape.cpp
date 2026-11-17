@@ -1870,7 +1870,9 @@ TENSORPLAY_LIBRARY_IMPL(Meta, MetaShape) {
     m.impl("trace", trace_kernel);
     m.impl("upsample_bilinear2d", upsample_bilinear2d_kernel);
     m.impl("pixel_shuffle", pixel_shuffle_kernel);
-    m.impl("pixel_unshuffle", pixel_unshuffle_kernel);
+    // pixel_unshuffle has a real CPU kernel (ShapeOpsKernels); a meta-shaped
+    // empty answer must not shadow it on CPU dispatch.
+    // m.impl("pixel_unshuffle", pixel_unshuffle_kernel);
     m.impl("channel_shuffle", channel_shuffle_kernel);
     m.impl("select_scatter", select_scatter_kernel);
     m.impl("slice_scatter", slice_scatter_kernel);
