@@ -1299,15 +1299,27 @@ Tensor& relu_inplace_kernel(Tensor& self) {
     // __AVX512F__/__AVX2__ blocks were dead code in this TU and the #else arm
     // was a serial full-tensor loop.  Non-AVX2 hosts fall through to the
     // parallel generic branch below.
-    if (vecunary::vec_ready() && self.dtype() == DType::Float32 && self.is_contiguous()) {
+    if (vecunary::vec_ready() && self.is_contiguous() &&
+        (self.dtype() == DType::Float32 || self.dtype() == DType::Float64)) {
         int64_t n = self.numel();
-        float* data = self.data_ptr<float>();
-        if (n <= kUnaryGrain) {
-            vecunary::run_f32(vecunary::VOp::Relu, vecunary::VParams{}, data, data, 0, n);
+        if (self.dtype() == DType::Float32) {
+            float* data = self.data_ptr<float>();
+            if (n <= kUnaryGrain) {
+                vecunary::run_f32(vecunary::VOp::Relu, vecunary::VParams{}, data, data, 0, n);
+            } else {
+                parallel_for(0, n, kUnaryGrain, [&](int64_t begin, int64_t end) {
+                    vecunary::run_f32(vecunary::VOp::Relu, vecunary::VParams{}, data, data, begin, end);
+                });
+            }
         } else {
-            parallel_for(0, n, kUnaryGrain, [&](int64_t begin, int64_t end) {
-                vecunary::run_f32(vecunary::VOp::Relu, vecunary::VParams{}, data, data, begin, end);
-            });
+            double* data = self.data_ptr<double>();
+            if (n <= kUnaryGrain) {
+                vecunary::run_f64(vecunary::VOp::Relu, vecunary::VParams{}, data, data, 0, n);
+            } else {
+                parallel_for(0, n, kUnaryGrain, [&](int64_t begin, int64_t end) {
+                    vecunary::run_f64(vecunary::VOp::Relu, vecunary::VParams{}, data, data, begin, end);
+                });
+            }
         }
          return self;
     }
