@@ -425,8 +425,8 @@ Tensor& bitwise_binary_inplace_cuda(Tensor& self, const Tensor& other_in,
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(true)
         .add_output(self)
-        .add_input(self)
-        .add_input(bc)
+        .add_const_input(self)
+        .add_const_input(bc)
         .build();
     if (self.dtype() == DType::Bool) {
         gpu_kernel(iter, [pred] __host__ __device__ (bool l, bool r) -> bool {
@@ -463,8 +463,8 @@ Tensor& bitwise_shift_inplace_cuda_impl(Tensor& self, const Tensor& other_in,
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(true)
         .add_output(self)
-        .add_input(self)
-        .add_input(bc)
+        .add_const_input(self)
+        .add_const_input(bc)
         .build();
 #define TP_SHIFT_INPLACE(ctype, name_) \
     case DType::name_: { \
