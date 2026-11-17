@@ -267,6 +267,7 @@ def run_case(
     mode: str | None,
     tasks: set[str],
     run_reference_compile: bool,
+    cold_compile: bool = False,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
         "name": case.name,
@@ -308,6 +309,8 @@ def run_case(
         )
 
         if "infer" in tasks:
+            if cold_compile:
+                torch.compiler.reset()
             with tp.no_grad():
                 record["tp_eager_infer_ms"] = time_call(
                     lambda: tp_model(tp_input), device, warmup, repeats
@@ -396,6 +399,8 @@ def run_case(
                 reference_step, device, train_warmup, train_repeats
             )
 
+            if cold_compile:
+                torch.compiler.reset()
             stax_train, stax_train_compile = compile_tensorplay(tp_model, mode)
             started = time.perf_counter()
             tp_optimizer.zero_grad(set_to_none=True)
@@ -514,6 +519,11 @@ def main() -> None:
     parser.add_argument("--mode", default=None)
     parser.add_argument("--threads", type=int, default=0)
     parser.add_argument("--no-reference-compile", action="store_true")
+    parser.add_argument(
+        "--cold-compile",
+        action="store_true",
+        help="measure a compile that cannot read a cached artifact on either side",
+    )
     parser.add_argument("--json-out", type=Path, required=True)
     args = parser.parse_args()
     tasks = set(args.tasks.split(","))
@@ -523,6 +533,32 @@ def main() -> None:
     if args.threads and hasattr(tp, "set_num_threads"):
         tp.set_num_threads(args.threads)
         torch.set_num_threads(args.threads)
+    if args.cold_compile:
+        from tensorplay.compiler.backends.stax import config as stax_config
+
+        stax_config.force_disable_caches = True
+        torch._inductor.config.force_disable_caches = True
+
+    def payload() -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "benchmark": "stax-vision",
+            "device": args.device,
+            "dtype": args.dtype,
+            "batch": args.batch,
+            "tasks": sorted(tasks),
+            "mode": args.mode,
+            "cold_compile": args.cold_compile,
+            "threads": args.threads
+            or getattr(tp, "get_num_threads", lambda: 0)(),
+            "measurements": records,
+        }
+
+    def write() -> None:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(
+            json.dumps(payload(), indent=2) + "\n", encoding="utf-8"
+        )
 
     records = []
     for case in selected_cases(args.models):
@@ -538,24 +574,14 @@ def main() -> None:
             args.mode,
             tasks,
             not args.no_reference_compile,
+            cold_compile=args.cold_compile,
         )
         print_record(record)
         records.append(record)
+        # Each case is a long compile in its own right; writing after every
+        # one keeps a sweep that is interrupted from losing the finished work.
+        write()
 
-    payload = {
-        "schema_version": 1,
-        "benchmark": "stax-vision",
-        "device": args.device,
-        "dtype": args.dtype,
-        "batch": args.batch,
-        "tasks": sorted(tasks),
-        "mode": args.mode,
-        "threads": args.threads
-        or getattr(tp, "get_num_threads", lambda: 0)(),
-        "measurements": records,
-    }
-    args.json_out.parent.mkdir(parents=True, exist_ok=True)
-    args.json_out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(f"wrote results: {args.json_out}")
 
 
