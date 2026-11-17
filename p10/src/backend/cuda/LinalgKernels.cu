@@ -1375,6 +1375,39 @@ std::tuple<Tensor, Tensor> eigh_impl_cuda(const Tensor& A, bool upper,
     Tensor vectors = clone_batched_column_major(A);
     Tensor values = Tensor::empty(cat_batch(batch, {n}), A.dtype(), A.device());
     Tensor info = Tensor::zeros(batch, DType::Int32, A.device());
+    // n >= 32: per-matrix divide-and-conquer syevd beats the batched Jacobi
+    // pass; small matrices keep the batched Jacobi driver.
+    if (n >= 32) {
+        run_real(A.dtype(), [&](auto tag) {
+            using T = std::remove_pointer_t<decltype(tag)>;
+            using Tr = CusolverTraits<T>;
+            auto* vectors_data = vectors.data_ptr<T>();
+            auto* values_data = values.data_ptr<T>();
+            auto* infos_data = info.data_ptr<int32_t>();
+            const auto handle = CUDAContext::getCusolverDnHandle();
+            const cusolverEigMode_t jobz = compute_eigenvectors
+                    ? CUSOLVER_EIG_MODE_VECTOR : CUSOLVER_EIG_MODE_NOVECTOR;
+            const cublasFillMode_t uplo = upper ? CUBLAS_FILL_MODE_UPPER
+                                                : CUBLAS_FILL_MODE_LOWER;
+            const char uplo_char = upper ? 'U' : 'L';
+            const int lda = std::max(1, static_cast<int>(n));
+            const int batch_count = static_cast<int>(batch_count_of(vectors));
+            int lwork = 0;
+            Tr::syevd_bufferSize(handle, jobz, uplo_char, n, vectors_data, lda,
+                                 values_data, &lwork);
+            Tensor work = Tensor::empty({std::max(lwork, 1)}, A.dtype(),
+                                        A.device());
+            auto* work_data = work.data_ptr<T>();
+            for (int64_t i = 0; i < batch_count; ++i) {
+                Tr::syevd(handle, jobz, uplo, n,
+                          vectors_data + i * n * lda, lda,
+                          values_data + i * n, work_data, lwork,
+                          infos_data + i);
+            }
+        });
+        check_infos(info, "linalg.eigh", A.dim() == 2);
+        return {values.contiguous(), vectors.contiguous()};
+    }
     run_real(A.dtype(), [&](auto tag) {
         using T = std::remove_pointer_t<decltype(tag)>;
         apply_syevj_batched<T>(values, vectors, info, upper,
