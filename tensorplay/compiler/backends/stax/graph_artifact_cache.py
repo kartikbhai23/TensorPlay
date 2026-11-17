@@ -322,6 +322,7 @@ def _wrapper_payload(wrapper_code: object) -> dict:
         "num_tensors": wrapper_code.num_tensors,
         "num_sizevars": wrapper_code.num_sizevars,
         "graph_input_names": wrapper_code.graph_input_names,
+        "view_meta": getattr(wrapper_code, "view_meta", None) or {},
     }
 
 
@@ -338,6 +339,7 @@ def _wrapper_from_payload(payload: dict) -> CppWrapperCode | ValueWithLineMap:
         num_tensors=payload["num_tensors"],
         num_sizevars=payload["num_sizevars"],
         graph_input_names=payload["graph_input_names"],
+        view_meta=payload.get("view_meta") or {},
     )
 
 

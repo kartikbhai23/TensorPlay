@@ -155,12 +155,92 @@ def test_region_with_intermediate_buffers(tmp_path):
         module(tp.ones(2, 3))
 
 
+def test_package_holds_a_two_layer_network(tmp_path):
+    """A region that hands its matrix multiplies to the runtime.
+
+    Both layers, their biases and the pointwise chain between them are part of
+    the package: what the caller supplies is the input, and everything the
+    program read from its surroundings is in the weight file.
+    """
+
+    first = tp.randn(4, 2) - 1
+    first_bias = tp.randn(4)
+    second = tp.randn(3, 4) + 1
+    second_bias = tp.randn(3)
+
+    def network(a):
+        hidden = tp.nn.functional.relu(
+            tp.nn.functional.linear(a, first, first_bias)
+        )
+        return tp.nn.functional.linear(hidden, second, second_bias)
+
+    path = _build(
+        tmp_path / _PKG, network, [tp.tensor([[1.0, 2.0], [-1.0, 0.5]])]
+    )
+    with open(os.path.join(path, "metadata.json")) as fp:
+        spec = PackageSpec.from_metadata(json.load(fp))
+    roles = [slot.role for slot in spec.slots]
+    assert roles.count("constant") == 4
+    assert roles.count("input") == 1
+    assert roles.count("output") == 1
+
+    module = load_package(path)
+    for values in (
+        [[1.0, 2.0], [-1.0, 0.5]],
+        [[0.0, 0.0], [3.0, -3.0]],
+    ):
+        x = tp.tensor(values)
+        got = module(x)
+        assert tp.allclose(got, network(x))
+
+
+def test_package_holds_a_matrix_multiply(tmp_path):
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3)
+    fn = lambda a: tp.mm(a, weight).tanh()
+    path = _build(
+        tmp_path / _PKG, fn, [tp.tensor([[1.0, 2.0, 3.0, 4.0], [0.0, -1.0, 0.5, 2.0]])]
+    )
+    module = load_package(path)
+    x = tp.tensor([[1.0, 2.0, 3.0, 4.0], [0.0, -1.0, 0.5, 2.0]])
+    assert tp.allclose(module(x), fn(x))
+
+
+def test_package_holds_a_matrix_multiply_over_a_bias(tmp_path):
+    """A matrix multiply and the bias added to it.
+
+    The bias is a constant like the weight, and the call that adds it is one
+    the package's entry point spells with a number as well as with buffers.
+    """
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    bias = tp.arange(3, dtype=tp.float32) / 3
+    fn = lambda a: (tp.mm(a, weight) + bias).relu()
+    x = tp.tensor([[1.0, 2.0, 3.0, 4.0], [0.0, -1.0, 0.5, 2.0]])
+    path = _build(tmp_path / _PKG, fn, [x])
+    module = load_package(path)
+    assert tp.allclose(module(x), fn(x))
+
+
+def test_region_that_returns_a_view_is_refused(tmp_path):
+    # A package lays out storage of its own, so there is nowhere for a view to
+    # sit: the result would name a window onto nothing.
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3)
+    fn = lambda a: tp.mm(a, weight).transpose(0, 1)
+    with pytest.raises(PackageError, match="is a view of another buffer"):
+        _build(
+            tmp_path / _PKG,
+            fn,
+            [tp.tensor([[1.0, 2.0, 3.0, 4.0], [0.0, -1.0, 0.5, 2.0]])],
+        )
+
+
 def test_region_without_a_cpp_wrapper_is_refused(tmp_path):
-    weight = tp.randn(3, 4)
-    bias = tp.randn(3)
-    fn = lambda a: tp.nn.functional.linear(a, weight, bias)
+    # A convolution is written as a Triton kernel on this device, so there is
+    # no host form to put in a package.
+    weight = tp.randn(2, 3, 3, 3)
+    fn = lambda a: tp.conv2d(a, weight)
     with pytest.raises(PackageError, match=r"no C\+\+ wrapper"):
-        _build(tmp_path / _PKG, fn, [tp.randn(2, 4)])
+        _build(tmp_path / _PKG, fn, [tp.randn(1, 3, 8, 8)])
 
 
 def test_non_tensor_argument_is_refused(tmp_path):

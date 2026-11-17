@@ -16,7 +16,7 @@ graph.  The Python runtime allocates the buffers, fills ``tensor_data`` and
 from __future__ import annotations
 
 import ctypes
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import sympy
@@ -51,6 +51,13 @@ class CppWrapperCode:
     num_tensors: int
     num_sizevars: int
     graph_input_names: list[str]
+    #: Views the program reads or returns, keyed by the name the generated
+    #: code calls them: the buffer they sit on, their shape, stride, offset
+    #: and type.  A view owns no storage, so the Python side that fills
+    #: ``tensor_data`` has to work these out from the buffer underneath.
+    view_meta: dict[str, tuple[str, tuple[Any, ...], tuple[Any, ...], Any, Any]] = (
+        field(default_factory=dict)
+    )
 
 
 class _TpTensorBuffer(ctypes.Structure):
@@ -105,6 +112,9 @@ class CppWrapperModule:
         self._output_names = wrapper_code.output_names
         self._buffer_meta = wrapper_code.buffer_meta
         self._graph_input_names = wrapper_code.graph_input_names
+        #: Views the program reads or returns: the name they are called by,
+        #: the buffer they sit on, their shape, stride, offset and type.
+        self._view_meta = wrapper_code.view_meta
 
     # -- what the module was built from --------------------------------------
     #
@@ -141,6 +151,12 @@ class CppWrapperModule:
 
         return self._num_tensors
 
+    @property
+    def view_names(self) -> list[str]:
+        """The names of the views the program reads or returns."""
+
+        return list(self._view_meta)
+
     @staticmethod
     def _fill_buffer(
         buf: _TpTensorBuffer,
@@ -173,7 +189,11 @@ class CppWrapperModule:
         num_tensors = self._num_tensors
         tensor_data = (_TpTensorBuffer * num_tensors)()
         keep_alive: list[Any] = []
+        # Every slot that holds storage, by name: what the caller supplied,
+        # what was allocated here, and the views that share one of those.
+        tensors: dict[str, Any] = {}
         for name, tensor in zip(self._graph_input_names, args):
+            tensors[name] = tensor
             idx = self._tensor_index.get(name)
             if idx is None:
                 continue
@@ -209,6 +229,7 @@ class CppWrapperModule:
                 allocated[name] = tp.empty_strided(
                     shape_i, stride_i, dtype=dtype, device=device
                 )
+            tensors[name] = allocated[name]
             buf = _TpTensorBuffer()
             self._fill_buffer(
                 buf,
@@ -221,16 +242,55 @@ class CppWrapperModule:
             )
             tensor_data[idx] = buf
 
+        # A view owns no storage: it is the same bytes read as another shape.
+        # The kernel was written against the view's own layout, so what it
+        # needs is the address the view's first element sits at, and the layout
+        # it was given.  A view may itself sit on a view, so these are settled
+        # in passes until every one has found storage to sit on.
+        pending = dict(self._view_meta)
+        while pending:
+            settled = False
+            for name, view in list(pending.items()):
+                base, size, stride, offset, dtype = view
+                base_tensor = tensors.get(base)
+                if base_tensor is None:
+                    continue
+                idx = self._tensor_index.get(name)
+                if idx is not None:
+                    buf = _TpTensorBuffer()
+                    self._fill_buffer(
+                        buf,
+                        base_tensor.data_ptr()
+                        + int(offset) * int(dtype.itemsize),
+                        size,
+                        stride,
+                        dtype,
+                        base_tensor.device.type,
+                        keep_alive,
+                    )
+                    tensor_data[idx] = buf
+                seen = tp.as_strided(base_tensor, size, stride, int(offset))
+                if base_tensor.dtype != dtype:
+                    seen = seen.view(dtype)
+                tensors[name] = seen
+                del pending[name]
+                settled = True
+            if not settled:
+                raise RuntimeError(
+                    f"view {min(pending)!r} sits on storage nothing provides"
+                )
+
         sizevars = (ctypes.c_long * self._num_sizevars)()
         self._call_fn(tensor_data, sizevars)
 
         outputs = []
         for name in self._output_names:
-            if name not in allocated:
+            value = tensors.get(name)
+            if value is None:
                 raise RuntimeError(
                     f"output buffer {name!r} was not allocated"
                 )
-            outputs.append(allocated[name])
+            outputs.append(value)
         return tuple(outputs)
 
 
@@ -246,6 +306,14 @@ _DISPATCH_UNARY_TEMPLATE = (
     "const tensorplay::Tensor&>::call("
     'tensorplay::Dispatcher::singleton().findHandle("{op}"), '
     "tensorplay::DispatchKey::CPU, {0})"
+)
+
+_DISPATCH_LINEAR_TEMPLATE = (
+    "tensorplay::DispatchStub<tensorplay::Tensor, "
+    "const tensorplay::Tensor&, const tensorplay::Tensor&, "
+    "const std::optional<tensorplay::Tensor>&>::call("
+    'tensorplay::Dispatcher::singleton().findHandle("linear"), '
+    "tensorplay::DispatchKey::CPU, {0}, {1}, {2})"
 )
 
 _EXTERN_KERNEL_SHIMS: dict[str, tuple[str, str]] = {
@@ -273,9 +341,121 @@ _EXTERN_KERNEL_SHIMS: dict[str, tuple[str, str]] = {
     "neg": ("tp_cpu_neg", _DISPATCH_UNARY_TEMPLATE.replace("{op}", "neg")),
 }
 
+#: Shims for an operation that takes an argument which may be absent, keyed by
+#: the number of tensors the call hands over.  Such an operation has one form
+#: per way it can be called -- a linear layer's bias may or may not be there --
+#: and the forms are separate entries because the C++ functions behind them
+#: take different arguments.  The last item of each entry is what the template
+#: splices in where the optional argument goes.
+_EXTERN_KERNEL_ARITY_SHIMS: dict[
+    str, dict[int, tuple[str, str, tuple[str, ...]]]
+] = {
+    "linear": {
+        2: ("tp_cpu_linear", _DISPATCH_LINEAR_TEMPLATE, ("std::nullopt",)),
+        3: ("tp_cpu_linear_bias", _DISPATCH_LINEAR_TEMPLATE, ()),
+    },
+}
+
+
+#: Shims for an operation that also takes a number.  Such an argument is not a
+#: buffer and has no slot, so it is written into the call as it was written in
+#: the program: the template names each one, and the entry point's call is
+#: given the value.  Writing the value rather than passing it through the
+#: table is what keeps its type -- an integral ``beta`` is spelled as an
+#: integer, a fractional one as a real -- which is part of what the operation
+#: means.
+_EXTERN_KERNEL_SCALAR_SHIMS: dict[
+    str, tuple[str, str, tuple[str, ...]]
+] = {
+    "addmm": (
+        "tp_cpu_addmm",
+        "tensorplay::DispatchStub<tensorplay::Tensor, const tensorplay::Tensor&, "
+        "const tensorplay::Tensor&, const tensorplay::Tensor&, "
+        "const tensorplay::Scalar&, const tensorplay::Scalar&>::call("
+        'tensorplay::Dispatcher::singleton().findHandle("addmm"), '
+        "tensorplay::DispatchKey::CPU, {0}, {1}, {2}, "
+        "tensorplay::Scalar({s0}), tensorplay::Scalar({s1}))",
+        ("beta", "alpha"),
+    ),
+}
+
+
+def _extern_shim(
+    name: str, arity: int
+) -> tuple[str | None, str | None, tuple[str, ...], tuple[str, ...]]:
+    """The C++ function an extern call is written as, and how it is spelled.
+
+    ``name`` is the operation, ``arity`` how many tensors the call hands over.
+    The third item is what the template splices in beyond the tensors, and the
+    fourth names the numbers the template also expects.
+    """
+
+    by_arity = _EXTERN_KERNEL_ARITY_SHIMS.get(name)
+    if by_arity is not None:
+        found = by_arity.get(arity)
+        if found is None:
+            return None, None, (), ()
+        shim_name, template, extra_exprs = found
+        return shim_name, template, extra_exprs, ()
+    found = _EXTERN_KERNEL_SHIMS.get(name)
+    if found is not None:
+        shim_name, template = found
+        return shim_name, template, (), ()
+    found = _EXTERN_KERNEL_SCALAR_SHIMS.get(name)
+    if found is None:
+        return None, None, (), ()
+    shim_name, template, scalar_names = found
+    return shim_name, template, (), scalar_names
+
+
+def _split_named(arg: Any) -> tuple[str | None, str, str]:
+    """A call argument that was passed by name, split into its parts.
+
+    A value that is not text, or text with no name in front of it, is a
+    positional argument: it has no name, and the empty name says so.
+    """
+
+    if isinstance(arg, str) and "=" in arg:
+        name, _, value = arg.partition("=")
+        return name.strip(), "=", value
+    return None, "", arg
+
+
+def _extern_scalar_names(name: str) -> tuple[str, ...]:
+    """The numbers the shim for an operation expects, if it takes any."""
+
+    found = _EXTERN_KERNEL_SCALAR_SHIMS.get(name)
+    return found[2] if found is not None else ()
+
+
+def _scalar_literal(value: str) -> str:
+    """A number as it was written in the program, spelled for C++.
+
+    A name-value pair arrives as text, and the value's type is what the
+    operation was given: an integer literal stays an integer, and a real stays
+    a real.  Anything that is not a plain number is refused rather than
+    guessed at, because a wrong value here is a wrong result rather than a
+    build failure.
+    """
+
+    text = value.strip()
+    try:
+        number = float(text)
+    except ValueError:
+        raise NotImplementedError(
+            f"C++ wrapper cannot write the argument value {value!r}"
+        ) from None
+    if number.is_integer() and "." not in text and "e" not in text.lower():
+        return str(int(number))
+    return repr(number)
+
 
 def _build_extern_shim_impl(
-    shim_name: str, template: str, n_tensors: int
+    shim_name: str,
+    template: str,
+    n_tensors: int,
+    extra_exprs: tuple[str, ...] = (),
+    scalar_values: tuple[str, ...] = (),
 ) -> str:
     params = ", ".join(
         [f"TpTensorBuffer* arg{i}" for i in range(n_tensors)]
@@ -286,7 +466,13 @@ def _build_extern_shim_impl(
         lines.append(
             f"tensorplay::Tensor t{i} = tp_buffer_to_tensor(*arg{i});"
         )
-    expr = template.format(*[f"t{i}" for i in range(n_tensors)])
+    substitutions = {str(i): f"t{i}" for i in range(n_tensors)}
+    substitutions.update(
+        {f"s{i}": value for i, value in enumerate(scalar_values)}
+    )
+    expr = template.format(
+        *[f"t{i}" for i in range(n_tensors)], *extra_exprs, **substitutions
+    )
     lines.append(f"tensorplay::Tensor result = {expr};")
     lines.append(
         "std::memcpy(out->data, result.data_ptr(),"
@@ -343,6 +529,13 @@ class CppWrapperCodegen(PythonWrapperCodegen):
         #: Python side that builds ``tensor_data`` before calling ``call``.
         self.buffer_meta: dict[str, tuple[Any, Any, Any, Any]] = {}
 
+        #: What each view the program reads or returns looks like: the buffer
+        #: it sits on, its shape, stride, offset and type.  A view is named by
+        #: the expression that spells it, so these are not buffer names.
+        self.view_meta: dict[
+            str, tuple[str, tuple[Any, ...], tuple[Any, ...], Any, Any]
+        ] = {}
+
         #: Names of the graph outputs, in return order.
         self.output_names: list[str] = []
 
@@ -389,6 +582,33 @@ class CppWrapperCodegen(PythonWrapperCodegen):
             buf.get_dtype(),
             buf.get_device(),
         )
+
+    def _record_view(
+        self,
+        name: str,
+        base: str,
+        size: Any,
+        stride: Any,
+        offset: Any,
+        dtype: Any,
+    ) -> None:
+        """Record what a view of another buffer looks like.
+
+        The generated code names a view by the expression that spells it, so
+        the name is not a buffer's own.  What the caller of the entry point has
+        to know is which buffer the bytes live in and how they are read, which
+        is the base buffer together with the view's own shape, stride, offset
+        and type.
+        """
+
+        try:
+            size = tuple(int(s) for s in size)
+            stride = tuple(int(s) for s in stride)
+            offset = int(offset)
+        except (TypeError, ValueError):
+            pass
+        self.view_meta[name] = (base, size, stride, offset, dtype)
+        self._register_tensor(name)
 
     # -- overrides -------------------------------------------------------
 
@@ -497,6 +717,50 @@ class CppWrapperCodegen(PythonWrapperCodegen):
     def generate_proton_finalize(self) -> None:
         pass
 
+    def can_reuse(self, input_buffer, output_buffer=None) -> bool:
+        """Whether one buffer's storage can be handed to another value.
+
+        A generated wrapper gives every buffer it names a slot of its own and
+        allocates one buffer per slot, so there is no storage to hand over: a
+        kernel that read its input and wrote its result in place would read the
+        result's own uninitialized buffer instead.  In-place reuse is not
+        offered here, and a region that would have reused a buffer gets one
+        more buffer rather than a wrong answer.
+        """
+
+        return False
+
+    def codegen_reinterpret_view(
+        self,
+        data,
+        size,
+        stride,
+        offset,
+        writeline,
+        dtype=None,
+    ) -> str:
+        """The name a view is called by, and what has to be known about it.
+
+        A view is named by the expression that spells it -- the buffer it sits
+        on, the shape it reads, the stride it steps by and where it starts --
+        because that expression is what the generated kernels were written
+        against.  Nothing is written here: the entry point is handed the view's
+        own address at call time, which is settled from what is recorded here.
+        """
+
+        name = super().codegen_reinterpret_view(
+            data, size, stride, offset, writeline, dtype
+        )
+        if name == data.get_name():
+            # The view asks for exactly the layout the buffer already has, so
+            # the buffer itself is what is read.
+            return name
+        # What the expression describes is the view, not the buffer: its shape
+        # and stride are what it was given, and its start is that offset.
+        view_dtype = dtype if dtype is not None else data.dtype
+        self._record_view(name, data.get_name(), size, stride, offset, view_dtype)
+        return name
+
     def generate_debug_sync(self, buffer) -> None:
         pass
 
@@ -505,16 +769,45 @@ class CppWrapperCodegen(PythonWrapperCodegen):
         """Derive the registered op name from a generated C++ kernel name.
 
         ``"tp_cpu_matmul"`` -> ``"matmul"``, ``"mm_out"`` -> ``"mm"``,
-        ``"tp_mm_out"`` -> ``"mm"``.
+        ``"tp_mm_out"`` -> ``"mm"``, ``"matmul_default"`` -> ``"matmul"``.
+
+        The spelling a kernel is called by carries the overload it was
+        generated for; what is registered is the operation in front of it.
         """
 
         name = kernel_name
         if name.startswith("tp_cpu_"):
             name = name[len("tp_cpu_") :]
-        if name.endswith("_out"):
-            name = name[: -len("_out")]
+        for suffix in ("_out", "_default"):
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                break
         name = name.removeprefix("tp_").removeprefix("_")
         return name
+
+    @staticmethod
+    def _tensor_arg_name(arg: Any, writer: Any) -> str:
+        """The name a call argument is read through.
+
+        A view is read as the window it selects rather than as the buffer
+        behind it, so it is named by the expression that spells it; that
+        expression is what the entry point is given, and what it describes.
+        """
+
+        if isinstance(arg, (ir.Buffer, ir.MutableBox, ir.ReinterpretView)):
+            return arg.codegen_reference(writer)
+        return arg.get_name()
+
+    def _tensor_slot(self, name: str) -> str:
+        """Register an argument's buffer, or refuse it if it has none."""
+
+        if name not in V.graph.name_to_buffer and name not in self.view_meta:
+            raise NotImplementedError(
+                "C++ wrapper extern kernel calls take buffers and views of "
+                f"them; got {name!r}"
+            )
+        self._register_tensor(name)
+        return self._tensor_buf_ref(name)
 
     def _generate_extern_kernel_alloc_helper(
         self, extern_kernel, args
@@ -545,31 +838,70 @@ class CppWrapperCodegen(PythonWrapperCodegen):
                 "tensor inputs"
             )
 
-        target = getattr(extern_kernel, "kernel", None) or extern_kernel.op_overload
-        name = getattr(target, "__name__", None)
-        if name is None:
-            name = getattr(extern_kernel, "cpp_kernel_name", None)
-            if name:
-                name = name.split("::")[-1].replace("_", "", 1)
-        shim_name, template = _EXTERN_KERNEL_SHIMS.get(
-            name, (None, None)
+        # The shim table is keyed by the operation, and the name the generated
+        # code calls this by is the one that carries it.  Where nothing settled
+        # a name, the operation itself is asked: a plain function is named by
+        # its own, and an operation reached through the table by its.
+        kernel_name = getattr(extern_kernel, "cpp_kernel_name", None)
+        if kernel_name:
+            name = self._op_name_from_kernel(kernel_name)
+        else:
+            target = (
+                getattr(extern_kernel, "kernel", None) or extern_kernel.op_overload
+            )
+            name = getattr(target, "__name__", None)
+        shim_name, template, extra_exprs, scalar_names = _extern_shim(
+            name, len(tensor_args)
         )
         if shim_name is None:
             raise NotImplementedError(
                 f"C++ wrapper has no shim for extern kernel {name!r}"
             )
-        impl = _build_extern_shim_impl(shim_name, template, len(tensor_args))
+        impl = _build_extern_shim_impl(
+            shim_name,
+            template,
+            len(tensor_args),
+            extra_exprs,
+            self._extern_scalars_of(name, scalar_names, args),
+        )
         if impl not in self._extern_shim_sources:
             self._extern_shim_sources.append(impl)
 
         arg_refs = [
-            self._tensor_buf_ref(t.get_name()) for t in tensor_args
+            self._tensor_slot(self._tensor_arg_name(t, self.wrapper_call))
+            for t in tensor_args
         ]
         arg_refs.append(self._tensor_buf_ref(output_name))
         self.writeline(
             f"TP_CHECK({shim_name}({', '.join(arg_refs)}) == 0, "
             f'"extern kernel {shim_name} failed");'
         )
+
+    def _extern_scalars_of(
+        self, op_name: str, scalar_names, args
+    ) -> tuple[str, ...]:
+        """The numbers an extern call was given, in the order it named them.
+
+        A number reaches the call as text next to the name it was passed
+        under; the operation's own argument names are what says which is
+        which, and a form that expects one and was not given it is an error
+        rather than a default that was never asked for.
+        """
+
+        if not scalar_names:
+            return ()
+        by_name = {}
+        for arg in args:
+            name, _, value = _split_named(arg)
+            if name is not None:
+                by_name[name] = value
+        missing = [name for name in scalar_names if name not in by_name]
+        if missing:
+            raise NotImplementedError(
+                f"C++ wrapper extern kernel {op_name!r} was called without "
+                f"its {missing[0]!r} argument"
+            )
+        return tuple(_scalar_literal(by_name[name]) for name in scalar_names)
 
     def _generate_extern_kernel_out_helper(
         self,
@@ -583,25 +915,38 @@ class CppWrapperCodegen(PythonWrapperCodegen):
         self._register_tensor(output_name)
         self._record_buffer_meta(output_name)
         op_name = self._op_name_from_kernel(kernel_name)
-        shim_name, template = _EXTERN_KERNEL_SHIMS.get(
-            op_name, (None, None)
+        tensor_refs = []
+        for arg in args:
+            if isinstance(arg, str) and (
+                arg in V.graph.name_to_buffer or arg in self.view_meta
+            ):
+                tensor_refs.append(self._tensor_slot(arg))
+                continue
+            name, _, _ = _split_named(arg)
+            if name in _extern_scalar_names(op_name):
+                # A number is written into the call where it stands, so it is
+                # left to the shim's own template to spell it.
+                continue
+            raise NotImplementedError(
+                "C++ wrapper extern kernel out calls support only tensor "
+                f"arguments; got {arg!r} for {op_name!r}"
+            )
+        # The arity is the number of tensors the call hands over: the result
+        # is passed separately, and an operation with an optional argument has
+        # a form for each of the ways it can be called without it.
+        shim_name, template, extra_exprs, scalar_names = _extern_shim(
+            op_name, len(tensor_refs)
         )
         if shim_name is None:
             raise NotImplementedError(
                 f"C++ wrapper has no shim for extern kernel {op_name!r}"
             )
-        tensor_refs = []
-        for arg in args:
-            if isinstance(arg, str) and arg in V.graph.name_to_buffer:
-                self._register_tensor(arg)
-                tensor_refs.append(self._tensor_buf_ref(arg))
-            else:
-                raise NotImplementedError(
-                    "C++ wrapper extern kernel out calls support only "
-                    f"tensor arguments; got {arg!r} for {op_name!r}"
-                )
         impl = _build_extern_shim_impl(
-            shim_name, template, len(tensor_refs)
+            shim_name,
+            template,
+            len(tensor_refs),
+            extra_exprs,
+            self._extern_scalars_of(op_name, scalar_names, args),
         )
         if impl not in self._extern_shim_sources:
             self._extern_shim_sources.append(impl)
@@ -778,6 +1123,7 @@ class CppWrapperCodegen(PythonWrapperCodegen):
             num_tensors=self._num_tensors,
             num_sizevars=self._num_sizevars,
             graph_input_names=tensor_input_names,
+            view_meta=self.view_meta,
         )
         return (
             code,

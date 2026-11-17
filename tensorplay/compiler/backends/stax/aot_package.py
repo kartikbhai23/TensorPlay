@@ -488,6 +488,12 @@ def _slot_table(
             )
         meta = module.buffer_meta.get(name)
         if meta is None:
+            if name in module.view_names:
+                raise PackageError(
+                    f"buffer {name!r} is a view of another buffer; a "
+                    "package lays out storage of its own and cannot "
+                    "describe one"
+                )
             raise PackageError(
                 f"buffer {name!r} has no recorded shape; the package could "
                 "not describe it"
@@ -534,12 +540,20 @@ def _slots_and_weights(
     """
 
     slots = _slot_table(module, constants)
+    # A constant is named by the argument the region was captured with, and the
+    # names are read in slot order while the values were handed over in the
+    # region's own order: the two are matched by name, not by position.
+    values = dict(zip(module.graph_input_names, constants))
     constant_names = [slot.name for slot in slots if slot.role == ROLE_CONSTANT]
-    values = dict(zip(constant_names, constants))
     blob = bytearray()
     offsets: dict[str, tuple[int, int]] = {}
     for name in constant_names:
-        value = values[name]
+        value = values.get(name)
+        if value is None:
+            raise PackageError(
+                f"constant {name!r} has no value; the region read more "
+                "buffers than it was given"
+            )
         if not value.is_contiguous():
             raise PackageError(
                 f"constant {name!r} is a view; a package can only bake a "

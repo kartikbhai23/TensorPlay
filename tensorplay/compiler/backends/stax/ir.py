@@ -3664,6 +3664,14 @@ class InputsKernel(OperationBuffer):
             x = x.data
         if isinstance(x, BaseView) and not isinstance(x, ReinterpretView):
             x = ExternKernel.realize_input(x)
+        elif not isinstance(x, (Buffer, ReinterpretView)) and isinstance(
+            x, IRNode
+        ):
+            # A value that is still being computed has no memory to read: there
+            # is nothing yet to open a window onto, so it is put in memory
+            # first.  The call then reads the copy, and whatever produced the
+            # value is scheduled ahead of it.
+            x = ExternKernel.realize_input(x)
         if isinstance(x, TensorBox):
             # Where making the view above failed, the result comes back wrapped
             # in a pair, so the taking off has to be done again.
@@ -6553,8 +6561,15 @@ class ExternKernel(InputsKernel):
 
         kernel = self.op_overload
         if self.cpp_kernel_name is None:
-            name = getattr(kernel, "name", None) or str(kernel)
-            self.cpp_kernel_name = name.replace("::", "_").replace(".", "_")
+            # An operation's ``name`` is a method rather than a field, so
+            # asking for it as one yields a bound method -- which is not a
+            # name anything can be spelled with.
+            name = getattr(kernel, "name", None)
+            if callable(name):
+                name = name()
+            self.cpp_kernel_name = (name or str(kernel)).replace(
+                "::", "_"
+            ).replace(".", "_")
 
     def set_python_kernel_name(self, python_kernel_name: str | None) -> None:
         """Settle the name the generated Python calls this under.

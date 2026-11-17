@@ -41,7 +41,7 @@
 | P2 | `export(strict=...)` 接受两种取值后 `del` 掉，docstring 自称两模式一致 | 静默失效，已核实 | 已拒绝（§8.4、§13） |
 | P0 | 捕获时读到的非张量全局/闭包/模块属性改变后仍复用旧程序，结果陈旧 | 正确性 bug，已复现 | 已修复（§3.3、§13） |
 | P1 | AOT 的 `memory_budget` 与 `keep_inference_input_mutations` 接收后丢弃 | 静默失效，已核实 | 已修复（§3.4、§13） |
-| P1 | 无 AOTInductor 部署包、无 oneDNN/MKLDNN/quantized/freezing | 子系统缺失，静态确认 | 部署包已实现（CPU C++ wrapper，§6、§13）；oneDNN/MKLDNN/quantized/freezing 未修 |
+| P1 | 无 AOTInductor 部署包、无 oneDNN/MKLDNN/quantized/freezing | 子系统缺失，静态确认 | 部署包已实现（CPU C++ wrapper，§6、§13）；C++ wrapper 本身此前无测试，且原地复用与视图两处都读错存储（§8.7），已修；oneDNN/MKLDNN/quantized/freezing 未修 |
 | P1 | cudagraph 只有单层录制：输入一换地址就回退到未捕获工件，输出被下次回放覆盖 | 能力缺失，静态确认 | 已实现树式录制：按布局分节点、共享一个内存池、copy-in/copy-back（§8.2、§13） |
 | P1 | 无 CPU GEMM 模板；`config.cpp.max_autotune_gemm_backends` 里的 "CPP" 无人消费 | 能力缺失，静态确认 | 已实现 `CppGemmTemplate`（f32/bf16/f16，静态 M/N/K，不预打包权重） |
 | P1 | 设备只注册 cpu/cuda；MPS/XPU/MTIA/ROCm 无代码生成 | 设备覆盖缺口，静态确认 | 未修 |
@@ -492,7 +492,7 @@ cpp_wrapper=use_cuda_codegen,
 
 | 子系统 | 现状 | 上游对应 |
 | --- | --- | --- |
-| AOTInductor 部署包 | 已有 `build_aot_package` / `load_aot_package`（`backends/stax/aot_package.py`）：把区域写成 `model.so` + `weights.bin` + `metadata.json` + `aoti_metadata.h` + `aoti_entry.cpp`，入口是 `aoti_entry(inputs, outputs, sizevars)`，常量先经 `aoti_set_constants` 交出；包只需运行期库，不需要 Python。只覆盖 C++ wrapper 能写出的 CPU 调度（Triton / 回退到图执行器的区域明确拒绝） | 可产出 `.so` + 包，C++ 运行时加载 |
+| AOTInductor 部署包 | 已有 `build_aot_package` / `load_aot_package`（`backends/stax/aot_package.py`）：把区域写成 `model.so` + `weights.bin` + `metadata.json` + `aoti_metadata.h` + `aoti_entry.cpp`，入口是 `aoti_entry(inputs, outputs, sizevars)`，常量先经 `aoti_set_constants` 交出；包只需运行期库，不需要 Python。覆盖 C++ wrapper 能写出的 CPU 调度：逐点链与 `mm`/`matmul`/`bmm`/`linear`/`addmm`（Triton kernel、回退到图执行器的区域、以及返回视图的区域明确拒绝） | 可产出 `.so` + 包，C++ 运行时加载 |
 | cudagraph trees | 只有 per-region flat manager，`max_entries=8`；dynamic/训练/原地修改直接 skip（`cudagraphs.py:206,776-777,784`） | 树式复用、跨重编译内存池、多树 replay |
 | oneDNN/MKLDNN | 无 `mkldnn_ir.py` / `mkldnn_lowerings.py`；`is_mkldnn_conv` 引用的 pass 不存在（`graph_lowering.py:472-473`） | CPU conv/linear 融合、channels-last、prepack |
 | 量化 | 无 `quantized_lowerings.py`；int4 仅 fallback；无 WOQ concat_linear | int8/fp8/mixed GEMM、量化 pattern |
@@ -595,7 +595,9 @@ pytest test/fx test/test_public_surface.py test/higher_order_ops test/export -q
 - 整图缓存补 `test/stax/test_stax_graph_cache.py`（7 项）：键随程序/输入/模块状态/设置/包版本变化、命中时不降级、符号形状不入缓存；
 - CPU 分块乘积补 `test/stax/test_stax_cpu_gemm_template.py`（13 项）：`mm`/`addmm`（行偏置与二维偏置）落成模板 kernel 且与 eager 一致、尾块形状、bf16/f16、其它类型不提供、不说话的后端列表不提供、两种 `mm`/`addmm` 拼写都指向同一 lowering、外部 kernel 名接受目标缓冲、边界符号的尺寸提示、读名不触发 store；
 - cudagraph 树补 `test/stax/test_cudagraph_trees.py`（17 项）：按布局分节点、交替布局复用、节点共享池、最近最少使用淘汰、树路径、批量入口与逐张量拷贝两条回放路径、输出独立，以及真实 CUDA 上的换地址回放与跨布局录制；
-- 部署包补 `test/stax/test_stax_aot_package.py`（16 项）：包的文件与元数据、常量烘进权重文件、切片常量按连续布局保存、结果跨调用独立、多输出、scratch 缓冲、拒绝无 C++ wrapper 的区域、拒绝非张量输入、拒绝覆盖已有包、坏元数据被拒、重复构建复用已建库，以及两条“不需要编译器”的验证——一个只用 `ctypes` 与 `json` 的子进程直接调 `aoti_entry`，一个用 `g++` 编译、只包含生成头并 `dlopen` 模型的程序；
+- 下降路径补一条 `test/stax/test_stax_native_lowerings.py::test_a_call_reads_a_value_that_is_still_being_computed`：`mm(relu(x), W)` / `mm(x + x, W)` / `mm(cat([x, x]), W)` 都真的被下降（断言没有降级），见 §8.7；
+- 部署包补 `test/stax/test_stax_aot_package.py`（20 项）：包的文件与元数据、常量烘进权重文件、切片常量按连续布局保存、结果跨调用独立、多输出、scratch 缓冲、拒绝无 C++ wrapper 的区域、拒绝非张量输入、拒绝覆盖已有包、坏元数据被拒、重复构建复用已建库，两层网络（四个常量：两层权重与两个偏置）、`mm` 接逐点与“矩阵乘后加偏置”的包，拒绝返回视图的区域，以及两条“不需要编译器”的验证——一个只用 `ctypes` 与 `json` 的子进程直接调 `aoti_entry`，一个用 `g++` 编译、只包含生成头并 `dlopen` 模型的程序；
+- C++ wrapper 本轮补 `test/stax/test_stax_cpp_wrapper.py`（29 项，此前该路径无任何测试）：逐点链、多输出、常量、`mm`/`matmul`/`bmm`/`linear`（带与不带偏置）、`addmm`、两层网络、“外部 kernel 之后接逐点”的整族与逐点链/归约，以及 8 项视图（转置/reshape/切片结果、切片偏移、转置输入、同一缓冲的两个视图、输入自身的视图）；每个用例都断言没有发生降级（§8.7）；
 - 无 fuzzer / `test_operators`。
 
 ### 8.4 文档声明 vs 实际
@@ -668,11 +670,63 @@ pytest test/fx test/test_public_surface.py test/higher_order_ops test/export -q
 - 入口收的是**裸缓冲区**：输入按区域参数顺序，输出由调用方提供，因此同一个包可以反复调用而结果互不影响。
 - 包只链接运行期库（`libp10`），不需要 Python；测试里用一个不 import 编译器的子进程与一个 `g++`
   编译的程序分别跑通同一条入口。
-- 只覆盖 C++ wrapper 能写出的 CPU 调度；Triton kernel、回退到图执行器的区域在构建时即拒绝。
+- 只覆盖 C++ wrapper 能写出的 CPU 调度（逐点链、`mm`/`matmul`/`bmm`/`linear`/`addmm`、softmax、layer_norm 等；返回视图的区域拒绝）：
+  Triton kernel（如本机 CPU 上的卷积）与回退到图执行器的区域在构建时即拒绝。
 - 构建以 `-Wl,-Bsymbolic` 链接、生成头里的常量用内部链接：同进程加载多个包时，各自的槽位表与
   入口互不覆盖（否则链接器会把 `STB_GNU_UNIQUE` 的表统一成同一个）。
 - 未做：GPU 包（需要把 Triton kernel 一并打包）、符号尺寸包（`sizevars` 目前只记录不填值）、
   把包接进 `compile()` 的一等公民选项。
+
+### 8.7 host wrapper：哪些区域写得出来，以及三处错读
+
+`stax.cuda_codegen` 把一个区域打印成一个 C++ 翻译单元，导出 `call(TpTensorBuffer*, long*)`。
+此前这条路径没有任何测试，覆盖情况与三处缺陷如下。
+
+**写不出来的区域**：kernel 由 Triton 生成（本机 CPU 上的卷积）、回退到图执行器、或调用没有
+shim 的外部 kernel（`sort`/`cumsum` 之类），会在降级时明确报错，而不是写出一个算不出结果的包。
+`_op_name_from_kernel` 现在把 kernel 名尾部的重载后缀（`_out` / `_default`）也去掉，因此
+`matmul.default` 这类"默认重载"能对上已注册的 `matmul`。`linear`（偏置可有可无）与 `addmm`
+（带 `beta`/`alpha` 两个数）各有自己的 shim：`linear` 按张量个数分表，`addmm` 把数值按原样写进
+调用——整数仍写成整数、实数仍写成实数，因为参数的类型也是这个运算含义的一部分。
+
+**三处缺陷**：
+
+1. `ExternKernel.set_cpp_kernel_name` 把 `op_overload.name` 当字段读。它是一个方法，取到的是绑定
+   方法对象，随后 `.replace(...)` 抛 `AttributeError`。结果：`a @ w` 这类节点在 C++ wrapper 下
+   直接降级（包也就写不出来）。现在按"可调用就调用"处理，与 `_CollectiveKernel` 里同一写法一致。
+2. 更严重的一处是**读错缓冲区**：调度器允许把"读一个缓冲、写一个缓冲"的逐点 kernel 判成原地
+   （`make_inplace(input, output)`），kernel 体因此只收一个 `in_out_ptr0`；但 wrapper 给每个名字
+   分配的是各自独立的槽位，于是传给 kernel 的是**结果**缓冲，输入缓冲（上一个 kernel 的输出）
+   从未被读。表现为 `mm(x, W).tanh()` 之类返回未初始化内存的值——只有 `relu`/`abs` 这类幂等逐点
+   恰好"看起来对"。`CppWrapperCodegen.can_reuse` 现在返回 `False`：这条路径没有 `codegen_inplace_reuse`
+   的对应实现，与其复用存储不如多给一个缓冲。
+
+3. **视图（reshape / transpose / 切片）读不到存储**。C++ wrapper 给每个名字分配一个槽位，
+   而视图没有自己的存储：它由 `codegen_reinterpret_view` 生成形如
+   `reinterpret_tensor(buf, (3, 2), (1, 3), 0)` 的表达式来命名，这个名字既不是缓冲区名，
+   `buffer_meta` 里也没有它。后果有两层——作为输出时 `call` 报
+   `output buffer ... was not allocated`；作为 kernel 参数时槽位 filled 的是全零
+   （`data` 为空指针），kernel 于是从未读到真正的数据。现在 `codegen_reinterpret_view` 会把
+   "名字 → 底层缓冲 + 形状 + 步长 + 偏移 + 类型"记进 `view_meta`，`call` 先分配底层缓冲、
+   再逐个把视图槽位指向"底层地址 + 偏移×元素大小"，返回值时用 `as_strided` 还原视图。
+   `CppWrapperModule` 因此能返回视图，`aoti_package` 则明确拒绝含视图的区域（包要自己排布存储）。
+   顺带修掉一处**变窄**：`_generate_extern_kernel_alloc_helper` 原先用 `input.get_name()` 取参数名，
+   视图会因此退回到底层缓冲的名字，把整块缓冲而不是窗口交给 kernel；现在统一走
+   `codegen_reference()`，与 Python wrapper 的 `val_to_arg_str` 一致。
+
+**另一处（不在 wrapper，而在下降路径）**：`InputsKernel.unwrap_storage_for_input` 只把
+`BaseView` 走一遍 `realize_input`，其它 IR 节点直接 `raise AssertionError`。于是任何
+"先把值算出来再交给矩阵乘"的写法——`mm(relu(x), W)`、`mm(x + b, W)`、`mm(cat([x, x]), W)`——
+都会在下降期被拒（CPU/CUDA 两条路一样）。现在非 `Buffer`/`ReinterpretView` 的 IR 节点也会被
+`realize_input` 落成缓冲，调用读到的是那份拷贝，产出它的 kernel 排在其前面。
+
+`test/stax/test_stax_cpp_wrapper.py`（29 项）覆盖逐点链、多输出、常量、`mm`/`matmul`/`bmm`/
+`linear`（带与不带偏置）、`addmm`（含"矩阵乘后加偏置"）、两层网络，以及"外部 kernel 之后接逐点"
+的整族（`tanh`/`exp`/`neg`/乘加/`abs`/`relu`、逐点链、归约、linear 接逐点）；另有 8 项覆盖视图：
+转置/reshape/切片结果、切片偏移、转置输入、同一缓冲的两个视图、输入自身的视图。每个用例都断言
+**没有发生降级**，因为降级路径同样能算出正确结果。下降路径那处修复由
+`test/stax/test_stax_native_lowerings.py::test_a_call_reads_a_value_that_is_still_being_computed`
+覆盖（同样断言没有降级）。
 
 ## 9. 算子与分解覆盖
 
@@ -878,7 +932,9 @@ pytest test/stax -q -p no:randomly
 | `5a0dc3e4` `fix(compiler)` | `upsample_nearest{1,2,3}d` 接受与输出尺寸一致的缩放提示（此前一律视为边界，`F.interpolate(scale_factor=…)` 区域因此回退到图执行器）；缩放与尺寸矛盾时仍回退，符号尺寸无法核对时按尺寸比例映射 |
 | `72503adf` `fix(compiler)` | `one_hot` 补分解为 `unsqueeze → eq(arange) → to(int64)`，范围检查作为不参与死代码删除的调用保留；`_assert_async.msg` 的 lowering 改为接受 `(cond, msg)`；分解注册表补 `one_hot.default` 样例 |
 | CUDA Graph Trees | 新增 `backends/cudagraph_trees.py` 与 `triton.cudagraph_trees`（默认开）：按输入布局分节点记录在一条树上，节点共享一个分配器池；录制持有私有输入副本，回放经 `stage_and_launch`（无该入口时逐张量 `copy_`）写入后启动；输出克隆返回，调用者结果跨回放有效；上限按最近最少使用淘汰。`CudagraphCompiledCallable` 按布局派生节点键，布局变化录制子节点而不是回退到未捕获工件；树关时保留原直连路径。新增 `test/stax/test_cudagraph_trees.py`（17 项），改写的 wrapper 用例覆盖换地址回放、输出独立与跨布局录制（§8.2） |
-| AOT 部署包 | 新增 `backends/stax/aot_package.py` 与 `compiler.build_aot_package` / `compiler.load_aot_package`：区域写成 `model.so` + `weights.bin` + `metadata.json` + `aoti_metadata.h` + `aoti_entry.cpp`，入口 `aoti_entry(inputs, outputs, sizevars)`；常量在编译期转成连续缓冲后烘进权重文件，元数据同时给出 JSON 与 C++ `constexpr` 两种形式；包只依赖运行期库，不需要 Python。构建脚本与 `_build_cpp_wrapper` 共用 `cpp_wrapper_build_options()`；包以 `-Wl,-Bsymbolic` 链接、头文件常量用内部链接，同一进程加载多个包不会互相串符号。新增 `test/stax/test_stax_aot_package.py`（16 项，含无 Python 的 `ctypes` 子进程与编译出的 C++ 程序两条运行路径） |
+| host wrapper 的正确性与覆盖面 | `_op_name_from_kernel` 去掉尾部的 `_out` / `_default` 重载后缀，`matmul.default` 能对上已注册的 `matmul`；`ExternKernel.set_cpp_kernel_name` 把 `name` 当方法调用（此前当成字段，取到绑定方法后 `.replace` 抛 `AttributeError`，`a @ w` 因此在 C++ wrapper 下静默降级）；新增 `linear` 与 `addmm` 的 shim（前者按张量个数分表，后者把 `beta`/`alpha` 按原样写进调用）；`CppWrapperCodegen.can_reuse` 返回 `False`，因为该路径没有 `codegen_inplace_reuse` 的对应实现——此前调度器把“读一个缓冲写一个缓冲”的逐点 kernel 判成原地，wrapper 却把**结果**缓冲传给 kernel，输入缓冲从未被读（`mm(x,W).tanh()` 之类返回未初始化内存，只有幂等逐点偶然正确）；视图（`transpose`/`reshape`/切片）此前没有槽位也没有元数据：作为输出时 `call` 报 `was not allocated`，作为参数时读到空指针；现在 `codegen_reinterpret_view` 记下“名字 → 底层缓冲 + 形状/步长/偏移/类型”，`call` 逐层解析后把视图槽位指到底层地址 + 偏移，输出用 `as_strided` 还原，包侧则明确拒绝含视图的区域；新增 `test/stax/test_stax_cpp_wrapper.py`（29 项，该路径此前无任何测试，§8.7） |
+| 下降路径：调用读到仍在计算的值 | `InputsKernel.unwrap_storage_for_input` 此前只对 `BaseView` 走 `realize_input`，其它 IR 节点直接 `raise AssertionError`，于是 `mm(relu(x), W)`、`mm(x + b, W)`、`mm(cat([x, x]), W)` 这类写法在下降期被拒（CPU/CUDA 两条路一样）；现在非 `Buffer`/`ReinterpretView` 的 IR 节点也会被落成缓冲，调用读那份拷贝，产出它的 kernel 排在其前（§8.7） |
+| AOT 部署包 | 新增 `backends/stax/aot_package.py` 与 `compiler.build_aot_package` / `compiler.load_aot_package`：区域写成 `model.so` + `weights.bin` + `metadata.json` + `aoti_metadata.h` + `aoti_entry.cpp`，入口 `aoti_entry(inputs, outputs, sizevars)`；常量在编译期转成连续缓冲后烘进权重文件，元数据同时给出 JSON 与 C++ `constexpr` 两种形式；包只依赖运行期库，不需要 Python。构建脚本与 `_build_cpp_wrapper` 共用 `cpp_wrapper_build_options()`；包以 `-Wl,-Bsymbolic` 链接、头文件常量用内部链接，同一进程加载多个包不会互相串符号。新增 `test/stax/test_stax_aot_package.py`（18 项，含两层网络、无 Python 的 `ctypes` 子进程与编译出的 C++ 程序两条运行路径） |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 

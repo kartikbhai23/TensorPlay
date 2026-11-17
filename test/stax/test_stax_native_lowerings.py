@@ -7,6 +7,7 @@ function compiled and eagerly and compares values and gradients; a counter
 on the call-out path checks that the region was really generated.
 """
 import collections
+import warnings
 
 import pytest
 
@@ -320,6 +321,42 @@ def test_compiled_inputs_that_start_inside_their_storage():
     fn = lambda t: F.scaled_dot_product_attention(t[None, None], t[None, None], t[None, None]) * 2
     assert x.storage_offset() != 0
     assert tp.allclose(tp.compile(fn)(x), fn(x), atol=1e-4)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_a_call_reads_a_value_that_is_still_being_computed(device):
+    """A call that reads memory is given memory, not a value.
+
+    A matrix multiply takes its operands as buffers, so an operand that is
+    still being computed has to be put in memory before it is handed over.
+    Where it was not, the region is refused -- and since the region would
+    have answered correctly had it been run as it was written, only the
+    absence of that refusal tells the two apart.
+    """
+
+    weight = tp.randn(4, 3, device=device)
+    x = tp.randn(2, 4, device=device)
+
+    def pointwise(a):
+        return a.relu()
+
+    def doubled(a):
+        return a + a
+
+    def stacked(a):
+        return tp.cat([a, a], dim=0)
+
+    for fn in (pointwise, doubled, stacked):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            got = tp.compile(lambda a: tp.mm(fn(a), weight))(x)
+        fell_back = [
+            str(item.message)
+            for item in caught
+            if "Stax lowering failed" in str(item.message)
+        ]
+        assert not fell_back, fell_back[0] if fell_back else ""
+        assert tp.allclose(got, tp.mm(fn(x), weight), atol=1e-5)
 
 
 def test_registered_lowerings_serve_the_new_operators():
