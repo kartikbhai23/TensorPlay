@@ -289,10 +289,30 @@ inline void cum_base(ctype* d, const ctype* s, int64_t d_size, int64_t outer,
             for (int64_t o = b; o < e; ++o) {
                 const ctype* sp = s + o * d_size;
                 ctype* dp = d + o * d_size;
-                acc_t acc = static_cast<acc_t>(init_val);
-                for (int64_t j = 0; j < d_size; ++j) {
-                    acc = op(acc, static_cast<acc_t>(sp[j]));
-                    dp[j] = static_cast<ctype>(acc);
+                if constexpr (std::is_integral_v<ctype>) {
+                    // Pairwise two-chain scan.  A serial integer scan is
+                    // bounded by its multiply's latency; advancing the running
+                    // product once per pair over the pair's own product halves
+                    // that chain.  Modular arithmetic is associative, so the
+                    // pair order answers exactly the serial product.
+                    acc_t t = static_cast<acc_t>(init_val);
+                    int64_t j = 0;
+                    for (; j + 2 <= d_size; j += 2) {
+                        const acc_t q = op(static_cast<acc_t>(sp[j]),
+                                           static_cast<acc_t>(sp[j + 1]));
+                        dp[j] = static_cast<ctype>(op(t, static_cast<acc_t>(sp[j])));
+                        dp[j + 1] = static_cast<ctype>(op(t, q));
+                        t = op(t, q);
+                    }
+                    if (j < d_size) {
+                        dp[j] = static_cast<ctype>(op(t, static_cast<acc_t>(sp[j])));
+                    }
+                } else {
+                    acc_t acc = static_cast<acc_t>(init_val);
+                    for (int64_t j = 0; j < d_size; ++j) {
+                        acc = op(acc, static_cast<acc_t>(sp[j]));
+                        dp[j] = static_cast<ctype>(acc);
+                    }
                 }
             }
         });
