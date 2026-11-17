@@ -131,6 +131,29 @@ def test_nearest_upsampling_value_and_gradient(device, extent):
 
 
 @pytest.mark.parametrize("device", DEVICES)
+def test_nearest_upsampling_named_by_a_scale_is_still_built(device):
+    # The call names the factor rather than the extent, and the extent it
+    # resolves to decides every sampled position.
+    extent = 2 * SIZE
+    weights = _weights(extent)
+    source = _source()
+    upsampled = [[0.0] * extent for _ in range(extent)]
+    grad = [[0.0] * SIZE for _ in range(SIZE)]
+    for i in range(extent):
+        for j in range(extent):
+            row, col = i * SIZE // extent, j * SIZE // extent
+            upsampled[i][j] = source[row][col]
+            grad[row][col] += weights[i][j]
+
+    def upsample(v):
+        return F.interpolate(v, scale_factor=2.0, mode="nearest")
+
+    got, got_grad = _run(upsample, device, weights)
+    _assert_close(got, upsampled)
+    _assert_close(got_grad, grad)
+
+
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("pooling", POOLINGS)
 def test_average_pooling_run_directly(device, pooling):
     kernel, stride, padding, ceil_mode, count_include_pad = pooling

@@ -4876,7 +4876,8 @@ def _spatial_ndim() -> int:
     return 3 if "3d" in target_name(V.current_node.target) else 2
 
 
-def _upsample_nearestnd(x, output_size, ndim, exact=False, **kwargs):
+def _upsample_nearestnd(x, output_size, ndim, scales=(), exact=False,
+                        **kwargs):
     """Nearest upsampling as an index remap of the source.
 
     Each output element reads the input element the scale maps it to, so the
@@ -4899,6 +4900,7 @@ def _upsample_nearestnd(x, output_size, ndim, exact=False, **kwargs):
     out_spatial = [int(s) for s in output_size][-ndim:]
     in_spatial = in_size[-ndim:]
     prefix = in_size[:-ndim]
+    _require_scales_agree(scales, in_spatial, out_spatial)
 
     def reindex(index):
         # Plain: floor(i * in / out); exact: floor((i + 1/2) * in / out).
@@ -4914,46 +4916,72 @@ def _upsample_nearestnd(x, output_size, ndim, exact=False, **kwargs):
     return make_view(x, size, reindex)
 
 
-def _no_scale_hint(scales):
-    # A scale handed alongside an extent is a hint the lowering cannot carry
-    # through the integer mapping; that call stays a boundary.
-    for scale in scales:
-        if scale is not None:
-            raise NotImplementedError("a scale handed alongside an extent")
+def _require_scales_agree(scales, in_spatial, out_spatial):
+    """Every scale a call names has to say what the two extents already say.
+
+    A call may carry both the output extent and the number of input positions
+    one output position spans.  The mapping is written against the ratio of
+    the extents, which is the same number whenever the two descriptions agree;
+    a hint that disagrees asks for a sampling grid the integer mapping cannot
+    express, and that call stays a boundary.
+    """
+
+    for scale, i, o in zip(scales, in_spatial, out_spatial):
+        if scale is None:
+            continue
+        try:
+            reciprocal = 1.0 / float(scale)
+        except (TypeError, ValueError, ZeroDivisionError):
+            raise NotImplementedError(
+                "a scale that is not a positive number"
+            ) from None
+        try:
+            ratio = float(i) / float(o)
+        except (TypeError, ValueError):
+            # An extent still written as a symbol has no number to check the
+            # hint against; the mapping reads the two extents either way.
+            continue
+        if reciprocal != ratio:
+            raise NotImplementedError(
+                "a scale hint that disagrees with the extent"
+            )
 
 
 @register("upsample_nearest2d.default")
 def lower_upsample_nearest2d(x, output_size, scales_h=None, scales_w=None,
                             **kwargs):
-    _no_scale_hint((scales_h, scales_w))
-    return _upsample_nearestnd(x, output_size, 2, **kwargs)
+    return _upsample_nearestnd(x, output_size, 2,
+                               scales=(scales_h, scales_w), **kwargs)
 
 
 @register("_upsample_nearest_exact2d.default")
 def lower_upsample_nearest_exact2d(x, output_size, scales_h=None,
                                    scales_w=None, **kwargs):
-    _no_scale_hint((scales_h, scales_w))
-    return _upsample_nearestnd(x, output_size, 2, exact=True, **kwargs)
+    return _upsample_nearestnd(x, output_size, 2,
+                               scales=(scales_h, scales_w), exact=True,
+                               **kwargs)
 
 
 @register("upsample_nearest3d.default")
 def lower_upsample_nearest3d(x, output_size, scales_d=None, scales_h=None,
                              scales_w=None, **kwargs):
-    _no_scale_hint((scales_d, scales_h, scales_w))
-    return _upsample_nearestnd(x, output_size, 3, **kwargs)
+    return _upsample_nearestnd(x, output_size, 3,
+                               scales=(scales_d, scales_h, scales_w),
+                               **kwargs)
 
 
 @register("_upsample_nearest_exact3d.default")
 def lower_upsample_nearest_exact3d(x, output_size, scales_d=None,
                                    scales_h=None, scales_w=None, **kwargs):
-    _no_scale_hint((scales_d, scales_h, scales_w))
-    return _upsample_nearestnd(x, output_size, 3, exact=True, **kwargs)
+    return _upsample_nearestnd(x, output_size, 3,
+                               scales=(scales_d, scales_h, scales_w),
+                               exact=True, **kwargs)
 
 
 @register("upsample_nearest1d.default")
 def lower_upsample_nearest1d(x, output_size, scales_d=None, **kwargs):
-    _no_scale_hint((scales_d,))
-    return _upsample_nearestnd(x, output_size, 1, **kwargs)
+    return _upsample_nearestnd(x, output_size, 1, scales=(scales_d,),
+                               **kwargs)
 
 
 # ---------------------------------------------------------------------------
