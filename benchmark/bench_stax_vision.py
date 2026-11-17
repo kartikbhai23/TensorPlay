@@ -277,6 +277,11 @@ def run_case(
     }
     try:
         tp_model, reference_model = build_pair(case, device, dtype)
+        if tasks == {"infer"}:
+            # An inference-only comparison does not need autograd history on
+            # the parameters, and leaving it off is what a serving path does.
+            tp_model.requires_grad_(False)
+            reference_model.requires_grad_(False)
         rng = np.random.default_rng(20261117)
         shape = (batch, 3, case.input_size, case.input_size)
         array = rng.standard_normal(shape).astype(np.float32)
