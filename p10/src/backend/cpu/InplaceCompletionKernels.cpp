@@ -12,6 +12,7 @@
 
 #include "Dispatcher.h"
 #include "GradMode.h"
+#include "Parallel.h"
 #include "Tensor.h"
 #include "tensorplay/ops/TPXOpsGenerated.h"
 
@@ -353,7 +354,54 @@ Tensor& mish_inplace_kernel(Tensor& self) {
 
 Tensor& nan_to_num_inplace_kernel(Tensor& self, const Scalar& nan, const std::optional<Scalar>& posinf, const std::optional<Scalar>& neginf) {
     NoGradGuard __tp_nograd;
-    self.copy_(self.nan_to_num(nan, posinf, neginf));
+    using tensorplay::parallel::parallel_for;
+    using tensorplay::parallel::GRAIN_SIZE;
+    // Single in-place sweep: replace NaN with nan, +inf with posinf, -inf
+    // with neginf, without the allocate-then-copy round trip.
+    if (!self.is_contiguous() || !isFloatingType(self.dtype())) {
+        self.copy_(self.nan_to_num(nan, posinf, neginf));
+        return self;
+    }
+    int64_t n = self.numel();
+    double nan_v = nan.toDouble();
+    bool has_pos = posinf.has_value(), has_neg = neginf.has_value();
+    double pos_v = has_pos ? posinf->toDouble() : std::numeric_limits<double>::infinity();
+    double neg_v = has_neg ? neginf->toDouble() : -std::numeric_limits<double>::infinity();
+    switch (self.dtype()) {
+    case DType::Float32: {
+        float* __restrict dp = self.data_ptr<float>();
+        float pv = has_pos ? static_cast<float>(pos_v) : std::numeric_limits<float>::max();
+        float nv = has_neg ? static_cast<float>(neg_v) : std::numeric_limits<float>::lowest();
+        float nan_c = static_cast<float>(nan_v);
+        parallel_for(0, n, GRAIN_SIZE, [&](int64_t b, int64_t e) {
+            for (int64_t i = b; i < e; ++i) {
+                float v = dp[i];
+                float r = (v != v) ? nan_c : v;
+                r = (r == std::numeric_limits<float>::infinity()) ? pv : r;
+                dp[i] = (r == -std::numeric_limits<float>::infinity()) ? nv : r;
+            }
+        });
+        break;
+    }
+    case DType::Float64: {
+        double* __restrict dp = self.data_ptr<double>();
+        double pv = has_pos ? pos_v : std::numeric_limits<double>::max();
+        double nv = has_neg ? neg_v : std::numeric_limits<double>::lowest();
+        double nan_c = nan_v;
+        parallel_for(0, n, GRAIN_SIZE, [&](int64_t b, int64_t e) {
+            for (int64_t i = b; i < e; ++i) {
+                double v = dp[i];
+                if (std::isnan(v)) dp[i] = nan_c;
+                else if (v == std::numeric_limits<double>::infinity()) dp[i] = pv;
+                else if (v == -std::numeric_limits<double>::infinity()) dp[i] = nv;
+            }
+        });
+        break;
+    }
+    default:
+        self.copy_(self.nan_to_num(nan, posinf, neginf));
+        break;
+    }
     return self;
 }
 
