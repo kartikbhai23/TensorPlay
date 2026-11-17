@@ -434,6 +434,31 @@ void apply_getrf(const Tensor& input, const Tensor& pivots, const Tensor& info) 
     const int lda = std::max(1, m);
     const auto handle = CUDAContext::getCusolverDnHandle();
 
+    // Batched fast path: one cuBLAS call factors the whole batch; the
+    // pointer table is a tiny device-resident array of matrix addresses.
+    // A single matrix stays on the serial driver, whose per-call setup is
+    // cheaper than the pointer-table roundtrip.
+    if (m == n && batch > 1) {
+        std::vector<const scalar_t*> host_ptrs(batch);
+        for (int64_t i = 0; i < batch; ++i) host_ptrs[i] = &a[i * ms];
+        Tensor dev_ptrs = Tensor::empty({batch}, DType::Int64, input.device());
+        cudaMemcpyAsync(dev_ptrs.data_ptr(), host_ptrs.data(),
+                        sizeof(const scalar_t*) * batch, cudaMemcpyHostToDevice,
+                        getCurrentCUDAStream().stream());
+        if constexpr (std::is_same_v<scalar_t, float>) {
+            CUBLAS_CHECK(cublasSgetrfBatched(
+                CUDAContext::getCublasHandle(), n,
+                reinterpret_cast<float* const*>(dev_ptrs.data_ptr()), lda,
+                ipiv, info_data, static_cast<int>(batch)));
+        } else {
+            CUBLAS_CHECK(cublasDgetrfBatched(
+                CUDAContext::getCublasHandle(), n,
+                reinterpret_cast<double* const*>(dev_ptrs.data_ptr()), lda,
+                ipiv, info_data, static_cast<int>(batch)));
+        }
+        return;
+    }
+
     int lwork = 0;
     CUSOLVER_CHECK(Tr::getrf_bufferSize(handle, m, n, a, lda, &lwork));
     Tensor work = Tensor::empty({std::max(lwork, 1)}, input.dtype(),
