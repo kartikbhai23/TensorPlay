@@ -402,13 +402,6 @@ def run_case(
             if cold_compile:
                 torch.compiler.reset()
             stax_train, stax_train_compile = compile_tensorplay(tp_model, mode)
-            started = time.perf_counter()
-            tp_optimizer.zero_grad(set_to_none=True)
-            model_logits(stax_train(tp_input)).float().sum().backward()
-            tp_optimizer.step()
-            record["stax_train_compile_seconds"] = stax_train_compile
-            record["stax_train_first_step_seconds"] = time.perf_counter() - started
-            record["stax_backward_codegens"] = backward_codegens(stax_train)
 
             def stax_step() -> None:
                 tp_optimizer.zero_grad(set_to_none=True)
@@ -417,6 +410,16 @@ def run_case(
                 )
                 loss.backward()
                 tp_optimizer.step()
+
+            # The first step is the timed one as well as the compiling one:
+            # a backward reached through a different loss can hand the region
+            # a gradient with a different layout than the artifact was built
+            # for, and that is a different call, not a warmup.
+            started = time.perf_counter()
+            stax_step()
+            record["stax_train_compile_seconds"] = stax_train_compile
+            record["stax_train_first_step_seconds"] = time.perf_counter() - started
+            record["stax_backward_codegens"] = backward_codegens(stax_train)
 
             record["stax_train_ms"] = time_call(
                 stax_step, device, train_warmup, train_repeats
@@ -432,14 +435,6 @@ def run_case(
                 reference_train, reference_train_compile = compile_reference(
                     reference_model, mode
                 )
-                started = time.perf_counter()
-                reference_optimizer.zero_grad(set_to_none=True)
-                model_logits(reference_train(reference_input)).float().sum().backward()
-                reference_optimizer.step()
-                record["reference_train_compile_seconds"] = reference_train_compile
-                record["reference_train_first_step_seconds"] = (
-                    time.perf_counter() - started
-                )
 
                 def reference_compiled_step() -> None:
                     reference_optimizer.zero_grad(set_to_none=True)
@@ -449,6 +444,13 @@ def run_case(
                     )
                     loss.backward()
                     reference_optimizer.step()
+
+                started = time.perf_counter()
+                reference_compiled_step()
+                record["reference_train_compile_seconds"] = reference_train_compile
+                record["reference_train_first_step_seconds"] = (
+                    time.perf_counter() - started
+                )
 
                 record["reference_compiled_train_ms"] = time_call(
                     reference_compiled_step, device, train_warmup, train_repeats
