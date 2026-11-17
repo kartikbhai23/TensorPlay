@@ -210,6 +210,18 @@ static Tensor conv_filter_packed(const Tensor& weight) {
                : weight.contiguous();
 }
 
+// Whether a call is large enough that the engine it runs on decides the total.
+// Below it the ranked list is taken as it stands, so the first call of the
+// many small convolutions a deep stack holds stays cheap.
+static bool conv_large_enough_to_tune(int64_t N, int64_t K, int64_t C, int64_t R,
+                                      int64_t S, int64_t OH, int64_t OW,
+                                      int64_t groups) {
+    const double flops = 2.0 * static_cast<double>(N) * static_cast<double>(K) * OH *
+                         OW * (static_cast<double>(C) / static_cast<double>(groups)) *
+                         static_cast<double>(R) * static_cast<double>(S);
+    return flops >= 5e7;
+}
+
 static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const Tensor& bias, const std::vector<int64_t>& stride_arg, const std::vector<int64_t>& padding_arg, const std::vector<int64_t>& dilation_arg, int64_t groups, bool fused_relu, Tensor out_provided = {}) {
     convolution::check_conv_shapes(input, weight, bias, groups, false);
     convolution::check_conv_geometry(input, weight, stride_arg, padding_arg,
@@ -263,11 +275,15 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
         int device;
         bool has_bias;
         bool fused_relu;
-        bool autotune;
         // Numeric switches are part of the plan identity: flipping either one
         // changes which engines are legal, so a cached plan must not be reused.
         bool allow_tf32;
         bool deterministic;
+        // The alignment each operand's storage was described with.  It bounds
+        // which engines can be realized, so a plan is only reused where the
+        // description matches.  How the plan was picked (ranked or timed) is
+        // deliberately absent: both pick from the same engine list.
+        int64_t x_align, w_align, y_align;
         std::array<int64_t, 4> x_stride;
         std::array<int64_t, 4> w_stride;
         std::array<int64_t, 4> y_stride;
@@ -278,7 +294,8 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
                    dh == o.dh && dw == o.dw && device == o.device &&
                    has_bias == o.has_bias && fused_relu == o.fused_relu &&
                    allow_tf32 == o.allow_tf32 && deterministic == o.deterministic &&
-                   autotune == o.autotune &&
+                   x_align == o.x_align && w_align == o.w_align &&
+                   y_align == o.y_align &&
                    x_stride == o.x_stride && w_stride == o.w_stride &&
                    y_stride == o.y_stride;
         }
@@ -291,7 +308,8 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
             h = h * 1000003 ^ std::hash<int>{}((int)k.dtype);
             h = h * 1000003 ^ std::hash<int>{}(k.device);
             h = h * 1000003 ^ std::hash<int>{}((int)k.fused_relu);
-            h = h * 1000003 ^ std::hash<int>{}((int)k.autotune);
+            for (auto v : {k.x_align, k.w_align, k.y_align})
+                h = h * 1000003 ^ std::hash<int64_t>{}(v);
             for (auto v : k.x_stride) h = h * 1000003 ^ std::hash<int64_t>{}(v);
             for (auto v : k.w_stride) h = h * 1000003 ^ std::hash<int64_t>{}(v);
             for (auto v : k.y_stride) h = h * 1000003 ^ std::hash<int64_t>{}(v);
@@ -348,12 +366,19 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
             N, K, OH, OW, input.dtype(), input.device(), use_channels_last);
     }
 
+    const int64_t x_align = alignment_of(input.data_ptr());
+    const int64_t w_align = alignment_of(weight.data_ptr());
+    const int64_t y_align = alignment_of(out.data_ptr());
+    const int64_t bias_align =
+        bias.defined() ? alignment_of(bias.data_ptr()) : y_align;
+
     ConvKey key{dtype, N, C, H, W, K, R, S, groups,
                 padding[0], padding[1], stride[0], stride[1], dilation[0], dilation[1],
                 static_cast<int>(input.device().index()),
-                bias.defined() && !post_bias_add, fused_relu, conv_autotune_enabled(),
+                bias.defined() && !post_bias_add, fused_relu,
                 tensorplay::globalContext().allowTF32CuDNN(),
                 tensorplay::globalContext().deterministicAlgorithms(),
+                x_align, w_align, y_align,
                 x_stride, w_stride, y_stride};
 
     cudnnHandle_t handle = CUDAContext::getCudnnHandle();
@@ -420,13 +445,19 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
         return kept;
     };
 
-    // Picks an execution plan for the graph.  Normally the first heuristic
-    // config is used; in benchmark mode several configs are timed instead.
+    // Picks an execution plan for the graph.  Normally the first ranked
+    // config is used; when tuning is asked for, several configs are timed
+    // instead and the fastest wins.
     // Cap on how many candidate plans the timer profiles.
     constexpr uint64_t kConvBenchmarkPlanLimit = 10000;
+    // How many of the ranked candidates a first-use tune times.  Tuning is
+    // there to escape a bad ranking, which the leading configs are the ones
+    // to escape it, so the tail of a long list is not worth the wall clock.
+    constexpr size_t kConvFirstUseCandidateLimit = 6;
 
-    auto pick_plan = [&](fe::OperationGraph& op_graph) -> std::shared_ptr<fe::ExecutionPlan> {
-        const bool autotune = conv_autotune_enabled();
+    auto pick_plan = [&](fe::OperationGraph& op_graph,
+                         bool tune,
+                         size_t candidate_limit) -> std::shared_ptr<fe::ExecutionPlan> {
         const bool deterministic = tensorplay::globalContext().deterministicAlgorithms();
         const bool allow_tf32 = tensorplay::globalContext().allowTF32CuDNN();
         auto heuristics = fe::EngineHeuristicsBuilder()
@@ -468,7 +499,7 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
                     .setEngineConfig(ec)
                     .build());
         };
-        if (!autotune || filtered.size() == 1) {
+        if (!tune || filtered.size() == 1) {
             // The heuristic ranks engines by expected quality, and the leading
             // entry is the plan the fast paths converge on.  Weaving a scratch
             // bound into that choice would skip the leading plans whenever
@@ -526,6 +557,9 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
             if (smallest) return smallest;
             TP_THROW(RuntimeError, "cuDNN: no executable engine configs for conv2d");
         }
+        if (candidates.size() > candidate_limit) {
+            candidates.resize(candidate_limit);
+        }
         if (candidates.size() == 1) return candidates[0];
 
         // Hand the candidates to the library timer, which warms each plan up
@@ -568,13 +602,16 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
         return std::make_shared<fe::ExecutionPlan>(std::move(timed.front()));
     };
 
-    const int64_t x_align = alignment_of(input.data_ptr());
-    const int64_t w_align = alignment_of(weight.data_ptr());
-    const int64_t y_align = alignment_of(out.data_ptr());
-    const int64_t bias_align =
-        bias.defined() ? alignment_of(bias.data_ptr()) : y_align;
-
     std::shared_ptr<fe::ExecutionPlan> plan;
+    // Timed selection is asked for either by the library's own search window
+    // or, failing that, by the call being large enough that its plan shows in
+    // the total.  Either way the answer is cached per shape, so a shape is
+    // only ever timed once in the process.
+    const bool benchmark_plan = conv_autotune_enabled();
+    const bool time_candidates =
+        benchmark_plan || conv_large_enough_to_tune(N, K, C, R, S, OH, OW, groups);
+    const size_t candidate_limit = benchmark_plan ? kConvBenchmarkPlanLimit
+                                                  : kConvFirstUseCandidateLimit;
     {
         std::lock_guard<std::mutex> lock(g_conv_cache_mutex);
         auto it = g_conv_plan_cache.find(key);
@@ -700,14 +737,14 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
                             .setOperationGraph(ops.size(), ops.data())
                             .build());
                 }
-                new_plan = pick_plan(*op_graph_ptr);
+                new_plan = pick_plan(*op_graph_ptr, time_candidates, candidate_limit);
             } else if (!key.fused_relu) {
                 std::array<fe::Operation const*, 1> ops = {&conv_op};
                 auto op_graph = fe::OperationGraphBuilder()
                                     .setHandle(handle)
                                     .setOperationGraph(ops.size(), ops.data())
                                     .build();
-                new_plan = pick_plan(op_graph);
+                new_plan = pick_plan(op_graph, time_candidates, candidate_limit);
             } else {
                 auto conv_out_desc = fe::TensorBuilder()
                                          .setDim(4, std::array<int64_t, 4>{N, K, OH, OW}.data())
@@ -739,7 +776,7 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
                                     .setHandle(handle)
                                     .setOperationGraph(ops.size(), ops.data())
                                     .build();
-                new_plan = pick_plan(op_graph);
+                new_plan = pick_plan(op_graph, time_candidates, candidate_limit);
             }
             plan = new_plan;
             g_conv_plan_cache[key] = new_plan;
