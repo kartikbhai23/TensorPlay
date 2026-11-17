@@ -418,24 +418,36 @@ Tensor& rrelu_with_noise__cuda(Tensor& self, Tensor& noise, const Scalar& lower,
     return unary_float_op_kernel_out(
         self, self, LeakyReluFunctor((lower.toDouble() + upper.toDouble()) / 2.0));
 }
-// log_sigmoid forward with its saved buffer: log_sigmoid(x) = -softplus(-x);
-// the buffer caches ::exp(-|x|), the stable remainder of the softplus
-// evaluation the backward reuses elementwise.  Composed from the elementwise
-// kernels dispatched in PointwiseKernels.cu.
-Tensor abs_kernel_cuda(const Tensor& self);
-Tensor neg_kernel_cuda(const Tensor& self);
-Tensor exp_kernel_cuda(const Tensor& self);
-Tensor log_kernel_cuda(const Tensor& self);
+// log_sigmoid forward with its saved buffer: log_sigmoid(x) = min(0, x) -
+// log1p(exp(-|x|)); the buffer caches exp(-|x|), the stable remainder of the
+// softplus evaluation the backward reuses elementwise.  One fused pass emits
+// both tensors.
 std::tuple<Tensor, Tensor> log_sigmoid_forward_components_cuda(const Tensor& self) {
-    const Scalar one(1.0);
-    Tensor b = exp_kernel_cuda(neg_kernel_cuda(abs_kernel_cuda(self)));  // ::exp(-|x|)
-    Tensor one_plus_b = b + one;
-    Tensor log_b = log_kernel_cuda(b);
-    Tensor log_one_plus_b = log_kernel_cuda(one_plus_b);
-    Tensor pos_branch = log_b - log_one_plus_b;        // ::log(b) - ::log(1+b)
-    Tensor neg_branch = self + log_b;                  // x + ::log(b), x < 0
-    Tensor output = ops::where(self.lt(Scalar(0.0)), neg_branch, pos_branch);
-    return {output, b};
+    Tensor output = Tensor::empty(self.shape(), self.dtype(), self.device());
+    Tensor buffer = Tensor::empty(self.shape(), self.dtype(), self.device());
+    TensorIterator iter = TensorIteratorConfig()
+        .check_all_same_dtype(true)
+        .add_output(output)
+        .add_output(buffer)
+        .add_const_input(self)
+        .build();
+    if (self.dtype() == DType::Float64) {
+        gpu_kernel_multiple_outputs(
+            iter, [] __host__ __device__(double x) -> std::tuple<double, double> {
+                const double b = ::exp(-::fabs(x));
+                const double base = ::std::min(0.0, x);
+                return {base - ::log1p(b), b};
+            });
+    } else {
+        gpu_kernel_multiple_outputs(
+            iter, [] __host__ __device__(float x) -> std::tuple<float, float> {
+                const float b = ::expf(-::fabsf(x));
+                const float base = ::std::min(0.0f, x);
+                return {base - ::log1pf(b), b};
+            });
+    }
+    CUDA_CHECK(cudaGetLastError());
+    return {output, buffer};
 }
 // out-variants: run the value kernel, then transfer into the caller's buffer.
 Tensor& gelu_out_cuda(const Tensor& self, const std::string& approximate,
