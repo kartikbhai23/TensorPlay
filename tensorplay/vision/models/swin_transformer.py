@@ -191,19 +191,22 @@ def shifted_window_attention(
     attn = attn + relative_position_bias
 
     if sum(shift_size) > 0:
-        # generate attention mask
-        attn_mask = x.new_zeros((pad_H, pad_W))
-        h_slices = ((0, -window_size[0]), (-window_size[0], -shift_size[0]), (-shift_size[0], None))
-        w_slices = ((0, -window_size[1]), (-window_size[1], -shift_size[1]), (-shift_size[1], None))
-        count = 0
-        for h in h_slices:
-            for w in w_slices:
-                attn_mask[h[0] : h[1], w[0] : w[1]] = count
-                count += 1
+        # Tokens split a padded axis into three ranges: the unshifted head, the
+        # wrap-around middle moved in by the shift, and the tail.  Labelling
+        # each range by its ordinal and combining the two axes gives every
+        # token a 3x3 region id; two tokens may attend to each other only when
+        # the ids agree.  Built from comparisons so the whole mask is a handful
+        # of elementwise steps, with no per-range writes.
+        def axis_region(length, window, shift):
+            coords = tensorplay.arange(length, device=x.device)
+            return (coords >= length - window).long() + (coords >= length - shift).long()
+
+        h_region = axis_region(pad_H, window_size[0], shift_size[0])
+        w_region = axis_region(pad_W, window_size[1], shift_size[1])
+        attn_mask = h_region[:, None] * 3 + w_region[None, :]
         attn_mask = attn_mask.view(pad_H // window_size[0], window_size[0], pad_W // window_size[1], window_size[1])
         attn_mask = attn_mask.permute(0, 2, 1, 3).reshape(num_windows, window_size[0] * window_size[1])
-        attn_mask = attn_mask.unsqueeze(1) - attn_mask.unsqueeze(2)
-        attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+        attn_mask = (attn_mask.unsqueeze(1) != attn_mask.unsqueeze(2)).to(tensorplay.float32) * float(-100.0)
         attn = attn.view(x.size(0) // num_windows, num_windows, num_heads, x.size(1), x.size(1))
         attn = attn + attn_mask.unsqueeze(1).unsqueeze(0)
         attn = attn.view(-1, num_heads, x.size(1), x.size(1))
