@@ -542,6 +542,40 @@ static Tensor fmod_like_pair_kernel(const Tensor& a, const Tensor& b, F f,
 
 Tensor remainder_tensor_cpu(const Tensor& self, const Tensor& other) {
     // Python modulo: sign follows the divisor
+    // A one-element divisor keeps it in a register and answers in one sweep;
+    // the vector lane loop would otherwise call libm fmod per element.  The
+    // scalar arrives as a 0-dim float64 tensor even for a float32 self, so
+    // the divisor is read as double and applied in self's arithmetic.
+    if (other.numel() == 1 && self.is_contiguous() && self.device().is_cpu() &&
+        (self.dtype() == DType::Float32 || self.dtype() == DType::Float64) &&
+        isFloatingType(other.dtype())) {
+        const int64_t n = self.numel();
+        const double yd = other.data_ptr<double>()[0];
+        Tensor out = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
+                                   self.dtype(), self.device());
+        if (self.dtype() == DType::Float32) {
+            const float* sp = self.data_ptr<float>();
+            float* dp = out.data_ptr<float>();
+            const float y = static_cast<float>(yd);
+            for (int64_t i = 0; i < n; ++i) {
+                const float x = sp[i];
+                float r = x - std::trunc(x / y) * y;
+                if (r != 0.0f && ((r < 0.0f) != (y < 0.0f))) r += y;
+                dp[i] = r;
+            }
+        } else {
+            const double* sp = self.data_ptr<double>();
+            double* dp = out.data_ptr<double>();
+            const double y = yd;
+            for (int64_t i = 0; i < n; ++i) {
+                const double x = sp[i];
+                double r = x - std::trunc(x / y) * y;
+                if (r != 0.0 && ((r < 0.0) != (y < 0.0))) r += y;
+                dp[i] = r;
+            }
+        }
+        return out;
+    }
     return fmod_like_pair_kernel<vecbinary::BOp::Remainder>(self, other,
         [](auto x, auto y) {
             using T = decltype(x);
@@ -559,9 +593,45 @@ Tensor remainder_tensor_cpu(const Tensor& self, const Tensor& other) {
         }, "remainder");
 }
 Tensor remainder_scalar_cpu(const Tensor& self, const Scalar& other) {
-    // Forcing the scalar into self's dtype would truncate a float divisor
-    // against an integral tensor; the pair promotes first.
-    const DType dt = scalar_promote(self.dtype(), other);
+    // Python scalars keep the tensor's dtype on floating-point tensors, so a
+    // contiguous CPU float buffer answers in one sweep with the divisor in a
+    // register — no promotion, no materialized broadcast tensor.
+    const bool float_tensor =
+        self.is_contiguous() && self.device().is_cpu() &&
+        (self.dtype() == DType::Float32 || self.dtype() == DType::Float64) &&
+        (other.isFloatingPoint() || other.isIntegral());
+    const DType dt = float_tensor ? self.dtype() : scalar_promote(self.dtype(), other);
+    // Scalar fast path: the divisor sits in a register, so one sweep answers
+    // without materializing a full broadcast tensor and re-reading it.
+    if (self.device().is_cpu() && dt == self.dtype() && self.is_contiguous()) {
+        if (self.dtype() == DType::Float32) {
+            Tensor out = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
+                                       self.dtype(), self.device());
+            const float* sp = self.data_ptr<float>();
+            float* dp = out.data_ptr<float>();
+            const float y = other.to<float>();
+            for (int64_t i = 0; i < self.numel(); ++i) {
+                const float x = sp[i];
+                float r = x - std::trunc(x / y) * y;
+                if (r != 0.0f && ((r < 0.0f) != (y < 0.0f))) r += y;
+                dp[i] = r;
+            }
+            return out;
+        }
+        if (self.dtype() == DType::Float64) {
+            Tensor out = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
+                                       self.dtype(), self.device());
+            const double* sp = self.data_ptr<double>();
+            double* dp = out.data_ptr<double>();
+            const double y = other.to<double>();
+            for (int64_t i = 0; i < self.numel(); ++i) {
+                double r = std::fmod(sp[i], y);
+                if (r != 0.0 && ((r < 0.0) != (y < 0.0))) r += y;
+                dp[i] = r;
+            }
+            return out;
+        }
+    }
     return remainder_tensor_cpu(self.to(dt), Tensor::full({}, other, dt, self.device()));
 }
 
