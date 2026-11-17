@@ -508,6 +508,17 @@ Tensor& float_power_tensor_tensor_out_cuda(const Tensor& self, const Tensor& exp
     return pow_tensor_tensor_out_cuda(self.to(dt), exponent.to(dt), out);
 }
 
+Tensor float_power_tensor_tensor_cuda(const Tensor& self, const Tensor& exponent) {
+    const DType dt = (isComplexType(self.dtype()) || isComplexType(exponent.dtype()))
+                         ? DType::ComplexDouble
+                         : DType::Float64;
+    Tensor out = Tensor::empty(
+        broadcast_shapes(static_cast<std::vector<int64_t>>(self.shape()),
+                         static_cast<std::vector<int64_t>>(exponent.shape())),
+        dt, self.device());
+    return float_power_tensor_tensor_out_cuda(self, exponent, out);
+}
+
 Tensor& float_power_tensor_scalar_out_cuda(const Tensor& self, const Scalar& exponent, Tensor& out) {
     const DType dt = (isComplexType(self.dtype()) || exponent.isComplex())
                          ? DType::ComplexDouble
@@ -914,6 +925,8 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, PointwiseKernels) {
     m.impl("float_power.Tensor_Tensor_out", float_power_tensor_tensor_out_cuda);
     m.impl("float_power.Tensor_Scalar_out", float_power_tensor_scalar_out_cuda);
     m.impl("float_power.Tensor_Scalar", float_power_tensor_scalar_cuda);
+    m.impl("float_power.Tensor_Tensor", float_power_tensor_tensor_cuda);
+    m.impl("float_power", float_power_tensor_tensor_cuda);
     m.impl("atan2", atan2_kernel_cuda);
     m.impl("atan2.out", atan2_out_kernel_cuda);
 
