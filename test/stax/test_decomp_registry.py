@@ -534,6 +534,7 @@ SAMPLES = {
     "is_complex.default": lambda: ((tp.randn(2, 3).to(tp.complex64),), {}),
     "isreal.default": lambda: ((tp.randn(2, 3).to(tp.complex64),), {}),
     "item.default": lambda: ((tp.tensor([3.5]),), {}),
+    "one_hot.default": lambda: ((tp.tensor([[4, 0, 8], [1, 1, 7]]), 9), {}),
     "where.self": lambda: ((tp.tensor([[True, False], [True, True]]),
                             tp.randn(2, 2), tp.randn(2, 2)), {}),
     "where.ScalarSelf": lambda: ((tp.tensor([[True, False], [True, True]]), 1.5,

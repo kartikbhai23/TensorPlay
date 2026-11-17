@@ -9085,7 +9085,7 @@ def view_as_complex(x: Any) -> Any:
 
 
 @register_lowering(tp_ops._assert_async.msg)
-def _assert_async(msg: Any) -> None:
+def _assert_async(cond: Any, msg: Any) -> None:
     """A check that does not stop the program, deferred to the device.
 
     A check whose answer is not known while the graph is being built is asked

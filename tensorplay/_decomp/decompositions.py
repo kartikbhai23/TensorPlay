@@ -6538,6 +6538,26 @@ def item(a):
     return a.reshape(1).tolist()[0]
 
 
+@register_decomposition(ops.one_hot.default)
+def one_hot(self, num_classes=-1):
+    if num_classes == -1:
+        num_classes = int(self.max().item()) + 1
+    # The checks stay calls of their own so they survive dead-code removal
+    # instead of being folded into the value below.
+    ops._assert_async.msg(
+        tp.all(self >= 0),
+        "one_hot: Class values must be non-negative.",
+    )
+    ops._assert_async.msg(
+        tp.all(self < num_classes),
+        "one_hot: Class values must be smaller than num_classes.",
+    )
+    return (
+        self.unsqueeze(-1)
+        == tp.arange(num_classes, dtype=self.dtype, device=self.device)
+    ).to(tp.int64)
+
+
 def _where_promoted(pred, a, b):
     if pred.dtype != tp.bool:
         raise RuntimeError(f"expected predicate to be bool, got {pred.dtype}")
