@@ -219,6 +219,10 @@ Tensor& floor_divide_out_cuda(const Tensor& self, const Tensor& other, Tensor& o
     return binary_same_cuda_out(self, other, out, HFn8{true}, "floor_divide");
 }
 
+Tensor& floor_divide__cuda(Tensor& self, const Tensor& other) {
+    return floor_divide_out_cuda(self, other, self);
+}
+
 }  // namespace
 
 TENSORPLAY_LIBRARY_IMPL(CUDA, BinaryPointwiseKernels) {
@@ -247,6 +251,7 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, BinaryPointwiseKernels) {
     m.impl("floor_divide", floor_divide_cuda);
     m.impl("floor_divide.Scalar", floor_divide_scalar_cuda);
     m.impl("floor_divide.out", floor_divide_out_cuda);
+    m.impl("floor_divide_.Tensor", floor_divide__cuda);
 }
 
 }  // namespace cuda
