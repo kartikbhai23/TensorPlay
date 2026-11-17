@@ -15,6 +15,7 @@ import copy
 import contextlib
 import itertools
 import math
+import mmap
 import multiprocessing
 import os
 import queue
@@ -24,6 +25,7 @@ import sys
 import threading
 import traceback
 import warnings
+import weakref
 from collections.abc import Mapping, MutableMapping, MutableSequence, Sequence, Sized
 from typing import Any, Callable, Generic, Iterable, Iterator, List, Optional, TypeVar
 
@@ -77,6 +79,310 @@ def _make_batch_index(indices, tensor: Tensor) -> Tensor:
     else:
         values = [int(index) for index in indices]
     return tp.tensor(values, dtype=tp.int64, device=tensor.device)
+
+
+# ---------------------------------------------------------------------------
+# Cross-process batch transport
+# ---------------------------------------------------------------------------
+# A worker can hand a produced batch to the main process by filling a segment
+# that both processes map, instead of shipping the bytes through the queue or
+# filling a fresh segment per message. A fresh segment pays for first-touching
+# every page, which costs more than the copy itself at ordinary batch sizes, so
+# each worker keeps a small pool of segments and reuses one after the consumer
+# has released the tensor that came from it.
+#
+# The pool is keyed by (shape, dtype). Tensors smaller than the threshold stay
+# on the ordinary pickle path, where the fixed per-message cost is not worth a
+# descriptor exchange. A released segment returns to the worker through a
+# private acknowledgement queue; the release runs when the mapped view is
+# collected, so a consumer that keeps a batch alive simply keeps its segment
+# out of the pool.
+#
+# The descriptor itself travels only once per segment: the first batch that
+# uses a segment announces it, and the consumer keeps that descriptor open for
+# every later batch, which maps the segment again to get a fresh view whose
+# lifetime can be tracked. Messages after the announcement carry nothing but
+# the segment identity, so the queue cost does not grow with the batch size.
+
+_SHARED_BATCH_MIN_BYTES = 1 << 19
+_SHARED_BATCH_MAX_BYTES = 128 << 20
+_SHARED_BATCH_MAX_SLOTS = 6
+_SHARED_BATCH_ACK_BACKLOG = 64
+
+try:
+    from multiprocessing.reduction import DupFd as _DupFd
+except (ImportError, AttributeError):  # pragma: no cover - non-Linux platforms
+    _DupFd = None
+
+_SHARED_BATCH_ENABLED = _DupFd is not None and hasattr(os, "memfd_create")
+
+# token -> acknowledgement queue per worker. A token is registered by one
+# iterator in the consumer process and dropped when that iterator shuts down;
+# releases that arrive afterwards become no-ops.
+_shared_batch_ack_queues: dict[int, list] = {}
+_shared_batch_tokens = itertools.count(1)
+
+# token -> {(worker_id, slot_id): descriptor}.  The consumer holds one
+# descriptor per announced segment for the life of the iterator.
+_shared_batch_fds: dict[int, dict[tuple, int]] = {}
+
+
+def _release_shared_batch(token, worker_id, slot_id):
+    queues = _shared_batch_ack_queues.get(token)
+    if queues is None:
+        return
+    try:
+        queues[worker_id].put_nowait(slot_id)
+    except Exception:
+        # The iterator may already be shutting down, or the acknowledgement
+        # backlog may be full; either way the segment simply stays private to
+        # the worker for the rest of its life.
+        pass
+
+
+def _close_shared_batch_fds(token):
+    cache = _shared_batch_fds.pop(token, None)
+    if not cache:
+        return
+    for handle in cache.values():
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+
+
+def _rebuild_shared_batch(
+    fd, nbytes, shape, dtype, requires_grad, token, worker_id, slot_id
+):
+    entry = (worker_id, slot_id)
+    cache = _shared_batch_fds.get(token)
+    if fd is not None:
+        handle = fd.detach()
+        if cache is None:
+            cache = _shared_batch_fds[token] = {}
+        cached = cache.get(entry)
+        if cached is None:
+            cache[entry] = handle
+        else:
+            # The worker announced a segment the consumer already keeps: the
+            # acknowledgement that would have told it so was lost.
+            os.close(handle)
+            handle = cached
+    else:
+        handle = None if cache is None else cache.get(entry)
+        if handle is None:
+            raise RuntimeError("batch segment was never announced")
+    view = mmap.mmap(handle, nbytes)
+    tensor = tp.frombuffer(view, dtype=dtype)
+    tensor = tensor.reshape(shape)
+    tensor.requires_grad = requires_grad
+    # The tensor's storage keeps ``view`` alive, and views of that tensor share
+    # the same storage, so the release fires only after the last of them goes
+    # away.
+    weakref.finalize(view, _release_shared_batch, token, worker_id, slot_id)
+    return tensor
+
+
+class _SharedBatchHandle:
+    """Picklable reference to a filled segment owned by one worker."""
+
+    __slots__ = (
+        "fd",
+        "nbytes",
+        "shape",
+        "dtype",
+        "requires_grad",
+        "token",
+        "worker_id",
+        "slot_id",
+        "announce",
+    )
+
+    def __init__(self, slot, token, worker_id):
+        self.fd = slot.fd
+        self.nbytes = slot.nbytes
+        self.shape = slot.shape
+        self.dtype = slot.dtype
+        self.requires_grad = slot.requires_grad
+        self.token = token
+        self.worker_id = worker_id
+        self.slot_id = slot.slot_id
+        # The consumer acknowledges a segment only after it has received and
+        # mapped one of its batches, so an unacknowledged segment has never
+        # reached it and its descriptor has to travel with this message.
+        self.announce = not slot.acknowledged
+
+    def __reduce__(self):
+        return (
+            _rebuild_shared_batch,
+            (
+                # Duplicate the descriptor: the slot keeps its own handle open
+                # for the next batch it carries.
+                None if not self.announce else _DupFd(self.fd),
+                self.nbytes,
+                self.shape,
+                self.dtype,
+                self.requires_grad,
+                self.token,
+                self.worker_id,
+                self.slot_id,
+            ),
+        )
+
+
+class _SharedBatchSlot:
+    """One segment, reused by the worker that owns it."""
+
+    __slots__ = (
+        "slot_id",
+        "fd",
+        "view",
+        "tensor",
+        "key",
+        "shape",
+        "dtype",
+        "nbytes",
+        "requires_grad",
+        "acknowledged",
+    )
+
+    def __init__(self, slot_id, shape, dtype, nbytes):
+        self.slot_id = slot_id
+        self.shape = tuple(shape)
+        self.dtype = dtype
+        self.nbytes = nbytes
+        self.key = (self.shape, dtype)
+        self.acknowledged = False
+        self.fd = os.memfd_create(
+            f"tensorplay-batch-{os.getpid()}-{slot_id}", flags=os.MFD_CLOEXEC
+        )
+        try:
+            os.ftruncate(self.fd, nbytes)
+            self.view = mmap.mmap(self.fd, nbytes)
+        except BaseException:
+            os.close(self.fd)
+            raise
+        self.tensor = tp.frombuffer(self.view, dtype=dtype).reshape(self.shape)
+        self.requires_grad = False
+
+
+class _SharedBatchState:
+    """Per-worker pool used while a batch is on its way to the consumer."""
+
+    __slots__ = (
+        "token",
+        "worker_id",
+        "ack_queue",
+        "slots",
+        "free",
+        "next_slot",
+        "bytes",
+    )
+
+    def __init__(self, token, worker_id, ack_queue):
+        self.token = token
+        self.worker_id = worker_id
+        self.ack_queue = ack_queue
+        self.slots: dict[int, _SharedBatchSlot] = {}
+        self.free: dict[tuple, list[_SharedBatchSlot]] = {}
+        self.next_slot = 0
+        self.bytes = 0
+
+    def _drain_acks(self):
+        while True:
+            try:
+                slot_id = self.ack_queue.get_nowait()
+            except Exception:
+                return
+            slot = self.slots.get(slot_id)
+            if slot is not None:
+                slot.acknowledged = True
+                self.free.setdefault(slot.key, []).append(slot)
+
+    def _take(self, shape, dtype, nbytes, requires_grad):
+        key = (tuple(shape), dtype)
+        self._drain_acks()
+        free = self.free.get(key)
+        if free:
+            slot = free.pop()
+            slot.requires_grad = requires_grad
+            return slot
+        if (
+            len(self.slots) >= _SHARED_BATCH_MAX_SLOTS
+            or self.bytes + nbytes > _SHARED_BATCH_MAX_BYTES
+        ):
+            return None
+        slot = _SharedBatchSlot(self.next_slot, shape, dtype, nbytes)
+        self.next_slot += 1
+        self.slots[slot.slot_id] = slot
+        self.bytes += nbytes
+        slot.requires_grad = requires_grad
+        return slot
+
+    def wrap(self, data):
+        """Replace large CPU tensors in ``data`` with segment-backed handles."""
+        if type(data) is Tensor:
+            nbytes = data.numel() * data.itemsize()
+            if (
+                data.device.type == "cpu"
+                and nbytes >= _SHARED_BATCH_MIN_BYTES
+                and not (data.requires_grad and not data.is_leaf)
+            ):
+                slot = self._take(data.shape, data.dtype, nbytes, data.requires_grad)
+                if slot is not None:
+                    slot.tensor.copy_(data)
+                    return _SharedBatchHandle(slot, self.token, self.worker_id)
+            return data
+        if isinstance(data, dict):
+            values = {key: self.wrap(value) for key, value in data.items()}
+            if type(data) is dict:
+                return values
+            try:
+                return type(data)(values)
+            except TypeError:
+                return values
+        if isinstance(data, list):
+            values = [self.wrap(value) for value in data]
+            if type(data) is list:
+                return values
+            try:
+                return type(data)(values)
+            except TypeError:
+                return values
+        if isinstance(data, tuple):
+            if hasattr(data, "_fields"):  # namedtuple
+                return type(data)(*(self.wrap(value) for value in data))
+            return tuple(self.wrap(value) for value in data)
+        return data
+
+
+def _restore_queued_batch(data):
+    return data
+
+
+class _QueuedSharedBatch:
+    """Fill a segment when the queue's feeder thread serializes the batch.
+
+    Placing the batch in a segment costs one copy, and doing that on the
+    worker's main thread delays the next fetch. Deferring it to the feeder
+    thread lets the copy overlap with the next fetch, which is where a batch
+    produced by the ordinary queue also pays its serialization cost.
+    """
+
+    __slots__ = ("state", "data")
+
+    def __init__(self, state, data):
+        self.state = state
+        self.data = data
+
+    def __reduce__(self):
+        try:
+            data = self.state.wrap(self.data)
+        except Exception:
+            # Never let a transport problem lose the batch; ship it the
+            # ordinary way from the same thread.
+            data = self.data
+        return (_restore_queued_batch, (data,))
 
 
 # ---------------------------------------------------------------------------
@@ -1485,6 +1791,8 @@ def _worker_loop(
     worker_id,
     num_workers,
     persistent_workers,
+    shared_batch_token=None,
+    shared_batch_ack=None,
 ) -> None:
     # See NOTE [ Data Loader Multiprocessing Shutdown Logic ] in
     try:
@@ -1500,6 +1808,12 @@ def _worker_loop(
         _worker_info = WorkerInfo(
             id=worker_id, num_workers=num_workers, seed=seed, dataset=dataset
         )
+
+        slot_state = None
+        if shared_batch_token is not None:
+            slot_state = _SharedBatchState(
+                shared_batch_token, worker_id, shared_batch_ack
+            )
 
         init_exception = None
 
@@ -1560,6 +1874,13 @@ def _worker_loop(
                         data = ExceptionWrapper(
                             where=f"in DataLoader worker process {worker_id}"
                         )
+                if slot_state is not None and not isinstance(
+                    data, (ExceptionWrapper, _IterableDatasetStopIteration)
+                ):
+                    # The segment is filled when the queue's feeder thread
+                    # serializes this batch, so the copy overlaps the next
+                    # fetch instead of delaying it.
+                    data = _QueuedSharedBatch(slot_state, data)
             data_queue.put((idx, data))
     except KeyboardInterrupt:
         # Main process will raise KeyboardInterrupt anyways.
@@ -1831,6 +2152,21 @@ class _MultiProcessDataLoaderIter(_BaseDataLoaderIter):
         self._shutdown = False
         self._workers_done_event = multiprocessing_context.Event()
 
+        # One acknowledgement queue per worker lets a worker learn that the
+        # consumer has released a segment and may reuse it. The registry is
+        # keyed by a token that is alive only while this iterator exists.
+        self._shared_batch_token = None
+        self._shared_batch_ack_queues = None
+        if _SHARED_BATCH_ENABLED:
+            self._shared_batch_token = next(_shared_batch_tokens)
+            self._shared_batch_ack_queues = [
+                multiprocessing_context.Queue(maxsize=_SHARED_BATCH_ACK_BACKLOG)
+                for _ in range(self._num_workers)
+            ]
+            _shared_batch_ack_queues[self._shared_batch_token] = (
+                self._shared_batch_ack_queues
+            )
+
         self._index_queues = []
         self._workers = []
         for i in range(self._num_workers):
@@ -1854,6 +2190,10 @@ class _MultiProcessDataLoaderIter(_BaseDataLoaderIter):
                     i,
                     self._num_workers,
                     self._persistent_workers,
+                    self._shared_batch_token,
+                    None
+                    if self._shared_batch_ack_queues is None
+                    else self._shared_batch_ack_queues[i],
                 ),
             )
             w.daemon = True
@@ -2100,6 +2440,20 @@ class _MultiProcessDataLoaderIter(_BaseDataLoaderIter):
                 q.cancel_join_thread()
                 q.close()
         finally:
+            # Drop the token before closing the queues: a release that fires
+            # while the process winds down must not try to use a closed queue.
+            token = getattr(self, "_shared_batch_token", None)
+            if token is not None:
+                _shared_batch_ack_queues.pop(token, None)
+                _close_shared_batch_fds(token)
+                self._shared_batch_token = None
+            for q in getattr(self, "_shared_batch_ack_queues", None) or ():
+                try:
+                    q.cancel_join_thread()
+                    q.close()
+                except Exception:
+                    pass
+            self._shared_batch_ack_queues = None
             for w in self._workers:
                 if w.is_alive():
                     # Existing mechanisms try to make the workers exit

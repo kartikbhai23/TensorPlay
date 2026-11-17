@@ -629,6 +629,85 @@ class TestDataLoaderFunctional(unittest.TestCase):
             list(td.DataLoader(SlowDS(), batch_size=1, num_workers=1, timeout=0.05))
         self.assertIn("DataLoader timed out after 0.05 seconds", str(cm.exception))
 
+    def _shared_batch_loader(self, dataset, **kwargs):
+        # Force every tensor through the segment transport even when the test
+        # data is too small to qualify on its own.
+        if not td._SHARED_BATCH_ENABLED:
+            self.skipTest("segment transport is not supported on this platform")
+        previous = td._SHARED_BATCH_MIN_BYTES
+        td._SHARED_BATCH_MIN_BYTES = 1
+        self.addCleanup(setattr, td, "_SHARED_BATCH_MIN_BYTES", previous)
+        return td.DataLoader(dataset, num_workers=2, **kwargs)
+
+    def test_shared_batch_transport_values(self):
+        features = 6
+        x = tp.arange(32 * features, dtype=tp.float32).reshape(32, features)
+        y = tp.arange(32, dtype=tp.int64)
+        loader = self._shared_batch_loader(
+            td.TensorDataset(x, y), batch_size=8, shuffle=False
+        )
+        kept = []
+        for batch_index, (batch_x, batch_y) in enumerate(loader):
+            start = batch_index * 8
+            self.assertEqual(batch_x.tolist(), x[start : start + 8].tolist())
+            self.assertEqual(batch_y.tolist(), list(range(start, start + 8)))
+            self.assertFalse(batch_x.requires_grad)
+            self.assertFalse(batch_y.requires_grad)
+            # Keeping the tensor alive must keep its values intact even though
+            # later batches pressure the worker's segment pool.
+            kept.append((batch_x, batch_y))
+        for batch_index, (batch_x, batch_y) in enumerate(kept):
+            start = batch_index * 8
+            self.assertEqual(batch_x.tolist(), x[start : start + 8].tolist())
+            self.assertEqual(batch_y.tolist(), list(range(start, start + 8)))
+
+    def test_shared_batch_transport_reuse_and_nested_structure(self):
+        class DictDataset(td.Dataset):
+            def __len__(self):
+                return 16
+
+            def __getitem__(self, index):
+                return {
+                    "image": tp.full((2, 3), float(index)),
+                    "meta": (tp.tensor([index, index + 1]), str(index)),
+                }
+
+        loader = self._shared_batch_loader(
+            DictDataset(), batch_size=4, persistent_workers=True
+        )
+        for _ in range(3):
+            seen = []
+            start = 0
+            for batch in loader:
+                images = batch["image"].tolist()
+                pair, names = batch["meta"]
+                self.assertEqual(len(images), 4)
+                for row, image in enumerate(images):
+                    value = float(start + row)
+                    self.assertEqual(image, [[value] * 3, [value] * 3])
+                self.assertEqual(
+                    pair.tolist(),
+                    [[start + row, start + row + 1] for row in range(4)],
+                )
+                self.assertEqual(list(names), [str(start + row) for row in range(4)])
+                seen.append(pair.tolist())
+                start += 4
+            self.assertEqual(seen[0], [[0, 1], [1, 2], [2, 3], [3, 4]])
+            self.assertEqual(seen[-1], [[12, 13], [13, 14], [14, 15], [15, 16]])
+        loader._iterator._shutdown_workers()
+
+    def test_shared_batch_transport_falls_back_for_retained_batches(self):
+        x = tp.arange(64 * 8, dtype=tp.float32).reshape(64, 8)
+        loader = self._shared_batch_loader(
+            td.TensorDataset(x), batch_size=8, shuffle=False
+        )
+        kept = [batch[0] for batch in loader]
+        # The pool is bounded, so later batches travel the ordinary way; every
+        # batch must still carry the correct values.
+        for batch_index, batch in enumerate(kept):
+            start = batch_index * 8
+            self.assertEqual(batch.tolist(), x[start : start + 8].tolist())
+
 
 if __name__ == "__main__":
     unittest.main()
