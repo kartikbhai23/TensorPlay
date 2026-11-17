@@ -61,6 +61,10 @@ Tensor& logical_not_out_cuda(const Tensor& self, Tensor& out) {
                              "logical_not");
 }
 
+Tensor& logical_not__cuda(Tensor& self) {
+    return logical_not_out_cuda(self, self);
+}
+
 Tensor logical_and_cuda(const Tensor& a, const Tensor& b) {
     return logical_binary_cuda(a, b, HFn17{}, "logical_and");
 }
@@ -110,6 +114,7 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, CompareLogicalKernels) {
     m.impl("signbit", signbit_cuda);
     m.impl("logical_not", logical_not_cuda);
     m.impl("logical_not.out", logical_not_out_cuda);
+    m.impl("logical_not_", logical_not__cuda);
     m.impl("logical_and", logical_and_cuda);
     m.impl("logical_or", logical_or_cuda);
     m.impl("logical_xor", logical_xor_cuda);

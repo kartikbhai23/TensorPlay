@@ -568,7 +568,6 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, InplaceCompletionKernels) {
     m.impl("log2_", log2_inplace_kernel);
     m.impl("log_", log_inplace_kernel);
     m.impl("logical_and_", logical_and_inplace_kernel);
-    m.impl("logical_not_", logical_not_inplace_kernel);
     m.impl("logical_or_", logical_or_inplace_kernel);
     m.impl("logical_xor_", logical_xor_inplace_kernel);
     m.impl("logit_", logit_inplace_kernel);
