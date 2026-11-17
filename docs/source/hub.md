@@ -115,9 +115,20 @@ unchanged ref reuses the cache, a moved ref refreshes it, and when the API is
 unreachable the cache is used as-is. Pass `skip_validation=True` to skip the
 check entirely and never contact the API on a cache hit.
 
-Downloads are resumable: an interrupted transfer leaves a `<file>.part` file
-that the next attempt continues from, and a completed download writes a
-`<file>.sha256` sidecar used to verify the file on later cache hits.
+Downloads are resumable and atomic: an interrupted transfer leaves a
+`<file>.part` file that the next attempt continues from with a range request,
+and the finished file is moved into place with a single rename, so a reader
+never sees a partial target. A completed download writes a `<file>.sha256`
+sidecar holding the file digest and its size; later cache hits are accepted
+only while the recorded size still matches, and a truncated or replaced file is
+downloaded again. When a caller asks for hash checking, the digest is verified
+while streaming and the staged bytes are discarded on a mismatch.
+
+Transient failures are retried with exponential backoff and jitter, honouring
+`Retry-After`, and a body shorter than its advertised length is retried rather
+than accepted. Concurrent writers of the same destination are serialized by a
+`<file>.lock` file, so parallel processes download one copy and the rest reuse
+it.
 
 ### Trust and validation
 

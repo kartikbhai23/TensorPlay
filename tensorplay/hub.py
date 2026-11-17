@@ -4,11 +4,13 @@ import contextlib
 import hashlib
 import json
 import os
+import random
 import re
 import logging
 import shutil
 import sys
 import time
+import uuid
 import warnings
 import zipfile
 from pathlib import Path
@@ -89,15 +91,28 @@ def set_dir(d: Union[str, Path]) -> None:
     global _hub_dir
     _hub_dir = Path(d).expanduser()
 
-# Download Utility
-DEFAULT_RETRY_DELAY : float = 1.0
-MAX_RETRY_DELAY : float = 10.0
+# Download utility
+DEFAULT_RETRY_DELAY: float = 1.0
+MAX_RETRY_DELAY: float = 10.0
+MAX_DOWNLOAD_ATTEMPTS: int = 100
 READ_DATA_CHUNK: int = 128 * 1024
 USER_AGENT = "TensorPlay/1.0 (Python/{}.{}; {})".format(
     sys.version_info.major,
     sys.version_info.minor,
     sys.platform
 )
+
+_PART_SUFFIX = ".part"
+_SIDECAR_SUFFIX = ".sha256"
+_LOCK_SUFFIX = ".lock"
+
+# Printing a header is part of the visible progress contract.
+_PROGRESS_BAR_FORMAT = "    \033[95m{bar:40}\033[0m {n_fmt}/{total_fmt} {rate_fmt} eta {remaining}"
+
+
+class _RetryableDownloadError(RuntimeError):
+    """A transient failure that a later attempt may still recover from."""
+
 
 def _human_readable_size(size: float) -> str:
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -106,12 +121,386 @@ def _human_readable_size(size: float) -> str:
         size /= 1024.0
     return f"{size:.1f} PB"
 
-def _sha256_file(path: Path) -> str:
-    hasher = hashlib.sha256()
+
+def _hash_file(path: Path, algo=hashlib.sha256) -> str:
+    hasher = algo()
     with open(path, "rb") as f:
         while chunk := f.read(READ_DATA_CHUNK):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def _feed_hashers(path: Path, *hashers) -> None:
+    """Replay a staged partial file through every incremental hasher."""
+    with open(path, "rb") as f:
+        while chunk := f.read(READ_DATA_CHUNK):
+            for hasher in hashers:
+                if hasher is not None:
+                    hasher.update(chunk)
+
+
+def _read_sidecar(sidecar: Path) -> tuple[Optional[str], Optional[int]]:
+    """Digest recorded for a finished download, and the size it covers."""
+    try:
+        tokens = sidecar.read_text().split()
+    except OSError:
+        return None, None
+    if not tokens or len(tokens[0]) != 64:
+        return None, None
+    size = int(tokens[1]) if len(tokens) > 1 and tokens[1].isdigit() else None
+    return tokens[0], size
+
+
+def _write_sidecar(sidecar: Path, digest: str, size: int) -> None:
+    tmp = sidecar.with_name(sidecar.name + ".tmp")
+    try:
+        tmp.write_text(f"{digest}\n{size}\n")
+        os.replace(tmp, sidecar)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+
+
+def _matches_recorded_file(
+    dst_path: Path, sidecar: Path, hash_prefix: Optional[str], hash_algo
+) -> tuple[bool, Optional[str]]:
+    """Whether an existing file may be reused, and its full SHA-256 if known.
+
+    A file with no recorded digest is accepted as-is, without a digest for the
+    record. When a digest was recorded, its recorded size settles the common
+    case without rereading the file; a size mismatch falls back to a full
+    reread so a truncated or replaced file is still detected.
+    """
+    try:
+        size = dst_path.stat().st_size
+    except OSError:
+        return False, None
+    digest, recorded_size = _read_sidecar(sidecar)
+    if hash_prefix:
+        same_size = recorded_size is None or recorded_size == size
+        if hash_algo is hashlib.sha256 and digest is not None and same_size:
+            return digest.startswith(hash_prefix), digest
+        actual = _hash_file(dst_path, hash_algo)
+        if not actual.startswith(hash_prefix):
+            return False, None
+        return True, actual if hash_algo is hashlib.sha256 else None
+    if digest is None:
+        return True, None
+    if recorded_size is not None and recorded_size == size:
+        return True, digest
+    actual = _hash_file(dst_path, hashlib.sha256)
+    if actual == digest:
+        return True, actual
+    return False, None
+
+
+@contextlib.contextmanager
+def _exclusive_lock(lock_path: Path):
+    """Serialize writers of one destination; yields whether the lock is held."""
+    try:
+        import fcntl
+    except ImportError:  # platforms without advisory locks stage privately instead
+        yield False
+        return
+    fd = -1
+    try:
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o666)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError:
+        if fd >= 0:
+            os.close(fd)
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _header_int(headers, name: str) -> Optional[int]:
+    value = headers.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return int(value) if value.isdigit() else None
+
+
+def _content_range_start(headers) -> Optional[int]:
+    value = headers.get("Content-Range")
+    if not value:
+        return None
+    match = re.match(r"bytes\s+(\d+)-", value.strip(), re.I)
+    return int(match.group(1)) if match else None
+
+
+def _content_range_total(headers) -> Optional[int]:
+    value = headers.get("Content-Range")
+    if not value:
+        return None
+    match = re.match(r"bytes\s+\d+-\d+/(\d+)", value.strip(), re.I)
+    return int(match.group(1)) if match else None
+
+
+def _retry_after(headers) -> Optional[float]:
+    if headers is None:
+        return None
+    value = headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return max(float(value.strip()), 0.0)
+    except ValueError:
+        return None
+
+
+def _warn_on_low_disk_space(expected_size: Optional[int], directory: Path) -> None:
+    if expected_size is None or expected_size <= 0:
+        return
+    try:
+        free = shutil.disk_usage(directory).free
+    except OSError:
+        return
+    if free < expected_size:
+        warnings.warn(
+            "Not enough free disk space to download the file: "
+            f"{_human_readable_size(expected_size)} needed, "
+            f"{_human_readable_size(free)} available in {directory}.",
+            stacklevel=3,
+        )
+
+
+def _start_progress_bar(url: str, total_size: Optional[int], initial: int):
+    readable_size = _human_readable_size(total_size) if total_size is not None else "Unknown size"
+    print(f"Downloading {url} ({readable_size})")
+    if tqdm is None:
+        return None
+    return tqdm(
+        total=total_size,
+        initial=initial,
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        bar_format=_PROGRESS_BAR_FORMAT,
+        ascii=" ╸━",
+        file=sys.stderr,
+        leave=True,
+    )
+
+
+def _resume_state(part_path: Path, prefix_algo):
+    """Staged byte count plus hashers primed over those bytes."""
+    hasher = hashlib.sha256()
+    prefix_hasher = prefix_algo() if prefix_algo is not None else None
+    size = 0
+    if part_path.exists():
+        try:
+            size = part_path.stat().st_size
+            if size:
+                _feed_hashers(part_path, hasher, prefix_hasher)
+            else:
+                part_path.unlink()
+        except OSError:
+            with contextlib.suppress(OSError):
+                part_path.unlink()
+            size = 0
+            hasher = hashlib.sha256()
+            prefix_hasher = prefix_algo() if prefix_algo is not None else None
+    return size, hasher, prefix_hasher
+
+
+def _download_locked(
+    *,
+    url: str,
+    dst_path: Path,
+    sidecar: Path,
+    locked: bool,
+    hash_prefix: Optional[str],
+    hash_algo,
+    progress: bool,
+    timeout: float,
+    max_retries: int,
+    overwrite: bool,
+    allow_resume: bool,
+    user_agent: str,
+) -> None:
+    if dst_path.exists():
+        if overwrite:
+            dst_path.unlink(missing_ok=True)
+            sidecar.unlink(missing_ok=True)
+        else:
+            accepted, digest = _matches_recorded_file(dst_path, sidecar, hash_prefix, hash_algo)
+            if accepted:
+                logger.info(f"Target file {dst_path} already matches the recorded digest; skipping download.")
+                # Record what a legacy cache entry lacked so later hits stay cheap.
+                if digest is not None:
+                    size = dst_path.stat().st_size
+                    if _read_sidecar(sidecar) != (digest, size):
+                        try:
+                            _write_sidecar(sidecar, digest, size)
+                        except OSError as exc:
+                            logger.warning(f"Could not write sha256 sidecar for {dst_path}: {exc}")
+                return
+            logger.warning(f"Target file {dst_path} does not match the recorded digest. Redownloading.")
+            dst_path.unlink(missing_ok=True)
+            sidecar.unlink(missing_ok=True)
+
+    resumable = allow_resume and locked
+    if resumable:
+        part_path = dst_path.with_name(dst_path.name + _PART_SUFFIX)
+    else:
+        part_path = dst_path.with_name(f"{dst_path.name}.{uuid.uuid4().hex[:8]}{_PART_SUFFIX}")
+
+    prefix_algo = hash_algo if hash_prefix else None
+    attempts_left = max(1, int(max_retries))
+    attempts_used = 0
+    last_error: Optional[BaseException] = None
+    retry_hint: Optional[float] = None
+    restarted_after_mismatch = False
+
+    try:
+        while attempts_left > 0 and attempts_used < MAX_DOWNLOAD_ATTEMPTS:
+            attempts_used += 1
+            attempts_left -= 1
+            if attempts_used > 1:
+                delay = min(DEFAULT_RETRY_DELAY * (2 ** (attempts_used - 2)), MAX_RETRY_DELAY)
+                if retry_hint is not None:
+                    delay = min(retry_hint, MAX_RETRY_DELAY)
+                time.sleep(delay + random.uniform(0.0, 0.1 * delay))
+            retry_hint = None
+
+            resume_size, hasher, prefix_hasher = _resume_state(part_path, prefix_algo)
+            if resume_size:
+                logger.info(f"Resuming {url} at byte {resume_size}")
+
+            headers = {"User-Agent": user_agent, "Accept": "*/*", "Accept-Encoding": "identity"}
+            if resume_size:
+                headers["Range"] = f"bytes={resume_size}-"
+            request = Request(url, headers=headers)
+            received = 0
+
+            try:
+                with urlopen(request, timeout=timeout) as response:
+                    status = getattr(response, "status", None) or 200
+                    if status in (200, 206):
+                        range_start = _content_range_start(response.headers) if status == 206 else None
+                        if status == 206 and range_start is None:
+                            # No range advertised: treat the body as continuing at the staged offset.
+                            range_start = resume_size
+                        if status == 200 or range_start == 0:
+                            if resume_size:
+                                logger.warning("Server ignored the range request; restarting the download.")
+                                part_path.unlink(missing_ok=True)
+                                resume_size = 0
+                                hasher = hashlib.sha256()
+                                prefix_hasher = prefix_algo() if prefix_algo is not None else None
+                            expected_size = _header_int(response.headers, "Content-Length")
+                        else:
+                            if range_start != resume_size:
+                                part_path.unlink(missing_ok=True)
+                                raise _RetryableDownloadError(
+                                    f"server resumed at byte {range_start}, expected {resume_size}"
+                                )
+                            expected_size = _content_range_total(response.headers)
+                            if expected_size is None:
+                                length = _header_int(response.headers, "Content-Length")
+                                expected_size = resume_size + length if length is not None else None
+                    elif status == 404:
+                        raise HTTPError(url, status, "File not found", response.headers, None)
+                    elif status in (408, 429) or status >= 500:
+                        raise HTTPError(url, status, "Server error", response.headers, None)
+                    else:
+                        raise RuntimeError(f"Unsupported HTTP status code: {status} (URL: {url})")
+
+                    if expected_size is not None:
+                        _warn_on_low_disk_space(max(expected_size - resume_size, 0), dst_path.parent)
+
+                    bar = _start_progress_bar(url, expected_size, resume_size) if progress else None
+                    try:
+                        with open(part_path, "ab" if resume_size else "wb") as handle:
+                            try:
+                                while True:
+                                    buffer = response.read(READ_DATA_CHUNK)
+                                    if not buffer:
+                                        break
+                                    handle.write(buffer)
+                                    hasher.update(buffer)
+                                    if prefix_hasher is not None:
+                                        prefix_hasher.update(buffer)
+                                    received += len(buffer)
+                                    if bar is not None:
+                                        bar.update(len(buffer))
+                            finally:
+                                handle.flush()
+                                os.fsync(handle.fileno())
+                    finally:
+                        if bar is not None:
+                            bar.close()
+
+                    if expected_size is not None and received != expected_size - resume_size:
+                        raise _RetryableDownloadError(
+                            f"incomplete body: received {received} of {expected_size - resume_size} bytes"
+                        )
+
+                    if prefix_hasher is not None:
+                        digest = prefix_hasher.hexdigest()
+                        if not digest.startswith(hash_prefix):
+                            part_path.unlink(missing_ok=True)
+                            if resume_size and not restarted_after_mismatch:
+                                restarted_after_mismatch = True
+                                attempts_left += 1
+                                logger.warning("Hash mismatch after resuming; restarting the download from scratch.")
+                                continue
+                            raise RuntimeError(
+                                "Hash check failed!\n"
+                                f"File path: {dst_path}\n"
+                                f"Expected prefix: {hash_prefix}\n"
+                                f"Actual hash: {digest}\n"
+                            )
+
+                    os.replace(part_path, dst_path)
+                    try:
+                        _write_sidecar(sidecar, hasher.hexdigest(), dst_path.stat().st_size)
+                    except OSError as exc:
+                        logger.warning(f"Could not write sha256 sidecar for {dst_path}: {exc}")
+                    return
+            except HTTPError as exc:
+                last_error = exc
+                retry_hint = _retry_after(exc.headers)
+                if exc.code == 416:
+                    # The staged offset is outside the resource: drop it and
+                    # fetch the whole file again.
+                    part_path.unlink(missing_ok=True)
+                    logger.warning("Server rejected the requested range; restarting the download.")
+                elif 400 <= exc.code < 500 and exc.code not in (408, 429):
+                    part_path.unlink(missing_ok=True)
+                    if exc.code == 404:
+                        raise RuntimeError(f"File not found: {url}") from exc
+                    raise RuntimeError(f"HTTP {exc.code} while downloading {url}") from exc
+                else:
+                    logger.warning(f"Download failed (attempt {attempts_used}): HTTP {exc.code}")
+            except _RetryableDownloadError as exc:
+                last_error = exc
+                logger.warning(f"Download failed (attempt {attempts_used}): {exc}")
+            except URLError as exc:
+                last_error = exc
+                logger.warning(f"Download failed (attempt {attempts_used}): {exc}")
+            except (TimeoutError, ConnectionError) as exc:
+                last_error = exc
+                logger.warning(f"Download failed (attempt {attempts_used}): {exc}")
+
+            if received:
+                # Data reached the disk, so the endpoint works: keep going while
+                # each attempt still advances the staged offset.
+                attempts_left = max(attempts_left, 1)
+    finally:
+        if not resumable:
+            part_path.unlink(missing_ok=True)
+
+    message = f"Network error: retried {attempts_used} times, still failed. URL: {url}"
+    raise RuntimeError(message) from last_error
 
 
 def download_url_to_file(
@@ -125,234 +514,82 @@ def download_url_to_file(
         allow_resume: bool = True,
         user_agent: str = USER_AGENT,
 ) -> None:
-    r"""
-    Download a URL to a local file(Safe download: temp file + hash check + progress feedback).
+    r"""Download a URL to a local file, atomically and resumably.
 
-    Features:
-    - First download to a temp file, then move to the destination path to avoid corrupting the destination file.
-    - Support SHA256 hash prefix check to ensure file integrity.
-    - Record a full-file sha256 sidecar (``<dst>.sha256``); cache hits verify
-      against it and redownload on mismatch.
-    - Show download progress bar (disable with progress=False).
-    - Support network timeout and retry mechanism for stability.
-    - Resume interrupted downloads from a deterministic ``<dst>.part`` file
-      when the server supports range requests.
-    - Automatically create parent directories for the destination path.
+    Guarantees:
+    - The destination is only ever replaced by an atomically renamed staging
+      file, so a concurrent reader never observes a half-written target.
+    - An existing file is reused when it matches the digest recorded beside it
+      (a size match short-circuits the reread), and replaced otherwise.
+    - ``hash_prefix`` is checked while streaming. A mismatch discards the
+      staged bytes and, when they came from a resume, retries once from zero.
+    - An interrupted transfer resumes with a range request; a server that
+      ignores the range restarts the transfer rather than appending a whole
+      response to a partial file, and a server that resumes at the wrong offset
+      is rejected.
+    - A body shorter than the advertised length is treated as a transient
+      failure instead of being accepted as complete.
+    - Retries are bounded, back off exponentially with jitter, honour
+      ``Retry-After``, and do not consume the budget while they keep making
+      progress.
+    - Writers of one destination are serialized by a lock file; where advisory
+      locks are unavailable each writer stages to a private file and renames
+      atomically, so a broken lock can cost bandwidth but never corrupt data.
 
     Args:
         url (str): URL address to download (supports HTTP/HTTPS).
         dst (str | Path): Destination path (including filename) to save the file.
-        hash_prefix (Optional[str]): SHA256 hash prefix for integrity check, default None.
-        progress (bool): Whether to show download progress bar, default True.
-        timeout (float): Network request timeout in seconds, default 10.0.
-        max_retries (int): Maximum number of retry attempts for network errors, default 3.
-        overwrite (bool): Whether to overwrite existing file, default False.
-        allow_resume (bool): Whether to support resuming interrupted downloads, default True.
-        user_agent (str): Custom User-Agent header for HTTP requests, default USER_AGENT.
+        hash_prefix (Optional[str]): Hexadecimal digest prefix to verify the
+            downloaded bytes against, default None.
+        progress (bool): Whether to show download progress, default True.
+        timeout (float): Per-request network timeout in seconds, default 10.0.
+        max_retries (int): Attempt budget for transient failures, default 3.
+        overwrite (bool): Whether to replace an existing file, default False.
+        allow_resume (bool): Whether an interrupted transfer may resume from
+            its staged offset, default True.
+        user_agent (str): Custom User-Agent header for HTTP requests.
     """
     if not url.strip():
         raise ValueError("Download URL cannot be an empty string")
+    scheme = urlparse(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"Download URL must use http or https, got {scheme!r}: {url}")
     if hash_prefix is not None:
         if not isinstance(hash_prefix, str) or len(hash_prefix) < 4:
             raise TypeError(
                 f"hash_prefix must be a string with length ≥ 4, but got {type(hash_prefix).__name__} "
                 f"(length: {len(hash_prefix) if isinstance(hash_prefix, str) else 'N/A'})"
             )
+        hash_prefix = hash_prefix.lower()
+        if any(ch not in "0123456789abcdef" for ch in hash_prefix):
+            raise ValueError(f"hash_prefix must be hexadecimal, got {hash_prefix!r}")
 
-    # Detect hash algorithm based on length if possible, or default to sha256
-    # MD5: 32 chars, SHA256: 64 chars
-    hash_algo = hashlib.sha256
-    if hash_prefix and len(hash_prefix) == 32:
-        hash_algo = hashlib.md5
+    # A 32-character prefix names an MD5 digest; everything else is SHA-256.
+    hash_algo = hashlib.md5 if hash_prefix is not None and len(hash_prefix) == 32 else hashlib.sha256
 
     dst_path = Path(dst).resolve()
     dst_parent = dst_path.parent
-    sidecar = dst_path.with_name(dst_path.name + ".sha256")
-
     try:
         dst_parent.mkdir(parents=True, exist_ok=True)
     except PermissionError as e:
         raise RuntimeError(f"Permission denied: cannot create parent directory {dst_parent} - {e}") from e
 
-    if dst_path.exists():
-        if overwrite:
-            dst_path.unlink(missing_ok=True)
-            sidecar.unlink(missing_ok=True)
-        else:
-            if hash_prefix:
-                prefix_hasher = hash_algo()
-                with open(dst_path, "rb") as f:
-                    while chunk := f.read(READ_DATA_CHUNK):
-                        prefix_hasher.update(chunk)
-                if prefix_hasher.hexdigest().startswith(hash_prefix.lower()):
-                    logger.info(f"Target file {dst_path} already exists and hash matches, skip downloading.")
-                    return
-                logger.warning(f"Target file {dst_path} exists but hash mismatch. Redownloading.")
-                dst_path.unlink()
-            elif sidecar.exists():
-                try:
-                    recorded = sidecar.read_text().strip()
-                except OSError:
-                    recorded = ""
-                if len(recorded) == 64 and recorded == _sha256_file(dst_path):
-                    logger.info(f"Target file {dst_path} already exists and sidecar hash matches, skip downloading.")
-                    return
-                logger.warning(f"Target file {dst_path} exists but sidecar hash mismatch. Redownloading.")
-                dst_path.unlink()
-                sidecar.unlink(missing_ok=True)
-            else:
-                logger.info(f"Target file {dst_path} already exists, skip downloading.")
-                return
-
-    # Deterministic partial-file name so a later call (or process) can resume.
-    tmp_dst = dst_path.with_name(dst_path.name + ".part")
-    downloaded_size = 0
-    hasher = hashlib.sha256()
-    prefix_hasher = hash_algo() if hash_prefix else None
-
-    if allow_resume and tmp_dst.exists():
-        try:
-            downloaded_size = tmp_dst.stat().st_size
-            if downloaded_size > 0:
-                with open(tmp_dst, "rb") as f:
-                    while chunk := f.read(READ_DATA_CHUNK):
-                        hasher.update(chunk)
-                        if prefix_hasher:
-                            prefix_hasher.update(chunk)
-            else:
-                tmp_dst.unlink(missing_ok=True)
-        except Exception:
-            tmp_dst.unlink(missing_ok=True)
-            downloaded_size = 0
-
-    retry_count = 0
-    while retry_count < max_retries:
-        retry_delay = min(DEFAULT_RETRY_DELAY * (2 ** retry_count), MAX_RETRY_DELAY)
-        try:
-            headers = {"User-Agent": user_agent, "Accept": "*/*"}
-            if allow_resume and downloaded_size > 0:
-                headers["Range"] = f"bytes={downloaded_size}-"
-
-            req = Request(url, headers=headers)
-
-            with urlopen(req, timeout=timeout) as u:
-                status_code = u.status
-                if status_code == 200:
-                    total_size = int(u.headers.get("Content-Length", 0)) if u.headers.get("Content-Length", "").isdigit() else None
-                    if allow_resume and downloaded_size > 0:
-                        # Server ignored Range header, restart download
-                        downloaded_size = 0
-                        tmp_dst.unlink(missing_ok=True)
-                        hasher = hashlib.sha256()
-                        if prefix_hasher:
-                            prefix_hasher = hash_algo()
-                elif status_code == 206 and allow_resume and downloaded_size > 0:
-                    remaining_size = int(u.headers.get("Content-Length", 0)) if u.headers.get("Content-Length", "").isdigit() else None
-                    total_size = downloaded_size + remaining_size if remaining_size is not None else None
-                elif status_code == 404:
-                    raise HTTPError(url, status_code, "File not found", u.headers, None)
-                elif status_code >= 500:
-                    raise HTTPError(url, status_code, "Server internal error", u.headers, None)
-                else:
-                    raise RuntimeError(f"Unsupported HTTP status code: {status_code} (URL: {url})")
-
-                mode = "ab" if downloaded_size > 0 else "wb"
-                
-                pbar = None
-                if progress:
-                    # Print header: Downloading URL (SIZE)
-                    readable_size = "Unknown size"
-                    if total_size is not None:
-                        readable_size = _human_readable_size(float(total_size))
-                    
-                    # Use standard print for the header message
-                    print(f"Downloading {url} ({readable_size})")
-
-                    if tqdm is not None:
-                        # Configure tqdm to look like pip's bar
-                        # Format: Indentation + Colored Bar + Stats
-                        # Use Magenta (\033[95m) for the bar to match typical pip style
-                        # Characters: '━' for fill, '╸' for tip
-                        bar_fmt = "    \033[95m{bar:40}\033[0m {n_fmt}/{total_fmt} {rate_fmt} eta {remaining}"
-                        
-                        pbar = tqdm(
-                            total=total_size,
-                            initial=downloaded_size,
-                            unit="B",
-                            unit_scale=True,
-                            unit_divisor=1024,
-                            bar_format=bar_fmt,
-                            ascii=" ╸━",
-                            file=sys.stderr,
-                            leave=True
-                        )
-                
-                try:
-                    with open(tmp_dst, mode) as f:
-                        while True:
-                            buffer = u.read(READ_DATA_CHUNK)
-                            if not buffer:
-                                break
-                            f.write(buffer)
-                            hasher.update(buffer)
-                            if prefix_hasher:
-                                prefix_hasher.update(buffer)
-                            if pbar:
-                                pbar.update(len(buffer))
-                finally:
-                    if pbar:
-                        pbar.close()
-
-                if hash_prefix:
-                    assert prefix_hasher is not None, "Hash checker is not initialized"
-                    digest = prefix_hasher.hexdigest()
-                    if not digest.startswith(hash_prefix.lower()):
-                        tmp_dst.unlink(missing_ok=True)
-                        raise RuntimeError(
-                            f"Hash check failed!\n"
-                            f"File path: {dst_path}\n"
-                            f"Expected prefix: {hash_prefix}\n"
-                            f"Actual hash: {digest}\n"
-                        )
-
-                try:
-                    shutil.move(str(tmp_dst), str(dst_path))
-                except PermissionError as e:
-                    time.sleep(1)
-                    shutil.move(str(tmp_dst), str(dst_path))
-                except Exception as e:
-                    raise RuntimeError(f"Failed to move temp file to final destination: {e}") from e
-
-                try:
-                    sidecar.write_text(hasher.hexdigest() + "\n")
-                except OSError as e:
-                    logger.warning(f"Could not write sha256 sidecar for {dst_path}: {e}")
-
-                return
-
-        except HTTPError as e:
-            retry_count += 1
-            status_code = e.code
-            if status_code == 404:
-                tmp_dst.unlink(missing_ok=True)
-                raise RuntimeError(f"File not found: {url}") from e
-            
-            logger.warning(f"Download failed (Retry {retry_count}/{max_retries}): HTTP {status_code}")
-            time.sleep(retry_delay)
-
-            if retry_count >= max_retries:
-                tmp_dst.unlink(missing_ok=True)
-                raise RuntimeError(f"Network error: Retried {max_retries} times, still failed. URL: {url}") from e
-
-        except URLError as e:
-            retry_count += 1
-            logger.warning(f"Download failed (Retry {retry_count}/{max_retries}): {e}")
-            time.sleep(retry_delay)
-            if retry_count >= max_retries:
-                tmp_dst.unlink(missing_ok=True)
-                raise RuntimeError(f"Network error: Retried {max_retries} times, still failed. URL: {url}") from e
-
-
+    sidecar = dst_path.with_name(dst_path.name + _SIDECAR_SUFFIX)
+    with _exclusive_lock(dst_path.with_name(dst_path.name + _LOCK_SUFFIX)) as locked:
+        _download_locked(
+            url=url,
+            dst_path=dst_path,
+            sidecar=sidecar,
+            locked=locked,
+            hash_prefix=hash_prefix,
+            hash_algo=hash_algo,
+            progress=progress,
+            timeout=timeout,
+            max_retries=max_retries,
+            overwrite=overwrite,
+            allow_resume=allow_resume,
+            user_agent=user_agent,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -931,13 +1168,18 @@ def load_state_dict_from_url(
 
     filename = file_name or os.path.basename(urlparse(url).path)
     cached_file = model_dir / filename
-    if not cached_file.exists():
-        print(f'Downloading: "{url}" to {cached_file}')
-        hash_prefix = None
-        if check_hash:
-            m = HASH_REGEX.search(filename)
-            hash_prefix = m.group(1) if m else None
-        download_url_to_file(url, str(cached_file), hash_prefix=hash_prefix, progress=progress)
+
+    hash_prefix = None
+    if check_hash:
+        match = HASH_REGEX.search(filename) or HASH_REGEX.search(os.path.basename(urlparse(url).path))
+        if match is None or not match.group(1):
+            raise ValueError(
+                f"check_hash=True requires the file name to carry a '-<hash>.' suffix, but {filename!r} has none"
+            )
+        hash_prefix = match.group(1)
+    # Always goes through the downloader: it validates an already cached file
+    # against the recorded digest and redownloads a stale or truncated one.
+    download_url_to_file(url, str(cached_file), hash_prefix=hash_prefix, progress=progress)
 
     import tensorplay as tp
     return tp.load(str(cached_file), map_location=map_location, weights_only=weights_only)

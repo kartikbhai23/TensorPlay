@@ -4,7 +4,7 @@ import os
 import shutil
 import zipfile
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -255,10 +255,12 @@ def test_foreign_aliases_point_at_native_modules(foreign_repo):
 class _FakeResponse:
     """Minimal urlopen stand-in: context manager, headers, read()."""
 
-    def __init__(self, data=b"", status=200):
+    def __init__(self, data=b"", status=200, headers=None, fail_after=None):
         self._data = data
         self.status = status
-        self.headers = _FakeHeaders()
+        self.headers = _FakeHeaders(headers)
+        # When set, the body stops there and the next read raises as a reset connection.
+        self._fail_after = fail_after
 
     def __enter__(self):
         return self
@@ -267,16 +269,23 @@ class _FakeResponse:
         return False
 
     def read(self, size=-1):
+        if self._fail_after is not None:
+            if self._fail_after <= 0:
+                raise URLError("connection reset by peer")
+            if size is None or size < 0 or size > self._fail_after:
+                size = self._fail_after
         if size is None or size < 0:
             data, self._data = self._data, b""
         else:
             data, self._data = self._data[:size], self._data[size:]
+        if self._fail_after is not None:
+            self._fail_after -= len(data)
         return data
 
 
 class _FakeHeaders:
     def __init__(self, values=None):
-        self._values = values or {}
+        self._values = {k.lower(): v for k, v in (values or {}).items()}
 
     def get(self, key, default=None):
         return self._values.get(key.lower(), default)
@@ -324,7 +333,9 @@ def test_download_url_to_file_writes_and_honors_sha256_sidecar(monkeypatch, tmp_
     monkeypatch.setattr(hub, "urlopen", fake_urlopen)
     hub.download_url_to_file("https://example.com/model.pth", dst, progress=False)
     sidecar = dst.with_name(dst.name + ".sha256")
-    assert sidecar.read_text().strip() == hashlib.sha256(payload).hexdigest()
+    digest, recorded_size = sidecar.read_text().split()
+    assert digest == hashlib.sha256(payload).hexdigest()
+    assert int(recorded_size) == len(payload)
 
     # Intact file: sidecar verification avoids the network.
     hub.download_url_to_file("https://example.com/model.pth", dst, progress=False)
@@ -335,6 +346,186 @@ def test_download_url_to_file_writes_and_honors_sha256_sidecar(monkeypatch, tmp_
     hub.download_url_to_file("https://example.com/model.pth", dst, progress=False)
     assert calls["n"] == 2
     assert dst.read_bytes() == payload
+
+
+def test_download_url_to_file_resumes_after_midstream_failure(monkeypatch, tmp_path):
+    import hashlib
+
+    payload = bytes(range(256)) * 4
+    dst = tmp_path / "weights.bin"
+    part = dst.with_name(dst.name + ".part")
+    part.write_bytes(payload[: len(payload) // 2])
+    requests = []
+
+    def fake_urlopen(req, timeout=None):
+        requests.append(req)
+        start = int(req.headers.get("Range", "bytes=0-").split("=")[1].split("-")[0])
+        body = payload[start:]
+        headers = {"Content-Length": str(len(body))}
+        if start:
+            headers["Content-Range"] = f"bytes {start}-{len(payload) - 1}/{len(payload)}"
+        # The first body is cut short by a reset connection.
+        fail_after = 256 if len(requests) == 1 else None
+        return _FakeResponse(body, status=206 if start else 200, headers=headers, fail_after=fail_after)
+
+    monkeypatch.setattr(hub, "urlopen", fake_urlopen)
+    hub.download_url_to_file("https://example.com/weights.bin", dst, progress=False)
+
+    assert dst.read_bytes() == payload
+    assert not part.exists()
+    sidecar = dst.with_name(dst.name + ".sha256")
+    assert sidecar.read_text().split()[0] == hashlib.sha256(payload).hexdigest()
+    assert len(requests) == 2
+    assert requests[1].headers.get("Range") == f"bytes={len(payload) // 2 + 256}-"
+
+
+def test_download_url_to_file_retries_a_truncated_body(monkeypatch, tmp_path):
+    payload = bytes(range(256)) * 4
+    dst = tmp_path / "weights.bin"
+    requests = []
+
+    def fake_urlopen(req, timeout=None):
+        requests.append(req)
+        rng = req.headers.get("Range")
+        if not rng:
+            # Advertise the full size but deliver a short body.
+            return _FakeResponse(payload[:600], status=200, headers={"Content-Length": str(len(payload))})
+        start = int(rng.split("=")[1].split("-")[0])
+        body = payload[start:]
+        return _FakeResponse(
+            body,
+            status=206,
+            headers={
+                "Content-Length": str(len(body)),
+                "Content-Range": f"bytes {start}-{len(payload) - 1}/{len(payload)}",
+            },
+        )
+
+    monkeypatch.setattr(hub, "urlopen", fake_urlopen)
+    hub.download_url_to_file("https://example.com/weights.bin", dst, progress=False)
+
+    assert dst.read_bytes() == payload
+    assert len(requests) == 2
+    assert requests[1].headers.get("Range") == "bytes=600-"
+
+
+def test_download_url_to_file_restarts_when_the_range_is_ignored(monkeypatch, tmp_path):
+    payload = bytes(range(256)) * 4
+    dst = tmp_path / "weights.bin"
+    part = dst.with_name(dst.name + ".part")
+    part.write_bytes(payload[: len(payload) // 2])
+
+    responses = [
+        _FakeResponse(payload, status=200, headers={"Content-Length": str(len(payload))}),
+        _FakeResponse(
+            payload,
+            status=206,
+            headers={"Content-Length": str(len(payload)), "Content-Range": f"bytes 0-{len(payload) - 1}/{len(payload)}"},
+        ),
+    ]
+
+    def fake_urlopen(req, timeout=None):
+        return responses.pop(0)
+
+    monkeypatch.setattr(hub, "urlopen", fake_urlopen)
+    # A full body from the start replaces the staged bytes instead of extending them.
+    hub.download_url_to_file("https://example.com/weights.bin", dst, progress=False)
+    part.write_bytes(payload[: len(payload) // 2])
+    hub.download_url_to_file("https://example.com/weights.bin", dst, overwrite=True, progress=False)
+    assert dst.read_bytes() == payload
+
+
+def test_download_url_to_file_rejects_a_misplaced_resume(monkeypatch, tmp_path):
+    payload = bytes(range(256)) * 4
+    dst = tmp_path / "weights.bin"
+    part = dst.with_name(dst.name + ".part")
+    part.write_bytes(payload[: len(payload) // 2])
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResponse(
+            payload[100:],
+            status=206,
+            headers={
+                "Content-Length": str(len(payload) - 100),
+                "Content-Range": f"bytes 100-{len(payload) - 1}/{len(payload)}",
+            },
+        )
+
+    monkeypatch.setattr(hub, "urlopen", fake_urlopen)
+    with pytest.raises(RuntimeError):
+        hub.download_url_to_file("https://example.com/weights.bin", dst, progress=False, max_retries=1)
+    assert not dst.exists()
+
+
+def test_download_url_to_file_verifies_a_cached_file_against_the_prefix(monkeypatch, tmp_path):
+    import hashlib
+
+    payload = bytes(range(256)) * 4
+    dst = tmp_path / "weights-01234567.bin"
+    prefix = hashlib.sha256(payload).hexdigest()[:8]
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        return _FakeResponse(payload, headers={"Content-Length": str(len(payload))})
+
+    monkeypatch.setattr(hub, "urlopen", fake_urlopen)
+    dst.write_bytes(b"stale bytes")
+    hub.download_url_to_file("https://example.com/weights-01234567.bin", dst, hash_prefix=prefix, progress=False)
+    assert calls["n"] == 1
+    assert dst.read_bytes() == payload
+
+    # The recorded digest plus the recorded size settle a second call without the network.
+    hub.download_url_to_file("https://example.com/weights-01234567.bin", dst, hash_prefix=prefix, progress=False)
+    assert calls["n"] == 1
+
+    # A cache entry without a sidecar is verified once and then recorded, so the
+    # next hit is a size check again.
+    sidecar = dst.with_name(dst.name + ".sha256")
+    sidecar.unlink()
+    hub.download_url_to_file("https://example.com/weights-01234567.bin", dst, hash_prefix=prefix, progress=False)
+    assert calls["n"] == 1
+    assert sidecar.exists()
+
+
+def test_download_url_to_file_serializes_concurrent_writers(monkeypatch, tmp_path):
+    import threading
+
+    payload = b"z" * 1024
+    dst = tmp_path / "weights.bin"
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        return _FakeResponse(payload, headers={"Content-Length": str(len(payload))})
+
+    monkeypatch.setattr(hub, "urlopen", fake_urlopen)
+    threads = [
+        threading.Thread(
+            target=hub.download_url_to_file,
+            args=("https://example.com/weights.bin", dst),
+            kwargs={"progress": False},
+        )
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert dst.read_bytes() == payload
+    # The lock makes the second writer reuse the completed file.
+    assert calls["n"] == 1
+
+
+def test_download_url_to_file_rejects_non_http_urls(tmp_path):
+    with pytest.raises(ValueError):
+        hub.download_url_to_file("file:///etc/passwd", tmp_path / "passwd")
+
+
+def test_load_state_dict_from_url_requires_a_hash_for_check_hash(tmp_path):
+    with pytest.raises(ValueError):
+        hub.load_state_dict_from_url("https://example.com/plain.pth", model_dir=tmp_path, check_hash=True, progress=False)
 
 
 def test_cache_pins_resolved_commit_sha(monkeypatch, tmp_path):
