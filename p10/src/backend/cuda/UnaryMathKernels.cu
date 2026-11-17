@@ -226,6 +226,16 @@ Tensor digamma_cuda(const Tensor& self) {
     return float_math_cuda(self, HFn34{}, "digamma");
 }
 
+Tensor& digamma_inplace_cuda(Tensor& self) {
+    // In-place takes the same staging-buffer route as the allocating form: the
+    // elementwise iterator is built for disjoint operands, so aliased
+    // output/input is served by compute-and-hand-over.
+    if (self.dtype() == DType::Float64) {
+        return write_out(self, float_math_cuda(self, DigammaWideFn{}, "digamma"));
+    }
+    return write_out(self, float_math_cuda(self, HFn34{}, "digamma"));
+}
+
 Tensor i0_cuda(const Tensor& self) {
     // Chebyshev expansion, valid over the whole range; see i0_cpu.
     return float_math_cuda(self, HFn35{}, "i0");
@@ -546,6 +556,7 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, UnaryMathKernels) {
     m.impl("logit", logit_cuda);
     m.impl("logit.out", logit_out_cuda);
     m.impl("digamma", digamma_cuda);
+    m.impl("digamma_", digamma_inplace_cuda);
     m.impl("i0", i0_cuda);
     m.impl("i0.out", i0_out_cuda);
     m.impl("nan_to_num", nan_to_num_cuda);

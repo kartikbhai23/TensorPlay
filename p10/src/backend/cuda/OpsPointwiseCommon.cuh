@@ -380,6 +380,14 @@ struct HFn34 : GenFnBase<HFn34> {
             return ::copysign(std::numeric_limits<double>::infinity(), -v);
         }
         if (v < 0.0 && v == ::floor(v)) return ::nan("");
+        // Negative arguments reflect through psi(1 - v) - pi / tan(pi * frac):
+        // O(1) instead of walking the recurrence one step per unit of |v|.
+        if (v < 0.0) {
+            double whole;
+            const double frac = ::modf(v, &whole);
+            constexpr double kPi = 3.14159265358979323846;
+            return run(1.0 - v) - kPi / ::tan(kPi * frac);
+        }
         double r = 0;
         while (v < 6.0) { r -= 1.0 / v; v += 1.0; }
         double inv = 1.0 / v, inv2 = inv * inv;
@@ -396,6 +404,12 @@ struct HFn34 : GenFnBase<HFn34> {
             return ::copysignf(std::numeric_limits<float>::infinity(), -v);
         }
         if (v < 0.0f && v == ::floorf(v)) return ::nanf("");
+        if (v < 0.0f) {
+            float whole;
+            const float frac = ::modff(v, &whole);
+            constexpr float kPiF = 3.14159265358979323846f;
+            return runf(1.0f - v) - kPiF / ::tanf(kPiF * frac);
+        }
         float r = 0.0f;
         while (v < 6.0f) { r -= 1.0f / v; v += 1.0f; }
         float inv = 1.0f / v, inv2 = inv * inv;
