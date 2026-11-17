@@ -632,27 +632,36 @@ def compile(
 
         nonlocal bound_certificate
         bound_grad_state = _grad_state_component()
-        dispatcher.tpx_set_fast(fast, nargs)
         # A Python entry has no trampoline state of its own, so the plan has
         # nothing to attach to and the gate below stays in charge.
         if not hasattr(fast, "__code__"):
             plan = _state_certificate_plan(model)
-            if plan is not None:
-                grad_enabled = bound_grad_state[0]
-                if (
-                    bound_certificate is None
-                    or bound_certificate[0] is not fast
-                    or bound_certificate[1] is not plan
-                    or bound_certificate[2] != grad_enabled
-                ):
-                    # Installing the certificate is a pass over every site it
-                    # names, so it is only redone when the entry, the places or
-                    # the mode it certifies are no longer the bound ones.
-                    dispatcher.tpx_set_state_plan(plan, grad_enabled)
-                    bound_certificate = (fast, plan, grad_enabled)
+            if plan is None:
+                # The entry reads state the argument fingerprint cannot see,
+                # and no certificate describes those places.  Installing it
+                # anyway would replay a recording whose state may have moved,
+                # so the caller keeps the path that reads that state itself.
+                dispatcher.tpx_set_fast(None, nargs)
+                bound_certificate = None
                 return
-            dispatcher.tpx_set_state_plan(None, False)
-            bound_certificate = None
+            # The certificate attaches to the bound entry, so the entry is
+            # bound first; a slow call re-enters here and rebinds.
+            dispatcher.tpx_set_fast(fast, nargs)
+            grad_enabled = bound_grad_state[0]
+            if (
+                bound_certificate is None
+                or bound_certificate[0] is not fast
+                or bound_certificate[1] is not plan
+                or bound_certificate[2] != grad_enabled
+            ):
+                # Installing the certificate is a pass over every site it
+                # names, so it is only redone when the entry, the places or
+                # the mode it certifies are no longer the bound ones.
+                dispatcher.tpx_set_state_plan(plan, grad_enabled)
+                bound_certificate = (fast, plan, grad_enabled)
+            return
+
+        dispatcher.tpx_set_fast(fast, nargs)
 
         def _fast(*args: Any) -> Any:
             if (

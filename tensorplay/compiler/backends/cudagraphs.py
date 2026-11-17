@@ -1056,8 +1056,6 @@ class CudagraphCompiledCallable:
         self._single_output = node.warmup_structure == ("single",)
         self._arity = len(args)
         self._state = "live"
-        if first:
-            self._install_fast_call()
         return self._replay(args, key=key, retry=False)
 
     def _replay(
@@ -1135,17 +1133,9 @@ class CudagraphCompiledCallable:
         )
         return self._capture(args)
 
-    def _replay_flat(self, values: List[Any], *, guard_autograd: bool) -> List[Any]:
+    def _replay_flat(self, values: List[Any]) -> List[Any]:
         """Replay the recording against one full argument vector."""
 
-        if guard_autograd and self._needs_eager_when_grad and self._records_autograd(values):
-            # This call is recording; a replay would drop that history.
-            # The artifact returns the caller's own shape of result, which
-            # the trampoline expects flattened into a list.
-            result = self._compiled(*values)
-            if isinstance(result, (list, tuple)):
-                return list(result)
-            return [result]
         if self._trees:
             key = self._layout_key(tuple(values))
             if not self._manager.has(key):
@@ -1158,7 +1148,7 @@ class CudagraphCompiledCallable:
         return self._manager.replay(self._key, *values, verify=False)
 
     def _build_fast_call(
-        self, head: Optional[Sequence[Any]], nargs: int, *, guard_autograd: bool
+        self, head: Optional[Sequence[Any]], nargs: int
     ) -> Any:
         """A native steady-state entry over the recording, or None."""
 
@@ -1170,7 +1160,7 @@ class CudagraphCompiledCallable:
             return None
 
         def replay_flat(values: List[Any]) -> List[Any]:
-            return self._replay_flat(values, guard_autograd=guard_autograd)
+            return self._replay_flat(values)
 
         try:
             return installer(
@@ -1210,20 +1200,7 @@ class CudagraphCompiledCallable:
             # have to carry one.  A later change of the ambient switch is
             # refused by the certificate the dispatcher installs alongside.
             return None
-        return self._build_fast_call(head, nargs, guard_autograd=False)
-
-    def _install_fast_call(self) -> None:
-        """Bind the steady-state replay into the C call trampoline.
-
-        Same contract as the lowerings use: identical objects with unchanged
-        versions take the C fast path, everything else vectorcalls back into
-        this wrapper.  Best effort - a build without the installer keeps the
-        plain Python replay.
-        """
-
-        self._fast_call = self._build_fast_call(
-            None, self._arity, guard_autograd=True
-        )
+        return self._build_fast_call(head, nargs)
 
 
 def cudagraph_wrap(
