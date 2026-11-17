@@ -407,6 +407,24 @@ def test_kwargs_delegate_to_artifact(fake_cuda_probe):
     assert calls == [2.0, 2.0, 3.0]
 
 
+def test_wrapper_follows_the_cudagraph_trees_setting(fake_cuda_probe, monkeypatch):
+    import tensorplay.compiler.backends.stax.config as stax_config
+
+    gm = _clean_gm()
+    graph = FakeGraph()
+    native = SimpleNamespace(CUDAGraph=lambda: graph)
+    monkeypatch.setattr(stax_config.triton, "cudagraph_trees", False)
+    wrapped, _ = cudagraph_wrap(
+        _twice_artifact(graph), gm, [FakeTensor(tp.tensor([1.0]))], native=native
+    )
+    assert not wrapped._trees
+    monkeypatch.setattr(stax_config.triton, "cudagraph_trees", True)
+    wrapped, _ = cudagraph_wrap(
+        _twice_artifact(graph), gm, [FakeTensor(tp.tensor([1.0]))], native=native
+    )
+    assert wrapped._trees
+
+
 def test_reset_releases_wrapped_graphs(fake_cuda_probe):
     from tensorplay._stax.cudagraphs import CudagraphsBackend
 
