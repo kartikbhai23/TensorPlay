@@ -1089,15 +1089,6 @@ def _constant_entry(value: Any) -> Any:
     return None
 
 
-#: Last value read at each site a capture may bake, keyed by the module or
-#: function that holds it.  Immutable values cannot change, so a site whose
-#: value is the same object reuses its description; a mutable container is
-#: re-read so an in-place edit is seen.
-_site_entry_cache: "weakref.WeakKeyDictionary[Any, dict[Any, tuple[Any, Any]]]" = (
-    weakref.WeakKeyDictionary()
-)
-
-
 def _reusable_by_identity(value: Any) -> bool:
     """Whether the same object at a site means the same described value."""
 
@@ -1106,24 +1097,6 @@ def _reusable_by_identity(value: Any) -> bool:
     if isinstance(value, tuple):
         return _is_immutable_constant(value)
     return True
-
-
-def _sited_constant_entry(owner: Any, site: Any, value: Any) -> Any:
-    """The description of ``value`` at a site, reusing an unchanged one."""
-
-    sites = _site_entry_cache.get(owner)
-    if sites is None:
-        sites = {}
-        _site_entry_cache[owner] = sites
-    cached = sites.get(site)
-    if cached is not None and cached[0] is value and _reusable_by_identity(value):
-        return cached[1]
-    entry = _constant_entry(value)
-    if _reusable_by_identity(value):
-        sites[site] = (value, entry)
-    else:
-        sites.pop(site, None)
-    return entry
 
 
 def _dependency_names(
@@ -1241,7 +1214,10 @@ def _module_running_functions(module: Any) -> list[types.FunctionType]:
     Which functions run is a property of the class, not of the instance, so
     the answer is worked out once per class.  An instance that rebinds its own
     ``forward`` is the one case where the class alone does not say what runs,
-    and that call is answered directly rather than through the cache.
+    and that call is answered directly rather than through the cache.  A class
+    method rebound in place after a region was compiled is not watched: the
+    class identity, not the contents of its namespace, is what a captured
+    region is keyed on.
     """
 
     instance_forward = getattr(module, "__dict__", {}).get("forward")
@@ -1310,22 +1286,6 @@ def _attribute_names_of_type(module_type: type, assigned: bool) -> frozenset[str
     return frozenset(names)
 
 
-def _module_attribute_names(module: Any, *, assigned: bool = False) -> set[str]:
-    """Attribute names the module's running code reads (or writes)."""
-
-    if getattr(module, "__dict__", {}).get("forward") is not None:
-        collector = (
-            _assigned_attribute_names_of_code
-            if assigned
-            else _loaded_attribute_names_of_code
-        )
-        names: set[str] = set()
-        for function in _running_functions(type(module), module.forward):
-            names.update(collector(function.__code__))
-        return names
-    return set(_attribute_names_of_type(type(module), assigned))
-
-
 @functools.lru_cache(maxsize=1024)
 def _constant_reads_of_function(
     function: types.FunctionType,
@@ -1366,58 +1326,6 @@ def _constant_attribute_names_of_type(module_type: type) -> tuple[str, ...]:
         _, _, mutated_attrs = _in_place_mutated_names_of_code(function.__code__)
         mutated |= mutated_attrs
     return tuple(sorted(readable - assigned - mutated))
-
-
-def _captured_constant_component(
-    modules: list[Any], functions: list[types.FunctionType]
-) -> tuple[Any, ...]:
-    """Values outside the argument list that a capture may have baked in.
-
-    A global number, a closure cell or a module attribute read while tracing
-    becomes part of the captured program.  Changing it must not reuse that
-    program, so its current value is part of the specialization key.  Names
-    the program itself assigns are left out: their value is an effect of the
-    call, not an input to it.
-
-    Which names to read is a property of the code and is worked out once per
-    function and per module class; only the values are read here.
-    """
-
-    entries: list[tuple[Any, ...]] = []
-    for function in functions:
-        label = f"{function.__module__}.{function.__qualname__}"
-        scope = function.__globals__
-        global_names, cell_indices = _constant_reads_of_function(function)
-        for name in global_names:
-            entry = _sited_constant_entry(function, ("global", name), scope.get(name))
-            if entry is not None:
-                entries.append(("global", label, name, entry))
-        freevars = function.__code__.co_freevars
-        for index in cell_indices:
-            try:
-                value = function.__closure__[index].cell_contents
-            except ValueError:
-                continue
-            entry = _sited_constant_entry(function, ("closure", index), value)
-            if entry is not None:
-                entries.append(("closure", label, index, entry))
-    for module in modules:
-        if getattr(module, "__dict__", {}).get("forward") is not None:
-            names = _constant_attribute_names(type(module), module.forward)
-        else:
-            names = _constant_attribute_names_of_type(type(module))
-        for name in names:
-            value = module.__dict__.get(name, _MISSING)
-            if value is _MISSING:
-                value = type(module).__dict__.get(name, _MISSING)
-            if value is _MISSING:
-                continue
-            entry = _sited_constant_entry(module, ("attribute", name), value)
-            if entry is not None:
-                entries.append(("attribute", id(module), name, entry))
-    # Every walk above follows a cached, insertion-ordered plan, so the same
-    # program yields the same order without a second sorting pass.
-    return tuple(entries)
 
 
 def _constant_attribute_names(
