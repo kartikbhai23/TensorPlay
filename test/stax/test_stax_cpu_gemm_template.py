@@ -16,6 +16,7 @@ import tensorplay as tp
 from tensorplay.compiler.backends.stax import config
 from tensorplay.compiler.backends.stax import ir
 from tensorplay.compiler.backends.stax import kernel_cache
+from tensorplay.compiler.backends.stax.templates import select_algorithm
 from tensorplay.compiler.backends.stax.utils import counters
 
 #: The settings a measured product is chosen under, with only the prepared
@@ -34,6 +35,13 @@ def isolated_cache(tmp_path, monkeypatch):
 
     monkeypatch.setenv("TP_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(kernel_cache, "_default_caches", {})
+    # Which candidate was measured is remembered for the process, not for the
+    # cache directory, so a test that ran before could hand this one a decision
+    # -- and a kernel that was already built, which is a kernel this test did
+    # not see being written.  Each test measures its own.
+    monkeypatch.setattr(
+        select_algorithm, "_ALGORITHM_SELECTOR_CACHE", None
+    )
     return tmp_path
 
 

@@ -41,7 +41,7 @@
 | P2 | `export(strict=...)` 接受两种取值后 `del` 掉，docstring 自称两模式一致 | 静默失效，已核实 | 已拒绝（§8.4、§13） |
 | P0 | 捕获时读到的非张量全局/闭包/模块属性改变后仍复用旧程序，结果陈旧 | 正确性 bug，已复现 | 已修复（§3.3、§13） |
 | P1 | AOT 的 `memory_budget` 与 `keep_inference_input_mutations` 接收后丢弃 | 静默失效，已核实 | 已修复（§3.4、§13） |
-| P1 | 无 AOTInductor 部署包、无 oneDNN/MKLDNN/quantized/freezing | 子系统缺失，静态确认 | 部署包已实现（CPU C++ wrapper，§6、§13）；C++ wrapper 本身此前无测试，且原地复用与视图两处都读错存储（§8.7），已修；oneDNN/MKLDNN/quantized/freezing 未修 |
+| P1 | 无 AOTInductor 部署包、无 oneDNN/MKLDNN/quantized/freezing | 子系统缺失，静态确认 | 部署包已实现（CPU C++ wrapper，§6、§13），已覆盖全连接与卷积网络；C++ wrapper 本身此前无测试，且原地复用、视图、非缓冲参数三处都读错/写不出（§8.7），已修；oneDNN/MKLDNN/quantized/freezing 未修 |
 | P1 | cudagraph 只有单层录制：输入一换地址就回退到未捕获工件，输出被下次回放覆盖 | 能力缺失，静态确认 | 已实现树式录制：按布局分节点、共享一个内存池、copy-in/copy-back（§8.2、§13） |
 | P1 | 无 CPU GEMM 模板；`config.cpp.max_autotune_gemm_backends` 里的 "CPP" 无人消费 | 能力缺失，静态确认 | 已实现 `CppGemmTemplate`（f32/bf16/f16，静态 M/N/K，不预打包权重） |
 | P1 | 设备只注册 cpu/cuda；MPS/XPU/MTIA/ROCm 无代码生成 | 设备覆盖缺口，静态确认 | 未修 |
