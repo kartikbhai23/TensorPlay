@@ -407,34 +407,108 @@ Tensor& bitwise_rshift_scalar_out_cuda(const Tensor& a, const Scalar& b, Tensor&
     return bitwise_assign_out_cuda(out, bitwise_rshift_scalar_cuda(a, b));
 }
 
+// True in-place elementwise body: the iterator aliases self as both output
+// and first input, so one kernel writes the result back without a temporary
+// buffer or a follow-up copy.
+template <typename Pred>
+Tensor& bitwise_binary_inplace_cuda(Tensor& self, const Tensor& other_in,
+                                    Pred pred, const char* name) {
+    bitwise_check_cuda(self, name);
+    bitwise_check_cuda(other_in, name);
+    std::vector<int64_t> out_shape = broadcast_shapes(shape_of(self), shape_of(other_in));
+    if (out_shape != static_cast<std::vector<int64_t>>(self.shape())) {
+        TP_THROW(RuntimeError, name,
+                 ": output shape must match self for in-place");
+    }
+    if (self.numel() == 0) return self;
+    Tensor bc = other_in.dtype() == self.dtype() ? other_in : other_in.to(self.dtype());
+    TensorIterator iter = TensorIteratorConfig()
+        .check_all_same_dtype(true)
+        .add_output(self)
+        .add_input(self)
+        .add_input(bc)
+        .build();
+    if (self.dtype() == DType::Bool) {
+        gpu_kernel(iter, [pred] __host__ __device__ (bool l, bool r) -> bool {
+            return pred(l, r);
+        });
+        return self;
+    }
+#define TP_BIT_INPLACE(ctype, name_) \
+    case DType::name_: \
+        gpu_kernel(iter, [pred] __host__ __device__ (ctype l, ctype r) -> ctype { \
+            return pred(l, r); \
+        }); \
+        break;
+    switch (self.dtype()) {
+        TENSORPLAY_FORALL_INT_TYPES_CUDA(TP_BIT_INPLACE)
+        default: TP_THROW(TypeError, name, ": unsupported dtype");
+    }
+#undef TP_BIT_INPLACE
+    return self;
+}
+
+template <bool kLeft>
+Tensor& bitwise_shift_inplace_cuda_impl(Tensor& self, const Tensor& other_in,
+                                        const char* name) {
+    bitwise_check_cuda(self, name);
+    bitwise_check_cuda(other_in, name);
+    std::vector<int64_t> out_shape = broadcast_shapes(shape_of(self), shape_of(other_in));
+    if (out_shape != static_cast<std::vector<int64_t>>(self.shape())) {
+        TP_THROW(RuntimeError, name,
+                 ": output shape must match self for in-place");
+    }
+    if (self.numel() == 0) return self;
+    Tensor bc = other_in.dtype() == self.dtype() ? other_in : other_in.to(self.dtype());
+    TensorIterator iter = TensorIteratorConfig()
+        .check_all_same_dtype(true)
+        .add_output(self)
+        .add_input(self)
+        .add_input(bc)
+        .build();
+#define TP_SHIFT_INPLACE(ctype, name_) \
+    case DType::name_: { \
+        gpu_kernel(iter, [] __host__ __device__ (ctype value, ctype shift) -> ctype { \
+            return bitwise_shift_value<ctype, kLeft>(value, shift); \
+        }); \
+        break; \
+    }
+    switch (self.dtype()) {
+        TENSORPLAY_FORALL_INT_TYPES_CUDA(TP_SHIFT_INPLACE)
+        default: TP_THROW(TypeError, name, ": unsupported dtype");
+    }
+#undef TP_SHIFT_INPLACE
+    return self;
+}
+
 // In-place dunder entry points write the binary result straight into self,
 // skipping the compute-then-copy composite route.
 Tensor& iand_tensor_inplace_cuda(Tensor& self, const Tensor& other) {
-    return bitwise_and_tensor_out_cuda(self, other, self);
+    return bitwise_binary_inplace_cuda(self, other, BitwiseAnd{}, "__iand__");
 }
 Tensor& iand_scalar_inplace_cuda(Tensor& self, const Scalar& other) {
     return bitwise_and_scalar_out_cuda(self, other, self);
 }
 Tensor& ior_tensor_inplace_cuda(Tensor& self, const Tensor& other) {
-    return bitwise_or_tensor_out_cuda(self, other, self);
+    return bitwise_binary_inplace_cuda(self, other, BitwiseOr{}, "__ior__");
 }
 Tensor& ior_scalar_inplace_cuda(Tensor& self, const Scalar& other) {
     return bitwise_or_scalar_out_cuda(self, other, self);
 }
 Tensor& ixor_tensor_inplace_cuda(Tensor& self, const Tensor& other) {
-    return bitwise_xor_tensor_out_cuda(self, other, self);
+    return bitwise_binary_inplace_cuda(self, other, BitwiseXor{}, "__ixor__");
 }
 Tensor& ixor_scalar_inplace_cuda(Tensor& self, const Scalar& other) {
     return bitwise_xor_scalar_out_cuda(self, other, self);
 }
 Tensor& ilshift_tensor_inplace_cuda(Tensor& self, const Tensor& other) {
-    return bitwise_lshift_tensor_out_cuda(self, other, self);
+    return bitwise_shift_inplace_cuda_impl<true>(self, other, "__ilshift__");
 }
 Tensor& ilshift_scalar_inplace_cuda(Tensor& self, const Scalar& other) {
     return bitwise_lshift_scalar_out_cuda(self, other, self);
 }
 Tensor& irshift_tensor_inplace_cuda(Tensor& self, const Tensor& other) {
-    return bitwise_rshift_tensor_out_cuda(self, other, self);
+    return bitwise_shift_inplace_cuda_impl<false>(self, other, "__irshift__");
 }
 Tensor& irshift_scalar_inplace_cuda(Tensor& self, const Scalar& other) {
     return bitwise_rshift_scalar_out_cuda(self, other, self);
@@ -462,14 +536,19 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, BitwiseKernels) {
     m.impl("bitwise_left_shift.Scalar_Tensor", bitwise_lshift_scalar_tensor_cuda);
     m.impl("bitwise_right_shift.Scalar_Tensor", bitwise_rshift_scalar_tensor_cuda);
     // In-place dunders on the CUDA key: keeps them off the staging composite.
+    m.impl("__iand__", iand_tensor_inplace_cuda);
     m.impl("__iand__.Tensor", iand_tensor_inplace_cuda);
     m.impl("__iand__.Scalar", iand_scalar_inplace_cuda);
+    m.impl("__ior__", ior_tensor_inplace_cuda);
     m.impl("__ior__.Tensor", ior_tensor_inplace_cuda);
     m.impl("__ior__.Scalar", ior_scalar_inplace_cuda);
+    m.impl("__ixor__", ixor_tensor_inplace_cuda);
     m.impl("__ixor__.Tensor", ixor_tensor_inplace_cuda);
     m.impl("__ixor__.Scalar", ixor_scalar_inplace_cuda);
+    m.impl("__ilshift__", ilshift_tensor_inplace_cuda);
     m.impl("__ilshift__.Tensor", ilshift_tensor_inplace_cuda);
     m.impl("__ilshift__.Scalar", ilshift_scalar_inplace_cuda);
+    m.impl("__irshift__", irshift_tensor_inplace_cuda);
     m.impl("__irshift__.Tensor", irshift_tensor_inplace_cuda);
     m.impl("__irshift__.Scalar", irshift_scalar_inplace_cuda);
     // In-place dunder entry points: direct write-back into self.
