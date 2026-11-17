@@ -71,6 +71,24 @@ def _looks_tensor(value: Any) -> bool:
     return device is not None and callable(getattr(device, "is_cuda", None))
 
 
+def _output_structure(value: Any) -> Tuple:
+    """The shape of a recorded result, one level deep.
+
+    A region returns a tensor, a flat sequence of tensors, or a flat sequence
+    in which a part the program never computed stands as ``None`` -- what a
+    module returns for an auxiliary branch it leaves out of an evaluation
+    call.  Such an entry carries no value to replay, so it keeps its place in
+    the result and is handed back unchanged.
+    """
+
+    if value is None or _looks_tensor(value):
+        return ("single",)
+    if isinstance(value, (list, tuple)):
+        if all(_looks_tensor(item) or item is None for item in value):
+            return ("tuple" if isinstance(value, tuple) else "list", len(value))
+    return ("unsupported",)
+
+
 def _shape_signature(args: Sequence[Any]) -> Tuple:
     signature: List[Any] = []
     for a in args:
@@ -250,18 +268,7 @@ class CudaGraphManager:
             # workspaces etc.); the native capture stream matches the stream
             # capture will run on.
             warmup_output = fn(*sample_args)
-            if warmup_output is None or _looks_tensor(warmup_output):
-                warmup_structure: Tuple = ("single",)
-            elif isinstance(warmup_output, (list, tuple)):
-                if all(_looks_tensor(item) for item in warmup_output):
-                    warmup_structure = (
-                        "tuple" if isinstance(warmup_output, tuple) else "list",
-                        len(warmup_output),
-                    )
-                else:
-                    warmup_structure = ("unsupported",)
-            else:
-                warmup_structure = ("unsupported",)
+            warmup_structure: Tuple = _output_structure(warmup_output)
             # The graph is captured against the caller's own tensors: the
             # recorded kernels read their storage live, so replay needs no
             # staging copy.  The manager keeps references for the entry's

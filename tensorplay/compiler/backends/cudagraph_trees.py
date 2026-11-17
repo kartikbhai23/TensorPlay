@@ -27,6 +27,7 @@ from .cudagraphs import (
     CudaGraphError,
     CudaGraphInputDrift,
     _looks_tensor,
+    _output_structure,
     _pin_launch_stream_to_capture,
     _shape_signature,
 )
@@ -51,17 +52,6 @@ def _stage_input(value: Any) -> Any:
         return cloned
     staged.copy_(value)
     return staged
-
-
-def _output_structure(value: Any) -> tuple:
-    """The shape of a recorded result, one level deep."""
-
-    if value is None or _looks_tensor(value):
-        return ("single",)
-    if isinstance(value, (list, tuple)):
-        if all(_looks_tensor(item) for item in value):
-            return ("tuple" if isinstance(value, tuple) else "list", len(value))
-    return ("unsupported",)
 
 
 class GraphNode:

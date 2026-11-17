@@ -380,6 +380,49 @@ def test_only_visible_outputs_are_copied(fake_cuda_probe):
     assert first[1].tolist() == [3.0]
 
 
+def test_region_output_with_an_absent_part_is_replayed(fake_cuda_probe):
+    """A module that leaves an auxiliary branch out returns None in its place.
+
+    The result keeps that place: only the parts the program computed have a
+    recorded buffer, and a call replaying the graph hands the rest back as the
+    value the recording itself returned.
+    """
+
+    graph = FakeGraph()
+    native = SimpleNamespace(CUDAGraph=lambda: graph)
+    seen = []
+
+    def artifact(x):
+        out = FakeTensor(x.data * 2)
+        seen.append(1)
+        if graph.in_capture:
+            def recompute():
+                out.data = x.data * 2
+
+            graph.recompute = recompute
+        return (out, None)
+
+    wrapped, _ = cudagraph_wrap(
+        artifact, _clean_gm(), [FakeTensor(tp.tensor([1.0]))], native=native
+    )
+    held = FakeTensor(tp.tensor([1.0]))
+    first = wrapped(held)
+    assert graph.captured
+    assert len(first) == 2
+    assert first[0].tolist() == [2.0]
+    assert first[1] is None
+
+    held.data.copy_(tp.tensor([4.0]))
+    again = wrapped(held)
+    assert again[0].tolist() == [8.0]
+    assert again[1] is None
+    entry = next(iter(wrapped._manager._entries.values()))
+    assert entry.replays == 2
+    assert len(entry.static_outputs) == 2
+    # the replay did not recompute the result through the artifact
+    assert len(seen) == 2
+
+
 def test_visible_output_indices_come_from_the_region_meta():
     from tensorplay._stax.cudagraphs import _visible_output_indices
 
