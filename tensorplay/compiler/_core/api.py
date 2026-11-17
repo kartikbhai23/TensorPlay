@@ -15,6 +15,7 @@ import re
 import threading
 import types
 from typing import Any, Callable
+import weakref
 from weakref import WeakSet
 
 from tensorplay.graph import (
@@ -965,7 +966,7 @@ def _state_roots(program: Any) -> tuple[list[Any], list[types.FunctionType]]:
             except ValueError:
                 continue
         scope = function.__globals__
-        for name in sorted(_loaded_global_names(function)):
+        for name in _loaded_global_names(function):
             visit(scope.get(name))
 
     visit(program)
@@ -985,6 +986,12 @@ def _modules_reached(program: Any) -> list[Any]:
 
 
 _MISSING = object()
+
+#: Frozen descriptions of immutable values, keyed by identity.  A value that
+#: cannot change is described once; the entry keeps the value alive, so the
+#: identity cannot be handed to a different object while the entry is held.
+_constant_entry_cache: dict[int, tuple[Any, Any]] = {}
+_MAX_CONSTANT_ENTRY_CACHE = 4096
 
 
 def _is_immutable_constant(value: Any) -> bool:
@@ -1045,7 +1052,14 @@ def _constant_entry(value: Any) -> Any:
     """
 
     if _is_immutable_constant(value):
-        return _freeze_immutable_constant(value)
+        cached = _constant_entry_cache.get(id(value))
+        if cached is not None and cached[0] is value:
+            return cached[1]
+        frozen = _freeze_immutable_constant(value)
+        if len(_constant_entry_cache) >= _MAX_CONSTANT_ENTRY_CACHE:
+            _constant_entry_cache.clear()
+        _constant_entry_cache[id(value)] = (value, frozen)
+        return frozen
     if isinstance(value, (list, tuple)):
         return (
             "contents",
@@ -1073,6 +1087,43 @@ def _constant_entry(value: Any) -> Any:
     if callable(value):
         return ("reference", id(value))
     return None
+
+
+#: Last value read at each site a capture may bake, keyed by the module or
+#: function that holds it.  Immutable values cannot change, so a site whose
+#: value is the same object reuses its description; a mutable container is
+#: re-read so an in-place edit is seen.
+_site_entry_cache: "weakref.WeakKeyDictionary[Any, dict[Any, tuple[Any, Any]]]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _reusable_by_identity(value: Any) -> bool:
+    """Whether the same object at a site means the same described value."""
+
+    if isinstance(value, (list, dict, set)):
+        return False
+    if isinstance(value, tuple):
+        return _is_immutable_constant(value)
+    return True
+
+
+def _sited_constant_entry(owner: Any, site: Any, value: Any) -> Any:
+    """The description of ``value`` at a site, reusing an unchanged one."""
+
+    sites = _site_entry_cache.get(owner)
+    if sites is None:
+        sites = {}
+        _site_entry_cache[owner] = sites
+    cached = sites.get(site)
+    if cached is not None and cached[0] is value and _reusable_by_identity(value):
+        return cached[1]
+    entry = _constant_entry(value)
+    if _reusable_by_identity(value):
+        sites[site] = (value, entry)
+    else:
+        sites.pop(site, None)
+    return entry
 
 
 def _dependency_names(
@@ -1186,10 +1237,31 @@ def _module_running_functions(module: Any) -> list[types.FunctionType]:
     followed, so both values read directly and values read by a helper are
     part of what a call depends on.  Code that is not reached this way --
     ``__init__`` or an unused method -- is not.
+
+    Which functions run is a property of the class, not of the instance, so
+    the answer is worked out once per class.  An instance that rebinds its own
+    ``forward`` is the one case where the class alone does not say what runs,
+    and that call is answered directly rather than through the cache.
     """
 
+    instance_forward = getattr(module, "__dict__", {}).get("forward")
+    if instance_forward is not None:
+        return _running_functions(type(module), instance_forward)
+    return list(_running_functions_of_type(type(module)))
+
+
+@functools.lru_cache(maxsize=1024)
+def _running_functions_of_type(module_type: type) -> tuple[types.FunctionType, ...]:
+    """The functions a call on an instance of ``module_type`` runs."""
+
+    return tuple(_running_functions(module_type, None))
+
+
+def _running_functions(
+    module_type: type, forward_override: Any
+) -> list[types.FunctionType]:
     helpers: dict[str, types.FunctionType] = {}
-    for name, member in type(module).__dict__.items():
+    for name, member in module_type.__dict__.items():
         if isinstance(member, (staticmethod, classmethod)):
             member = member.__func__
         try:
@@ -1198,7 +1270,9 @@ def _module_running_functions(module: Any) -> list[types.FunctionType]:
             continue
         if isinstance(member, types.FunctionType):
             helpers[name] = member
-    forward = getattr(module, "forward", None)
+    forward = forward_override
+    if forward is None:
+        forward = getattr(module_type, "forward", None)
     if isinstance(forward, types.MethodType):
         forward = forward.__func__
     try:
@@ -1221,8 +1295,9 @@ def _module_running_functions(module: Any) -> list[types.FunctionType]:
     return running
 
 
-def _module_attribute_names(module: Any, *, assigned: bool = False) -> set[str]:
-    """Attribute names the module's running code reads (or writes)."""
+@functools.lru_cache(maxsize=1024)
+def _attribute_names_of_type(module_type: type, assigned: bool) -> frozenset[str]:
+    """Attribute names running code of ``module_type`` reads (or writes)."""
 
     collector = (
         _assigned_attribute_names_of_code
@@ -1230,9 +1305,67 @@ def _module_attribute_names(module: Any, *, assigned: bool = False) -> set[str]:
         else _loaded_attribute_names_of_code
     )
     names: set[str] = set()
-    for function in _module_running_functions(module):
+    for function in _running_functions_of_type(module_type):
         names.update(collector(function.__code__))
-    return names
+    return frozenset(names)
+
+
+def _module_attribute_names(module: Any, *, assigned: bool = False) -> set[str]:
+    """Attribute names the module's running code reads (or writes)."""
+
+    if getattr(module, "__dict__", {}).get("forward") is not None:
+        collector = (
+            _assigned_attribute_names_of_code
+            if assigned
+            else _loaded_attribute_names_of_code
+        )
+        names: set[str] = set()
+        for function in _running_functions(type(module), module.forward):
+            names.update(collector(function.__code__))
+        return names
+    return set(_attribute_names_of_type(type(module), assigned))
+
+
+@functools.lru_cache(maxsize=1024)
+def _constant_reads_of_function(
+    function: types.FunctionType,
+) -> tuple[tuple[str, ...], tuple[int, ...]]:
+    """The globals and closure cells a capture may have baked from a function.
+
+    Which names are read, assigned in place, or written is a property of the
+    code, so the list is worked out once per function and only the values are
+    read on each call.
+    """
+
+    code = function.__code__
+    written = _assigned_names_of_code(code)
+    mutated_globals, mutated_cells, _ = _in_place_mutated_names_of_code(code)
+    globals_ = tuple(
+        sorted(_loaded_global_names(function) - written - mutated_globals)
+    )
+    freevars = code.co_freevars
+    cells = tuple(
+        index
+        for index in range(len(function.__closure__ or ()))
+        if not (
+            index < len(freevars)
+            and (freevars[index] in written or freevars[index] in mutated_cells)
+        )
+    )
+    return globals_, cells
+
+
+@functools.lru_cache(maxsize=1024)
+def _constant_attribute_names_of_type(module_type: type) -> tuple[str, ...]:
+    """Attribute names of ``module_type`` whose values a capture may bake."""
+
+    readable = _attribute_names_of_type(module_type, False)
+    assigned = _attribute_names_of_type(module_type, True)
+    mutated: set[str] = set()
+    for function in _running_functions_of_type(module_type):
+        _, _, mutated_attrs = _in_place_mutated_names_of_code(function.__code__)
+        mutated |= mutated_attrs
+    return tuple(sorted(readable - assigned - mutated))
 
 
 def _captured_constant_component(
@@ -1245,50 +1378,60 @@ def _captured_constant_component(
     program, so its current value is part of the specialization key.  Names
     the program itself assigns are left out: their value is an effect of the
     call, not an input to it.
+
+    Which names to read is a property of the code and is worked out once per
+    function and per module class; only the values are read here.
     """
 
     entries: list[tuple[Any, ...]] = []
     for function in functions:
         label = f"{function.__module__}.{function.__qualname__}"
-        code = function.__code__
-        written = _assigned_names_of_code(code)
-        mutated_globals, mutated_cells, mutated_attrs = (
-            _in_place_mutated_names_of_code(code)
-        )
         scope = function.__globals__
-        for name in sorted(_loaded_global_names(function) - written - mutated_globals):
-            entry = _constant_entry(scope.get(name))
+        global_names, cell_indices = _constant_reads_of_function(function)
+        for name in global_names:
+            entry = _sited_constant_entry(function, ("global", name), scope.get(name))
             if entry is not None:
                 entries.append(("global", label, name, entry))
-        freevars = code.co_freevars
-        for index, cell in enumerate(function.__closure__ or ()):
-            if index < len(freevars) and freevars[index] in written:
-                continue
-            if index < len(freevars) and freevars[index] in mutated_cells:
-                continue
+        freevars = function.__code__.co_freevars
+        for index in cell_indices:
             try:
-                value = cell.cell_contents
+                value = function.__closure__[index].cell_contents
             except ValueError:
                 continue
-            entry = _constant_entry(value)
+            entry = _sited_constant_entry(function, ("closure", index), value)
             if entry is not None:
                 entries.append(("closure", label, index, entry))
     for module in modules:
-        assigned = _module_attribute_names(module, assigned=True)
-        mutated = set()
-        for function in _module_running_functions(module):
-            _, _, mutated_attrs = _in_place_mutated_names_of_code(function.__code__)
-            mutated |= mutated_attrs
-        for name in sorted(_module_attribute_names(module) - assigned - mutated):
+        if getattr(module, "__dict__", {}).get("forward") is not None:
+            names = _constant_attribute_names(type(module), module.forward)
+        else:
+            names = _constant_attribute_names_of_type(type(module))
+        for name in names:
             value = module.__dict__.get(name, _MISSING)
             if value is _MISSING:
                 value = type(module).__dict__.get(name, _MISSING)
             if value is _MISSING:
                 continue
-            entry = _constant_entry(value)
+            entry = _sited_constant_entry(module, ("attribute", name), value)
             if entry is not None:
                 entries.append(("attribute", id(module), name, entry))
-    return tuple(sorted(entries, key=repr))
+    # Every walk above follows a cached, insertion-ordered plan, so the same
+    # program yields the same order without a second sorting pass.
+    return tuple(entries)
+
+
+def _constant_attribute_names(
+    module_type: type, forward: Any
+) -> tuple[str, ...]:
+    """Attribute names to read when an instance rebinds its own ``forward``."""
+
+    readable = _attribute_names_of_type(module_type, False)
+    assigned = _attribute_names_of_type(module_type, True)
+    mutated: set[str] = set()
+    for function in _running_functions(module_type, forward):
+        _, _, mutated_attrs = _in_place_mutated_names_of_code(function.__code__)
+        mutated |= mutated_attrs
+    return tuple(sorted(readable - assigned - mutated))
 
 
 def _module_state_component(program: Any) -> tuple[Any, ...]:
@@ -1298,24 +1441,114 @@ def _module_state_component(program: Any) -> tuple[Any, ...]:
     and children can be replaced without changing the root's training flag.
     Values read from outside the arguments are compared too, since a capture
     bakes them into the program it produces.
+
+    The set of places to read is fixed once the part of the program's world
+    that the call reaches has the same shape as last time, so the per-call
+    work is reading those places rather than working out which they are.
     """
 
     modules, functions = _state_roots(program)
-    return (
-        tuple(
-            (
-                index,
-                id(module),
-                module.training,
-                tuple(
-                    (child_name, id(child))
-                    for child_name, child in module._modules.items()
-                ),
-            )
-            for index, module in enumerate(modules)
-        ),
-        _captured_constant_component(modules, functions),
+    module_part = tuple(
+        (
+            index,
+            id(module),
+            module.training,
+            tuple(
+                (child_name, id(child))
+                for child_name, child in module._modules.items()
+            ),
+        )
+        for index, module in enumerate(modules)
     )
+
+    shape = (tuple(id(module) for module in modules), tuple(id(f) for f in functions))
+    plan = _state_plan(program, shape, modules, functions)
+    return (module_part, _planned_constant_component(plan))
+
+
+#: Read plans and the last value seen at each site, per compiled program.  A
+#: weak key keeps a program that is dropped from holding its plan alive.
+_state_plan_cache: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
+
+
+def _state_plan(program: Any, shape: Any, modules: list[Any], functions: list[Any]) -> Any:
+    """The sites a call reads constants from, rebuilt only when the shape moves."""
+
+    try:
+        cached = _state_plan_cache.get(program)
+    except TypeError:
+        cached = None
+    if cached is not None and cached[0] == shape:
+        return cached[1]
+    plan = _build_read_plan(modules, functions)
+    try:
+        _state_plan_cache[program] = (shape, plan)
+    except TypeError:
+        pass
+    return plan
+
+
+def _build_read_plan(modules: list[Any], functions: list[Any]) -> tuple[Any, ...]:
+    """Every site a capture may have read a value from, in a fixed order."""
+
+    plan: list[Any] = []
+    for function in functions:
+        label = f"{function.__module__}.{function.__qualname__}"
+        global_names, cell_indices = _constant_reads_of_function(function)
+        for name in global_names:
+            plan.append(("global", function, label, name, None))
+        for index in cell_indices:
+            plan.append(("closure", function, label, index, None))
+    for module in modules:
+        if getattr(module, "__dict__", {}).get("forward") is not None:
+            names = _constant_attribute_names(type(module), module.forward)
+        else:
+            names = _constant_attribute_names_of_type(type(module))
+        for name in names:
+            plan.append(("attribute", module, None, name, None))
+    plan.append(("values", None, None, None, ([], [])))
+    return tuple(plan)
+
+
+def _planned_constant_component(plan: tuple[Any, ...]) -> tuple[Any, ...]:
+    """Read every planned site, reusing the description of an unchanged value."""
+
+    entries: list[tuple[Any, ...]] = []
+    values, cached_entries = plan[-1][4]
+    for index, (kind, owner, label, name, _) in enumerate(plan[:-1]):
+        if kind == "attribute":
+            value = owner.__dict__.get(name, _MISSING)
+            if value is _MISSING:
+                value = type(owner).__dict__.get(name, _MISSING)
+            if value is _MISSING:
+                continue
+        elif kind == "global":
+            value = owner.__globals__.get(name)
+        else:
+            try:
+                value = owner.__closure__[name].cell_contents
+            except ValueError:
+                continue
+        reusable = _reusable_by_identity(value)
+        if index < len(values) and values[index] is value and reusable:
+            entry = cached_entries[index]
+        else:
+            entry = _constant_entry(value)
+            if len(values) <= index:
+                values.extend([None] * (index + 1 - len(values)))
+            values[index] = value
+            if len(cached_entries) <= index:
+                cached_entries.extend([None] * (index + 1 - len(cached_entries)))
+            cached_entries[index] = entry
+        if entry is None:
+            continue
+        if kind == "attribute":
+            entries.append(("attribute", id(owner), name, entry))
+        elif kind == "global":
+            entries.append(("global", label, name, entry))
+        else:
+            entries.append(("closure", label, name, entry))
+    return tuple(entries)
 
 
 def _free_tensor_sources(
