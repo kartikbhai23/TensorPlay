@@ -2464,6 +2464,21 @@ def _underlying(box):
     return node
 
 
+def _view_source(box):
+    """The node a view over this value should read.
+
+    A value already in memory is held by the view directly, so the scheduler
+    sees the view over the buffer itself.  A value that has nowhere to live
+    yet keeps the box that owns it: only a box can be asked for memory, and a
+    view built straight over an unwritten body could never be realized later.
+    """
+
+    node = _underlying(box)
+    if IRNode.is_realized_node(node):
+        return node
+    return box
+
+
 def _flat_index(index, size):
     expr = sympy.Integer(0)
     for i, extent in zip(index, size):
@@ -2543,7 +2558,7 @@ def reshape(x: TensorBox, new_size) -> TensorBox:
             viewed = _reinterpret_consecutive(node, new_size)
             if viewed is not None:
                 return viewed
-    return TensorBox(View.create(_underlying(x), new_size))
+    return TensorBox(View.create(_view_source(x), new_size))
 
 
 def _reinterpret_consecutive(node, new_size):
@@ -2615,7 +2630,7 @@ def lower_permute(x, dims):
     # says so is told the order and works out the addressing from it.
     rank = len(x.get_size())
     dims = [normalize_dim(d, rank) for d in dims]
-    return PermuteView.create(_underlying(x), tuple(dims))
+    return PermuteView.create(_view_source(x), tuple(dims))
 
 
 @register("permute_backward.default")
@@ -2649,7 +2664,7 @@ def lower_unsqueeze(x, dim):
     size = list(x.get_size())
     dim = normalize_dim(dim, len(size) + 1)
     new_size = size[:dim] + [1] + size[dim:]
-    return View.create(_underlying(x), new_size)
+    return View.create(_view_source(x), new_size)
 
 
 @register("squeeze.dim", "squeeze.dims", "squeeze.default")
@@ -2676,9 +2691,9 @@ def lower_squeeze(x, dim=None):
     if not dims:
         return x
     if dim is None:
-        return SqueezeView.create(_underlying(x))
+        return SqueezeView.create(_view_source(x))
     new_size = [s for d, s in enumerate(size) if d not in dims]
-    return View.create(_underlying(x), new_size)
+    return View.create(_view_source(x), new_size)
 
 
 @register("expand.default")
@@ -2711,7 +2726,7 @@ def _slice(x, dim, start, end, step, *, clamp=True):
         start, end = start_index, _clamp_slice_end_to_start(end_index, start_index)
     if start == 0 and step == 1 and end == extent:
         return x
-    return SliceView.create(_underlying(x), dim, start, end, step, clamp=False)
+    return SliceView.create(_view_source(x), dim, start, end, step, clamp=False)
 
 
 @register("slice.Tensor")
