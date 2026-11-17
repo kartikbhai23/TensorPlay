@@ -407,6 +407,39 @@ Tensor& bitwise_rshift_scalar_out_cuda(const Tensor& a, const Scalar& b, Tensor&
     return bitwise_assign_out_cuda(out, bitwise_rshift_scalar_cuda(a, b));
 }
 
+// In-place dunder entry points write the binary result straight into self,
+// skipping the compute-then-copy composite route.
+Tensor& iand_tensor_inplace_cuda(Tensor& self, const Tensor& other) {
+    return bitwise_and_tensor_out_cuda(self, other, self);
+}
+Tensor& iand_scalar_inplace_cuda(Tensor& self, const Scalar& other) {
+    return bitwise_and_scalar_out_cuda(self, other, self);
+}
+Tensor& ior_tensor_inplace_cuda(Tensor& self, const Tensor& other) {
+    return bitwise_or_tensor_out_cuda(self, other, self);
+}
+Tensor& ior_scalar_inplace_cuda(Tensor& self, const Scalar& other) {
+    return bitwise_or_scalar_out_cuda(self, other, self);
+}
+Tensor& ixor_tensor_inplace_cuda(Tensor& self, const Tensor& other) {
+    return bitwise_xor_tensor_out_cuda(self, other, self);
+}
+Tensor& ixor_scalar_inplace_cuda(Tensor& self, const Scalar& other) {
+    return bitwise_xor_scalar_out_cuda(self, other, self);
+}
+Tensor& ilshift_tensor_inplace_cuda(Tensor& self, const Tensor& other) {
+    return bitwise_lshift_tensor_out_cuda(self, other, self);
+}
+Tensor& ilshift_scalar_inplace_cuda(Tensor& self, const Scalar& other) {
+    return bitwise_lshift_scalar_out_cuda(self, other, self);
+}
+Tensor& irshift_tensor_inplace_cuda(Tensor& self, const Tensor& other) {
+    return bitwise_rshift_tensor_out_cuda(self, other, self);
+}
+Tensor& irshift_scalar_inplace_cuda(Tensor& self, const Scalar& other) {
+    return bitwise_rshift_scalar_out_cuda(self, other, self);
+}
+
 } // anonymous namespace
 
 TENSORPLAY_LIBRARY_IMPL(CUDA, BitwiseKernels) {
@@ -428,6 +461,28 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, BitwiseKernels) {
     m.impl("bitwise_xor.Scalar_Tensor", bitwise_xor_scalar_tensor_cuda);
     m.impl("bitwise_left_shift.Scalar_Tensor", bitwise_lshift_scalar_tensor_cuda);
     m.impl("bitwise_right_shift.Scalar_Tensor", bitwise_rshift_scalar_tensor_cuda);
+    // In-place dunders on the CUDA key: keeps them off the staging composite.
+    m.impl("__iand__.Tensor", iand_tensor_inplace_cuda);
+    m.impl("__iand__.Scalar", iand_scalar_inplace_cuda);
+    m.impl("__ior__.Tensor", ior_tensor_inplace_cuda);
+    m.impl("__ior__.Scalar", ior_scalar_inplace_cuda);
+    m.impl("__ixor__.Tensor", ixor_tensor_inplace_cuda);
+    m.impl("__ixor__.Scalar", ixor_scalar_inplace_cuda);
+    m.impl("__ilshift__.Tensor", ilshift_tensor_inplace_cuda);
+    m.impl("__ilshift__.Scalar", ilshift_scalar_inplace_cuda);
+    m.impl("__irshift__.Tensor", irshift_tensor_inplace_cuda);
+    m.impl("__irshift__.Scalar", irshift_scalar_inplace_cuda);
+    // In-place dunder entry points: direct write-back into self.
+    m.impl("__iand__.Tensor", iand_tensor_inplace_cuda);
+    m.impl("__iand__.Scalar", iand_scalar_inplace_cuda);
+    m.impl("__ior__.Tensor", ior_tensor_inplace_cuda);
+    m.impl("__ior__.Scalar", ior_scalar_inplace_cuda);
+    m.impl("__ixor__.Tensor", ixor_tensor_inplace_cuda);
+    m.impl("__ixor__.Scalar", ixor_scalar_inplace_cuda);
+    m.impl("__ilshift__.Tensor", ilshift_tensor_inplace_cuda);
+    m.impl("__ilshift__.Scalar", ilshift_scalar_inplace_cuda);
+    m.impl("__irshift__.Tensor", irshift_tensor_inplace_cuda);
+    m.impl("__irshift__.Scalar", irshift_scalar_inplace_cuda);
     // Out variants
     m.impl("bitwise_and.Tensor_out", bitwise_and_tensor_out_cuda);
     m.impl("bitwise_or.Tensor_out", bitwise_or_tensor_out_cuda);
