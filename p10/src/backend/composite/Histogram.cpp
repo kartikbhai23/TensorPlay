@@ -361,6 +361,46 @@ Tensor histc_native(const Tensor& self, int64_t bins, const Scalar& min,
         TP_THROW(RuntimeError, "histc: max must be larger than min");
     }
 
+    // CPU fast path: one sweep over the data bins each in-range element and
+    // increments its counter, instead of the multi-pass mask/where/arithmetic
+    // expansion.  Bin indices use double math so the boundary mapping matches
+    // the promoted path.
+    if (self.device().is_cpu() && !promote_to_f64) {
+        const Tensor flat = work.contiguous().reshape({-1});
+        const int64_t n = flat.numel();
+        std::vector<int64_t> counts(static_cast<size_t>(bins), 0);
+        const double scale = static_cast<double>(bins) / (hi - lo);
+        const int64_t top = bins - 1;
+        if (self.dtype() == DType::Float64) {
+            const double* p = flat.data_ptr<double>();
+            for (int64_t i = 0; i < n; ++i) {
+                const double v = p[i];
+                if (v < lo || v > hi) continue;
+                int64_t b = static_cast<int64_t>((v - lo) * scale);
+                ++counts[static_cast<size_t>(b < 0 ? 0 : (b > top ? top : b))];
+            }
+        } else {
+            const float* p = flat.data_ptr<float>();
+            const float lo_f = static_cast<float>(lo);
+            const float hi_f = static_cast<float>(hi);
+            const float bins_f = static_cast<float>(bins);
+            const float span = hi_f - lo_f;
+            for (int64_t i = 0; i < n; ++i) {
+                const float v = p[i];
+                if (v < lo_f || v > hi_f) continue;
+                // Same expression order as the composite path, so values on a
+                // bin edge land in the same bucket as the reference.
+                int64_t b = static_cast<int64_t>((v - lo_f) * bins_f / span);
+                ++counts[static_cast<size_t>(b < 0 ? 0 : (b > top ? top : b))];
+            }
+        }
+        Tensor counts_t = Tensor::empty(std::vector<int64_t>{bins}, DType::Int64,
+                                        self.device());
+        int64_t* cp = counts_t.data_ptr<int64_t>();
+        for (int64_t k = 0; k < bins; ++k) cp[k] = counts[static_cast<size_t>(k)];
+        return counts_t.to(self.dtype());
+    }
+
     const Tensor flat = ops::reshape(work, {-1});
     const Tensor in_range = ops::logical_and(ops::ge(flat, Scalar(lo)),
                                              ops::le(flat, Scalar(hi)));
