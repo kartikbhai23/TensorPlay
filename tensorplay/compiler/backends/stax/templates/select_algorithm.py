@@ -408,6 +408,23 @@ class ExternKernelCaller(ChoiceCaller):
     def __str__(self) -> str:
         return f"ExternKernelCaller({self.choice.call_name()})"
 
+    def warm(self, *args: Any, out: Any = None) -> None:
+        """Do what the operation decides once per shape rather than per call.
+
+        A library that keeps the algorithm it picked for a shape has to pick
+        one before the call is timed, or the measurement reports the search
+        instead of the work.  An operation that decides nothing keeps nothing,
+        and this does nothing for it.
+        """
+
+        prepare = self.choice.warm
+        if prepare is None:
+            return
+        if self.has_out_variant and out is not None:
+            prepare(*args, out=out)
+        else:
+            prepare(*args)
+
     def call_name(self) -> str:
         """The name a trace shows this call under."""
 
@@ -760,6 +777,7 @@ class ExternKernelChoice:
         op_overload: Any = None,
         use_fallback_kernel: bool = False,
         kernel_creator: Callable[..., Any] | None = None,
+        warm: Callable[..., Any] | None = None,
     ):
         name = name or getattr(kernel, "__name__", None)
         if not callable(kernel):
@@ -787,6 +805,10 @@ class ExternKernelChoice:
         self.op_overload = op_overload
         self.use_fallback_kernel = use_fallback_kernel
         self.kernel_creator = kernel_creator
+        #: The preparation a call needs before it can be timed: what a library
+        #: decides once per shape rather than per call.  Absent for an
+        #: operation that decides nothing it keeps.
+        self.warm = warm
         self.ordered_kwargs_for_cpp_kernel: tuple = ()
         #: There is no source for an operation that is not written out here, so
         #: there is nothing to hash: the operation is the kernel, and the name
@@ -4833,6 +4855,12 @@ class AlgorithmSelectorCache(PersistentCache):
         benchmark_tensors = autotune_args.get_benchmark_tensors(cls._is_extern(choice))
         inputs, output = benchmark_tensors.unpack()
         output.zero_()
+        # What the candidate settles once per shape -- a library's algorithm
+        # choice, for one -- happens before the timer starts, so the number
+        # reported is the work and not the search for how to do it.
+        prepare = getattr(choice, "warm", None)
+        if prepare is not None:
+            prepare(*inputs, out=output)
         result = choice.benchmark(*inputs, out=output)
         device_type = next(
             (tensor.device.type for tensor in inputs if tensor.device.type == "cuda"),

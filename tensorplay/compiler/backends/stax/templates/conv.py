@@ -7,6 +7,7 @@ product at all, which is the one form that needs a table of its own.
 
 from __future__ import annotations
 import logging
+import contextlib
 
 #: Where this module's messages go.  A measurement that is
 #: discarded is worth a line and a discarded one is worth none, so
@@ -870,10 +871,48 @@ CONV_BWD_INPUT = ConvBwdInputTemplate()
 
 CONV_BWD_WEIGHT = ConvBwdWeightTemplate()
 
+@contextlib.contextmanager
+def _algorithm_search_window():
+    """Let the library search for its fastest algorithm while this is open.
+
+    A convolution library keeps the algorithm it picked per shape, so the
+    search belongs to the compile: the shapes a region plans are searched once,
+    and every later call of those shapes reuses the answer.  The switch is put
+    back afterwards, so a call from anywhere else in the process keeps the
+    library's own default.
+    """
+
+    library = tp.backends.cudnn
+    previous = library.benchmark
+    if previous:
+        yield
+        return
+    library.benchmark = True
+    try:
+        yield
+    finally:
+        library.benchmark = previous
+
+
+def warm_framework_convolution(
+    input, weight, bias, *args: Any, out: Any = None, **kwargs: Any
+):
+    """Plan one convolution with the library's search turned on.
+
+    The call happens on the operands the candidates are timed on, in the layout
+    they were arranged in, so the plan the library settles on is the one that
+    call will want.
+    """
+
+    with _algorithm_search_window():
+        return tp.ops.tp.convolution(input, weight, bias, *args, **kwargs, out=out)
+
+
 framework_convolution = ExternKernelChoice(
     tp.ops.tp.convolution, "convolution",
     has_out_variant=True,
     op_overload=tp.ops.tp.convolution.default,
+    warm=warm_framework_convolution if config.tune_conv_algorithms else None,
 )
 
 def conv1x1_launch(feed: list):

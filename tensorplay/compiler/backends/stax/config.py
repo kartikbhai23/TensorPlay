@@ -635,6 +635,13 @@ max_autotune_conv_backends = os.environ.get(
     "TP_MAX_AUTOTUNE_CONV_BACKENDS", "EAGER,TRITON"
 )
 
+# A convolution library keeps the algorithm it picked for a shape, so the
+# search for that algorithm is paid once.  Where the library only searches
+# when asked, the plan is asked for while the region is being planned: every
+# later call of that shape reuses the answer instead of the heuristic, and a
+# call from anywhere else in the process keeps what it had.
+tune_conv_algorithms = os.environ.get("TP_TUNE_CONV", "1") == "1"
+
 # Which ways of computing a product may be measured.  Every one of them is a
 # candidate when the measurement was asked for, and the operation's own kernel
 # is only among them if it is named here or the measurement was not asked for --
