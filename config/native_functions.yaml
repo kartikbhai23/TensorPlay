@@ -340,14 +340,12 @@
 
 - func: div.Tensor_mode(Tensor self, Tensor other, *, str? rounding_mode) -> Tensor
   device_check: NoCheck
-  variants: method
   dispatch:
     CPU: div_mode_tensor_cpu
     CUDA: div_mode_tensor_cuda
   tags: [core, pointwise]
 
 - func: div.Scalar_mode(Tensor self, Scalar other, *, str? rounding_mode) -> Tensor
-  variants: method
   dispatch:
     CPU: div_mode_scalar_cpu
     CUDA: div_mode_scalar_cuda
@@ -366,13 +364,11 @@
     CUDA: divide_scalar_cuda
 
 - func: divide.Tensor_mode(Tensor self, Tensor other, *, str? rounding_mode) -> Tensor
-  variants: method
   dispatch:
     CPU: div_mode_tensor_cpu
     CUDA: div_mode_tensor_cuda
 
 - func: divide.Scalar_mode(Tensor self, Scalar other, *, str? rounding_mode) -> Tensor
-  variants: method
   dispatch:
     CPU: div_mode_scalar_cpu
     CUDA: div_mode_scalar_cuda
