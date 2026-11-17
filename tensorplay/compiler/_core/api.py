@@ -587,6 +587,10 @@ def compile(
     last_call_fp: Any = None
     last_quick_parts: tuple[Any, ...] | None = None
     last_module_state: Any = None
+    #: The entry the native certificate was last installed on, the places it
+    #: names, and the ambient mode it was taken under.  Held so the install
+    #: (a pass over every site) only happens when one of them moved.
+    bound_certificate: tuple[Any, ...] | None = None
 
     def _guard_component(
         args_: tuple[Any, ...],
@@ -618,12 +622,37 @@ def compile(
         current across recompiles and specialization switches.
 
         The argument memo cannot see ambient autograd or module state, so
-        the entry checks both against the specialization it was bound to.
-        A state change returns to specialization lookup rather than reusing
-        an artifact captured under a different mode or module hierarchy.
+        both are checked before the entry runs.  Where the entry is a native
+        trampoline, the places the capture read from are handed over as a
+        certificate it re-checks in one C pass; otherwise the entry is a
+        Python gate that reads the state the long way.  Either way a state
+        change returns to specialization lookup rather than reusing an
+        artifact captured under a different mode or module hierarchy.
         """
 
+        nonlocal bound_certificate
         bound_grad_state = _grad_state_component()
+        dispatcher.tpx_set_fast(fast, nargs)
+        # A Python entry has no trampoline state of its own, so the plan has
+        # nothing to attach to and the gate below stays in charge.
+        if not hasattr(fast, "__code__"):
+            plan = _state_certificate_plan(model)
+            if plan is not None:
+                grad_enabled = bound_grad_state[0]
+                if (
+                    bound_certificate is None
+                    or bound_certificate[0] is not fast
+                    or bound_certificate[1] is not plan
+                    or bound_certificate[2] != grad_enabled
+                ):
+                    # Installing the certificate is a pass over every site it
+                    # names, so it is only redone when the entry, the places or
+                    # the mode it certifies are no longer the bound ones.
+                    dispatcher.tpx_set_state_plan(plan, grad_enabled)
+                    bound_certificate = (fast, plan, grad_enabled)
+                return
+            dispatcher.tpx_set_state_plan(None, False)
+            bound_certificate = None
 
         def _fast(*args: Any) -> Any:
             if (
@@ -852,7 +881,10 @@ def compile(
             last_quick_key = quick_key
             last_compiled_fn = compiled_fn
         if not kwargs:
-            fast = getattr(compiled_fn, "_fast_call", None)
+            make_entry = getattr(compiled_fn, "_steady_state_entry", None)
+            fast = make_entry(len(args)) if make_entry is not None else None
+            if fast is None:
+                fast = getattr(compiled_fn, "_fast_call", None)
             if fast is not None:
                 _bind_dispatcher_fast(fast, len(args), module_state)
                 return compiled_fn(*args)
@@ -1434,6 +1466,86 @@ def _store_state_roots(
 #: Read plans and the last value seen at each site, per compiled program.  A
 #: weak key keeps a program that is dropped from holding its plan alive.
 _state_plan_cache: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
+
+#: The same places, arranged for the native certificate, and the component they
+#: were taken from.  A component is rebuilt whenever a recorded value moves, so
+#: its identity is what says the arrangement is still describing the state the
+#: capture saw.
+_state_certificate_cache: "weakref.WeakKeyDictionary[Any, Any]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _state_certificate_plan(program: Any) -> Any:
+    """The captured state a call depends on, as the native check reads it.
+
+    A site is described by where it lives -- a module attribute, a global, a
+    closure cell -- and by the object it held when the capture ran.  The
+    native side re-reads those places in one pass and answers whether every
+    answer is still the same object with the same version, which is the
+    condition under which the recording still describes the call.
+
+    Answered with None when the program's state cannot be certified by
+    identity alone (a site holding a value whose description moves without the
+    object moving), so the caller keeps reading it the long way.
+    """
+
+    roots = _cached_state_roots(program)
+    if roots is None:
+        return None
+    modules, functions, shape, _module_part, component = roots
+    try:
+        cached = _state_certificate_cache.get(program)
+    except TypeError:
+        cached = None
+    if cached is not None and cached[0] is component:
+        return cached[1]
+    plan = _build_state_certificate(program, shape, modules, functions)
+    try:
+        _state_certificate_cache[program] = (component, plan)
+    except TypeError:
+        pass
+    return plan
+
+
+def _build_state_certificate(
+    program: Any, shape: Any, modules: list[Any], functions: list[Any]
+) -> Any:
+    """Arrange a program's read sites as the native certificate's plan."""
+
+    plan = _state_plan(program, shape, modules, functions)
+    sites = plan[:-1]
+    values, _cached_entries, last, reusable_flags = plan[-1][4]
+    if last is None or len(values) < len(sites):
+        return None
+    entries: list[tuple[Any, ...]] = []
+    for index, site in enumerate(sites):
+        kind, owner, _label, name, _ = site
+        value = values[index]
+        present = value is not _MISSING
+        if present and not reusable_flags[index]:
+            # An unchanged object does not always mean an unchanged value for
+            # this kind of site, and a certificate that cannot say the value
+            # held still would be certifying the wrong thing.
+            return None
+        if kind == "attribute":
+            code = 0
+        elif kind == "global":
+            code = 1
+        elif kind == "closure":
+            code = 2
+        else:  # pragma: no cover - the plan only builds the three kinds
+            return None
+        entries.append((code, owner, name, value if present else None, present))
+    module_part = [
+        (
+            module,
+            bool(getattr(module, "training", True)),
+            tuple(getattr(module, "_modules", {}).items()),
+        )
+        for module in modules
+    ]
+    return (tuple(module_part), tuple(entries))
 
 
 def _state_plan(program: Any, shape: Any, modules: list[Any], functions: list[Any]) -> Any:

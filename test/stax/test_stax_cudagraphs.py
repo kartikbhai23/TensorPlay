@@ -738,3 +738,71 @@ def test_max_autotune_no_cudagraphs_mode_compiles_and_matches_eager():
     compiled = tp.compile(fn, mode="max-autotune-no-cudagraphs")
     x = tp.randn(32, 16)
     assert tp.allclose(compiled(x), fn(x))
+
+
+class _ScaledSteady(tp.nn.Module):
+    """A module whose output depends on a plain attribute and a buffer."""
+
+    def __init__(self):
+        super().__init__()
+        self.bias = tp.zeros(3, device="cuda")
+        self.scale = 2.0
+
+    def forward(self, x):
+        return (x + self.bias) * self.scale
+
+
+@requires_cuda
+def test_steady_state_repeats_the_recorded_answer():
+    module = _ScaledSteady()
+    compiled = tp.compile(module, fullgraph=True, mode="reduce-overhead")
+    x = tp.ones(3, device="cuda")
+    with tp.no_grad():
+        first = compiled(x)
+        assert first.tolist() == [2.0, 2.0, 2.0]
+        second = compiled(x)
+        assert second.tolist() == [2.0, 2.0, 2.0]
+        # Each replay answers with a tensor of its own, not the buffer the
+        # previous call returned.
+        assert first is not second
+        assert first.tolist() == [2.0, 2.0, 2.0]
+
+
+@requires_cuda
+def test_steady_state_returns_to_the_slow_path_when_an_attribute_moves():
+    module = _ScaledSteady()
+    compiled = tp.compile(module, fullgraph=True, mode="reduce-overhead")
+    x = tp.ones(3, device="cuda")
+    with tp.no_grad():
+        assert compiled(x).tolist() == [2.0, 2.0, 2.0]
+        assert compiled(x).tolist() == [2.0, 2.0, 2.0]
+        module.scale = 3.0
+        assert compiled(x).tolist() == [3.0, 3.0, 3.0]
+        assert compiled(x).tolist() == [3.0, 3.0, 3.0]
+
+
+@requires_cuda
+def test_steady_state_notices_a_value_written_in_place():
+    module = _ScaledSteady()
+    compiled = tp.compile(module, fullgraph=True, mode="reduce-overhead")
+    x = tp.ones(3, device="cuda")
+    with tp.no_grad():
+        assert compiled(x).tolist() == [2.0, 2.0, 2.0]
+        # The buffer keeps its identity and moves its contents: the version it
+        # carries is what says the recording no longer describes the call.
+        module.bias.add_(1.0)
+        assert compiled(x).tolist() == [4.0, 4.0, 4.0]
+
+
+@requires_cuda
+def test_steady_state_follows_a_training_flag_flip():
+    module = _ScaledSteady()
+    compiled = tp.compile(module, fullgraph=True, mode="reduce-overhead")
+    x = tp.ones(3, device="cuda")
+    module.eval()
+    with tp.no_grad():
+        assert compiled(x).tolist() == [2.0, 2.0, 2.0]
+        module.train()
+        # The flag is part of what the module tree certifies; the call has to
+        # come back through the wrapper rather than replay a stale tree.
+        assert compiled(x).tolist() == [2.0, 2.0, 2.0]

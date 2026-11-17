@@ -1,6 +1,7 @@
 #include "python_bindings.h"
 #include "Graph.h"
 #include "Fusion.h"
+#include "GradMode.h"
 #include <sstream>
 #include <vector>
 
@@ -51,11 +52,58 @@ namespace {
 // unreachable for a real counter (unsigned, always non-negative).
 constexpr long long kFpNoVersion = -1;
 
+// ---------------------------------------------------------------------------
+// Captured-state certificate.
+//
+// A recorded region may have baked values it read from outside its call
+// arguments: module attributes, the globals and closure cells its Python code
+// loads, and the module tree itself -- identities, training flags and child
+// bindings.  Replaying the recording is valid exactly while every one of those
+// still holds the object it held when the region was recorded (and, for a
+// tensor, the same version).
+//
+// The Python side works out *where* those places are, once; re-reading them is
+// then one pass in C.  A site is certified by identity alone, which is the
+// condition under which the recorded value cannot have moved, so a certificate
+// that passes means the Python side would have read the same answer.
+// ---------------------------------------------------------------------------
+enum {
+    kStateAttribute = 0,
+    kStateGlobal = 1,
+    kStateClosure = 2,
+};
+
+//: A site whose recorded value is not a versioned tensor.
+constexpr long long kStateNotTensor = -2;
+
+struct StateSite {
+    int kind;
+    PyObject* owner;    // strong: module holding the attribute, or the function
+    PyObject* name;     // strong: attribute / global name; null for a closure
+    Py_ssize_t index;   // closure cell index
+    PyObject* value;    // strong: the object read at record time; null = nothing
+    long long version;  // version counter when ``value`` is a tensor
+};
+
+struct StateModule {
+    PyObject* module;               // strong
+    PyObject* training;             // strong: the flag read at record time
+    PyObject* children;             // strong: the module's child table
+    std::vector<PyObject*> names;   // strong, in table order
+    std::vector<PyObject*> values;  // strong, matching ``names``
+};
+
+struct StatePlan {
+    std::vector<StateSite> sites;
+    std::vector<StateModule> modules;
+};
+
 struct CallTrampolineState {
     PyObject* lowering;      // borrowed: owned by the compiled wrapper
     PyObject* fallback;      // borrowed: outer optimized wrapper, if present
     PyObject* exec_fn;       // strong: native Graph.execute bound method
     PyObject* tail;          // strong list: attribute targets + constants
+    PyObject* head;          // strong list: fixed leading arguments, or null
     PyObject* tensor_type;   // strong: tensorplay.Tensor (exact-type check)
     Py_ssize_t nargs_expected;
     int output_count;
@@ -72,9 +120,36 @@ struct CallTrampolineState {
     std::vector<long long> fp_versions;  // kFpNoVersion marks an inference tensor
     std::vector<int> fp_rg;      // fast-path view: 0 unless a gradient plan exists
     std::vector<int> fp_rg_live;  // memo view: live requires_grad flag
+    // Captured-state certificate and the ambient autograd flag it was taken
+    // under.  Present only where the recorded region's validity depends on
+    // state the fingerprint cannot see; -1 means "not compared".
+    StatePlan* state_plan;
+    int grad_enabled_expected;
 };
 
 bool capture_busy_probe();
+
+void destroy_state_plan(StatePlan* plan);
+
+// The two names a module entry is re-read through.  Interned once: they are
+// the same strings on every call, so the read costs a table lookup.
+PyObject* interned_name(PyObject** slot, const char* name) {
+    if (*slot == nullptr) {
+        *slot = PyUnicode_InternFromString(name);
+        if (*slot == nullptr) PyErr_Clear();
+    }
+    return *slot;
+}
+
+PyObject* plan_training_name() {
+    static PyObject* name = nullptr;
+    return interned_name(&name, "training");
+}
+
+PyObject* plan_children_name() {
+    static PyObject* name = nullptr;
+    return interned_name(&name, "_modules");
+}
 
 CallTrampolineState* trampoline_state_from_callable(PyObject* callable) {
     if (callable == nullptr || !PyCFunction_Check(callable)) return nullptr;
@@ -91,9 +166,126 @@ CallTrampolineState* trampoline_state_from_callable(PyObject* callable) {
 void destroy_trampoline_state(CallTrampolineState* st) {
     Py_XDECREF(st->exec_fn);
     Py_XDECREF(st->tail);
+    Py_XDECREF(st->head);
     Py_XDECREF(st->tensor_type);
     for (PyObject* id : st->fp_ids) Py_XDECREF(id);
+    destroy_state_plan(st->state_plan);
     delete st;
+}
+
+// Destroy everything a plan holds.  Every entry owns a strong reference, so
+// dropping the plan without this would keep the module tree alive.
+void destroy_state_plan(StatePlan* plan) {
+    if (plan == nullptr) return;
+    for (StateSite& site : plan->sites) {
+        Py_XDECREF(site.owner);
+        Py_XDECREF(site.name);
+        Py_XDECREF(site.value);
+    }
+    for (StateModule& entry : plan->modules) {
+        Py_XDECREF(entry.module);
+        Py_XDECREF(entry.training);
+        Py_XDECREF(entry.children);
+        for (PyObject* name : entry.names) Py_XDECREF(name);
+        for (PyObject* value : entry.values) Py_XDECREF(value);
+    }
+    delete plan;
+}
+
+// The value an attribute site currently holds.  ``owner.__dict__`` is read
+// first and the type's own table second -- the two places a Python attribute
+// read reaches a captured value from -- and a name that is in neither reads
+// nothing.  A null result without an error means "reads nothing".
+PyObject* state_attribute(PyObject* owner, PyObject* name) {
+    if (owner == nullptr || name == nullptr) return nullptr;
+    PyObject** dict = nullptr;
+    PyObject* type_table = nullptr;
+    if (PyType_Check(owner)) {
+        // A class keeps its attributes in its own table, and ``owner.__dict__``
+        // is that table; the second place a read can reach is the metaclass.
+        auto* type = reinterpret_cast<PyTypeObject*>(owner);
+        dict = &type->tp_dict;
+        type_table = Py_TYPE(type)->tp_dict;
+    } else {
+        dict = _PyObject_GetDictPtr(owner);
+        type_table = Py_TYPE(owner)->tp_dict;
+    }
+    if (dict != nullptr && *dict != nullptr) {
+        PyObject* value = PyDict_GetItemWithError(*dict, name);
+        if (value != nullptr) return value;
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+            return nullptr;
+        }
+    }
+    if (type_table == nullptr) return nullptr;
+    PyObject* value = PyDict_GetItemWithError(type_table, name);
+    if (value != nullptr) return value;
+    if (PyErr_Occurred()) PyErr_Clear();
+    return nullptr;
+}
+
+// The value a global or closure site currently holds, or null for "nothing".
+PyObject* state_shared_value(const StateSite& site) {
+    if (site.kind == kStateClosure) {
+        PyObject* closure = PyFunction_GET_CLOSURE(site.owner);
+        if (closure == nullptr || !PyTuple_Check(closure)) return nullptr;
+        if (site.index < 0 || site.index >= PyTuple_GET_SIZE(closure)) {
+            return nullptr;
+        }
+        PyObject* cell = PyTuple_GET_ITEM(closure, site.index);
+        if (!PyCell_Check(cell)) return nullptr;
+        return PyCell_GET(cell);
+    }
+    PyObject* globals = PyFunction_GET_GLOBALS(site.owner);
+    if (globals == nullptr) return nullptr;
+    PyObject* value = PyDict_GetItemWithError(globals, site.name);
+    if (value != nullptr) return value;
+    if (PyErr_Occurred()) {
+        PyErr_Clear();
+        return nullptr;
+    }
+    // A missing global reads as nothing; the Python side spells it ``None``,
+    // which is the object a plan records for that site.
+    return Py_None;
+}
+
+// True when every site and every module binding still holds what the region
+// was recorded against.  Identity is the test; a tensor additionally has to
+// carry the version it had, since an in-place update leaves the object in
+// place while the value it describes moves.
+bool state_plan_holds(const StatePlan& plan) {
+    for (const StateSite& site : plan.sites) {
+        PyObject* value = site.kind == kStateAttribute
+                              ? state_attribute(site.owner, site.name)
+                              : state_shared_value(site);
+        if (value != site.value) return false;
+        if (value == nullptr || site.version == kStateNotTensor) continue;
+        long long version = 0;
+        if (tpx_tensor_guard_probe(value, &version) != 0) return false;
+        if (version != site.version) return false;
+    }
+    for (const StateModule& entry : plan.modules) {
+        if (state_attribute(entry.module, plan_training_name()) != entry.training) {
+            return false;
+        }
+        PyObject* children = state_attribute(entry.module, plan_children_name());
+        if (children != entry.children) return false;
+        if (!PyDict_Check(children)) return false;
+        if (PyDict_GET_SIZE(children) != (Py_ssize_t)entry.names.size()) {
+            return false;
+        }
+        PyObject *name = nullptr;
+        PyObject *child = nullptr;
+        Py_ssize_t position = 0;
+        Py_ssize_t cursor = 0;
+        while (PyDict_Next(children, &cursor, &name, &child)) {
+            if (name != entry.names[position]) return false;
+            if (child != entry.values[position]) return false;
+            ++position;
+        }
+    }
+    return true;
 }
 
 // Read the fingerprint-relevant state of one argument.  Returns false when
@@ -232,6 +424,22 @@ PyObject* call_trampoline(PyObject* self, PyObject* const* args,
         return PyObject_Vectorcall(fallback, args, nargs, kwnames);
     }
 
+    // State the fingerprint cannot see: the ambient autograd switch the
+    // recording was taken under, and every place the region read a value from
+    // outside its arguments.  Either one moving means the recording no longer
+    // describes this call.
+    if (st->state_plan != nullptr &&
+        !state_plan_holds(*st->state_plan)) {
+        PyObject* fallback = st->fallback != nullptr ? st->fallback : st->lowering;
+        return PyObject_Vectorcall(fallback, args, nargs, kwnames);
+    }
+    if (st->grad_enabled_expected >= 0 &&
+        tensorplay::GradMode::is_enabled() !=
+            (st->grad_enabled_expected != 0)) {
+        PyObject* fallback = st->fallback != nullptr ? st->fallback : st->lowering;
+        return PyObject_Vectorcall(fallback, args, nargs, kwnames);
+    }
+
     if (st->direct != nullptr) {
         // Steady state with a pinned kernel: pointers straight from the
         // C++ value holders, kernel allocates and wraps its own output.
@@ -249,17 +457,23 @@ PyObject* call_trampoline(PyObject* self, PyObject* const* args,
         return st->direct(ins);
     }
 
-    Py_ssize_t total = nargs + PyList_GET_SIZE(st->tail);
+    Py_ssize_t head_count = st->head != nullptr ? PyList_GET_SIZE(st->head) : 0;
+    Py_ssize_t total = head_count + nargs + PyList_GET_SIZE(st->tail);
     PyObject* inputs = PyList_New(total);
     if (!inputs) return nullptr;
+    for (Py_ssize_t i = 0; i < head_count; ++i) {
+        PyObject* item = PyList_GET_ITEM(st->head, i);  // borrowed
+        Py_INCREF(item);
+        PyList_SET_ITEM(inputs, i, item);
+    }
     for (Py_ssize_t i = 0; i < nargs; ++i) {
         Py_INCREF(args[i]);
-        PyList_SET_ITEM(inputs, i, args[i]);
+        PyList_SET_ITEM(inputs, head_count + i, args[i]);
     }
     for (Py_ssize_t i = 0; i < PyList_GET_SIZE(st->tail); ++i) {
         PyObject* item = PyList_GET_ITEM(st->tail, i);  // borrowed
         Py_INCREF(item);
-        PyList_SET_ITEM(inputs, nargs + i, item);
+        PyList_SET_ITEM(inputs, head_count + nargs + i, item);
     }
     PyObject* out = PyObject_CallOneArg(st->exec_fn, inputs);
     Py_DECREF(inputs);
@@ -280,6 +494,176 @@ PyObject* call_trampoline(PyObject* self, PyObject* const* args,
         return as_tuple;  // multi-output: match Python's tuple contract
     }
     return out;
+}
+
+// Read one site of a plan description into ``site``.  The description states
+// where the value comes from, and whether the site read anything at all.
+bool build_state_site(PyObject* item, StateSite* site) {
+    PyObject* parts = PySequence_Fast(item, "a state site is a sequence");
+    if (parts == nullptr) return false;
+    bool ok = PySequence_Fast_GET_SIZE(parts) == 5;
+    if (ok) {
+        PyObject* kind = PySequence_Fast_GET_ITEM(parts, 0);
+        PyObject* owner = PySequence_Fast_GET_ITEM(parts, 1);
+        PyObject* key = PySequence_Fast_GET_ITEM(parts, 2);
+        PyObject* value = PySequence_Fast_GET_ITEM(parts, 3);
+        PyObject* present = PySequence_Fast_GET_ITEM(parts, 4);
+        long kind_of = PyLong_AsLong(kind);
+        if (kind_of == -1 && PyErr_Occurred()) {
+            ok = false;
+        } else if (kind_of == kStateClosure) {
+            Py_ssize_t index = PyLong_AsSsize_t(key);
+            if (index == -1 && PyErr_Occurred()) {
+                ok = false;
+            } else {
+                site->kind = kStateClosure;
+                site->owner = Py_NewRef(owner);
+                site->name = nullptr;
+                site->index = index;
+            }
+        } else if (kind_of == kStateAttribute || kind_of == kStateGlobal) {
+            site->kind = static_cast<int>(kind_of);
+            site->owner = Py_NewRef(owner);
+            site->name = Py_NewRef(key);
+            site->index = 0;
+        } else {
+            PyErr_SetString(PyExc_ValueError, "unknown state site kind");
+            ok = false;
+        }
+        if (ok) {
+            int has_value = PyObject_IsTrue(present);
+            if (has_value < 0) {
+                ok = false;
+            } else if (has_value == 0) {
+                site->value = nullptr;
+                site->version = kStateNotTensor;
+            } else {
+                site->value = Py_NewRef(value);
+                site->version = kStateNotTensor;
+                long long version = 0;
+                // A versioned tensor is certified by its counter as well:
+                // the object stays the same across an in-place update while
+                // the value it describes does not.
+                if (tpx_tensor_guard_probe(value, &version) == 0) {
+                    site->version = version;
+                }
+            }
+        }
+    }
+    Py_DECREF(parts);
+    return ok;
+}
+
+// Read one module entry of a plan description: the module, the training flag
+// it carried, and its child bindings in table order.
+bool build_state_module(PyObject* item, StateModule* entry) {
+    PyObject* parts = PySequence_Fast(item, "a state module is a sequence");
+    if (parts == nullptr) return false;
+    bool ok = PySequence_Fast_GET_SIZE(parts) == 3;
+    if (ok) {
+        PyObject* module = PySequence_Fast_GET_ITEM(parts, 0);
+        PyObject* training = PySequence_Fast_GET_ITEM(parts, 1);
+        PyObject* children = PySequence_Fast_GET_ITEM(parts, 2);
+        PyObject* table = state_attribute(module, plan_children_name());
+        if (table == nullptr || !PyDict_Check(table)) {
+            PyErr_SetString(PyExc_TypeError, "a state module has no child table");
+            ok = false;
+        } else {
+            entry->module = Py_NewRef(module);
+            entry->training = Py_NewRef(training);
+            entry->children = Py_NewRef(table);
+            Py_ssize_t count = PySequence_Fast_GET_SIZE(children);
+            if (count < 0) {
+                ok = false;
+            } else {
+                entry->names.reserve(static_cast<size_t>(count));
+                entry->values.reserve(static_cast<size_t>(count));
+                for (Py_ssize_t i = 0; ok && i < count; ++i) {
+                    PyObject* pair = PySequence_Fast_GET_ITEM(children, i);
+                    PyObject* pair_parts = PySequence_Fast(pair, "a child binding is a sequence");
+                    if (pair_parts == nullptr || PySequence_Fast_GET_SIZE(pair_parts) != 2) {
+                        Py_XDECREF(pair_parts);
+                        ok = false;
+                        break;
+                    }
+                    entry->names.push_back(Py_NewRef(PySequence_Fast_GET_ITEM(pair_parts, 0)));
+                    entry->values.push_back(Py_NewRef(PySequence_Fast_GET_ITEM(pair_parts, 1)));
+                    Py_DECREF(pair_parts);
+                }
+                if (ok && (Py_ssize_t)entry->names.size() != PyDict_GET_SIZE(table)) {
+                    PyErr_SetString(PyExc_ValueError,
+                                    "a state module's child list does not match its table");
+                    ok = false;
+                }
+            }
+        }
+    }
+    Py_DECREF(parts);
+    return ok;
+}
+
+// Build a plan from (modules, sites).  Every entry takes a strong reference,
+// so the plan keeps the objects it certifies alive and their addresses are
+// never reused underneath it.
+StatePlan* build_state_plan(PyObject* description) {
+    if (!PyTuple_Check(description) || PyTuple_GET_SIZE(description) != 2) {
+        PyErr_SetString(PyExc_TypeError, "a state plan is (modules, sites)");
+        return nullptr;
+    }
+    auto* plan = new StatePlan();
+    auto fail = [&]() -> StatePlan* {
+        destroy_state_plan(plan);
+        return nullptr;
+    };
+    PyObject* modules = PySequence_Fast(PyTuple_GET_ITEM(description, 0),
+                                        "a state plan's modules");
+    if (modules == nullptr) return fail();
+    PyObject* sites = PySequence_Fast(PyTuple_GET_ITEM(description, 1),
+                                      "a state plan's sites");
+    if (sites == nullptr) {
+        Py_DECREF(modules);
+        return fail();
+    }
+    Py_ssize_t module_count = PySequence_Fast_GET_SIZE(modules);
+    Py_ssize_t site_count = PySequence_Fast_GET_SIZE(sites);
+    plan->modules.reserve(static_cast<size_t>(module_count));
+    plan->sites.reserve(static_cast<size_t>(site_count));
+    bool ok = true;
+    for (Py_ssize_t i = 0; ok && i < module_count; ++i) {
+        StateModule entry{};
+        if (!build_state_module(PySequence_Fast_GET_ITEM(modules, i), &entry)) {
+            // Free what this entry took before dropping the plan: the plan
+            // only owns entries that were pushed.
+            Py_XDECREF(entry.module);
+            Py_XDECREF(entry.training);
+            Py_XDECREF(entry.children);
+            for (PyObject* name : entry.names) Py_XDECREF(name);
+            for (PyObject* value : entry.values) Py_XDECREF(value);
+            ok = false;
+            break;
+        }
+        plan->modules.push_back(std::move(entry));
+    }
+    for (Py_ssize_t i = 0; ok && i < site_count; ++i) {
+        StateSite site{};
+        site.owner = nullptr;
+        site.name = nullptr;
+        site.value = nullptr;
+        site.version = kStateNotTensor;
+        site.index = 0;
+        if (!build_state_site(PySequence_Fast_GET_ITEM(sites, i), &site)) {
+            Py_XDECREF(site.owner);
+            Py_XDECREF(site.name);
+            Py_XDECREF(site.value);
+            ok = false;
+            break;
+        }
+        plan->sites.push_back(site);
+    }
+    Py_DECREF(modules);
+    Py_DECREF(sites);
+    if (!ok) return fail();
+    return plan;
 }
 
 PyMethodDef trampoline_def = {
@@ -416,6 +800,34 @@ PyObject* call_dispatcher_fingerprint_clear(PyObject* self,
     Py_RETURN_NONE;
 }
 
+// Install the captured-state certificate on the currently bound trampoline,
+// paired with the ambient autograd switch it was taken under.  The trampoline
+// consults both before replaying; a plan of None drops the certificate, which
+// makes every call divert to the Python wrapper.
+PyObject* call_dispatcher_set_state_plan(PyObject* self,
+                                         PyObject* const* args,
+                                         Py_ssize_t nargs) {
+    auto* d = reinterpret_cast<CallDispatcher*>(self);
+    if (nargs != 2) {
+        PyErr_SetString(PyExc_TypeError, "tpx_set_state_plan(plan, grad_enabled)");
+        return nullptr;
+    }
+    if (d->fast == nullptr) Py_RETURN_NONE;
+    auto* st = trampoline_state_from_callable(d->fast);
+    if (st == nullptr) Py_RETURN_NONE;
+    destroy_state_plan(st->state_plan);
+    st->state_plan = nullptr;
+    st->grad_enabled_expected = -1;
+    if (args[0] != Py_None) {
+        st->state_plan = build_state_plan(args[0]);
+        if (st->state_plan == nullptr) return nullptr;
+        int enabled = PyObject_IsTrue(args[1]);
+        if (enabled < 0) return nullptr;
+        st->grad_enabled_expected = enabled;
+    }
+    Py_RETURN_NONE;
+}
+
 int call_dispatcher_traverse(PyObject* self, visitproc visit, void* arg) {
     auto* d = reinterpret_cast<CallDispatcher*>(self);
     Py_VISIT(d->python_entry);
@@ -463,6 +875,9 @@ PyMethodDef dispatcher_methods[] = {
      METH_FASTCALL, nullptr},
     {"tpx_fingerprint_clear",
      (PyCFunction)(void(*)(void))call_dispatcher_fingerprint_clear,
+     METH_FASTCALL, nullptr},
+    {"tpx_set_state_plan",
+     (PyCFunction)(void(*)(void))call_dispatcher_set_state_plan,
      METH_FASTCALL, nullptr},
     {nullptr, nullptr, 0, nullptr},
 };
@@ -563,21 +978,33 @@ void init_stax(py::module_& m) {
         [](py::object lowering, py::object exec_fn, py::list tail,
            py::object tensor_type, Py_ssize_t nargs_expected,
            int output_count, bool gradient_plan,
-           unsigned long long direct_addr) -> py::object {
+           unsigned long long direct_addr, py::object head) -> py::object {
             auto* st = new CallTrampolineState();
             st->lowering = lowering.ptr();
             st->fallback = nullptr;
             st->exec_fn = exec_fn.ptr();
             st->tail = tail.ptr();
+            st->head = nullptr;
             st->tensor_type = tensor_type.ptr();
             st->nargs_expected = nargs_expected;
             st->output_count = output_count;
             st->gradient_plan = gradient_plan;
+            st->state_plan = nullptr;
+            st->grad_enabled_expected = -1;
             st->direct = reinterpret_cast<PyObject* (*)(const void* const*)>(
                 direct_addr);
             Py_INCREF(st->exec_fn);
             Py_INCREF(st->tail);
             Py_INCREF(st->tensor_type);
+            // A fixed leading list is the arguments a region always reads
+            // before the caller's own: the state its program was recorded
+            // against.  The fingerprint covers the caller's arguments, so the
+            // list is what a call needs to rebuild the full argument vector
+            // without walking the module tree again.
+            if (!head.is_none()) {
+                st->head = head.ptr();
+                Py_INCREF(st->head);
+            }
             PyObject* cap = PyCapsule_New((void*)st, nullptr,
                                           [](PyObject* c) {
                 auto* hh = (CallTrampolineState*)PyCapsule_GetPointer(c, nullptr);
@@ -596,7 +1023,7 @@ void init_stax(py::module_& m) {
         py::arg("lowering"), py::arg("exec_fn"), py::arg("tail"),
         py::arg("tensor_type"), py::arg("nargs_expected"),
         py::arg("output_count"), py::arg("gradient_plan"),
-        py::arg("direct_addr") = 0ULL);
+        py::arg("direct_addr") = 0ULL, py::arg("head") = py::none());
 
     stax_m.def(
         "capture_state_enter",

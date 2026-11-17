@@ -403,6 +403,14 @@ def _is_tensor(value: Any) -> bool:
     return isinstance(value, tensorplay.Tensor)
 
 
+def _grad_enabled() -> bool:
+    """Whether the ambient switch records history for this call."""
+
+    import tensorplay
+
+    return bool(tensorplay.is_grad_enabled())
+
+
 def _storage_key(value: Any) -> Any:
     try:
         return value.untyped_storage().data_ptr()
@@ -958,9 +966,7 @@ class CudagraphCompiledCallable:
 
         if not any(_is_tensor(value) and value.requires_grad for value in args):
             return False
-        import tensorplay
-
-        return bool(tensorplay.is_grad_enabled())
+        return _grad_enabled()
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         if kwargs or self._state == "fallback" or self._records_autograd(args):
@@ -1122,6 +1128,83 @@ class CudagraphCompiledCallable:
         )
         return self._capture(args)
 
+    def _replay_flat(self, values: List[Any], *, guard_autograd: bool) -> List[Any]:
+        """Replay the recording against one full argument vector."""
+
+        if guard_autograd and self._needs_eager_when_grad and self._records_autograd(values):
+            # This call is recording; a replay would drop that history.
+            # The artifact returns the caller's own shape of result, which
+            # the trampoline expects flattened into a list.
+            result = self._compiled(*values)
+            if isinstance(result, (list, tuple)):
+                return list(result)
+            return [result]
+        if self._trees:
+            key = self._layout_key(tuple(values))
+            if not self._manager.has(key):
+                return self._replay(tuple(values), key=key)
+            # The key was just built from these very arguments, so the
+            # signature check would only repeat it.
+            return self._manager.replay(key, *values, verify=False)
+        # The entry that reached here certified every argument by identity and
+        # version, which is what the signature and address checks establish.
+        return self._manager.replay(self._key, *values, verify=False)
+
+    def _build_fast_call(
+        self, head: Optional[Sequence[Any]], nargs: int, *, guard_autograd: bool
+    ) -> Any:
+        """A native steady-state entry over the recording, or None."""
+
+        try:
+            import tensorplay
+
+            installer = tensorplay._C._stax.install_call_trampoline
+        except Exception:  # noqa: BLE001 - trampoline is an optional accelerator
+            return None
+
+        def replay_flat(values: List[Any]) -> List[Any]:
+            return self._replay_flat(values, guard_autograd=guard_autograd)
+
+        try:
+            return installer(
+                self,
+                replay_flat,
+                [],
+                tensorplay.Tensor,
+                nargs,
+                1 if self._single_output else 2,
+                False,
+                0,
+                None if head is None else list(head),
+            )
+        except Exception:  # noqa: BLE001 - trampoline is an optional accelerator
+            return None
+
+    def _replay_entry(self, *, head: Sequence[Any], nargs: int) -> Any:
+        """A steady-state entry for a caller that holds only its own arguments.
+
+        A recorded region reads the module state it was captured against and
+        then the caller's arguments.  The state list is the same objects on
+        every steady call, so the entry carries it and asks the C dispatcher
+        to rebuild the argument vector; the caller's own arguments are the
+        only part the argument memo has to check.
+        """
+
+        if self._state != "live":
+            return None
+        if self._trees:
+            # A staged recording is keyed by the argument layout, which is a
+            # signature over every value it reads; naming it again per call is
+            # what the Python replay already does, so the entry would only add
+            # a hand-off, not a shortcut.
+            return None
+        if self._needs_eager_when_grad and _grad_enabled():
+            # The recording writes no autograd history, and this call would
+            # have to carry one.  A later change of the ambient switch is
+            # refused by the certificate the dispatcher installs alongside.
+            return None
+        return self._build_fast_call(head, nargs, guard_autograd=False)
+
     def _install_fast_call(self) -> None:
         """Bind the steady-state replay into the C call trampoline.
 
@@ -1130,42 +1213,10 @@ class CudagraphCompiledCallable:
         this wrapper.  Best effort - a build without the installer keeps the
         plain Python replay.
         """
-        try:
-            import tensorplay
 
-            installer = tensorplay._C._stax.install_call_trampoline
-        except Exception:  # noqa: BLE001 - trampoline is an optional accelerator
-            return
-
-        def replay_flat(values: List[Any]) -> List[Any]:
-            if self._needs_eager_when_grad and self._records_autograd(values):
-                # This call is recording; a replay would drop that history.
-                # The artifact returns the caller's own shape of result, which
-                # the trampoline expects flattened into a list.
-                result = self._compiled(*values)
-                if isinstance(result, (list, tuple)):
-                    return list(result)
-                return [result]
-            if self._trees:
-                key = self._layout_key(tuple(values))
-                if not self._manager.has(key):
-                    return self._replay(tuple(values), key=key)
-                return self._manager.replay(key, *values)
-            return self._manager.replay(self._key, *values)
-
-        try:
-            self._fast_call = installer(  # type: ignore[attr-defined]
-                self,
-                replay_flat,
-                [],
-                tensorplay.Tensor,
-                self._arity,
-                1 if self._single_output else 2,
-                False,
-                0,
-            )
-        except Exception:  # noqa: BLE001 - trampoline is an optional accelerator
-            self._fast_call = None
+        self._fast_call = self._build_fast_call(
+            None, self._arity, guard_autograd=True
+        )
 
 
 def cudagraph_wrap(

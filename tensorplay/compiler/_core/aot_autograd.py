@@ -505,6 +505,7 @@ def aot_function(
             "_tensorplay_aot_graphs",
             "_tensorplay_codegen",
             "_tensorplay_backward_codegen",
+            "_tensorplay_region_callable",
         ):
             if hasattr(inner, name):
                 setattr(run_flattened, name, getattr(inner, name))
@@ -543,6 +544,15 @@ def aot_function(
                 return tree_unflatten(list(produced), out_spec)
 
         run_inference._tensorplay_aot_graphs = (fw_module,)  # type: ignore[attr-defined]
+        #: The callable a steady-state entry replays.  Everything between the
+        #: caller and it -- state substitution, output unpinning, the empty
+        #: no-grad frame -- is bookkeeping the recording already stands for.
+        #: A region whose forward writes back into its inputs is not one of
+        #: those: the write is part of the call, so it keeps the full path.
+        if not input_updates:
+            run_inference._tensorplay_region_callable = (  # type: ignore[attr-defined]
+                compiled_fw
+            )
         run_inference._tensorplay_codegen = getattr(
             compiled_fw, "_tensorplay_codegen", None
         )  # type: ignore[attr-defined]
@@ -859,6 +869,55 @@ def aot_module_simplified(
             self._tensorplay_aot_graphs = getattr(
                 compiled, "_tensorplay_aot_graphs", ()
             )
+            #: The region a steady-state entry replays, and the entries built
+            #: for the call shapes that reached it.  An entry is kept across
+            #: calls so the argument memo it carries survives; it is rebuilt
+            #: only when the state list it was built over is no longer the
+            #: list the module reports.
+            self._region = getattr(compiled, "_tensorplay_region_callable", None)
+            self._fast_entries: dict[int, tuple[Any, list[Any]]] = {}
+
+        def _steady_state_entry(self, nargs: int) -> Any:
+            """The entry for a call that passes only its own arguments.
+
+            A recorded region reads the module state it was captured against
+            and then the caller's arguments.  On the steady state that state is
+            the same objects it was recorded with, so the entry carries the
+            list and asks the native dispatcher to put the two halves back
+            together: the call then checks its own arguments alone instead of
+            walking the module tree on every call.
+            """
+
+            region = self._region
+            if region is None:
+                return None
+            make = getattr(region, "_replay_entry", None)
+            if make is None:
+                return None
+            state = self._read_state()
+            # The entry stands in for the argument binding as well, so the call
+            # has to be the shape the binding leaves untouched: as many
+            # arguments as the program has inputs.
+            placeholders = getattr(
+                getattr(self._module, "graph", None), "placeholders", None
+            )
+            if placeholders is None:
+                return None
+            if nargs != len(placeholders):
+                return None
+            cached = self._fast_entries.get(nargs)
+            if cached is not None:
+                entry, recorded = cached
+                if len(recorded) == len(state) and all(
+                    kept is current for kept, current in zip(recorded, state)
+                ):
+                    return entry
+            entry = make(head=state, nargs=nargs)
+            if entry is None:
+                self._fast_entries.pop(nargs, None)
+                return None
+            self._fast_entries[nargs] = (entry, state)
+            return entry
 
         def __call__(self, *args: Any, **kwargs: Any) -> Any:
             return self._compiled(
