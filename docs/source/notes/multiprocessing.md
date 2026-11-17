@@ -9,7 +9,9 @@ but extends it, so that all tensors sent through a
 memory and will only send a handle to another process. Change the import from
 `multiprocessing` to `tensorplay.multiprocessing` and every tensor put on a
 queue, or otherwise pickled to another process, is transparently converted to
-a shared-memory view.
+a shared-memory view. Payloads small enough that copying them is cheaper than
+sharing them travel with the message instead; the receiving process sees the
+same private snapshot either way.
 
 :::{note}
 When a {class}`~tensorplay.Tensor` is sent to another process, only the data

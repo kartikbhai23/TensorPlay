@@ -17,6 +17,7 @@ Two sharing strategies are supported:
 
 import mmap
 import os
+import sys
 import threading
 from multiprocessing import reduction
 from multiprocessing.resource_tracker import unregister as _tracker_unregister
@@ -26,6 +27,14 @@ import tensorplay
 from tensorplay._C import DType
 
 from ._atfork import register_after_fork
+
+# Descriptor transport. A persistent local connection per peer keeps the
+# per-message cost at a single request/reply round trip; elsewhere the
+# one-shot transport of the runtime is used.
+if sys.platform == "linux":
+    from ._fdsharer import SharedFd
+else:
+    SharedFd = reduction.DupFd
 
 # Early load resource_sharer to prevent a partially initialized instance from
 # being inherited in a forked child process. The descriptor-based reducer needs
@@ -229,12 +238,13 @@ def _reduce_tensor_fd(tensor):
     except BaseException:
         os.close(fd)
         raise
-    # DupFd duplicates the descriptor while it is being constructed, and the
-    # duplicate holds the segment pages until the recipient detaches it.
-    # Neither this descriptor nor the mapping has to outlive the call: the page
-    # cache keeps the contents for the recipient to map.
+    # The transport duplicates the descriptor while the handle is being
+    # constructed, and the duplicate holds the segment pages until the
+    # recipient detaches it. Neither this descriptor nor the mapping has to
+    # outlive the call: the page cache keeps the contents for the recipient to
+    # map.
     try:
-        df = reduction.DupFd(fd)
+        df = SharedFd(fd)
     finally:
         os.close(fd)
     return (

@@ -22,6 +22,12 @@ def _fd_child(q_in, q_out, ack):
     ack.get(timeout=120)
 
 
+def _fd_echo_child(q_in, q_out, rounds):
+    for _ in range(rounds):
+        t = q_in.get()
+        q_out.put(float(t[0] + t[-1]))
+
+
 def _reader_child(q_in, q_out):
     t = q_in.get()
     q_out.put(float(t[0]))
@@ -173,6 +179,46 @@ class TestQueueSharing(unittest.TestCase):
         self.assertEqual(p.exitcode, 0)
         self.assertEqual(len(shared_cache), before)
 
+    def test_file_descriptor_reuses_peer_connection(self):
+        # Every transfer after the first runs on the connection already open to
+        # the sender, so a long-lived pair pays the connect and handshake once.
+        tmp.set_sharing_strategy("file_descriptor")
+        rounds = 20
+        t = tp.arange(0, 300000, dtype=tp.float32)  # 1.2 MiB
+        q_in, q_out = self.ctx.Queue(), self.ctx.Queue()
+        p = self.ctx.Process(target=_fd_echo_child, args=(q_in, q_out, rounds))
+        p.start()
+        try:
+            for _ in range(rounds):
+                q_in.put(t)
+                self.assertEqual(q_out.get(timeout=120), float(t[0] + t[-1]))
+        finally:
+            p.join(timeout=120)
+        self.assertEqual(p.exitcode, 0)
+
+    def test_file_descriptor_two_receivers(self):
+        # Two peers keep their own connection to the same sender open at the
+        # same time, so the sender must serve them concurrently.
+        tmp.set_sharing_strategy("file_descriptor")
+        t = tp.full((300000,), 3.0)
+        procs, queues = [], []
+        for _ in range(2):
+            q_in, q_out = self.ctx.Queue(), self.ctx.Queue()
+            p = self.ctx.Process(target=_reader_child, args=(q_in, q_out))
+            p.start()
+            procs.append(p)
+            queues.append((q_in, q_out))
+        try:
+            for q_in, _ in queues:
+                q_in.put(t)
+            for _, q_out in queues:
+                self.assertEqual(q_out.get(timeout=120), 3.0)
+        finally:
+            for p in procs:
+                p.join(timeout=120)
+        for p in procs:
+            self.assertEqual(p.exitcode, 0)
+
     def test_empty_tensor(self):
         t = tp.empty(0)
         q_in, q_out = self.ctx.Queue(), self.ctx.Queue()
@@ -246,6 +292,25 @@ class TestSpawnMethod(unittest.TestCase):
             self.assertEqual(tuple(back.shape), (2, 3))
             # The child assigned row 1 of the shared region.
             self.assertEqual(float(back[1][0]), 7.0)
+        finally:
+            ack.put("done")
+            p.join(timeout=120)
+        self.assertEqual(p.exitcode, 0)
+
+    def test_spawn_file_descriptor_above_inline_limit(self):
+        # Large payloads take the descriptor path in both directions, so the
+        # spawned child has to authenticate against the parent's sharer and
+        # then publish a listener of its own for the reply.
+        tmp.set_sharing_strategy("file_descriptor")
+        t = tp.arange(0, 300000, dtype=tp.float32)  # 1.2 MiB
+        q_in, q_out, ack = self.ctx.Queue(), self.ctx.Queue(), self.ctx.Queue()
+        p = self.ctx.Process(target=_fd_child, args=(q_in, q_out, ack))
+        p.start()
+        try:
+            q_in.put(t)
+            back = q_out.get(timeout=120)
+            self.assertEqual(float(back[1]), 7.0)
+            self.assertEqual(float(back[-1]), float(t[-1]))
         finally:
             ack.put("done")
             p.join(timeout=120)

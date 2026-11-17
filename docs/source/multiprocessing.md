@@ -62,10 +62,15 @@ rebuilds a tensor aliasing those pages. The sending tensor keeps its
 original (private) storage, so the two sides are connected only through the
 snapshot taken at send time. Tensors that already live in shared memory skip
 this path and are re-sent by name instead.
-Note that if there will be a lot of tensors shared, this strategy will keep a
-large number of file descriptors open most of the time. If your system has low
-limits for the number of open file descriptors, and you can't raise them, you
-should use the `file_system` strategy.
+
+Payloads below 512 KiB travel inline with the pickled message instead: the
+hand-off costs more than copying that much data, and the receiver rebuilds a
+private tensor from the bytes either way, so only the representation differs.
+
+Descriptors are passed over a connection that each pair of processes keeps
+open, and the sender closes its own descriptor as soon as the hand-off is
+registered. A process therefore holds one connection per peer it receives
+from, rather than one descriptor per message in flight.
 
 ### File system - `file_system`
 
