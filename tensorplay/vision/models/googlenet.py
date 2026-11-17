@@ -34,7 +34,7 @@ class GoogLeNet(nn.Module):
         num_classes: int = 1000,
         aux_logits: bool = True,
         transform_input: bool = False,
-        init_weights: Optional[bool] = None,
+        init_weights: bool = True,
         blocks: Optional[list[Callable[..., nn.Module]]] = None,
         dropout: float = 0.2,
         dropout_aux: float = 0.7,
@@ -43,14 +43,6 @@ class GoogLeNet(nn.Module):
         _log_api_usage_once(self)
         if blocks is None:
             blocks = [BasicConv2d, Inception, InceptionAux]
-        if init_weights is None:
-            warnings.warn(
-                "The default weight initialization of GoogleNet will be changed in future releases of "
-                "tensorplay.vision. If you wish to keep the old behavior (which leads to long initialization times"
-                " due to scipy/scipy#11299), please set init_weights=True.",
-                FutureWarning,
-            )
-            init_weights = True
         if len(blocks) != 3:
             raise ValueError(f"blocks length should be 3 instead of {len(blocks)}")
         conv_block = blocks[0]
