@@ -16,7 +16,6 @@ Two sharing strategies are supported:
 """
 
 import mmap
-import multiprocessing
 import os
 import threading
 from multiprocessing import reduction
@@ -25,6 +24,8 @@ from multiprocessing.shared_memory import SharedMemory
 
 import tensorplay
 from tensorplay._C import DType
+
+from ._atfork import register_after_fork
 
 # Early load resource_sharer to prevent a partially initialized instance from
 # being inherited in a forked child process. The descriptor-based reducer needs
@@ -39,50 +40,50 @@ __all__ = ["init_reductions"]
 
 _MEMFD_PREFIX = "tensorplay-mp-segment-"
 
+# Tensors at or below this many bytes travel inline with the pickled message
+# instead of through a shared segment. Establishing a segment and exchanging a
+# descriptor costs on the order of a hundred microseconds per message, far more
+# than copying this much data: measured across a queue link, inline transfer is
+# 2-4x faster up to this size and loses beyond 1 MiB.
+_INLINE_TENSOR_BYTES = 1 << 19
+
 
 class TensorWeakRef:
     r"""A cache entry for a tensor recently handed to another process.
 
-    The reference is intentionally strong: it anchors the Python objects that
-    keep a handed-over segment alive (the tensor, its memory view, and any
-    descriptor it was created from) for as long as the cache holds the entry.
-    ``releasers`` are no-argument callables run when the entry is dropped.
+    The reference is intentionally strong: it anchors the Python object that
+    keeps a named segment alive (the tensor and its shared-memory owner) for as
+    long as the cache holds the entry, so a recipient that attaches later still
+    finds the segment registered. ``nbytes`` records how much memory the entry
+    keeps alive, letting the cache bound itself by size and not only by count.
     """
 
-    __slots__ = ["tensor", "_releasers"]
+    __slots__ = ["tensor", "nbytes"]
 
-    def __init__(self, tensor, releasers=()):
+    def __init__(self, tensor, nbytes=0):
         self.tensor = tensor
-        self._releasers = list(releasers)
-
-    def expired(self):
-        return False
-
-    def release(self):
-        while self._releasers:
-            try:
-                self._releasers.pop()()
-            except Exception:
-                # Releasers may run during interpreter shutdown, when module
-                # globals can already be torn down; never raise from here.
-                pass
-
-    def __del__(self):
-        self.release()
+        self.nbytes = nbytes
 
 
 class SharedCache(dict):
-    """Dictionary from shared-segment handles to TensorWeakRef objects."""
+    """Dictionary from segment names to TensorWeakRef objects.
+
+    Entries keep the sender-side tensor alive until another process attaches to
+    the segment, so the cache is bounded by an entry count and by a byte budget:
+    a handful of large tensors must not be retained as long as a hundred small
+    ones would be.
+    """
 
     def __init__(self) -> None:
-        # free_dead_references() is called if the len exceeds the current
-        # limit. The limit scales with the number of remaining live objects.
         self.limit = 128
+        self.byte_limit = 1 << 28
+        self.nbytes = 0
         # `fork` inherits lock state, so in case we fork while the lock is
-        # held, we register a function to reset the lock to a new object in
-        # the child to avoid possible deadlocks.
+        # held, reset the lock in the child to avoid a deadlock. Registering
+        # through os.register_at_fork also covers children created by a bare
+        # os.fork(), which the multiprocessing-only hook would miss.
         self._after_fork()
-        multiprocessing.util.register_after_fork(self, SharedCache._after_fork)
+        register_after_fork(self._after_fork)
 
     def _after_fork(self):
         self.lock = threading.Lock()
@@ -93,40 +94,29 @@ class SharedCache(dict):
 
     def __setitem__(self, key, storage_ref):
         with self.lock:
+            previous = dict.get(self, key)
+            if previous is not None:
+                self.nbytes -= previous.nbytes
             dict.__setitem__(self, key, storage_ref)
-            if len(self) > self.limit:
-                self.free_dead_references()
+            self.nbytes += storage_ref.nbytes
+            if len(self) > self.limit or self.nbytes > self.byte_limit:
+                self._evict_oldest(key)
 
-    def free_dead_references(self):
-        live = 0
-        for key, storage_ref in list(self.items()):
-            if storage_ref.expired():
-                del self[key]
-            else:
-                live += 1
+    def _evict_oldest(self, keep):
         # Entries hold strong references, so they only leave the cache when
-        # evicted. Dropping a named-segment entry is safe: the segment name
-        # stays valid while the resource tracker keeps it registered for this
-        # process. Dropping a descriptor entry is safe too: the recipient's
-        # duplicated descriptor is held by the resource sharer until detach.
-        if live > self.limit:
-            excess = live - self.limit // 2
-            for key in list(self.keys())[:excess]:
-                self.pop(key).release()
-            live -= excess
-        self.limit = max(128, live * 2)
+        # evicted here. Dropping an entry is safe: the segment name stays valid
+        # while the resource tracker keeps it registered for this process, so a
+        # recipient attaching afterwards still sees the same live pages.
+        for oldest in list(self.keys()):
+            if len(self) <= self.limit and self.nbytes <= self.byte_limit:
+                break
+            if oldest == keep:
+                continue
+            self.nbytes -= dict.pop(self, oldest).nbytes
 
 
-# mapping from segment handles to TensorWeakRef objects
+# mapping from segment names to TensorWeakRef objects
 shared_cache = SharedCache()
-
-
-def fd_id(fd):
-    # Returns a tuple which uniquely identifies a file descriptor. In Mac OS,
-    # this doesn't work with shared memory handles, which is why we don't
-    # support the "file_descriptor" sharing method on that platform.
-    stat = os.fstat(fd)
-    return (stat.st_ino, stat.st_dev)
 
 
 def rebuild_event(device, handle):
@@ -151,17 +141,28 @@ def rebuild_shared_tensor(
     cls, name, shape, strides, dtype, device_type, device_index, requires_grad
 ):
     # Attach to the named segment and rebuild a tensor aliasing its pages.
-    shm = SharedMemory(name=name, create=False)
-    # The attaching process must not unlink the segment when it exits: the
-    # sender and any further receivers still need the name to stay valid.
     try:
-        _tracker_unregister(shm._name, "shared_memory")
-    except (ValueError, KeyError):
-        pass
+        shm = SharedMemory(name=name, create=False, track=False)
+    except TypeError:
+        # Runtimes without per-instance tracking control register the segment
+        # with the resource tracker on attach. Drop that registration again:
+        # this process must not unlink a segment its sender still owns.
+        shm = SharedMemory(name=name, create=False)
+        try:
+            _tracker_unregister(shm._name, "shared_memory")
+        except (ValueError, KeyError):
+            pass
     tensor = cls.__new__(cls)
     tensor.__setstate__(
         ("shm", shm, shape, strides, dtype, device_type, device_index, requires_grad)
     )
+    return tensor
+
+
+def rebuild_tensor_from_state(cls, state):
+    # Rebuild from the byte payload carried by the pickle itself.
+    tensor = cls.__new__(cls)
+    tensor.__setstate__(state)
     return tensor
 
 
@@ -197,11 +198,18 @@ def _reduce_tensor_shared(tensor):
             tensor = compact
     state = tensor.__getstate__()
     shm = state[1]
-    shared_cache[shm.name] = TensorWeakRef(tensor)
+    shared_cache[shm.name] = TensorWeakRef(tensor, shm.size)
     return (
         rebuild_shared_tensor,
         (type(tensor), shm.name) + tuple(state[2:]),
     )
+
+
+def _reduce_tensor_inline(tensor):
+    # Ship the values with the message. The recipient rebuilds a private copy
+    # from the byte payload, which is what the descriptor path hands over too
+    # (it copies into a private segment before duplicating the descriptor).
+    return (rebuild_tensor_from_state, (type(tensor), tensor.__getstate__()))
 
 
 def _reduce_tensor_fd(tensor):
@@ -221,10 +229,14 @@ def _reduce_tensor_fd(tensor):
     except BaseException:
         os.close(fd)
         raise
-    releasers = [lambda: os.close(fd)]
-    cache_key = fd_id(fd)
-    shared_cache[cache_key] = TensorWeakRef(host, releasers)
-    df = reduction.DupFd(fd)
+    # DupFd duplicates the descriptor while it is being constructed, and the
+    # duplicate holds the segment pages until the recipient detaches it.
+    # Neither this descriptor nor the mapping has to outlive the call: the page
+    # cache keeps the contents for the recipient to map.
+    try:
+        df = reduction.DupFd(fd)
+    finally:
+        os.close(fd)
     return (
         rebuild_shared_tensor_fd,
         (
@@ -273,6 +285,8 @@ def reduce_tensor(tensor):
 
     if get_sharing_strategy() == "file_system" or tensor.is_shared():
         return _reduce_tensor_shared(tensor)
+    if tensor.numel() * tensor.itemsize() <= _INLINE_TENSOR_BYTES:
+        return _reduce_tensor_inline(tensor)
     return _reduce_tensor_fd(tensor)
 
 

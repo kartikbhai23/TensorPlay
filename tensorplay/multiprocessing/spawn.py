@@ -215,9 +215,11 @@ def start_processes(
     daemon=False,
     start_method="spawn",
 ):
-    # The forkserver path can start workers in parallel when explicitly enabled.
+    # The forkserver and spawn paths can start workers in parallel when
+    # explicitly enabled: both launch a fresh interpreter, so process start-up
+    # dominates the launch time once the ranks get numerous.
     if (
-        start_method == "forkserver"
+        start_method in ("forkserver", "spawn")
         and os.environ.get(ENV_VAR_PARALLEL_START, "0") == "1"
     ):
         log.info("Starting processes in parallel.")

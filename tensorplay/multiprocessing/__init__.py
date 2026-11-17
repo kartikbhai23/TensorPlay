@@ -55,40 +55,6 @@ def _prctl_pr_set_pdeathsig(signal_value) -> None:
         pass
 
 
-"""Add helper functions to name the calling thread (best effort)."""
-
-
-def _set_thread_name(name: str) -> None:
-    """Set the name of the calling thread.
-
-    Args:
-        name (str): Name to assign; the kernel keeps at most 16 bytes
-            (including the terminating null) of it.
-    """
-    if sys.platform != "linux":
-        return
-    try:
-        with open("/proc/thread-self/comm", "w") as comm:
-            comm.write(name[:15])
-    except OSError:
-        pass
-
-
-def _get_thread_name() -> str | None:
-    """Get the name of the calling thread.
-
-    Returns:
-        str | None: Name of the calling thread, or ``None`` if unavailable.
-    """
-    if sys.platform != "linux":
-        return None
-    try:
-        with open("/proc/thread-self/comm", "r") as comm:
-            return comm.read().strip()
-    except OSError:
-        return None
-
-
 if sys.platform == "darwin" or sys.platform == "win32":
     _sharing_strategy = "file_system"
     _all_sharing_strategies = {"file_system"}

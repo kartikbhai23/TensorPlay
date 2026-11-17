@@ -1,4 +1,5 @@
 import multiprocessing
+import os
 import unittest
 
 import tensorplay as tp
@@ -135,6 +136,43 @@ class TestQueueSharing(unittest.TestCase):
         # Under this strategy the sending tensor keeps its private storage.
         self.assertEqual(float(t[1]), 1.0)
 
+    def test_file_descriptor_above_inline_limit(self):
+        # Payloads over the inline limit still travel through a duplicated
+        # descriptor; the mapped values must match the sender's byte for byte.
+        tmp.set_sharing_strategy("file_descriptor")
+        t = tp.arange(0, 300000, dtype=tp.float32)  # 1.2 MiB
+        q_in, q_out, ack = self.ctx.Queue(), self.ctx.Queue(), self.ctx.Queue()
+        p = self.ctx.Process(target=_fd_child, args=(q_in, q_out, ack))
+        p.start()
+        try:
+            q_in.put(t)
+            back = q_out.get(timeout=120)
+            self.assertEqual(tuple(back.shape), tuple(t.shape))
+            self.assertEqual(float(back[1]), 7.0)
+            self.assertEqual(float(back[-1]), float(t[-1]))
+        finally:
+            ack.put("done")
+            p.join(timeout=120)
+        self.assertEqual(p.exitcode, 0)
+        self.assertEqual(float(t[1]), 1.0)
+
+    def test_file_descriptor_keeps_no_sender_copy(self):
+        # The descriptor is duplicated when it is handed over, so the sender's
+        # private copy must not be retained by the segment cache.
+        tmp.set_sharing_strategy("file_descriptor")
+        from tensorplay.multiprocessing.reductions import shared_cache
+
+        before = len(shared_cache)
+        t = tp.zeros(300000)  # above the inline limit: descriptor path
+        p, q_in, q_out = self._run_pair(_reader_child)
+        try:
+            q_in.put(t)
+            self.assertEqual(q_out.get(timeout=60), 0.0)
+        finally:
+            p.join(timeout=60)
+        self.assertEqual(p.exitcode, 0)
+        self.assertEqual(len(shared_cache), before)
+
     def test_empty_tensor(self):
         t = tp.empty(0)
         q_in, q_out = self.ctx.Queue(), self.ctx.Queue()
@@ -217,6 +255,17 @@ class TestSpawnMethod(unittest.TestCase):
 class TestStartProcesses(unittest.TestCase):
     def test_success(self):
         tmp.start_processes(_spawn_ok, args=(), nprocs=2, join=True)
+
+    def test_spawn_parallel_start(self):
+        old = os.environ.get(tmp.ENV_VAR_PARALLEL_START)
+        os.environ[tmp.ENV_VAR_PARALLEL_START] = "1"
+        try:
+            tmp.start_processes(_spawn_ok, args=(), nprocs=2, join=True)
+        finally:
+            if old is None:
+                del os.environ[tmp.ENV_VAR_PARALLEL_START]
+            else:
+                os.environ[tmp.ENV_VAR_PARALLEL_START] = old
 
     def test_exception_forwarded(self):
         with self.assertRaises(tmp.ProcessRaisedException) as cm:
