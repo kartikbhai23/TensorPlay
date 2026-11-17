@@ -987,6 +987,11 @@ def _modules_reached(program: Any) -> list[Any]:
 
 _MISSING = object()
 
+#: Types whose values are described by themselves: an object of one of them
+#: that is still the object a site held last time cannot describe a change, so
+#: the steady-state scan does not need the general reuse test for it.
+_IMMUTABLE_SITE_TYPES = frozenset({type(None), bool, int, float, str})
+
 #: Frozen descriptions of immutable values, keyed by identity.  A value that
 #: cannot change is described once; the entry keeps the value alive, so the
 #: identity cannot be handed to a different object while the entry is held.
@@ -1342,21 +1347,10 @@ def _constant_attribute_names(
     return tuple(sorted(readable - assigned - mutated))
 
 
-def _module_state_component(program: Any) -> tuple[Any, ...]:
-    """Read live module identities, training modes and child bindings.
+def _module_state_part(modules: list[Any]) -> tuple[Any, ...]:
+    """Module identities, training modes and child bindings, in tree order."""
 
-    Rediscover roots on each call: closure cells and globals can be rebound,
-    and children can be replaced without changing the root's training flag.
-    Values read from outside the arguments are compared too, since a capture
-    bakes them into the program it produces.
-
-    The set of places to read is fixed once the part of the program's world
-    that the call reaches has the same shape as last time, so the per-call
-    work is reading those places rather than working out which they are.
-    """
-
-    modules, functions = _state_roots(program)
-    module_part = tuple(
+    return tuple(
         (
             index,
             id(module),
@@ -1369,9 +1363,72 @@ def _module_state_component(program: Any) -> tuple[Any, ...]:
         for index, module in enumerate(modules)
     )
 
+
+def _module_state_component(program: Any) -> tuple[Any, ...]:
+    """Read live module identities, training modes and child bindings.
+
+    Closure cells and globals can be rebound, and children can be replaced
+    without changing the root's training flag, so the places to read are
+    revalidated on every call.  Discovering them -- walking the module tree
+    and the functions it runs -- is the expensive half, and it only changes
+    when a binding it walked does: the recorded modules are re-read first and
+    the tree is walked again only when those readings moved.  Values read from
+    outside the arguments are compared too, since a capture bakes them into the
+    program it produces.
+
+    The set of places to read is fixed once the part of the program's world
+    that the call reaches has the same shape as last time, so the per-call
+    work is reading those places rather than working out which they are.
+    """
+
+    roots = _cached_state_roots(program)
+    if roots is not None:
+        modules, functions, shape, recorded_part, recorded_component = roots
+        module_part = _module_state_part(modules)
+        if module_part == recorded_part:
+            plan = _state_plan(program, shape, modules, functions)
+            component = _planned_constant_component(plan)
+            if component is recorded_component:
+                return (module_part, component)
+            # A value a capture baked moved, and with it the module tree the
+            # walk reached (a rebound closure cell or global is how a program
+            # is pointed at another tree): discover the roots again.
+
+    modules, functions = _state_roots(program)
+    module_part = _module_state_part(modules)
     shape = (tuple(id(module) for module in modules), tuple(id(f) for f in functions))
     plan = _state_plan(program, shape, modules, functions)
-    return (module_part, _planned_constant_component(plan))
+    component = _planned_constant_component(plan)
+    _store_state_roots(program, modules, functions, shape, module_part, component)
+    return (module_part, component)
+
+
+#: The modules and functions a program's call reaches, with the readings that
+#: certify the walk is still current.  A dropped program drops its entry.
+_state_roots_cache: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
+
+
+def _cached_state_roots(program: Any) -> Any:
+    try:
+        return _state_roots_cache.get(program)
+    except TypeError:  # an unhashable program keeps no cache
+        return None
+
+
+def _store_state_roots(
+    program: Any,
+    modules: list[Any],
+    functions: list[Any],
+    shape: Any,
+    module_part: tuple[Any, ...],
+    component: tuple[Any, ...],
+) -> None:
+    try:
+        _state_roots_cache[program] = (
+            modules, functions, shape, module_part, component
+        )
+    except TypeError:
+        pass
 
 
 #: Read plans and the last value seen at each site, per compiled program.  A
@@ -1414,40 +1471,76 @@ def _build_read_plan(modules: list[Any], functions: list[Any]) -> tuple[Any, ...
             names = _constant_attribute_names_of_type(type(module))
         for name in names:
             plan.append(("attribute", module, None, name, None))
-    plan.append(("values", None, None, None, ([], [])))
+    plan.append(("values", None, None, None, [[], [], None, []]))
     return tuple(plan)
 
 
 def _planned_constant_component(plan: tuple[Any, ...]) -> tuple[Any, ...]:
     """Read every planned site, reusing the description of an unchanged value."""
 
+    values, cached_entries, last, reusable_flags = plan[-1][4]
+    sites = plan[:-1]
+    # Steady state: every site still holds the object it held last time, which
+    # for a reusable value is the same value, so the description cannot have
+    # moved.  Establishing that costs one comparison per site and nothing else.
+    if last is not None and len(values) >= len(sites):
+        for index, (kind, owner, label, name, _) in enumerate(sites):
+            if kind == "attribute":
+                value = owner.__dict__.get(name, _MISSING)
+                if value is _MISSING:
+                    value = type(owner).__dict__.get(name, _MISSING)
+            elif kind == "global":
+                value = owner.__globals__.get(name)
+            else:
+                try:
+                    value = owner.__closure__[name].cell_contents
+                except ValueError:
+                    value = _MISSING
+            # A site that reads nothing contributes no entry, but the slot
+            # records that, so the scan can certify it like any other site.
+            if value is not values[index]:
+                break
+            if value is _MISSING:
+                continue
+            if not reusable_flags[index]:
+                break
+        else:
+            return last
+
     entries: list[tuple[Any, ...]] = []
-    values, cached_entries = plan[-1][4]
-    for index, (kind, owner, label, name, _) in enumerate(plan[:-1]):
+    for index, (kind, owner, label, name, _) in enumerate(sites):
         if kind == "attribute":
             value = owner.__dict__.get(name, _MISSING)
             if value is _MISSING:
                 value = type(owner).__dict__.get(name, _MISSING)
-            if value is _MISSING:
-                continue
         elif kind == "global":
             value = owner.__globals__.get(name)
         else:
             try:
                 value = owner.__closure__[name].cell_contents
             except ValueError:
-                continue
+                value = _MISSING
+        if len(values) <= index:
+            values.extend([_MISSING] * (index + 1 - len(values)))
+            cached_entries.extend([None] * (index + 1 - len(cached_entries)))
+            reusable_flags.extend([False] * (index + 1 - len(reusable_flags)))
+        if value is _MISSING:
+            # A name that reads nothing here stays recorded, so the
+            # steady-state scan can certify it the same way as any other site.
+            values[index] = _MISSING
+            cached_entries[index] = None
+            reusable_flags[index] = False
+            continue
         reusable = _reusable_by_identity(value)
-        if index < len(values) and values[index] is value and reusable:
+        if values[index] is value and reusable:
             entry = cached_entries[index]
         else:
             entry = _constant_entry(value)
-            if len(values) <= index:
-                values.extend([None] * (index + 1 - len(values)))
             values[index] = value
-            if len(cached_entries) <= index:
-                cached_entries.extend([None] * (index + 1 - len(cached_entries)))
             cached_entries[index] = entry
+            # Certified here once: while the slot keeps this object, the flag
+            # describes it, and the steady-state scan reads nothing else.
+            reusable_flags[index] = bool(reusable)
         if entry is None:
             continue
         if kind == "attribute":
@@ -1456,7 +1549,9 @@ def _planned_constant_component(plan: tuple[Any, ...]) -> tuple[Any, ...]:
             entries.append(("global", label, name, entry))
         else:
             entries.append(("closure", label, name, entry))
-    return tuple(entries)
+    component = tuple(entries)
+    plan[-1][4][2] = component
+    return component
 
 
 def _free_tensor_sources(
