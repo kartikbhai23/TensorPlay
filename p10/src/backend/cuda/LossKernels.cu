@@ -383,15 +383,38 @@ Tensor tp_l1_loss_backward_cuda(const Tensor& grad_output, const Tensor& input,
 
 Tensor tp_kl_div_cuda(const Tensor& input, const Tensor& target,
                       int64_t reduction, bool log_target) {
-    Tensor loss;
+    // One fused elementwise pass feeds the shared reduction helper.  The
+    // non-log branch short-circuits on target == 0 so log(0) never enters
+    // the arithmetic.
+    Tensor loss = Tensor::empty(shape_of(input), input.dtype(), input.device());
+    TensorIterator iter = TensorIteratorConfig()
+        .check_all_same_dtype(true)
+        .add_output(loss)
+        .add_const_input(input)
+        .add_const_input(target)
+        .build();
     if (log_target) {
-        loss = target.exp() * (target - input);
+        if (input.dtype() == DType::Float64) {
+            gpu_kernel(iter, [] __host__ __device__(double i, double t) -> double {
+                return ::exp(t) * (t - i);
+            });
+        } else {
+            gpu_kernel(iter, [] __host__ __device__(float i, float t) -> float {
+                return ::expf(t) * (t - i);
+            });
+        }
     } else {
-        Tensor nonzero = target.ne(Scalar(0)).to(input.dtype());
-        Tensor xlogy = Tensor::where(target.eq(Scalar(0)), target * 0,
-                                     target * target.log());
-        loss = (xlogy - target * input) * nonzero;
+        if (input.dtype() == DType::Float64) {
+            gpu_kernel(iter, [] __host__ __device__(double i, double t) -> double {
+                return t > 0 ? t * (::log(t) - i) : 0.0;
+            });
+        } else {
+            gpu_kernel(iter, [] __host__ __device__(float i, float t) -> float {
+                return t > 0 ? t * (::logf(t) - i) : 0.0f;
+            });
+        }
     }
+    CUDA_CHECK(cudaGetLastError());
     return tp_loss_reduce(loss, reduction);
 }
 
