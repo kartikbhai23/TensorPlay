@@ -41,7 +41,7 @@
 | P2 | `export(strict=...)` 接受两种取值后 `del` 掉，docstring 自称两模式一致 | 静默失效，已核实 | 已拒绝（§8.4、§13） |
 | P0 | 捕获时读到的非张量全局/闭包/模块属性改变后仍复用旧程序，结果陈旧 | 正确性 bug，已复现 | 已修复（§3.3、§13） |
 | P1 | AOT 的 `memory_budget` 与 `keep_inference_input_mutations` 接收后丢弃 | 静默失效，已核实 | 已修复（§3.4、§13） |
-| P1 | 无 AOTInductor 部署包、无 oneDNN/MKLDNN/quantized/freezing | 子系统缺失，静态确认 | 未修 |
+| P1 | 无 AOTInductor 部署包、无 oneDNN/MKLDNN/quantized/freezing | 子系统缺失，静态确认 | 部署包已实现（CPU C++ wrapper，§6、§13）；oneDNN/MKLDNN/quantized/freezing 未修 |
 | P1 | cudagraph 只有单层录制：输入一换地址就回退到未捕获工件，输出被下次回放覆盖 | 能力缺失，静态确认 | 已实现树式录制：按布局分节点、共享一个内存池、copy-in/copy-back（§8.2、§13） |
 | P1 | 无 CPU GEMM 模板；`config.cpp.max_autotune_gemm_backends` 里的 "CPP" 无人消费 | 能力缺失，静态确认 | 已实现 `CppGemmTemplate`（f32/bf16/f16，静态 M/N/K，不预打包权重） |
 | P1 | 设备只注册 cpu/cuda；MPS/XPU/MTIA/ROCm 无代码生成 | 设备覆盖缺口，静态确认 | 未修 |
@@ -54,7 +54,7 @@
 `pytest test/stax` 实测（修复前）：**1568 passed, 2 failed, 1 skipped**（1571 项，约 2 分 4 秒）。
 其中一个失败是确定性的 P0 正确性 bug；另一个是容差/顺序相关的偶发（单独运行通过）。
 
-`pytest test/stax -q -p no:randomly` 实测（本轮修复后）：**1833 passed, 1 skipped**（1834 项，约 3 分 49 秒）。
+`pytest test/stax -q -p no:randomly` 实测（本轮修复后）：**1849 passed, 1 skipped**（1850 项，约 23 分钟）。
 此前一轮曾记录 `1806 passed, 5 failed`：5 项失败里 3 项是工作区里进行中的前端/内核改动（`upsample_nearest2d`
 同时收到尺寸与缩放、`one_hot` 走回退），已分别修掉（§13），剩下 2 项是随机顺序导致的偶发，会话级
 缓存隔离后不再复现（§8.3）。
@@ -492,7 +492,7 @@ cpp_wrapper=use_cuda_codegen,
 
 | 子系统 | 现状 | 上游对应 |
 | --- | --- | --- |
-| AOTInductor 部署包 | 无 `aoti_*` / `package/` / `standalone_compile` / `extern_node_serializer` / `script.ld` | 可产出 `.so` + 包，C++ 运行时加载 |
+| AOTInductor 部署包 | 已有 `build_aot_package` / `load_aot_package`（`backends/stax/aot_package.py`）：把区域写成 `model.so` + `weights.bin` + `metadata.json` + `aoti_metadata.h` + `aoti_entry.cpp`，入口是 `aoti_entry(inputs, outputs, sizevars)`，常量先经 `aoti_set_constants` 交出；包只需运行期库，不需要 Python。只覆盖 C++ wrapper 能写出的 CPU 调度（Triton / 回退到图执行器的区域明确拒绝） | 可产出 `.so` + 包，C++ 运行时加载 |
 | cudagraph trees | 只有 per-region flat manager，`max_entries=8`；dynamic/训练/原地修改直接 skip（`cudagraphs.py:206,776-777,784`） | 树式复用、跨重编译内存池、多树 replay |
 | oneDNN/MKLDNN | 无 `mkldnn_ir.py` / `mkldnn_lowerings.py`；`is_mkldnn_conv` 引用的 pass 不存在（`graph_lowering.py:472-473`） | CPU conv/linear 融合、channels-last、prepack |
 | 量化 | 无 `quantized_lowerings.py`；int4 仅 fallback；无 WOQ concat_linear | int8/fp8/mixed GEMM、量化 pattern |
@@ -568,7 +568,7 @@ stax 的 wrap 路径上检查 `dynamic`，后端入口把该参数丢掉；两�
 ```
 pytest test/stax -q -p no:randomly
 # 修复前：1568 passed, 2 failed, 1 skipped
-# 本轮修复后：1833 passed, 1 skipped
+# 本轮修复后：1849 passed, 1 skipped
 pytest test/fx test/test_public_surface.py test/higher_order_ops test/export -q
 # 376 passed
 ```
@@ -595,6 +595,7 @@ pytest test/fx test/test_public_surface.py test/higher_order_ops test/export -q
 - 整图缓存补 `test/stax/test_stax_graph_cache.py`（7 项）：键随程序/输入/模块状态/设置/包版本变化、命中时不降级、符号形状不入缓存；
 - CPU 分块乘积补 `test/stax/test_stax_cpu_gemm_template.py`（13 项）：`mm`/`addmm`（行偏置与二维偏置）落成模板 kernel 且与 eager 一致、尾块形状、bf16/f16、其它类型不提供、不说话的后端列表不提供、两种 `mm`/`addmm` 拼写都指向同一 lowering、外部 kernel 名接受目标缓冲、边界符号的尺寸提示、读名不触发 store；
 - cudagraph 树补 `test/stax/test_cudagraph_trees.py`（17 项）：按布局分节点、交替布局复用、节点共享池、最近最少使用淘汰、树路径、批量入口与逐张量拷贝两条回放路径、输出独立，以及真实 CUDA 上的换地址回放与跨布局录制；
+- 部署包补 `test/stax/test_stax_aot_package.py`（16 项）：包的文件与元数据、常量烘进权重文件、切片常量按连续布局保存、结果跨调用独立、多输出、scratch 缓冲、拒绝无 C++ wrapper 的区域、拒绝非张量输入、拒绝覆盖已有包、坏元数据被拒、重复构建复用已建库，以及两条“不需要编译器”的验证——一个只用 `ctypes` 与 `json` 的子进程直接调 `aoti_entry`，一个用 `g++` 编译、只包含生成头并 `dlopen` 模型的程序；
 - 无 fuzzer / `test_operators`。
 
 ### 8.4 文档声明 vs 实际
@@ -649,6 +650,29 @@ pytest test/fx test/test_public_surface.py test/higher_order_ops test/export -q
 
 顺带说明 `is_fbcode()`：本仓库它是恒定 `False`，因此快照/缓存键里不写它不会带来跨构建差异；
 上游把它写进自动调优缓存键是为区分内部与外部构建，本实现没有这种区分。
+
+### 8.6 部署包：编译产物的运行时形态
+
+`compiler.build_aot_package(fn, example_inputs, path)` 把一个区域写成一个目录：
+
+| 文件 | 内容 |
+| --- | --- |
+| `model.so` | 生成的 host kernel 与入口 `aoti_entry(const void* const* inputs, void* const* outputs, const long* sizevars)` |
+| `weights.bin` | 程序从周围读到的常量，按槽位顺序打包；编译期已转成连续布局 |
+| `metadata.json` | 槽位表：输入 / 输出 / 常量 / scratch，含形状、步长、dtype、设备与常量在权重文件中的偏移 |
+| `aoti_metadata.h` | 同一张表的 C++ `constexpr` 形式，C++ 调用方据此知道参数形状而不用解析 JSON |
+| `aoti_entry.cpp` | 按上表生成的 C 入口，`aoti_set_constants(const void* const*)` 交出常量 |
+
+要点与边界：
+
+- 入口收的是**裸缓冲区**：输入按区域参数顺序，输出由调用方提供，因此同一个包可以反复调用而结果互不影响。
+- 包只链接运行期库（`libp10`），不需要 Python；测试里用一个不 import 编译器的子进程与一个 `g++`
+  编译的程序分别跑通同一条入口。
+- 只覆盖 C++ wrapper 能写出的 CPU 调度；Triton kernel、回退到图执行器的区域在构建时即拒绝。
+- 构建以 `-Wl,-Bsymbolic` 链接、生成头里的常量用内部链接：同进程加载多个包时，各自的槽位表与
+  入口互不覆盖（否则链接器会把 `STB_GNU_UNIQUE` 的表统一成同一个）。
+- 未做：GPU 包（需要把 Triton kernel 一并打包）、符号尺寸包（`sizevars` 目前只记录不填值）、
+  把包接进 `compile()` 的一等公民选项。
 
 ## 9. 算子与分解覆盖
 
@@ -854,6 +878,7 @@ pytest test/stax -q -p no:randomly
 | `5a0dc3e4` `fix(compiler)` | `upsample_nearest{1,2,3}d` 接受与输出尺寸一致的缩放提示（此前一律视为边界，`F.interpolate(scale_factor=…)` 区域因此回退到图执行器）；缩放与尺寸矛盾时仍回退，符号尺寸无法核对时按尺寸比例映射 |
 | `72503adf` `fix(compiler)` | `one_hot` 补分解为 `unsqueeze → eq(arange) → to(int64)`，范围检查作为不参与死代码删除的调用保留；`_assert_async.msg` 的 lowering 改为接受 `(cond, msg)`；分解注册表补 `one_hot.default` 样例 |
 | CUDA Graph Trees | 新增 `backends/cudagraph_trees.py` 与 `triton.cudagraph_trees`（默认开）：按输入布局分节点记录在一条树上，节点共享一个分配器池；录制持有私有输入副本，回放经 `stage_and_launch`（无该入口时逐张量 `copy_`）写入后启动；输出克隆返回，调用者结果跨回放有效；上限按最近最少使用淘汰。`CudagraphCompiledCallable` 按布局派生节点键，布局变化录制子节点而不是回退到未捕获工件；树关时保留原直连路径。新增 `test/stax/test_cudagraph_trees.py`（17 项），改写的 wrapper 用例覆盖换地址回放、输出独立与跨布局录制（§8.2） |
+| AOT 部署包 | 新增 `backends/stax/aot_package.py` 与 `compiler.build_aot_package` / `compiler.load_aot_package`：区域写成 `model.so` + `weights.bin` + `metadata.json` + `aoti_metadata.h` + `aoti_entry.cpp`，入口 `aoti_entry(inputs, outputs, sizevars)`；常量在编译期转成连续缓冲后烘进权重文件，元数据同时给出 JSON 与 C++ `constexpr` 两种形式；包只依赖运行期库，不需要 Python。构建脚本与 `_build_cpp_wrapper` 共用 `cpp_wrapper_build_options()`；包以 `-Wl,-Bsymbolic` 链接、头文件常量用内部链接，同一进程加载多个包不会互相串符号。新增 `test/stax/test_stax_aot_package.py`（16 项，含无 Python 的 `ctypes` 子进程与编译出的 C++ 程序两条运行路径） |
 
 修复验证以 `pytest test/stax` 全量一次跑完为准，结果见 §0。
 

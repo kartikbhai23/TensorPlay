@@ -90,15 +90,56 @@ class CppWrapperModule:
     """
 
     def __init__(
-        self, call_fn: Any, wrapper_code: CppWrapperCode
+        self, call_fn: Any, wrapper_code: CppWrapperCode, so_path: str | None = None
     ) -> None:
         self._call_fn = call_fn
+        #: The printed program this module was built from.  A deployment
+        #: package is written from it, so it stays with the module rather
+        #: than only in the code cache entry it was written to.
+        self.wrapper_code = wrapper_code
+        #: Where the built shared object lives, when the builder recorded it.
+        self.so_path = so_path
         self._tensor_index = wrapper_code.tensor_index
         self._num_tensors = wrapper_code.num_tensors
         self._num_sizevars = wrapper_code.num_sizevars
         self._output_names = wrapper_code.output_names
         self._buffer_meta = wrapper_code.buffer_meta
         self._graph_input_names = wrapper_code.graph_input_names
+
+    # -- what the module was built from --------------------------------------
+    #
+    # A deployment package is written from these: which buffer each index
+    # stands for, what shape it has, and which of them the caller supplies.
+
+    @property
+    def graph_input_names(self) -> list[str]:
+        """The names the region's arguments are recorded under, in order."""
+
+        return list(self._graph_input_names)
+
+    @property
+    def output_names(self) -> list[str]:
+        """The names of the region's results, in order."""
+
+        return list(self._output_names)
+
+    @property
+    def tensor_index(self) -> dict[str, int]:
+        """Which slot of the entry point's table each buffer occupies."""
+
+        return dict(self._tensor_index)
+
+    @property
+    def buffer_meta(self) -> dict[str, tuple[Any, Any, Any, Any]]:
+        """Shape, stride, dtype and device recorded for every buffer."""
+
+        return dict(self._buffer_meta)
+
+    @property
+    def num_tensors(self) -> int:
+        """How many slots the entry point's table has."""
+
+        return self._num_tensors
 
     @staticmethod
     def _fill_buffer(

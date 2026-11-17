@@ -518,44 +518,11 @@ def _build_cpp_wrapper(wrapper_code: CppWrapperCode):
 
     import ctypes
     import os
-    import sysconfig
 
     from .codecache import write
-    from .cpp_builder import CppBuilder, CppOptions, get_cpp_compiler, package_paths
+    from .cpp_builder import CppBuilder, cpp_wrapper_build_options
 
-    paths = package_paths()
-    compiler = get_cpp_compiler()
-    if paths is None or not compiler:
-        raise RuntimeError("host C++ runtime is unavailable")
-    include_dir, generated_include_dir, lib_dir = paths
-    generated_ops_dir = os.path.join(
-        os.path.dirname(os.path.dirname(include_dir)),
-        "build",
-        "generated",
-    )
-    python_include = sysconfig.get_paths().get("include")
-    if not python_include:
-        raise RuntimeError("Python headers are unavailable")
-    options = CppOptions(
-        compiler=compiler,
-        include_dirs=[
-            include_dir,
-            generated_include_dir,
-            generated_ops_dir,
-            python_include,
-        ],
-        cflags=[
-            "-std=c++20",
-            "-O3",
-            "-fPIC",
-            "-shared",
-            "-pthread",
-            "-fopenmp",
-        ],
-        library_dirs=[lib_dir],
-        libraries=["p10", "gomp"],
-        ldflags=["-pthread", f"-Wl,-rpath,{lib_dir}"],
-    )
+    options = cpp_wrapper_build_options()
     key, source_path = write(
         wrapper_code.value,
         "cpp",
@@ -575,7 +542,7 @@ def _build_cpp_wrapper(wrapper_code: CppWrapperCode):
     call_fn = lib.call
     call_fn.restype = None
     call_fn.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_long)]
-    return CppWrapperModule(call_fn, wrapper_code)
+    return CppWrapperModule(call_fn, wrapper_code, so_path=output_path)
 
 
 def realize_region(

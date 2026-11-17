@@ -251,6 +251,51 @@ class CppOptions:
         return cmd
 
 
+def cpp_wrapper_build_options() -> "CppOptions":
+    """The compiler invocation a generated host wrapper is built with.
+
+    A wrapper is one translation unit: it includes the runtime headers and the
+    generated operator declarations, and links the runtime library the kernels
+    were generated for.  Both the region compiler and the deployment-package
+    builder go through here, so a package is built with exactly the flags the
+    compiler itself uses.
+    """
+
+    import sysconfig
+
+    paths = package_paths()
+    if paths is None:
+        raise RuntimeError("host C++ runtime is unavailable")
+    compiler = get_cpp_compiler()
+    if not compiler:
+        raise RuntimeError("no C++ compiler was found")
+    include_dir, generated_include_dir, lib_dir = paths
+    generated_ops_dir = os.path.join(
+        os.path.dirname(os.path.dirname(include_dir)),
+        "build",
+        "generated",
+    )
+    python_include = sysconfig.get_paths().get("include")
+    include_dirs = [include_dir, generated_include_dir, generated_ops_dir]
+    if python_include:
+        include_dirs.append(python_include)
+    return CppOptions(
+        compiler=compiler,
+        include_dirs=include_dirs,
+        cflags=[
+            "-std=c++20",
+            "-O3",
+            "-fPIC",
+            "-shared",
+            "-pthread",
+            "-fopenmp",
+        ],
+        library_dirs=[lib_dir],
+        libraries=["p10", "gomp"],
+        ldflags=["-pthread", f"-Wl,-rpath,{lib_dir}"],
+    )
+
+
 class CppBuilder:
     """Compile ``sources`` into one artifact under ``output_dir``."""
 

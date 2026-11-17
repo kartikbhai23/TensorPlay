@@ -82,6 +82,7 @@ __all__ = [
     "annotate",
     "assume_constant_result",
     "allow_in_graph",
+    "build_aot_package",
     "compile",
     "config",
     "disallow_in_graph",
@@ -95,6 +96,7 @@ __all__ = [
     "isinstance",
     "list_backends",
     "list_mode_options",
+    "load_aot_package",
     "lookup_backend",
     "mark_static",
     "NestedCompileRegionOptions",
@@ -1289,6 +1291,38 @@ def reset() -> None:
         for record in _records.values():
             record.constant_ready = False
             record.constant_value = None
+
+
+def build_aot_package(
+    fn: Callable[..., Any],
+    example_inputs: list[Any],
+    path: str,
+    *,
+    options: dict[str, bool] | None = None,
+    overwrite: bool = False,
+) -> str:
+    """Write ``fn`` for ``example_inputs`` as a deployment package.
+
+    The package is a directory holding the region's shared object, its
+    constants, and the metadata a caller needs to run it without this
+    compiler: ``load_aot_package`` reads it back, and a C++ caller includes
+    the generated header instead.  Regions whose schedule has no C++ form
+    cannot be packaged and raise :class:`PackageError`.
+    """
+
+    from .backends.stax.aot_package import build_package
+
+    return build_package(
+        fn, example_inputs, path, options=options, overwrite=overwrite
+    )
+
+
+def load_aot_package(path: str) -> Any:
+    """Load the deployment package written under ``path``."""
+
+    from .backends.stax.aot_package import load_package
+
+    return load_package(path)
 
 
 def list_backends(
