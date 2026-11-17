@@ -327,3 +327,91 @@ def test_a_cumsum_of_program_data_stays_a_cumsum():
 
     assert tp.ops.tp.cumsum.default in seen[-1]
     assert tp.allclose(result, eager)
+
+
+@pytest.mark.parametrize("addend_first", [False, True])
+def test_a_product_and_an_added_input_are_written_as_one_call(addend_first):
+    def fn(x, w, b):
+        product = tp.mm(x, w)
+        return b + product if addend_first else product + b
+
+    x = tp.randn(4, 8)
+    w = tp.randn(8, 5)
+    b = tp.randn(5)
+    eager = fn(x, w, b)
+
+    result, seen = _compiled_order(fn, x, w, b)
+
+    assert tp.ops.tp.addmm.default in seen[-1]
+    assert tp.ops.tp.mm.default not in seen[-1]
+    assert tp.ops.tp.add.Tensor not in seen[-1]
+    assert tp.allclose(result, eager)
+
+
+def test_a_scaled_addition_keeps_the_product_and_the_addition():
+    def fn(x, w, b):
+        return tp.add(tp.mm(x, w), b, alpha=2.0)
+
+    x = tp.randn(4, 8)
+    w = tp.randn(8, 5)
+    b = tp.randn(5)
+    eager = fn(x, w, b)
+
+    result, seen = _compiled_order(fn, x, w, b)
+
+    # 加法带了系数，单次调用的含义是无系数的加法，两者不是一件事。
+    assert tp.ops.tp.addmm.default not in seen[-1]
+    assert tp.ops.tp.mm.default in seen[-1]
+    assert tp.allclose(result, eager)
+
+
+def test_an_addition_of_another_dtype_keeps_the_product_and_the_addition():
+    def fn(x, w, b):
+        return tp.mm(x, w) + b
+
+    x = tp.randn(4, 8)
+    w = tp.randn(8, 5)
+    b = tp.randn(5).double()
+    eager = fn(x, w, b)
+
+    result, seen = _compiled_order(fn, x, w, b)
+
+    # 加数会提升结果类型，折进乘积的收尾就少了一次提升。
+    assert tp.ops.tp.addmm.default not in seen[-1]
+    assert tp.allclose(result, eager)
+
+
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="cuda not available")
+def test_a_product_and_a_bias_that_feeds_pointwise_stay_unfused_on_the_gpu():
+    def fn(x, w, b):
+        return (tp.mm(x, w) + b).relu()
+
+    x = tp.randn(4, 8, device="cuda")
+    w = tp.randn(8, 5, device="cuda")
+    b = tp.randn(5, device="cuda")
+    eager = fn(x, w, b)
+
+    result, seen = _compiled_order(fn, x, w, b)
+
+    # 收尾的逐点链本来就能融进乘积，写成一次调用反而挡住了它。
+    assert tp.ops.tp.addmm.default not in seen[-1]
+    assert tp.ops.tp.mm.default in seen[-1]
+    assert tp.allclose(result, eager)
+
+
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="cuda not available")
+def test_a_scaled_quotient_and_an_addition_are_written_as_one_call():
+    def fn(inp, t1, t2):
+        return tp.addcdiv(inp, t1, t2, value=2.0)
+
+    inp = tp.randn(4, 8, device="cuda")
+    t1 = tp.randn(4, 8, device="cuda")
+    t2 = tp.randn(4, 8, device="cuda").abs() + 1.0
+    eager = fn(inp, t1, t2)
+
+    result, seen = _compiled_order(fn, inp, t1, t2)
+
+    assert tp.ops.tp.addcdiv.default in seen[-1]
+    assert tp.ops.tp.div.Tensor not in seen[-1]
+    assert tp.ops.tp.mul.Scalar not in seen[-1]
+    assert tp.allclose(result, eager)

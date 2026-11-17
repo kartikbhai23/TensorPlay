@@ -7,7 +7,11 @@ from tensorplay.graph import Graph, Node, map_arg
 from tensorplay.graph.experimental.symbolic_shapes import statically_known_true, sym_eq
 from tensorplay.graph.experimental.sympy_functions import OrderedSet
 from tensorplay._decomp import register_decomposition
-from tensorplay.primitives.common import is_boolean_dtype, is_integer_dtype
+from tensorplay.primitives.common import (
+    is_boolean_dtype,
+    is_expandable_to,
+    is_integer_dtype,
+)
 
 from .. import config
 from ..fx_utils import get_fake_args_kwargs, get_node_storage
@@ -588,6 +592,167 @@ def unfuse_bias_baddbmm_to_pointwise(match: Match, mat1, mat2, *, inp, alpha, be
         return inp + bmm_result
 
     match.replace_by_example(repl, [inp, mat1, mat2, alpha, beta])
+
+
+def _floating_value(value: Any) -> bool:
+    """Whether a recorded value, or its description, holds real numbers."""
+
+    flag = getattr(value, "is_floating_point", None)
+    if flag is not None:
+        return bool(flag() if callable(flag) else flag)
+    dtype = getattr(value, "dtype", None)
+    return bool(getattr(dtype, "is_floating_point", False))
+
+
+def is_valid_addmm_fusion(match: Match) -> bool:
+    """Whether a product and an added input are worth writing as one call.
+
+    The added input is folded into the product's epilogue, which needs it to
+    be broadcastable to the product's shape and to hold the same numbers as
+    the operands; a different dtype would make the fused call compute
+    something the addition did not.
+    """
+
+    inp = match.kwargs["inp"]
+    inp_value = inp.meta.get("val")
+    if inp_value is None or not hasattr(inp_value, "shape"):
+        return False
+    mat1, mat2 = match.args
+    mat1_value = mat1.meta.get("val")
+    mat2_value = mat2.meta.get("val")
+    if mat1_value is None or mat2_value is None:
+        return False
+    mat1_shape = tuple(getattr(mat1_value, "shape", ()))
+    mat2_shape = tuple(getattr(mat2_value, "shape", ()))
+    if len(mat1_shape) != 2 or len(mat2_shape) != 2:
+        return False
+    if not is_expandable_to(
+        tuple(inp_value.shape), (mat1_shape[0], mat2_shape[1])
+    ):
+        return False
+    if inp_value.dtype != mat1_value.dtype or inp_value.dtype != mat2_value.dtype:
+        return False
+    # The addition may carry a scale of its own; the single call means the
+    # unscaled addition.
+    alpha = get_arg_value(match.output_node(), 2, "alpha")
+    if alpha is not None and alpha != 1:
+        return False
+    # Where the fusion would spoil a chain the region could fold into the
+    # product's epilogue anyway, the two calls are left as they are.
+    return not should_prefer_unfused_addmm(match)
+
+
+@register_graph_pattern(
+    CallFunction(
+        tp_ops.add.Tensor,
+        CallFunction(tp_ops.mm.default, Arg(), Arg()),
+        KeywordArg("inp"),
+    ),
+    extra_check=is_valid_addmm_fusion,
+    pass_dict=pass_patterns[2],
+)
+@register_graph_pattern(
+    CallFunction(
+        tp_ops.add.Tensor,
+        KeywordArg("inp"),
+        CallFunction(tp_ops.mm.default, Arg(), Arg()),
+    ),
+    extra_check=is_valid_addmm_fusion,
+    pass_dict=pass_patterns[2],
+)
+def fuse_addmm(match: Match, mat1, mat2, *, inp):
+    """A product with an added input is the product-with-bias operation.
+
+    Written as two calls, the addition is a pass over the product's result;
+    written as one, the bias is folded into the product's own epilogue and
+    the intermediate never exists.
+    """
+
+    node = match.output_node()
+    graph = node.graph
+    with graph.inserting_before(node):
+        fused = graph.create_node(
+            "call_function", tp_ops.addmm.default, (inp, mat1, mat2)
+        )
+    # The call computes what the addition computed, so the value the node
+    # stood for is the value it now stands for.
+    fused.meta.update(node.meta)
+    node.replace_all_uses_with(fused)
+    match.erase_nodes()
+
+
+def _is_addcdiv_fma_eligible(match: Match) -> bool:
+    """Whether a scaled quotient and an addition are worth re-fusing.
+
+    The single-call form rounds the quotient once and takes the product and
+    the sum in one step where the device has such a step; a chain of three
+    calls rounds between each of them.  Only a device with the step gains
+    anything, and the single-call form asks for real numbers throughout.
+    """
+
+    inp_value = match.kwargs["inp"].meta.get("val")
+    if inp_value is None or not _floating_value(inp_value):
+        return False
+    out_value = match.output_node().meta.get("val")
+    if out_value is None or _match_device_type(out_value) not in ("cuda", "xpu"):
+        return False
+    for key in ("t1", "t2"):
+        node = match.kwargs.get(key)
+        value = node.meta.get("val") if isinstance(node, Node) else node
+        if value is None or not _floating_value(value):
+            return False
+    # A quotient rounded toward zero is not the quotient the single call
+    # takes; only the unrounded one is.
+    quotient = next(
+        (n for n in match.nodes if n.target is tp_ops.div.Tensor), None
+    )
+    if quotient is not None and get_arg_value(
+        quotient, 2, "rounding_mode"
+    ) not in (None, "None"):
+        return False
+    # The scale is a number; a tensor there is a different operation.
+    return not isinstance(match.kwargs.get("value"), Node)
+
+
+@register_graph_pattern(
+    CallFunction(
+        tp_ops.add.Tensor,
+        KeywordArg("inp"),
+        CallFunction(
+            tp_ops.mul.Scalar,
+            CallFunction(tp_ops.div.Tensor, KeywordArg("t1"), KeywordArg("t2")),
+            KeywordArg("value"),
+        ),
+    ),
+    extra_check=_is_addcdiv_fma_eligible,
+    pass_dict=pass_patterns[2],
+)
+@register_graph_pattern(
+    CallFunction(
+        tp_ops.add.Tensor,
+        KeywordArg("inp"),
+        CallFunction(
+            tp_ops.mul.Tensor,
+            CallFunction(tp_ops.div.Tensor, KeywordArg("t1"), KeywordArg("t2")),
+            KeywordArg("value"),
+        ),
+    ),
+    extra_check=_is_addcdiv_fma_eligible,
+    pass_dict=pass_patterns[2],
+)
+def fuse_addcdiv(match: Match, inp, t1, t2, value):
+    """This, plus a scaled quotient, is the single call that says so."""
+
+    node = match.output_node()
+    graph = node.graph
+    with graph.inserting_before(node):
+        fused = graph.create_node(
+            "call_function", tp_ops.addcdiv.default, (inp, t1, t2),
+            {"value": value},
+        )
+    fused.meta.update(node.meta)
+    node.replace_all_uses_with(fused)
+    match.erase_nodes()
 
 
 #: The two ways a value is cut into pieces of given sizes: one takes the sizes
