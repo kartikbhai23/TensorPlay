@@ -670,10 +670,15 @@ del _is_cpu, _is_cuda, _is_meta, _is_mps
 def xpu(self, device=None):
     if device is None:
         return self.to(_C.Device(_C.DeviceType.XPU))
-    if builtins_int(device) == device and not isinstance(device, str):
+    # int() reaches into the spelling of a string or a Device before anything
+    # reads the argument, so an index is recognized by type instead: any other
+    # spelling is left to the Device constructor, which is what turns "xpu",
+    # "xpu:1" and a Device into the device they name.
+    if isinstance(device, builtins_int):
         return self.to(_C.Device(_C.DeviceType.XPU, device))
-    parsed = _C.Device(device)
-    return self.to(parsed)
+    if not isinstance(device, (str, _C.Device)):
+        raise TypeError(f"Invalid XPU device: {device!r}")
+    return self.to(_C.Device(device))
 
 
 Tensor.xpu = xpu
