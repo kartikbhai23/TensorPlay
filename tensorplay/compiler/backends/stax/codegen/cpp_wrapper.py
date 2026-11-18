@@ -372,6 +372,9 @@ _EXTERN_KERNEL_SHIMS: dict[str, tuple[str, str]] = {
     # A nan-median over every element is one value: the middle element with
     # the NaNs left out, so there is no order to hand back beside it.
     "nanmedian": ("tp_cpu_nanmedian", "t0.nanmedian()"),
+    # The median over every element is the same shape of answer, and the
+    # order it came from is only handed back when an axis is named.
+    "median": ("tp_cpu_median", "t0.median()"),
 }
 
 #: The arguments a convolution is given beyond its operands, in the order the
@@ -619,6 +622,13 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
     "cumsum": (
         "tp_cpu_cumsum",
         "t0.cumsum({s0}, {s1})",
+        (("dim", "int"), ("dtype", "optional_dtype")),
+    ),
+    # A running sum of exponentials: the axis it runs along and the type it
+    # accumulates in are its two places.
+    "logcumsumexp": (
+        "tp_cpu_logcumsumexp",
+        "t0.logcumsumexp({s0}, {s1})",
         (("dim", "int"), ("dtype", "optional_dtype")),
     ),
     # The product along one axis accumulates the same way the sum does, and it
@@ -1630,7 +1640,9 @@ class CppWrapperCodegen(PythonWrapperCodegen):
                 # The argument stands in the call without a name, so the values
                 # are taken in the order they were written.
                 if not positional:
-                    if kind == "optional_tensor":
+                    if kind.startswith("optional_"):
+                        # An argument the call stopped short of is the absent
+                        # value, which is what an optional argument is for.
                         values.append("std::nullopt")
                         continue
                     raise NotImplementedError(
@@ -1640,9 +1652,7 @@ class CppWrapperCodegen(PythonWrapperCodegen):
                 values.append(_literal_value(kind, positional.pop(0)))
                 continue
             if name not in by_name:
-                if kind == "optional_tensor":
-                    # An argument that was not passed at all is the absent
-                    # value, which is what an optional argument is for.
+                if kind.startswith("optional_"):
                     values.append("std::nullopt")
                     continue
                 raise NotImplementedError(

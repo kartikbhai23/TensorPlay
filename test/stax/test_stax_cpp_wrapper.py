@@ -526,6 +526,33 @@ def test_a_cumulative_product():
     )
 
 
+def test_a_running_sum_of_exponentials():
+    """A running sum of exponentials takes an axis and a type to accumulate.
+
+    The type is optional: a call that does not name one leaves it absent, and
+    the absent form is what the call is written with.
+    """
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    _check(
+        lambda a: tp.logcumsumexp(tp.mm(a, weight), 1),
+        [_pair_input()],
+    )
+    _check(
+        lambda a: tp.logcumsumexp(tp.mm(a, weight), 1, dtype=tp.float64),
+        [_pair_input()],
+    )
+
+
+def test_the_median_of_every_element():
+    """Over every element the median is one value, with no order beside it."""
+
+    _check(
+        lambda a: tp.median(a),
+        [tp.tensor([[4.0, 1.0, 3.0], [2.0, 5.0, 0.0]])],
+    )
+
+
 def test_a_running_maximum():
     """A running maximum keeps the place each maximum came from."""
 
