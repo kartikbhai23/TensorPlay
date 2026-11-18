@@ -219,6 +219,39 @@ class TestQueueSharing(unittest.TestCase):
         for p in procs:
             self.assertEqual(p.exitcode, 0)
 
+    def _roundtrip_through_child(self, t):
+        q_in, q_out, ack = self.ctx.Queue(), self.ctx.Queue(), self.ctx.Queue()
+        p = self.ctx.Process(target=_fd_child, args=(q_in, q_out, ack))
+        p.start()
+        try:
+            q_in.put(t)
+            back = q_out.get(timeout=120)
+        finally:
+            ack.put("done")
+            p.join(timeout=120)
+        self.assertEqual(p.exitcode, 0)
+        return back
+
+    def test_file_descriptor_strided_payload(self):
+        # A strided view cannot be copied out as one contiguous run, so the
+        # sender compacts it before filling the segment.
+        tmp.set_sharing_strategy("file_descriptor")
+        t = tp.arange(0, 600000, dtype=tp.float32)[::2]  # 1.2 MiB strided view
+        back = self._roundtrip_through_child(t)
+        self.assertEqual(tuple(back.shape), tuple(t.shape))
+        self.assertEqual(float(back[1]), 7.0)
+        self.assertEqual(float(back[-1]), float(t[-1]))
+        self.assertEqual(float(t[1]), 2.0)
+
+    def test_file_descriptor_dtype_without_byte_view(self):
+        # Dtypes that have no element-mapped array view still transfer through
+        # the mapping fallback.
+        tmp.set_sharing_strategy("file_descriptor")
+        t = tp.zeros(300000, dtype=tp.bfloat16)  # 600 KiB
+        back = self._roundtrip_through_child(t)
+        self.assertEqual(back.dtype, t.dtype)
+        self.assertEqual(float(back[1]), 7.0)
+
     def test_empty_tensor(self):
         t = tp.empty(0)
         q_in, q_out = self.ctx.Queue(), self.ctx.Queue()

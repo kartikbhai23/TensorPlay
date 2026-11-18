@@ -221,6 +221,45 @@ def _reduce_tensor_inline(tensor):
     return (rebuild_tensor_from_state, (type(tensor), tensor.__getstate__()))
 
 
+def _byte_view(tensor, nbytes):
+    """Return a flat byte view of *tensor*, or None when none matches its bytes.
+
+    Element dtypes without a matching array dtype (they may widen, or have no
+    array equivalent at all) report None and take the mapping fallback.
+    """
+    if getattr(os, "pwrite", None) is None:
+        return None
+    try:
+        view = memoryview(tensor.detach().numpy()).cast("B")
+    except (AttributeError, TypeError, ValueError, RuntimeError):
+        return None
+    return view if view.nbytes == nbytes else None
+
+
+def _write_segment(fd, tensor, nbytes):
+    """Copy *tensor* into the segment backing *fd*.
+
+    Writing through the descriptor places the bytes in the segment's pages
+    directly. Mapping the segment first faults in and zeroes every page, which
+    costs several times more than the copy for the payload sizes that reach
+    this path.
+    """
+    source = tensor if tensor.is_contiguous() else tensor.contiguous()
+    view = _byte_view(source, nbytes)
+    if view is not None:
+        written = 0
+        while written < nbytes:
+            step = os.pwrite(fd, view[written:], written)
+            if step <= 0:
+                raise OSError("short write into shared segment")
+            written += step
+        return
+    mapping = mmap.mmap(fd, nbytes)
+    host = tensorplay.frombuffer(mapping, dtype=tensor.dtype)
+    host = host.reshape(tuple(tensor.shape))
+    host.copy_(tensor)
+
+
 def _reduce_tensor_fd(tensor):
     # Hand the segment over as a duplicated descriptor. The sender fills a
     # private memfd-backed region; the recipient maps the received descriptor
@@ -231,10 +270,7 @@ def _reduce_tensor_fd(tensor):
     fd = os.memfd_create(_MEMFD_PREFIX + str(os.getpid()), flags=os.MFD_CLOEXEC)
     try:
         os.ftruncate(fd, nbytes)
-        view = mmap.mmap(fd, nbytes)
-        host = tensorplay.frombuffer(view, dtype=tensor.dtype)
-        host = host.reshape(shape)
-        host.copy_(tensor)
+        _write_segment(fd, tensor, nbytes)
     except BaseException:
         os.close(fd)
         raise
