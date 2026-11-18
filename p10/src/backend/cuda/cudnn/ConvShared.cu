@@ -49,6 +49,33 @@ std::vector<int64_t> expand_param_if_needed(const std::vector<int64_t>& list, in
         return {c * h * w, 1, w * c, c};
     }
 
+    std::array<int64_t, 4> conv_ordered_strides(
+        const std::array<int64_t, 4>& size,
+        const std::array<int64_t, 4>& stride,
+        bool channels_last) {
+        // The stride of a size-one dimension is not part of the value: no
+        // element is ever reached by advancing along it.  An engine reads a
+        // descriptor literally all the same, and the ones that recognize the
+        // channel-major order look at every stride -- so a filter of shape
+        // (K, 1, R, S), whose channel dimension is one, describes itself as
+        // channel-major only where that dimension's stride is the one the
+        // order names.  Row-major strides it with R*S, and the same buffer
+        // answers to one either way.
+        std::array<int64_t, 4> out = stride;
+        const std::array<int64_t, 4> order = channels_last
+            ? std::array<int64_t, 4>{1, 3, 2, 0}
+            : std::array<int64_t, 4>{3, 2, 1, 0};
+        int64_t inner = 1;
+        for (int64_t d : order) {
+            if (size[d] == 1) {
+                out[d] = inner;
+            } else {
+                inner *= size[d];
+            }
+        }
+        return out;
+    }
+
     Tensor empty_conv_output(
         int64_t n,
         int64_t c,

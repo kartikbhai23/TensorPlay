@@ -45,6 +45,13 @@ Tensor conv_to_channel_major(const Tensor& t);
 
 std::array<int64_t, 4> channels_last_strides(int64_t c, int64_t h, int64_t w);
 
+// The strides a descriptor is described with: the operand's own, except along
+// the dimensions whose extent is one, where the order the call was given
+// names the stride instead.
+std::array<int64_t, 4> conv_ordered_strides(const std::array<int64_t, 4>& size,
+                                            const std::array<int64_t, 4>& stride,
+                                            bool channels_last);
+
 Tensor empty_conv_output(int64_t n, int64_t c, int64_t h, int64_t w, DType dtype,
                          const Device& device, bool channels_last);
 

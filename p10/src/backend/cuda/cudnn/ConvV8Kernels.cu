@@ -354,13 +354,20 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
     const bool post_bias_add =
         bias.defined() && bias.numel() != 0 && !fused_relu &&
         !use_channels_last;
-    const std::array<int64_t, 4> x_stride{
-        input.stride(0), input.stride(1), input.stride(2), input.stride(3)};
-    const std::array<int64_t, 4> w_stride{
-        weight.stride(0), weight.stride(1), weight.stride(2), weight.stride(3)};
-    const std::array<int64_t, 4> y_stride = use_channels_last
-        ? channels_last_strides(K, OH, OW)
-        : std::array<int64_t, 4>{K * OH * OW, OH * OW, OW, 1};
+    const std::array<int64_t, 4> x_stride = conv_ordered_strides(
+        {N, C, H, W},
+        {input.stride(0), input.stride(1), input.stride(2), input.stride(3)},
+        use_channels_last);
+    const std::array<int64_t, 4> w_stride = conv_ordered_strides(
+        {K, C / groups, R, S},
+        {weight.stride(0), weight.stride(1), weight.stride(2), weight.stride(3)},
+        use_channels_last);
+    const std::array<int64_t, 4> y_stride = conv_ordered_strides(
+        {N, K, OH, OW},
+        use_channels_last
+            ? channels_last_strides(K, OH, OW)
+            : std::array<int64_t, 4>{K * OH * OW, OH * OW, OW, 1},
+        use_channels_last);
     // A caller handing over its own output buffer spares the plan a fresh
     // allocation and the copy into it, but only when the buffer's geometry is
     // the one this plan is built around; anything else keeps the old path of
@@ -1174,15 +1181,24 @@ Tensor conv2d_grad_input_cudnn_v8(const Tensor& grad_output, const Tensor& input
         return alignment;
     };
 
-    const std::array<int64_t, 4> dy_stride{
-        grad_output.stride(0), grad_output.stride(1), grad_output.stride(2), grad_output.stride(3)};
-    const std::array<int64_t, 4> w_stride{
-        weight.stride(0), weight.stride(1), weight.stride(2), weight.stride(3)};
     const bool use_channels_last =
         is_channels_last_4d(grad_output) || is_channels_last_4d(input);
-    const std::array<int64_t, 4> dx_stride = use_channels_last
-        ? channels_last_strides(C, H, W)
-        : std::array<int64_t, 4>{C * H * W, H * W, W, 1};
+    const std::array<int64_t, 4> dy_stride = conv_ordered_strides(
+        {N, K, OH, OW},
+        {grad_output.stride(0), grad_output.stride(1), grad_output.stride(2),
+         grad_output.stride(3)},
+        use_channels_last);
+    const std::array<int64_t, 4> w_stride = conv_ordered_strides(
+        {K, C, R, S},
+        {weight.stride(0), weight.stride(1), weight.stride(2),
+         weight.stride(3)},
+        use_channels_last);
+    const std::array<int64_t, 4> dx_stride = conv_ordered_strides(
+        {N, C, H, W},
+        use_channels_last
+            ? channels_last_strides(C, H, W)
+            : std::array<int64_t, 4>{C * H * W, H * W, W, 1},
+        use_channels_last);
     Tensor out = Tensor::empty({N, C, H, W}, input.dtype(), input.device());
     if (use_channels_last) {
         out = out.as_strided(
@@ -1404,22 +1420,30 @@ Tensor conv2d_grad_weight_cudnn_v8(const Tensor& grad_output, const Tensor& inpu
         return alignment;
     };
 
-    const std::array<int64_t, 4> x_stride{
-        input.stride(0), input.stride(1), input.stride(2), input.stride(3)};
-    const std::array<int64_t, 4> dy_stride{
-        grad_output.stride(0), grad_output.stride(1), grad_output.stride(2), grad_output.stride(3)};
+    const bool use_channels_last =
+        !conv_bwd_filter_row_major() &&
+        (is_channels_last_4d(grad_output) || is_channels_last_4d(input));
+    const std::array<int64_t, 4> x_stride = conv_ordered_strides(
+        {N, C, H, W},
+        {input.stride(0), input.stride(1), input.stride(2), input.stride(3)},
+        use_channels_last);
+    const std::array<int64_t, 4> dy_stride = conv_ordered_strides(
+        {N, K, OH, OW},
+        {grad_output.stride(0), grad_output.stride(1), grad_output.stride(2),
+         grad_output.stride(3)},
+        use_channels_last);
     // The filter gradient is laid out like its operands.  With both of them
     // channel-last that is the order the ranked engines read as they lie; a
     // row-major gradient instead makes the plan repack each operand around
     // every read, which for activations is orders of magnitude more traffic
     // than the one filter-sized copy that brings the result back to the
     // row-major order the caller asked for.
-    const bool use_channels_last =
-        !conv_bwd_filter_row_major() &&
-        (is_channels_last_4d(grad_output) || is_channels_last_4d(input));
-    const std::array<int64_t, 4> dw_stride = use_channels_last
-        ? channels_last_strides(C, R, S)
-        : std::array<int64_t, 4>{C * R * S, R * S, S, 1};
+    const std::array<int64_t, 4> dw_stride = conv_ordered_strides(
+        {K, C, R, S},
+        use_channels_last
+            ? channels_last_strides(C, R, S)
+            : std::array<int64_t, 4>{C * R * S, R * S, S, 1},
+        use_channels_last);
     Tensor out = empty_conv_output(K, C, R, S, input.dtype(), input.device(),
                                    use_channels_last);
 
