@@ -1477,16 +1477,26 @@ def require_stride_order(x, order, allow_padding: bool = False):
 def channels_last_call(x, ndim: int, groups: int, transposed: bool) -> bool:
     """Whether a call's operands are handed over with their channels last.
 
-    Always, where the region's layouts are chosen as a whole.  Otherwise for a
-    reduced-precision, ungrouped two-dimensional call on the GPU: the library
-    computes those channels last whatever it is handed, and repacks operands
-    in the other order itself -- one pass over each operand before the call
-    and one over the result after it.  Asked for here, the order is written by
-    whatever produces the operand, which a kernel of the region does anyway,
-    and the result arrives channels last for its readers.
+    Always for an ungrouped two-dimensional call, where the region's layouts are
+    chosen as a whole.  Otherwise for a reduced-precision, ungrouped
+    two-dimensional call on the GPU: the library computes those channels last
+    whatever it is handed, and repacks operands in the other order itself -- one
+    pass over each operand before the call and one over the result after it.
+    Asked for here, the order is written by whatever produces the operand, which
+    a kernel of the region does anyway, and the result arrives channels last for
+    its readers.
+
+    A grouped call is not one of those.  The kernel written for it here walks
+    the row-major order with one filter channel per group, and the engines left
+    to read the other order measure several times slower on this hardware, so
+    the region's layout choice does not extend to it: it keeps the order it is
+    handed and its reader converts once.
     """
 
     if ndim != 2:
+        return False
+    mode = config.conv_channels_last_mode
+    if groups > 1 and mode not in ("all", "depthwise", "grouped"):
         return False
     if V.graph.layout_opt:
         return True
@@ -1501,7 +1511,6 @@ def channels_last_call(x, ndim: int, groups: int, transposed: bool) -> bool:
         or (dtype == tp.float32 and _tf32_allowed())
     ):
         return False
-    mode = config.conv_channels_last_mode
     if mode == "all":
         return True
     if mode in ("depthwise", "grouped"):
@@ -1670,17 +1679,16 @@ def convolution(
     ):
         return convert_1x1_conv_to_mm(x, weight, bias)
 
-    # A bias is a value per output channel, so it is added after the call rather
-    # than folded into it: a kernel that added it would have to read it once per
-    # element of the contracted axis, which is the same number every time.
+    # A bias is a value per output channel, and the operation's own kernel
+    # writes it in the pass that writes the result rather than reading it once
+    # per contracted element.  The templates offered below have no such stage,
+    # so the call is measured both ways -- the framework candidate carries the
+    # bias, the templates are the same call without one -- and a result written
+    # by a template receives the addition afterwards.  A call of no output
+    # channels has no value to add to and is answered as it stands.
     if bias is not None and device_type != "cpu":
-        result = convolution(x, weight, None, **kwargs)
-        if V.graph.sizevars.statically_known_equals(result.get_size()[1], 0):
-            return result
-        return LOWERINGS["add.Tensor"](
-            result,
-            LOWERINGS["view.default"](bias, [result.get_size()[1]] + ndim * [1]),
-        )
+        if V.graph.sizevars.statically_known_equals(out_chan, 0):
+            return convolution(x, weight, None, **kwargs)
 
     x.realize()
     weight.realize()
@@ -1690,6 +1698,15 @@ def convolution(
         weight = ir.ExternKernel.require_channels_last(weight)
         layout = conv_layout(x, weight, None, **kwargs)
     else:
+        if groups > 1:
+            # A grouped call is laid out row-major here.  Asking the library for
+            # the result's strides while the operand is channels last describes
+            # a channels-last result, which this path would then require and
+            # hand to a kernel that does not read that order -- and the engines
+            # left to read it are several times slower.  The operand is brought
+            # to the order the kernel walks first, so the answer describes the
+            # call that will be made.
+            x = ir.ExternKernel.require_contiguous(x)
         layout = conv_layout(x, weight, None, **kwargs)
         req_stride_order = ir.get_stride_order(
             V.graph.sizevars.guarding_hints_or_throw(layout.stride)
@@ -1700,6 +1717,7 @@ def convolution(
     ordered_kwargs_for_cpp_kernel = [
         "stride", "padding", "dilation", "transposed", "output_padding", "groups",
     ]
+    bias_view = None
     if bias is None:
         args = [x, weight]
         kwargs["bias"] = None
@@ -1711,6 +1729,9 @@ def convolution(
         args = [x, weight, bias]
         bias.freeze_layout()
         V.graph.sizevars.guard_int_seq(bias.get_size())
+        # The addition a template needs, described once and used only if one
+        # of them wins.
+        bias_view = LOWERINGS["view.default"](bias, [out_chan] + ndim * [1])
 
     choices = []
     if "EAGER" in config.max_autotune_conv_backends:
@@ -1787,6 +1808,10 @@ def convolution(
                         num_stages=cfg.num_stages, num_warps=num_warps, **cfg.kwargs,
                     )
     node, _ = autotune_select_algorithm("convolution", choices, args, layout)
+    if bias_view is not None and not _framework_wrote(node):
+        # The candidate that won wrote the result alone, so the value per
+        # output channel is added to what it wrote.
+        return LOWERINGS["add.Tensor"](node, bias_view)
     return node
 
 
@@ -1811,6 +1836,21 @@ framework_convolution_backward = ExternKernelChoice(
     has_out_variant=False,
     op_overload=tp.ops.tp.convolution_backward.default,
 )
+
+
+def _framework_wrote(node: Any) -> bool:
+    """Whether a call to the operation is what wrote this value.
+
+    That call takes the value per output channel and writes it in the pass
+    that writes the result; a kernel written from a template has no such
+    stage and writes the result alone.  The value is carried in boxes, so
+    the call is recognised under them.
+    """
+
+    inner = node
+    while isinstance(inner, (ir.TensorBox, ir.StorageBox)):
+        inner = inner.data
+    return isinstance(inner, (ir.ExternKernelOut, ir.ExternKernelAlloc))
 
 
 def _conv_bwd_backends(kind: str) -> bool:
