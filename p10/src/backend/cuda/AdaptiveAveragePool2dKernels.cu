@@ -56,35 +56,39 @@ template <typename T, typename M>
 __global__ void adaptive_avg_pool2d_forward_kernel(
     const T* input,
     T* output,
-    int64_t N,
-    int64_t C,
-    int64_t H_in,
-    int64_t W_in,
-    int64_t H_out,
-    int64_t W_out) {
-    int64_t output_index = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    int64_t output_elements = N * C * H_out * W_out;
-    if (output_index >= output_elements) return;
+    int64_t isizeH,
+    int64_t isizeW,
+    int64_t osizeH,
+    int64_t osizeW,
+    int64_t h_blocks) {
+    // One block covers a (plane, output-row band) pair: index math reduces to
+    // two divisions per thread, and the grid keeps enough blocks resident.
+    const int64_t plane = blockIdx.x / h_blocks;
+    const int64_t h_band = blockIdx.x % h_blocks;
+    input += plane * isizeH * isizeW;
+    output += plane * osizeH * osizeW;
 
-    int64_t w = output_index % W_out;
-    int64_t h = (output_index / W_out) % H_out;
-    int64_t c = (output_index / (W_out * H_out)) % C;
-    int64_t n = output_index / (W_out * H_out * C);
+    const int64_t oh = h_band * blockDim.y + threadIdx.y;
+    if (oh >= osizeH) return;
 
-    int64_t h_start = (h * H_in) / H_out;
-    int64_t h_end = ((h + 1) * H_in + H_out - 1) / H_out;
-    int64_t w_start = (w * W_in) / W_out;
-    int64_t w_end = ((w + 1) * W_in + W_out - 1) / W_out;
+    const int64_t h_start = (oh * isizeH) / osizeH;
+    const int64_t h_end = ((oh + 1) * isizeH + osizeH - 1) / osizeH;
 
-    M sum = M(0);
-    for (int64_t ih = h_start; ih < h_end; ++ih) {
-        for (int64_t iw = w_start; iw < w_end; ++iw) {
-            int64_t input_index = ((n * C + c) * H_in + ih) * W_in + iw;
-            sum += static_cast<M>(input[input_index]);
+    const int64_t ostepW = blockDim.x;
+    for (int64_t ow = threadIdx.x; ow < osizeW; ow += ostepW) {
+        const int64_t w_start = (ow * isizeW) / osizeW;
+        const int64_t w_end = ((ow + 1) * isizeW + osizeW - 1) / osizeW;
+
+        M sum = M(0);
+        for (int64_t ih = h_start; ih < h_end; ++ih) {
+            const T* row = input + ih * isizeW;
+            for (int64_t iw = w_start; iw < w_end; ++iw) {
+                sum += static_cast<M>(row[iw]);
+            }
         }
+        output[oh * osizeW + ow] = static_cast<T>(
+            sum / static_cast<M>((h_end - h_start) * (w_end - w_start)));
     }
-    output[output_index] = static_cast<T>(
-        sum / static_cast<M>((h_end - h_start) * (w_end - w_start)));
 }
 
 template <typename T, typename M>
@@ -147,36 +151,36 @@ Tensor adaptive_avg_pool2d_cuda(const Tensor& input,
         {input.size(0), input.size(1), H_out, W_out}, input.dtype(), input.device());
     int64_t elements = output.numel();
     if (elements == 0) return output;
-    int threads = 256;
-    int blocks = static_cast<int>((elements + threads - 1) / threads);
+    dim3 threads(32, 8);
+    int64_t planes = input.size(0) * input.size(1);
+    int64_t h_blocks = (H_out + static_cast<int64_t>(threads.y) - 1) / threads.y;
+    dim3 blocks(static_cast<unsigned>(planes * h_blocks));
     switch (input.dtype()) {
         case DType::Float32:
             adaptive_avg_pool2d_forward_kernel<float, float>
                 <<<blocks, threads, 0, getCurrentCUDAStream().stream()>>>(
                     input_contig.data_ptr<float>(), output.data_ptr<float>(),
-                    input.size(0), input.size(1), input.size(2), input.size(3),
-                    H_out, W_out);
+                    input.size(2), input.size(3), H_out, W_out, h_blocks);
             break;
         case DType::Float64:
             adaptive_avg_pool2d_forward_kernel<double, double>
                 <<<blocks, threads, 0, getCurrentCUDAStream().stream()>>>(
                     input_contig.data_ptr<double>(), output.data_ptr<double>(),
-                    input.size(0), input.size(1), input.size(2), input.size(3),
-                    H_out, W_out);
+                    input.size(2), input.size(3), H_out, W_out, h_blocks);
             break;
         case DType::Float16:
             adaptive_avg_pool2d_forward_kernel<tensorplay::Half, float>
                 <<<blocks, threads, 0, getCurrentCUDAStream().stream()>>>(
                     input_contig.data_ptr<tensorplay::Half>(),
-                    output.data_ptr<tensorplay::Half>(), input.size(0), input.size(1),
-                    input.size(2), input.size(3), H_out, W_out);
+                    output.data_ptr<tensorplay::Half>(), input.size(2),
+                    input.size(3), H_out, W_out, h_blocks);
             break;
         case DType::BFloat16:
             adaptive_avg_pool2d_forward_kernel<tensorplay::BFloat16, float>
                 <<<blocks, threads, 0, getCurrentCUDAStream().stream()>>>(
                     input_contig.data_ptr<tensorplay::BFloat16>(),
-                    output.data_ptr<tensorplay::BFloat16>(), input.size(0), input.size(1),
-                    input.size(2), input.size(3), H_out, W_out);
+                    output.data_ptr<tensorplay::BFloat16>(), input.size(2),
+                    input.size(3), H_out, W_out, h_blocks);
             break;
         default:
             TP_THROW(NotImplementedError,
