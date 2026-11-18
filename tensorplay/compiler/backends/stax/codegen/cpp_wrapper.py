@@ -17,6 +17,7 @@ and invokes ``call`` through the loaded shared object.
 from __future__ import annotations
 
 import ctypes
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -435,6 +436,67 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
         "tensorplay::Scalar({s0}), tensorplay::Scalar({s1}))",
         (("beta", "real"), ("alpha", "real")),
     ),
+    "cumsum": (
+        "tp_cpu_cumsum",
+        "t0.cumsum({s0}, {s1})",
+        (("dim", "int"), ("dtype", "optional_dtype")),
+    ),
+    "div_Scalar_mode": (
+        "tp_cpu_div_scalar_mode",
+        "tensorplay::Tensor::div(t0, tensorplay::Scalar({s0}), {s1})",
+        ((None, "real"), ("rounding_mode", "string")),
+    ),
+    "divide_Scalar_mode": (
+        "tp_cpu_divide_scalar_mode",
+        "tensorplay::Tensor::divide(t0, tensorplay::Scalar({s0}), {s1})",
+        ((None, "real"), ("rounding_mode", "string")),
+    ),
+}
+
+
+#: Shims for an operation that leaves more than one result behind, keyed by the
+#: name the generated code calls it.  A sort answers with its values and the
+#: order that produced them; each half is a buffer of its own, so the shim is
+#: handed one slot per result and copies each into place.
+#:
+#: Each entry is the C++ function to call, the call as it is spelled -- the
+#: operands as ``{0}``, ``{1}``, ... and the arguments that are not buffers as
+#: ``{s0}``, ``{s1}``, ... -- and those arguments and how to write each.  A
+#: name of ``None`` means the argument stands in the call without one, in which
+#: case the values are taken in the order they were written.
+_EXTERN_KERNEL_MULTI_SHIMS: dict[
+    str, tuple[str, str, tuple[tuple[str | None, str], ...]]
+] = {
+    "tp_sort_stable": (
+        "tp_cpu_sort_stable",
+        "t0.sort({s0}, {s1}, {s2})",
+        (("stable", "optional_flag"), ("dim", "int"), ("descending", "flag")),
+    ),
+    "tp_topk": (
+        "tp_cpu_topk",
+        "tensorplay::Tensor::topk(t0, {s0}, {s1}, {s2}, {s3})",
+        (
+            (None, "int"),
+            (None, "int"),
+            (None, "flag"),
+            (None, "flag"),
+        ),
+    ),
+    "tp_median_dim": (
+        "tp_cpu_median_dim",
+        "t0.median({s0}, {s1})",
+        ((None, "int"), (None, "flag")),
+    ),
+    "tp_mode": (
+        "tp_cpu_mode",
+        "t0.mode({s0}, {s1})",
+        ((None, "int"), (None, "flag")),
+    ),
+    "tp_kthvalue": (
+        "tp_cpu_kthvalue",
+        "t0.kthvalue({s0}, {s1}, {s2})",
+        ((None, "int"), (None, "int"), (None, "flag")),
+    ),
 }
 
 
@@ -473,6 +535,57 @@ def _write_flag(text: str) -> str:
     raise NotImplementedError(
         f"C++ wrapper cannot write the flag {text!r}"
     )
+
+
+@_literal_writer("optional_flag")
+def _write_optional_flag(text: str) -> str:
+    """A flag that may not have been supplied at all.
+
+    The absent case is what an optional argument is for, and it is written as
+    nothing rather than as one of the two flags.
+    """
+
+    if text == "None":
+        return "std::nullopt"
+    return _write_flag(text)
+
+
+@_literal_writer("string")
+def _write_string(text: str) -> str:
+    """A word the call takes, written where it stands.
+
+    The value arrives as it was written in the program, quotes and all; what
+    the call takes is the word itself.
+    """
+
+    body = text.strip()
+    if len(body) >= 2 and body[0] == body[-1] and body[0] in "'\"":
+        body = body[1:-1]
+    return f'std::string("{body}")'
+
+
+@_literal_writer("optional_dtype")
+def _write_optional_dtype(text: str) -> str:
+    """An element type that may not have been asked for.
+
+    The type is written as the name the program used -- ``tensorplay.float64``
+    -- and what the call takes is the enumerator of that name, so the spelling
+    is worked out from the name rather than kept in a table that would have to
+    be extended for every type the framework gains.
+    """
+
+    if text == "None":
+        return "std::nullopt"
+    name = text.strip().rsplit(".", 1)[-1]
+    words = re.findall(r"[A-Za-z]+|[0-9]+", name)
+    spelled = "".join(
+        word if word[0].isupper() else (word[:1].upper() + word[1:])
+        for word in words
+    )
+    # The unsigned types are spelled with a capital I in the middle.
+    if spelled.startswith("Uint"):
+        spelled = "UInt" + spelled[len("Uint") :]
+    return f"tensorplay::DType::{spelled}"
 
 
 @_literal_writer("ints")
@@ -614,10 +727,11 @@ def _build_extern_shim_impl(
     template: str,
     n_tensors: int,
     literal_values: tuple[str, ...] = (),
+    n_outputs: int = 1,
 ) -> str:
     params = ", ".join(
         [f"TpTensorBuffer* arg{i}" for i in range(n_tensors)]
-        + ["TpTensorBuffer* out"]
+        + [f"TpTensorBuffer* out{i}" for i in range(n_outputs)]
     )
     lines = []
     for i in range(n_tensors):
@@ -631,11 +745,23 @@ def _build_extern_shim_impl(
     expr = template.format(
         *[f"t{i}" for i in range(n_tensors)], **substitutions
     )
-    lines.append(f"tensorplay::Tensor result = {expr};")
-    lines.append(
-        "std::memcpy(out->data, result.data_ptr(),"
-        " result.numel() * result.itemsize());"
-    )
+    if n_outputs == 1:
+        lines.append(f"tensorplay::Tensor result = {expr};")
+        lines.append(
+            "std::memcpy(out0->data, result.data_ptr(),"
+            " result.numel() * result.itemsize());"
+        )
+    else:
+        # An operation that answers with several results answers with them
+        # together, so what is copied is each part of what came back, in the
+        # order the operation returns them.
+        lines.append(f"auto result = {expr};")
+        for i in range(n_outputs):
+            lines.append(
+                f"std::memcpy(out{i}->data, std::get<{i}>(result).data_ptr(),"
+                f" std::get<{i}>(result).numel()"
+                f" * std::get<{i}>(result).itemsize());"
+            )
     body = "\n        ".join(lines)
     return f"""
 extern "C" int64_t {shim_name}({params}) {{
@@ -979,13 +1105,7 @@ class CppWrapperCodegen(PythonWrapperCodegen):
         if isinstance(extern_kernel.layout, ir.NoneLayout):
             return
         if getattr(extern_kernel, "outputs", None):
-            self._generate_fallback_kernel_helper(
-                extern_kernel.get_name(),
-                [o.get_name() for o in extern_kernel.outputs],
-                args,
-                extern_kernel.get_device(),
-                extern_kernel.get_stack_traces(),
-            )
+            self._generate_fallback_kernel_helper(extern_kernel, args)
             return
         output_name = extern_kernel.get_name()
         self._register_tensor(output_name)
@@ -1042,6 +1162,7 @@ class CppWrapperCodegen(PythonWrapperCodegen):
         template: str,
         n_tensors: int,
         literal_values: tuple[str, ...] = (),
+        n_outputs: int = 1,
     ) -> str:
         """Write a shim for one call of an operation, and name it.
 
@@ -1051,7 +1172,7 @@ class CppWrapperCodegen(PythonWrapperCodegen):
         of its own.  Two calls that agree share one.
         """
 
-        key = (template, n_tensors, tuple(literal_values))
+        key = (template, n_tensors, tuple(literal_values), n_outputs)
         named = self._extern_shim_keys.get(key)
         if named is not None:
             return named
@@ -1063,7 +1184,9 @@ class CppWrapperCodegen(PythonWrapperCodegen):
         self._extern_shim_names.add(name)
         self._extern_shim_keys[key] = name
         self._extern_shim_sources.append(
-            _build_extern_shim_impl(name, template, n_tensors, literal_values)
+            _build_extern_shim_impl(
+                name, template, n_tensors, literal_values, n_outputs
+            )
         )
         return name
 
@@ -1081,12 +1204,33 @@ class CppWrapperCodegen(PythonWrapperCodegen):
         if not literals:
             return ()
         by_name = {}
+        positional = []
         for arg in args:
             name, _, value = _split_named(arg)
             if name is not None:
                 by_name[name] = value
+            elif not (
+                isinstance(arg, str)
+                and (arg in V.graph.name_to_buffer or arg in self.view_meta)
+            ):
+                # An operand is written as the buffer it names; anything else
+                # without a name is a value the operation was given.
+                positional.append(arg)
         values = []
         for name, kind in literals:
+            if name is None:
+                # The argument stands in the call without a name, so the values
+                # are taken in the order they were written.
+                if not positional:
+                    if kind == "optional_tensor":
+                        values.append("std::nullopt")
+                        continue
+                    raise NotImplementedError(
+                        f"C++ wrapper extern kernel {op_name!r} was called "
+                        f"without its {kind!r} argument"
+                    )
+                values.append(_literal_value(kind, positional.pop(0)))
+                continue
             if name not in by_name:
                 if kind == "optional_tensor":
                     # An argument that was not passed at all is the absent
@@ -1099,6 +1243,42 @@ class CppWrapperCodegen(PythonWrapperCodegen):
                 )
             values.append(_literal_value(kind, by_name[name]))
         return tuple(values)
+
+    def codegen_multi_output(self, node: ir.MultiOutput) -> None:
+        """One of several results of a single call.
+
+        A call that answers with several results writes each of them into the
+        buffer it belongs in, so the buffer is the result and there is nothing
+        to take out of anything.  A result that is one part of an answer this
+        wrapper does not write that way is refused rather than left as a name
+        nothing ever fills.
+        """
+
+        producer = V.graph.name_to_buffer.get(node.input_name(0))
+        if not isinstance(producer, ir.FallbackKernel):
+            raise NotImplementedError(
+                "C++ wrapper takes several results only from a call it writes "
+                f"as a whole; got {type(producer).__name__}"
+            )
+
+    def _codegen_assert_size_stride(
+        self,
+        code,
+        name: str,
+        size: str,
+        stride: str,
+        op_name: str,
+        dtype=None,
+    ) -> None:
+        """The checks that a result really has the shape it was given.
+
+        Every buffer this wrapper hands a call is allocated by the entry point
+        from the shape and stride recorded for it, so there is nothing here
+        that could disagree with what the call wrote: the check would guard a
+        value the entry point chose itself.
+        """
+
+        return
 
     def _generate_extern_kernel_out_helper(
         self,
@@ -1159,15 +1339,76 @@ class CppWrapperCodegen(PythonWrapperCodegen):
 
     def _generate_fallback_kernel_helper(
         self,
-        kernel_name,
-        output_names,
+        extern_kernel,
         args,
-        device,
-        stack_traces,
     ) -> None:
-        raise NotImplementedError(
-            "C++ wrapper does not yet generate multi-output fallback "
-            f"kernels ({kernel_name!r}, outputs={output_names!r})"
+        """Write a call that leaves more than one result behind.
+
+        Some operations answer with a pair -- a sort's values and the order
+        that produced them -- and neither half is the call's result on its own:
+        each is a buffer of its own, which is why they arrive here as several.
+        What is written is a shim that calls the operation once and copies each
+        half into the buffer it belongs in, in the order the operation answers.
+
+        An operation whose several results are one of them a place an argument
+        already had is not this: there the call writes back into memory it was
+        handed rather than into memory of its own, and that is not a call this
+        can describe.
+        """
+
+        if not isinstance(extern_kernel, ir.FallbackKernel):
+            raise NotImplementedError(
+                "C++ wrapper cannot write the several results of "
+                f"{type(extern_kernel).__name__}"
+            )
+        output_names = [o.get_name() for o in extern_kernel.outputs]
+        for name in output_names:
+            self._register_tensor(name)
+            self._record_buffer_meta(name)
+
+        tensor_args = list(getattr(extern_kernel, "tensor_args", None) or [])
+        if not tensor_args:
+            tensor_args = [
+                a for a in extern_kernel.inputs if isinstance(a, ir.Buffer)
+            ]
+        if not tensor_args:
+            raise NotImplementedError(
+                "C++ wrapper does not support extern kernels without "
+                "tensor inputs"
+            )
+
+        kernel_name = getattr(extern_kernel, "cpp_kernel_name", None)
+        name = kernel_name
+        if name is None:
+            target = getattr(extern_kernel, "kernel", None) or extern_kernel.op_overload
+            name = getattr(target, "__name__", None)
+        found = _EXTERN_KERNEL_MULTI_SHIMS.get(name)
+        if found is None and kernel_name:
+            found = _EXTERN_KERNEL_MULTI_SHIMS.get(
+                self._op_name_from_kernel(kernel_name)
+            )
+        if found is None:
+            raise NotImplementedError(
+                "C++ wrapper has no shim for the several results of "
+                f"{name!r}"
+            )
+        shim_name, template, literals = found
+        shim_name = self._extern_shim_source(
+            shim_name,
+            template,
+            len(tensor_args),
+            self._extern_literals_of(name, literals, args),
+            len(output_names),
+        )
+
+        arg_refs = [
+            self._tensor_slot(self._tensor_arg_name(t, self.wrapper_call))
+            for t in tensor_args
+        ]
+        arg_refs.extend(self._tensor_buf_ref(name) for name in output_names)
+        self.writeline(
+            f"TP_CHECK({shim_name}({', '.join(arg_refs)}) == 0, "
+            f'"extern kernel {shim_name} failed");'
         )
 
     def _generate_index_put_fallback_helper(self, node) -> None:

@@ -247,6 +247,32 @@ def test_package_holds_a_convolution(tmp_path):
     assert tp.allclose(module(x), network(x), atol=1e-4)
 
 
+def test_package_holds_a_sort(tmp_path):
+    """A sort answers with its values and the order that produced them.
+
+    The region hands back the values; the package's entry point writes each
+    half of the answer into the buffer it belongs in, and the package only
+    describes the half the region returns.
+    """
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    x = tp.tensor([[1.0, 2.0, 3.0, 4.0], [0.0, -1.0, 0.5, 2.0]])
+    path = _build(tmp_path / _PKG, lambda a: tp.mm(a, weight).sort(dim=-1)[0], [x])
+    module = load_package(path)
+    assert tp.allclose(module(x), tp.mm(x, weight).sort(dim=-1)[0])
+
+
+def test_package_holds_a_topk(tmp_path):
+    """The k largest, and which of them they were."""
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    x = tp.tensor([[1.0, 2.0, 3.0, 4.0], [0.0, -1.0, 0.5, 2.0]])
+    fn = lambda a: tp.mm(a, weight).topk(2, dim=-1)[1]
+    path = _build(tmp_path / _PKG, fn, [x])
+    module = load_package(path)
+    assert tp.allclose(module(x), fn(x))
+
+
 def test_region_that_returns_a_view_is_refused(tmp_path):
     # A package lays out storage of its own, so there is nowhere for a view to
     # sit: the result would name a window onto nothing.
@@ -261,10 +287,15 @@ def test_region_that_returns_a_view_is_refused(tmp_path):
 
 
 def test_region_without_a_cpp_wrapper_is_refused(tmp_path):
-    # A sort has no host form to put in a package: its schedule is a kernel
-    # this device runs as a Triton program.
+    # A contraction written as one call takes its operands as a list rather
+    # than as buffers, and there is no host form of it to put in a package.
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3)
     with pytest.raises(PackageError, match=r"no C\+\+ wrapper"):
-        _build(tmp_path / _PKG, lambda a: tp.sort(a, dim=-1), [tp.randn(4)])
+        _build(
+            tmp_path / _PKG,
+            lambda a: tp.einsum("ij,jk->ik", a, weight),
+            [tp.ones(2, 4)],
+        )
 
 
 def test_non_tensor_argument_is_refused(tmp_path):

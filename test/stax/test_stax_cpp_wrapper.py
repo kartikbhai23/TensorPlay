@@ -294,3 +294,101 @@ def test_two_convolutions():
         return tp.conv2d(hidden, second)
 
     _check(network, [tp.randn(1, 3, 8, 8)])
+
+
+# --------------------------------------------------------------------------
+# a call that answers with more than one result
+# --------------------------------------------------------------------------
+
+
+def _pair_input():
+    return tp.tensor([[1.0, 2.0, 3.0, 4.0], [-1.0, 0.5, 2.0, 0.0]])
+
+
+def test_a_sort_answers_with_both_halves():
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    _check(
+        lambda a: tp.mm(a, weight).sort(dim=-1),
+        [_pair_input()],
+    )
+
+
+def test_a_sort_read_by_either_half():
+    """The values and the order are two buffers, and either may be the result."""
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    _check(
+        lambda a: tp.mm(a, weight).sort(dim=-1)[1],
+        [_pair_input()],
+    )
+    _check(
+        lambda a: tp.mm(a, weight).sort(dim=-1)[0] * 2.0,
+        [_pair_input()],
+    )
+
+
+def test_a_sort_that_keeps_its_axes():
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    _check(
+        lambda a: tp.mm(a, weight).sort(dim=-1, descending=True),
+        [_pair_input()],
+    )
+
+
+def test_topk():
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    _check(lambda a: tp.mm(a, weight).topk(2, dim=-1), [_pair_input()])
+
+
+def test_a_median_and_a_mode():
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    _check(
+        lambda a: tp.median(tp.mm(a, weight), dim=-1),
+        [_pair_input()],
+    )
+    _check(
+        lambda a: tp.mode(tp.mm(a, weight), dim=-1),
+        [_pair_input()],
+    )
+
+
+def test_a_kth_value():
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    _check(
+        lambda a: tp.kthvalue(tp.mm(a, weight), 2, dim=-1),
+        [_pair_input()],
+    )
+
+
+def test_a_cumulative_sum():
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    _check(
+        lambda a: tp.mm(a, weight).cumsum(dim=-1),
+        [_pair_input()],
+    )
+
+
+def test_a_cumulative_sum_in_another_type():
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    _check(
+        lambda a: tp.mm(a, weight).cumsum(dim=-1, dtype=tp.float64),
+        [_pair_input()],
+    )
+
+
+def test_a_rounded_division():
+    """A division that rounds keeps the rounding as part of the call.
+
+    The mode is a word the call takes rather than a buffer, so it is written
+    where it stands; an integral quotient is what the two spellings are for.
+    """
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    _check(
+        lambda a: tp.div(tp.mm(a, weight) * 10, 3.0, rounding_mode="floor"),
+        [_pair_input()],
+    )
+    _check(
+        lambda a: tp.divide(tp.mm(a, weight) * 10, 3.0, rounding_mode="trunc"),
+        [_pair_input()],
+    )
