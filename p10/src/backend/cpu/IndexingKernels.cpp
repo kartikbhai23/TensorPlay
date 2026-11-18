@@ -1694,6 +1694,19 @@ static void index_copy_into(Tensor& dest, const Tensor& self, int64_t dim,
         ctype* d = dest.data_ptr<ctype>(); \
         const ctype* sp = source_c.data_ptr<ctype>(); \
         const int64_t grain = std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(outer * inner, 1)); \
+        if (inner == 1) { \
+            /* One slot holds a single element, so the slice copy is a bare \
+               store; calling memcpy per element would dominate the cost. */ \
+            parallel_for(0, n_idx, grain, [&](int64_t b, int64_t e) { \
+                for (int64_t k = b; k < e; ++k) { \
+                    const int64_t iv = ip[k]; \
+                    for (int64_t o = 0; o < outer; ++o) { \
+                        d[o * row + iv] = sp[o * n_idx + k]; \
+                    } \
+                } \
+            }); \
+            break; \
+        } \
         parallel_for(0, n_idx, grain, [&](int64_t b, int64_t e) { \
             for (int64_t k = b; k < e; ++k) { \
                 const int64_t iv = ip[k]; \
