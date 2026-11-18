@@ -23,6 +23,24 @@ patterns = PatternMatcherPass(subsystem="joint_graph_passes")
 operator_set = tp.ops.tp
 
 
+def _computed_extent(value) -> bool:
+    """Whether an extent is itself computed by the graph rather than known now.
+
+    A draw whose extents are only known at run time cannot be turned into a
+    seeded draw at compile time: the draw's size is a value the program
+    produces, so the call has to stay in the graph and be asked for its
+    numbers when it runs.
+    """
+
+    from tensorplay.graph import Node
+
+    if isinstance(value, (Node, tp.graph.Proxy)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return any(_computed_extent(item) for item in value)
+    return False
+
+
 def _shape_to_offset(shape, device: tp.device):
     # The offset a draw starts from within the counter, counted the way the
 # counter itself advances, so that two draws do not overlap.
@@ -198,6 +216,8 @@ def replace_random(
         return
     if pin_memory:
         return
+    if _computed_extent(size):
+        return
 
     def replacement(size):
         result = tp_prims.random(
@@ -238,8 +258,14 @@ def replace_random(
 
         replacement_fn = replacement_align
 
-    # pyrefly: ignore [bad-argument-type]
-    match.replace_by_example(replacement_fn, [size])
+    # A draw whose replacement cannot be traced keeps the call it already is:
+    # the numbers are then asked for when the program runs, which is what the
+    # call asked for in the first place.
+    try:
+        # pyrefly: ignore [bad-argument-type]
+        match.replace_by_example(replacement_fn, [size])
+    except Exception:  # noqa: BLE001 - an untraceable draw stays a call
+        log.debug("left a random draw as a call", exc_info=True)
 
 
 # pyrefly: ignore [bad-argument-type]
@@ -256,6 +282,8 @@ def replace_randint(
     pin_memory=None,
 ):
     if pin_memory:
+        return
+    if _computed_extent(size):
         return
 
     def replacement(low, high, size):
