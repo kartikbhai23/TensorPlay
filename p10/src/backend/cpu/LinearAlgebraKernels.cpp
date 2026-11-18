@@ -1338,6 +1338,8 @@ Tensor matmul_batched_2d(
     return result;
 }
 
+Tensor dot_kernel(const Tensor& self_in, const Tensor& other_in);
+
 Tensor matmul_kernel(const Tensor& self, const Tensor& other) {
     const int64_t dim1 = self.dim();
     const int64_t dim2 = other.dim();
@@ -1415,9 +1417,10 @@ Tensor matmul_kernel(const Tensor& self, const Tensor& other) {
         if (self_p.size(0) != other_p.size(0)) {
             TP_THROW(RuntimeError, "matmul: size mismatch, got ", self_p.size(0), " and ", other_p.size(0));
         }
-        Tensor result = matmul_batched_2d(
-            self_p.unsqueeze(0), other_p.unsqueeze(1), {}, {});
-        return result.squeeze(0).squeeze(0);
+        // A vector/vector product is a dot; the GEMM detour through
+        // unsqueezed 1xN/Nx1 matrices pays several microseconds of reshaping
+        // on top of the reduction itself.
+        return dot_kernel(self_p, other_p);
     }
 
     if (dim1 == 1) {
