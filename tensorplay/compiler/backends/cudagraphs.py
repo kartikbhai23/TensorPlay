@@ -69,14 +69,26 @@ def _default_native() -> Any:
     return _C
 
 
+#: What each kind of object answered to the probe below.  The probe asks only
+#: whether a value carries a device with an ``is_cuda`` method, which is a
+#: property of the object's type, so the answer is kept per type instead of
+#: being rediscovered for every argument of every replay.
+_tensor_probe_cache: dict[type, bool] = {}
+
+
 def _looks_tensor(value: Any) -> bool:
     """Duck-typed tensor probe: a device with an ``is_cuda`` predicate.
 
     Keeps the manager usable with stand-in tensors in tests and avoids
     importing the runtime type here.
     """
-    device = getattr(value, "device", None)
-    return device is not None and callable(getattr(device, "is_cuda", None))
+    value_type = type(value)
+    cached = _tensor_probe_cache.get(value_type)
+    if cached is None:
+        device = getattr(value, "device", None)
+        cached = device is not None and callable(getattr(device, "is_cuda", None))
+        _tensor_probe_cache[value_type] = cached
+    return cached
 
 
 def _clone_if_tensor(value: Any) -> Any:
@@ -136,10 +148,11 @@ def _shape_signature(args: Sequence[Any]) -> Tuple:
             # Strides join the signature because replay reads the input
             # storage with the strides the kernels were captured against:
             # a same-shape view with a different layout (e.g. a transpose)
-            # must not reuse the entry.
-            signature.append(
-                (tuple(a.shape), tuple(a.stride()), str(a.dtype), str(a.device))
-            )
+            # must not reuse the entry.  Shape and stride are recorded as the
+            # tensor hands them over rather than rebuilt as tuples, since each
+            # is compared by value anyway; the dtype and device are spelled out
+            # because a stand-in's device need not compare equal to itself.
+            signature.append((a.shape, a.stride(), str(a.dtype), str(a.device)))
         else:
             # Non-tensor inputs are baked into the capture; their value
             # joins the signature so a drift is refused at replay instead
