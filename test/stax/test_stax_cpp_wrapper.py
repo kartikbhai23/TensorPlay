@@ -797,3 +797,34 @@ def test_a_draw_beside_a_computed_value():
 
 def test_a_region_that_is_only_a_draw():
     _check_seeded(lambda: tp.randn(3, 4), [])
+
+
+# --------------------------------------------------------------------------
+# what is refused rather than written
+# --------------------------------------------------------------------------
+
+
+def test_a_scattered_write_is_refused_before_it_is_printed():
+    """A scattered write is not a call the host wrapper can spell.
+
+    The refusal comes before anything is printed, so the region is run as it
+    was written; printing first would leave a translation unit that cannot
+    compile, and the region would fall back only after the compiler had
+    rejected it.
+    """
+
+    def fn(a):
+        index = tp.tensor([[0, 1, 0, 1], [1, 0, 1, 0]], dtype=tp.int64)
+        return a.scatter_add(0, index, tp.ones(2, 4))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        compiled = tp.compile(fn, options={"stax.cuda_codegen": True})
+        got = compiled(tp.ones(2, 4))
+    refused = [
+        str(item.message)
+        for item in caught
+        if "does not support scatter fallback" in str(item.message)
+    ]
+    assert refused, "the region was not refused"
+    assert tp.allclose(got, fn(tp.ones(2, 4)))

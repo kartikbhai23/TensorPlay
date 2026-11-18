@@ -1766,6 +1766,19 @@ class CppWrapperCodegen(PythonWrapperCodegen):
             f'"extern kernel {shim_name} failed");'
         )
 
+    #: The lines these two fallbacks are written as, and what the host
+    #: translation unit does with them.  Neither is a call the wrapper can
+    #: spell -- one writes through an index and the other reduces through one
+    #: -- so both are refused here, before anything is printed: a refusal
+    #: leaves the region to the interpreter, where the call is written as it
+    #: was captured, while printing one would leave a translation unit that
+    #: cannot compile.
+    def generate_index_put_fallback(self, node) -> None:
+        self._generate_index_put_fallback_helper(node)
+
+    def generate_scatter_fallback(self, node) -> None:
+        self._generate_scatter_fallback_helper(node)
+
     def _generate_index_put_fallback_helper(self, node) -> None:
         raise NotImplementedError(
             "C++ wrapper does not support index_put fallback yet"
