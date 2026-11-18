@@ -103,6 +103,19 @@ def test_replay_signature_rejects_layout_drift():
     assert mgr._entries["mm"].graph.replays == 1
 
 
+def test_replay_refuses_in_place_reshape_of_captured_tensor():
+    mgr = _manager()
+    x0 = tp.randn(4, 4)
+    mgr.capture("mm", lambda x: x.sin().sum(), x0)
+    mgr.replay("mm", x0)
+    # The very object that was captured, reshaped in place: being the same
+    # object says nothing about its layout, so the recorded strides are what
+    # the call is checked against.
+    x0.transpose_(0, 1)
+    with pytest.raises(CudaGraphInputDrift):
+        mgr.replay("mm", x0)
+
+
 def test_same_key_same_signature_returns_entry():
     mgr = _manager()
     e1 = mgr.capture("a", lambda x: x * 2, tp.tensor([1.0]))

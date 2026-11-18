@@ -1556,7 +1556,7 @@ def _build_state_certificate(
         return None
     entries: list[tuple[Any, ...]] = []
     for index, site in enumerate(sites):
-        kind, owner, _label, name, _ = site
+        kind, owner, _label, name = site[0], site[1], site[2], site[3]
         value = values[index]
         present = value is not _MISSING
         if present and not reusable_flags[index]:
@@ -1601,6 +1601,24 @@ def _state_plan(program: Any, shape: Any, modules: list[Any], functions: list[An
     return plan
 
 
+def _site_reader(kind: str, owner: Any, name: Any) -> tuple[Any, ...]:
+    """The place a planned site reads, resolved once when the plan is built.
+
+    A module's instance and type dictionaries, a function's globals mapping and
+    a closure cell all stay the same object for as long as the walk that found
+    the site is current, and reaching any of them through the owner costs an
+    attribute access on every call.  ``(code, first, second, name)`` names the
+    mapping and the key instead, with the code saying which of the two is a
+    cell.
+    """
+
+    if kind == "attribute":
+        return (0, owner.__dict__, type(owner).__dict__, name)
+    if kind == "global":
+        return (1, owner.__globals__, None, name)
+    return (2, owner.__closure__[name], None, None)
+
+
 def _build_read_plan(modules: list[Any], functions: list[Any]) -> tuple[Any, ...]:
     """Every site a capture may have read a value from, in a fixed order."""
 
@@ -1609,18 +1627,41 @@ def _build_read_plan(modules: list[Any], functions: list[Any]) -> tuple[Any, ...
         label = f"{function.__module__}.{function.__qualname__}"
         global_names, cell_indices = _constant_reads_of_function(function)
         for name in global_names:
-            plan.append(("global", function, label, name, None))
+            plan.append(
+                ("global", function, label, name, None, _site_reader("global", function, name))
+            )
         for index in cell_indices:
-            plan.append(("closure", function, label, index, None))
+            plan.append(
+                ("closure", function, label, index, None, _site_reader("closure", function, index))
+            )
     for module in modules:
         if getattr(module, "__dict__", {}).get("forward") is not None:
             names = _constant_attribute_names(type(module), module.forward)
         else:
             names = _constant_attribute_names_of_type(type(module))
         for name in names:
-            plan.append(("attribute", module, None, name, None))
-    plan.append(("values", None, None, None, [[], [], None, []]))
+            plan.append(
+                ("attribute", module, None, name, None, _site_reader("attribute", module, name))
+            )
+    plan.append(("values", None, None, None, [[], [], None, []], None))
     return tuple(plan)
+
+
+def _read_site(reader: tuple[Any, ...]) -> Any:
+    """The value a planned site holds right now, or ``_MISSING``."""
+
+    code = reader[0]
+    if code == 0:
+        value = reader[1].get(reader[3], _MISSING)
+        if value is _MISSING:
+            value = reader[2].get(reader[3], _MISSING)
+        return value
+    if code == 1:
+        return reader[1].get(reader[3])
+    try:
+        return reader[1].cell_contents
+    except ValueError:
+        return _MISSING
 
 
 def _planned_constant_component(plan: tuple[Any, ...]) -> tuple[Any, ...]:
@@ -1632,16 +1673,18 @@ def _planned_constant_component(plan: tuple[Any, ...]) -> tuple[Any, ...]:
     # for a reusable value is the same value, so the description cannot have
     # moved.  Establishing that costs one comparison per site and nothing else.
     if last is not None and len(values) >= len(sites):
-        for index, (kind, owner, label, name, _) in enumerate(sites):
-            if kind == "attribute":
-                value = owner.__dict__.get(name, _MISSING)
+        for index, site in enumerate(sites):
+            reader = site[5]
+            code = reader[0]
+            if code == 0:
+                value = reader[1].get(reader[3], _MISSING)
                 if value is _MISSING:
-                    value = type(owner).__dict__.get(name, _MISSING)
-            elif kind == "global":
-                value = owner.__globals__.get(name)
+                    value = reader[2].get(reader[3], _MISSING)
+            elif code == 1:
+                value = reader[1].get(reader[3])
             else:
                 try:
-                    value = owner.__closure__[name].cell_contents
+                    value = reader[1].cell_contents
                 except ValueError:
                     value = _MISSING
             # A site that reads nothing contributes no entry, but the slot
@@ -1660,18 +1703,9 @@ def _planned_constant_component(plan: tuple[Any, ...]) -> tuple[Any, ...]:
             return last
 
     entries: list[tuple[Any, ...]] = []
-    for index, (kind, owner, label, name, _) in enumerate(sites):
-        if kind == "attribute":
-            value = owner.__dict__.get(name, _MISSING)
-            if value is _MISSING:
-                value = type(owner).__dict__.get(name, _MISSING)
-        elif kind == "global":
-            value = owner.__globals__.get(name)
-        else:
-            try:
-                value = owner.__closure__[name].cell_contents
-            except ValueError:
-                value = _MISSING
+    for index, site in enumerate(sites):
+        kind, owner, label, name = site[0], site[1], site[2], site[3]
+        value = _read_site(site[5])
         if len(values) <= index:
             values.extend([_MISSING] * (index + 1 - len(values)))
             cached_entries.extend([None] * (index + 1 - len(cached_entries)))

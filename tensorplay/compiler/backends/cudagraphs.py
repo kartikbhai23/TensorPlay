@@ -150,6 +150,9 @@ def _output_structure(value: Any) -> Tuple:
 _self_comparing_operands: dict[type, bool] = {}
 
 
+_value_comparing_types: set[type] = set()
+
+
 def _operand_identity(value: Any) -> tuple:
     """The dtype and device of a value, as themselves when they compare."""
 
@@ -164,36 +167,96 @@ def _operand_identity(value: Any) -> tuple:
         )
         _self_comparing_operands[value_type] = compares
     if compares:
+        _value_comparing_types.add(value_type)
         return (value.dtype, value.device)
     return (str(value.dtype), str(value.device))
 
 
 def _shape_signature(args: Sequence[Any]) -> Tuple:
+    """The layout of a call's arguments, as a replay compares it.
+
+    Every argument is visited on every replayed call, so the common case -- a
+    runtime tensor, whose dtype and device are values that compare by value --
+    takes one branch and no helper call.
+    """
+
     signature: List[Any] = []
+    append = signature.append
+    comparing = _value_comparing_types
     for a in args:
-        if _looks_tensor(a):
+        kind = type(a)
+        if kind in comparing:
             # Strides join the signature because replay reads the input
             # storage with the strides the kernels were captured against:
             # a same-shape view with a different layout (e.g. a transpose)
             # must not reuse the entry.  Shape and stride are recorded as the
             # tensor hands them over rather than rebuilt as tuples, since each
             # is compared by value anyway.
-            signature.append((a.shape, a.stride(), *_operand_identity(a)))
+            append((a.shape, a.stride(), a.dtype, a.device))
+        elif _looks_tensor(a):
+            append((a.shape, a.stride(), *_operand_identity(a)))
         else:
             # Non-tensor inputs are baked into the capture; their value
             # joins the signature so a drift is refused at replay instead
             # of silently replaying a stale constant.
-            signature.append(("scalar", type(a).__name__, a))
+            append(("scalar", kind.__name__, a))
     return tuple(signature)
+
+
+def _layout_memo_of(args: Sequence[Any], signature: Tuple) -> List[Tuple]:
+    """Pair every argument with the layout signature recorded for it.
+
+    Replay visits each argument of a region -- hundreds of them -- and the
+    layout of one that is still the very object captured can only have moved
+    by an in-place reshape.  Keeping the recorded shape and stride beside that
+    object lets the scan compare those few numbers instead of rebuilding a
+    signature item with its dtype and device.
+    """
+
+    memo: List[Tuple] = []
+    append = memo.append
+    for arg, item in zip(args, signature):
+        if item[0] == "scalar":
+            append((item, arg, None, None))
+        else:
+            append((item, arg, item[0], item[1]))
+    return memo
+
+
+def _layout_memo_holds(args: Sequence[Any], memo: List[Tuple]) -> bool:
+    """Whether every argument still carries the layout recorded for it.
+
+    An argument that is a new object pays for its own signature item, and if
+    that matches the recorded one it is remembered, so the next call that
+    passes it is answered by identity.  A mismatch is left for the caller to
+    describe from the full signature, which names every argument that moved.
+    """
+
+    for index, recorded in enumerate(memo):
+        arg = args[index]
+        item, holder, shape, stride = recorded
+        if arg is holder:
+            # The tensor is the captured object: dtype and device are fixed
+            # for its lifetime, so only a reshape can have moved the layout.
+            if shape is None or (arg.shape == shape and arg.stride() == stride):
+                continue
+        elif _shape_signature((arg,))[0] == item:
+            memo[index] = (
+                (item, arg, None, None)
+                if shape is None
+                else (item, arg, item[0], item[1])
+            )
+            continue
+        return False
+    return True
 
 
 def _input_data_ptr(value: Any) -> Optional[int]:
     """Address of a tensor's storage, or None when unverifiable."""
-    ptr = getattr(value, "data_ptr", None)
-    if ptr is None:
-        return None
     try:
-        return int(ptr())
+        return value.data_ptr()
+    except AttributeError:
+        return None
     except Exception:  # noqa: BLE001 - exotic stand-ins: treat as unverifiable
         return None
 
@@ -273,7 +336,7 @@ def _pin_launch_stream_to_capture():
 class _GraphEntry:
     __slots__ = ("key", "signature", "graph", "static_inputs",
                  "static_outputs", "tensor_positions", "warmup_structure",
-                 "replays", "input_ptrs", "staged_positions")
+                 "replays", "input_ptrs", "staged_positions", "layout_memo")
 
     def __init__(self, key: str, signature: Tuple, graph: Any,
                  static_inputs: List[Any], static_outputs: List[Any],
@@ -302,6 +365,11 @@ class _GraphEntry:
         # from the caller's tensor, because that argument moves between
         # calls.  Replay writes the caller's current values onto it first.
         self.staged_positions: frozenset = frozenset(int(p) for p in staged_positions)
+        # The recorded layout of each argument, paired with the object it was
+        # read from, so a replay that is handed the same objects again
+        # verifies their shape and stride instead of rebuilding the whole
+        # signature.  Filled on the first verification that succeeds.
+        self.layout_memo: Optional[List[Tuple]] = None
 
 
 class CudaGraphManager:
@@ -429,7 +497,13 @@ class CudaGraphManager:
         self._entries[key] = entry
         return entry
 
-    def replay(self, key: str, *args: Any, verify: bool = True) -> List[Any]:
+    def replay(
+        self,
+        key: str,
+        *args: Any,
+        verify: bool = True,
+        layout_checked: bool = False,
+    ) -> List[Any]:
         entry = self._entries.get(key)
         if entry is None:
             raise CudaGraphError(f"no captured graph under key {key!r}")
@@ -438,11 +512,23 @@ class CudaGraphManager:
                 f"entry {key!r} expects {len(entry.static_inputs)} inputs, got {len(args)}"
             )
         if verify:
-            signature = _shape_signature(args)
-            if signature != entry.signature:
-                raise CudaGraphInputDrift(
-                    f"entry {key!r} captured for {entry.signature}, replay args are {signature}"
-                )
+            # ``layout_checked`` says the key was named from these very
+            # arguments, so it already carries the layout they have; the
+            # signature would be compared with itself.
+            if not layout_checked:
+                memo = entry.layout_memo
+                if (
+                    memo is None
+                    or len(memo) != len(args)
+                    or not _layout_memo_holds(args, memo)
+                ):
+                    signature = _shape_signature(args)
+                    if signature != entry.signature:
+                        raise CudaGraphInputDrift(
+                            f"entry {key!r} captured for {entry.signature}, "
+                            f"replay args are {signature}"
+                        )
+                    entry.layout_memo = _layout_memo_of(args, signature)
             # The executable reads the captured input storage directly, so
             # every replay verifies the tensors still live there.  A drifted
             # tensor cannot be seen by the graph - copying it onto the
@@ -451,11 +537,17 @@ class CudaGraphManager:
             # last call passed, unchanged, is already known to live there.
             moved: List[int] = []
             first: Optional[Tuple[Optional[int], Optional[int]]] = None
+            staged = entry.staged_positions
             for position, recorded in zip(entry.tensor_positions, entry.input_ptrs):
-                if position in entry.staged_positions:
+                if staged and position in staged:
                     # Replay writes this one onto the recorded private buffer.
                     continue
-                actual = _input_data_ptr(args[position])
+                try:
+                    actual = args[position].data_ptr()
+                except AttributeError:
+                    actual = None
+                except Exception:  # noqa: BLE001 - exotic stand-ins
+                    actual = None
                 if actual == recorded:
                     continue
                 if first is None:
@@ -1314,16 +1406,22 @@ class CudagraphCompiledCallable:
         self, args: Tuple[Any, ...], *, key: Optional[str] = None, retry: bool = True
     ) -> Any:
         certified = False
+        layout_checked = False
         if key is None:
             if self._trees:
                 key, certified = self._resolve_layout(args)
+                # On an uncertified memo miss the key was named from these
+                # arguments, so it already describes their layout.
+                layout_checked = not certified
             else:
                 key = self._key
                 certified = self._layout_matches(args)
         if self._trees and not self._manager.has(key):
             return self._capture(args, key=key)
         try:
-            outputs = self._manager.replay(key, *args, verify=not certified)
+            outputs = self._manager.replay(
+                key, *args, verify=not certified, layout_checked=layout_checked
+            )
         except CudaGraphInputDrift as drift:
             if self._trees:
                 # The layout is new (e.g. a different arity): record it.
@@ -1430,9 +1528,13 @@ class CudagraphCompiledCallable:
         """Replay the recording against one full argument vector."""
 
         if self._trees:
-            key = self._layout_key(tuple(values))
+            args = tuple(values)
+            # The layout memo answers for the very objects the last call
+            # passed, which is the case a steady-state call is in; naming the
+            # layout from a signature is then needed only when they change.
+            key, _certified = self._resolve_layout(args)
             if not self._manager.has(key):
-                return self._replay(tuple(values), key=key)
+                return self._replay(args, key=key)
             # The key was just built from these very arguments, so the
             # signature check would only repeat it.
             return self._manager.replay(key, *values, verify=False)

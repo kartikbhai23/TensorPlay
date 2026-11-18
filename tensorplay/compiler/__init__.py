@@ -263,24 +263,29 @@ def _register_record(
 
 
 def _iter_proxies(value: Any) -> Iterator[Any]:
+    """Yield the proxies inside an argument structure.
+
+    This runs on every eager call of a compiled region, over argument lists
+    that hold hundreds of tensors, so it walks an explicit stack rather than
+    recursing: a plain tensor costs one exact-type test and no frame.
+    """
+
     from tensorplay.graph.proxy import Proxy
 
-    if builtins.isinstance(value, Proxy):
-        yield value
-        return
-    if builtins.isinstance(value, (tuple, list)):
-        for item in value:
-            yield from _iter_proxies(item)
-        return
-    if builtins.isinstance(value, dict):
-        for key, item in value.items():
-            yield from _iter_proxies(key)
-            yield from _iter_proxies(item)
-        return
-    if builtins.isinstance(value, slice):
-        yield from _iter_proxies(value.start)
-        yield from _iter_proxies(value.stop)
-        yield from _iter_proxies(value.step)
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        kind = type(item)
+        if kind is Proxy:
+            yield item
+        elif kind is tuple or kind is list:
+            stack.extend(item)
+        elif kind is dict:
+            for key, entry in item.items():
+                stack.append(entry)
+                stack.append(key)
+        elif kind is slice:
+            stack.extend((item.start, item.stop, item.step))
 
 
 def _tracer_for(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
