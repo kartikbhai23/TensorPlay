@@ -451,20 +451,21 @@ class Optimizer:
         grouped_grads = {}
         for group in self.param_groups:
             for p in group['params']:
-                if p.grad is not None:
+                grad = p.grad
+                if grad is not None:
                     if set_to_none:
                         p.grad = None
                     else:
-                        if p.grad.grad_fn is not None:
-                            p.grad.detach_()
+                        if grad.grad_fn is not None:
+                            grad.detach_()
                         else:
-                            p.grad.requires_grad_(False)
-                        if foreach and not p.grad.is_sparse:
+                            grad.requires_grad_(False)
+                        if foreach and not grad.is_sparse:
                             grouped_grads.setdefault(
-                                (p.grad.device, p.grad.dtype), []
-                            ).append(p.grad)
+                                (grad.device, grad.dtype), []
+                            ).append(grad)
                         else:
-                            p.grad.zero_()
+                            grad.zero_()
         if foreach:
             for grads in grouped_grads.values():
                 tp._foreach_zero_(grads)
