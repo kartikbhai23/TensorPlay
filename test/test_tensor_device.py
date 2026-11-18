@@ -25,6 +25,24 @@ def test_cuda_accepts_every_device_form(device):
     assert placed.device.index == 0
 
 
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA is not available")
+@pytest.mark.parametrize("device", ["cpu", tp.device("cpu")])
+def test_cuda_rejects_another_device_type(device):
+    # A spelling or device naming another type is a mistake, not an index on
+    # the type the placement lands on.
+    with pytest.raises(ValueError, match="Expected a CUDA device"):
+        tp.tensor([1.0]).cuda(device)
+
+
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA is not available")
+def test_placement_on_the_same_device_returns_the_same_object():
+    cpu = tp.tensor([1.0])
+    assert cpu.cpu() is cpu
+    cuda = cpu.cuda()
+    assert cuda.cuda() is cuda
+    assert cuda.cuda(tp.device("cuda")) is cuda
+
+
 @pytest.mark.parametrize("device", [None, 0, 2, "xpu", "xpu:3", tp.device("xpu:1")])
 def test_xpu_accepts_every_device_form(device):
     # The argument handling decides what this test can observe: without an XPU

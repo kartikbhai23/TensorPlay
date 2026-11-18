@@ -32,6 +32,11 @@
 #include <cuda_runtime.h>
 #endif
 
+#ifdef USE_MPS
+#include "backend/mps/MPSDevice.h"
+#include "backend/mps/MPSRuntime.h"
+#endif
+
 using namespace tensorplay::python;
 
 // Using TPX Tensor as the main Tensor exposed to Python
@@ -1940,6 +1945,101 @@ PyObject* to_dlpack_fastcall(PyObject*, PyObject* const* args,
 
 }  // namespace
 
+namespace {
+
+// The index a placement lands on when the argument names no index.  A backend
+// that cannot answer -- no device, no backend built -- yields index 0, and the
+// conversion that follows reports the backend's own reason for failing.
+int current_placement_index(DeviceType type) {
+    if (type == DeviceType::CUDA) {
+#ifdef USE_CUDA
+        try {
+            return tensorplay::cuda::currentDevice();
+        } catch (...) {
+        }
+#endif
+        return 0;
+    }
+    if (type == DeviceType::MPS) {
+#ifdef USE_MPS
+        try {
+            if (tensorplay::mps::is_available()) {
+                return tensorplay::mps::currentDevice();
+            }
+        } catch (...) {
+        }
+#endif
+        return 0;
+    }
+    return 0;
+}
+
+// The device a placement method lands on.  The argument names an index, a
+// device, a device spelling, or nothing at all; it is read once, and a
+// spelling or device naming a different device type is rejected rather than
+// reinterpreted as an index on the type the method places on.
+Device placement_device(const py::handle& spec, DeviceType type,
+                        const char* label, const char* article,
+                        bool resolve_missing_index) {
+    if (spec.is_none()) {
+        return Device(type, resolve_missing_index ? current_placement_index(type)
+                                                  : -1);
+    }
+    if (PyLong_Check(spec.ptr())) {
+        const int64_t index = PyLong_AsLongLong(spec.ptr());
+        if (index == -1 && PyErr_Occurred() != nullptr) {
+            throw py::error_already_set();
+        }
+        return Device(type, index);
+    }
+    Device named(type);
+    if (PyUnicode_Check(spec.ptr())) {
+        named = Device(py::str(spec).cast<std::string>());
+    } else if (py::isinstance<Device>(spec)) {
+        named = py::cast<const Device&>(spec);
+    } else {
+        throw py::type_error(std::string("Invalid ") + label + " device: " +
+                             py::repr(spec).cast<std::string>());
+    }
+    if (named.type() != type) {
+        throw py::value_error(std::string("Expected ") + article + " " + label +
+                              " device, got " +
+                              py::str(spec).cast<std::string>());
+    }
+    int64_t index = named.index();
+    if (index < 0 && resolve_missing_index) {
+        index = current_placement_index(type);
+    }
+    return Device(type, index);
+}
+
+// Move a value onto a device, handing back the caller's object when the
+// placement changes nothing.  The conversion is the expensive part -- it may
+// copy every element onto another accelerator -- so the interpreter lock is
+// released while it runs.  Autograd and dispatch hooks may call back into the
+// interpreter, so those paths keep the lock.
+py::object place_on(const py::object& self_obj, const Device& target,
+                    bool non_blocking) {
+    const Tensor& self = py::cast<const Tensor&>(self_obj);
+    if (self.defined() && !self.is_batched() &&
+        !tensorplay::impl::python_dispatch_active() &&
+        self.device() == target) {
+        self_obj.inc_ref();
+        return self_obj;
+    }
+    Tensor result;
+    if (self.defined() &&
+        (self.is_batched() || tensorplay::impl::python_dispatch_active())) {
+        result = tensorplay::tpx::to(self, target, non_blocking, false);
+    } else {
+        py::gil_scoped_release release;
+        result = tensorplay::tpx::to(self, target, non_blocking, false);
+    }
+    return converted_or_self(self_obj, std::move(result));
+}
+
+}  // namespace
+
 void init_tensor(py::module_& m) {
     // tensor_from_numpy(): zero-copy from_blob view; non-writable arrays warn
     // once instead of failing; byte-stride divisibility, negative strides and
@@ -2768,6 +2868,42 @@ void init_tensor(py::module_& m) {
            "non_blocking"_a = false, "copy"_a = false, py::kw_only(),
            "memory_format"_a = std::nullopt, "layout"_a = std::nullopt,
            "pin_memory"_a = std::nullopt)
+
+        // Placement onto one device type.  Each method is the same argument
+        // reading and the same conversion; only the type it lands on and
+        // whether an unnamed index means "the current device" differ.
+        .def("cpu", [](py::object self_obj) {
+            return place_on(self_obj, Device(DeviceType::CPU), false);
+        }, "Returns a copy of this object in CPU memory")
+
+        .def("cuda", [](py::object self_obj, py::object device,
+                        bool non_blocking) {
+            return place_on(self_obj,
+                            placement_device(device, DeviceType::CUDA, "CUDA",
+                                             "a",
+                                             /*resolve_missing_index=*/true),
+                            non_blocking);
+        }, "device"_a = py::none(), "non_blocking"_a = false,
+           "Returns a copy of this object in CUDA memory")
+
+        .def("mps", [](py::object self_obj, py::object device,
+                       bool non_blocking) {
+            return place_on(self_obj,
+                            placement_device(device, DeviceType::MPS, "MPS",
+                                             "an",
+                                             /*resolve_missing_index=*/true),
+                            non_blocking);
+        }, "device"_a = py::none(), "non_blocking"_a = false,
+           "Returns a copy of this object in MPS memory")
+
+        .def("xpu", [](py::object self_obj, py::object device) {
+            return place_on(self_obj,
+                            placement_device(device, DeviceType::XPU, "XPU",
+                                             "an",
+                                             /*resolve_missing_index=*/false),
+                            false);
+        }, "device"_a = py::none(),
+           "Returns a copy of this object in XPU memory")
 
         .def("__array__", [](py::object self_obj, py::object dtype, bool copy) {
             // to .numpy() so both share one conversion path (grad/device/

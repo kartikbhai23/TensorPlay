@@ -29,63 +29,6 @@ def int(self):
 def double(self):
     return self.to(_C.float64)
 
-def cuda(self, device=None, non_blocking=False):
-    """
-    Returns a copy of this object in CUDA memory.
-    If this object is already in CUDA memory and on the correct device, then no copy is performed and the original object is returned.
-    """
-    if device is None:
-        device_idx = _C._cuda.current_device() if _C._cuda.is_available() else 0
-    elif isinstance(device, builtins_int):
-        device_idx = device
-    elif isinstance(device, str):
-        parsed = _C.Device(device)
-        device_idx = parsed.index
-        if device_idx < 0:
-            device_idx = _C._cuda.current_device() if _C._cuda.is_available() else 0
-    elif isinstance(device, _C.Device):
-        if not device.is_cuda():
-            raise ValueError(f"Expected a CUDA device, got {device}")
-        device_idx = device.index
-        if device_idx < 0:
-            device_idx = _C._cuda.current_device() if _C._cuda.is_available() else 0
-    else:
-        raise TypeError(f"Invalid CUDA device: {device!r}")
-    
-    return self.to(_C.Device(_C.DeviceType.CUDA, device_idx), non_blocking=non_blocking)
-
-def mps(self, device=None, non_blocking=False):
-    """
-    Returns a copy of this object in MPS memory.
-    If this object is already in MPS memory, then no copy is performed and the original object is returned.
-    """
-    if device is None:
-        device_idx = _C._mps.current_device() if _C._mps.is_available() else 0
-    elif isinstance(device, builtins_int):
-        device_idx = device
-    elif isinstance(device, str):
-        parsed = _C.Device(device)
-        device_idx = parsed.index
-        if device_idx < 0:
-            device_idx = _C._mps.current_device() if _C._mps.is_available() else 0
-    elif isinstance(device, _C.Device):
-        if not device.is_mps():
-            raise ValueError(f"Expected an MPS device, got {device}")
-        device_idx = device.index
-        if device_idx < 0:
-            device_idx = _C._mps.current_device() if _C._mps.is_available() else 0
-    else:
-        raise TypeError(f"Invalid MPS device: {device!r}")
-
-    return self.to(_C.Device(_C.DeviceType.MPS, device_idx), non_blocking=non_blocking)
-
-def cpu(self):
-    """
-    Returns a copy of this object in CPU memory.
-    If this object is already in CPU memory, then no copy is performed and the original object is returned.
-    """
-    return self.to(_C.Device(_C.DeviceType.CPU))
-
 def type(self, dtype=None, non_blocking=False, **kwargs):
     """
     Returns the type if dtype is not provided, else casts this object to the specified type.
@@ -130,9 +73,6 @@ Tensor.long = long
 Tensor.float = float
 Tensor.int = int
 Tensor.double = double
-Tensor.cuda = cuda
-Tensor.mps = mps
-Tensor.cpu = cpu
 Tensor.type = type
 
 
@@ -665,23 +605,6 @@ Tensor.is_cuda = property(_is_cuda)
 Tensor.is_meta = property(_is_meta)
 Tensor.is_mps = property(_is_mps)
 del _is_cpu, _is_cuda, _is_meta, _is_mps
-
-
-def xpu(self, device=None):
-    if device is None:
-        return self.to(_C.Device(_C.DeviceType.XPU))
-    # int() reaches into the spelling of a string or a Device before anything
-    # reads the argument, so an index is recognized by type instead: any other
-    # spelling is left to the Device constructor, which is what turns "xpu",
-    # "xpu:1" and a Device into the device they name.
-    if isinstance(device, builtins_int):
-        return self.to(_C.Device(_C.DeviceType.XPU, device))
-    if not isinstance(device, (str, _C.Device)):
-        raise TypeError(f"Invalid XPU device: {device!r}")
-    return self.to(_C.Device(device))
-
-
-Tensor.xpu = xpu
 
 
 # ---------------------------------------------------------------------------
