@@ -36,7 +36,7 @@ def cuda(self, device=None, non_blocking=False):
     """
     if device is None:
         device_idx = _C._cuda.current_device() if _C._cuda.is_available() else 0
-    elif isinstance(device, int):
+    elif isinstance(device, builtins_int):
         device_idx = device
     elif isinstance(device, str):
         parsed = _C.Device(device)
@@ -61,7 +61,7 @@ def mps(self, device=None, non_blocking=False):
     """
     if device is None:
         device_idx = _C._mps.current_device() if _C._mps.is_available() else 0
-    elif isinstance(device, int):
+    elif isinstance(device, builtins_int):
         device_idx = device
     elif isinstance(device, str):
         parsed = _C.Device(device)
