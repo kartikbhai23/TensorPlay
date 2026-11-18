@@ -55,6 +55,9 @@ def _prctl_pr_set_pdeathsig(signal_value) -> None:
         pass
 
 
+# The descriptor strategy needs an anonymous segment created from a
+# descriptor: Windows offers named sections instead, and macOS has no
+# memfd_create, so both platforms share through named segments only.
 if sys.platform == "darwin" or sys.platform == "win32":
     _sharing_strategy = "file_system"
     _all_sharing_strategies = {"file_system"}
