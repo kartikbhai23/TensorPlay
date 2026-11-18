@@ -41,26 +41,26 @@ Tensor& acosh_inplace_kernel(Tensor& self) {
 
 Tensor& addbmm_inplace_kernel(Tensor& self, const Tensor& batch1, const Tensor& batch2, const Scalar& beta, const Scalar& alpha) {
     NoGradGuard __tp_nograd;
-    self.copy_(Tensor::addbmm(self, batch1, batch2, beta, alpha));
+    tensorplay::detail::redispatch_addbmm_out_function(self, batch1, batch2, beta, alpha, self);
     return self;
 }
 
 Tensor& addmm_inplace_kernel(Tensor& self, const Tensor& mat1, const Tensor& mat2, const Scalar& beta, const Scalar& alpha) {
     NoGradGuard __tp_nograd;
-    self.copy_(Tensor::addmm(self, mat1, mat2, beta, alpha));
+    tensorplay::detail::redispatch_addmm_out_function(self, mat1, mat2, beta, alpha, self);
     return self;
 }
 
 Tensor& addmv_inplace_kernel(Tensor& self, const Tensor& mat, const Tensor& vec, const Scalar& beta, const Scalar& alpha) {
     NoGradGuard __tp_nograd;
     if (try_addmv_inplace(self, mat, vec, beta.toDouble(), alpha.toDouble())) return self;
-    self.copy_(Tensor::addmv(self, mat, vec, beta, alpha));
+    tensorplay::detail::redispatch_addmv_out_function(self, mat, vec, beta, alpha, self);
     return self;
 }
 
 Tensor& addr_inplace_kernel(Tensor& self, const Tensor& vec1, const Tensor& vec2, const Scalar& beta, const Scalar& alpha) {
     NoGradGuard __tp_nograd;
-    self.copy_(Tensor::addr(self, vec1, vec2, beta, alpha));
+    tensorplay::detail::redispatch_addr_out_function(self, vec1, vec2, beta, alpha, self);
     return self;
 }
 
@@ -102,7 +102,7 @@ Tensor& bitwise_not_inplace_kernel(Tensor& self) {
 
 Tensor& baddbmm_inplace_kernel(Tensor& self, const Tensor& batch1, const Tensor& batch2, const Scalar& beta, const Scalar& alpha) {
     NoGradGuard __tp_nograd;
-    self.copy_(Tensor::baddbmm(self, batch1, batch2, beta, alpha));
+    tensorplay::detail::redispatch_baddbmm_out_function(self, batch1, batch2, beta, alpha, self);
     return self;
 }
 

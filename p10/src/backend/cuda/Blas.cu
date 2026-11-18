@@ -333,10 +333,42 @@ Tensor vdot_cuda(const Tensor& a_in, const Tensor& b_in) {
     }
 }
 
+Tensor& addr_out_cuda(const Tensor& self, const Tensor& vec1, const Tensor& vec2,
+                      const Scalar& beta, const Scalar& alpha, Tensor& out) {
+    // The kernel reads each input element before writing the matching output
+    // element, so launching straight into the destination is race-free when
+    // the destination already holds beta * self, and skips the
+    // allocate-and-copy round trip the composite wrapper performs.
+    if (all_floating(self, vec1, vec2) && out.is_contiguous() && out.dim() == 2 &&
+        out.size(0) == vec1.numel() && out.size(1) == vec2.numel() &&
+        self.is_contiguous() && self.dim() == 2 &&
+        self.size(0) == vec1.numel() && self.size(1) == vec2.numel()) {
+        const DType dt = promoteTypes(promoteTypes(vec1.dtype(), vec2.dtype()), self.dtype());
+        blas_composite::check_scalar(dt, beta, "beta");
+        blas_composite::check_scalar(dt, alpha, "alpha");
+        const DType cdt = (dt == DType::Float64) ? DType::Float64 : DType::Float32;
+        if (cdt == out.dtype() && (out.dtype() == DType::Float32 || out.dtype() == DType::Float64)) {
+            const Tensor v1 = vec1.contiguous().to(cdt);
+            const Tensor v2 = vec2.contiguous().to(cdt);
+            const Tensor self_b = self.expand({out.size(0), out.size(1)}).contiguous();
+            const double beta_v = beta.toDouble(), alpha_v = alpha.toDouble();
+            if (cdt == DType::Float64) {
+                launch_addr<double>(self_b, v1, v2, out, beta_v, alpha_v);
+            } else {
+                launch_addr<float>(self_b, v1, v2, out, beta_v, alpha_v);
+            }
+            return out;
+        }
+    }
+    out.copy_(addr_cuda(self, vec1, vec2, beta, alpha));
+    return out;
+}
+
 TENSORPLAY_LIBRARY_IMPL(CUDA, Blas) {
     m.impl("addbmm", addbmm_cuda);
     m.impl("addmv", addmv_cuda);
     m.impl("addr", addr_cuda);
+    m.impl("addr.out", addr_out_cuda);
     m.impl("vdot", vdot_cuda);
 }
 
