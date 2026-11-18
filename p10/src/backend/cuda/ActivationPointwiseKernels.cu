@@ -449,11 +449,17 @@ std::tuple<Tensor, Tensor> log_sigmoid_forward_components_cuda(const Tensor& sel
     CUDA_CHECK(cudaGetLastError());
     return {output, buffer};
 }
-// out-variants: run the value kernel, then transfer into the caller's buffer.
+// out-variants: run the value kernel directly into the caller's buffer
+// (the allocating form plus a cast-back copy would double the memory pass).
 Tensor& gelu_out_cuda(const Tensor& self, const std::string& approximate,
                       Tensor& out) {
-    write_out(out, gelu_kernel_cuda_v2(self, approximate));
-    return out;
+    if (approximate == "tanh") {
+        return unary_float_op_kernel_out(self, out, GeluTanhFunctor());
+    }
+    if (approximate != "none") {
+        TP_THROW(ValueError, "approximate argument must be either none or tanh, but got " + approximate);
+    }
+    return unary_float_op_kernel_out(self, out, GeluFunctor());
 }
 Tensor& gelu_backward_grad_input_cuda(const Tensor& grad_output,
                                       const Tensor& self,
