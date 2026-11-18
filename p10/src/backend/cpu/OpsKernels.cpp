@@ -596,6 +596,42 @@ Tensor remainder_tensor_cpu(const Tensor& self, const Tensor& other) {
             }
         }, "remainder");
 }
+// One sweep of the Python-modulo form against a single divisor held in a
+// register.  The quotient comes from a lane division, the sign fix from a
+// lane select; the target attribute is what makes the compiler keep the
+// lane loop, since the translation unit compiles without the ISA.
+__attribute__((target("avx2,fma"), noinline))
+static void remainder_f32_sweep(const float* sp, float* dp, float y,
+                                int64_t n) {
+    int64_t i = 0;
+    const __m256 vy = _mm256_set1_ps(y);
+    const __m256 vzero = _mm256_setzero_ps();
+    for (; i + 8 <= n; i += 8) {
+        const __m256 x = _mm256_loadu_ps(sp + i);
+        const __m256 q = _mm256_round_ps(_mm256_div_ps(x, vy),
+                                         _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
+        const __m256 r = _mm256_fnmadd_ps(q, vy, x);
+        // Python modulo fixes the sign toward the divisor, but only where
+        // the remainder is nonzero; a zero lane keeps itself.  Both compare
+        // masks are all-ones patterns, so XOR is a logical difference.
+        const __m256 fixed = _mm256_add_ps(r, vy);
+        const __m256 mask_zero = _mm256_cmp_ps(r, vzero, _CMP_EQ_OQ);
+        const __m256 mask_neg_r = _mm256_cmp_ps(r, vzero, _CMP_LT_OQ);
+        const __m256 mask_neg_y = _mm256_cmp_ps(vy, vzero, _CMP_LT_OQ);
+        const __m256 mask_sign_differ =
+            _mm256_xor_ps(mask_neg_r, mask_neg_y);
+        const __m256 mask_apply =
+            _mm256_andnot_ps(mask_zero, mask_sign_differ);
+        _mm256_storeu_ps(dp + i, _mm256_blendv_ps(r, fixed, mask_apply));
+    }
+    for (; i < n; ++i) {
+        const float x = sp[i];
+        float r = x - __builtin_truncf(x / y) * y;
+        if (r != 0.0f && ((r < 0.0f) != (y < 0.0f))) r += y;
+        dp[i] = r;
+    }
+}
+
 Tensor remainder_scalar_cpu(const Tensor& self, const Scalar& other) {
     // Python scalars keep the tensor's dtype on floating-point tensors, so a
     // contiguous CPU float buffer answers in one sweep with the divisor in a
@@ -611,15 +647,8 @@ Tensor remainder_scalar_cpu(const Tensor& self, const Scalar& other) {
         if (self.dtype() == DType::Float32) {
             Tensor out = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
                                        self.dtype(), self.device());
-            const float* sp = self.data_ptr<float>();
-            float* dp = out.data_ptr<float>();
-            const float y = other.to<float>();
-            for (int64_t i = 0; i < self.numel(); ++i) {
-                const float x = sp[i];
-                float r = x - __builtin_truncf(x / y) * y;
-                if (r != 0.0f && ((r < 0.0f) != (y < 0.0f))) r += y;
-                dp[i] = r;
-            }
+            remainder_f32_sweep(self.data_ptr<float>(), out.data_ptr<float>(),
+                                other.to<float>(), self.numel());
             return out;
         }
         if (self.dtype() == DType::Float64) {
@@ -629,7 +658,7 @@ Tensor remainder_scalar_cpu(const Tensor& self, const Scalar& other) {
             double* dp = out.data_ptr<double>();
             const double y = other.to<double>();
             for (int64_t i = 0; i < self.numel(); ++i) {
-                double r = std::fmod(sp[i], y);
+                double r = sp[i] - __builtin_trunc(sp[i] / y) * y;
                 if (r != 0.0 && ((r < 0.0) != (y < 0.0))) r += y;
                 dp[i] = r;
             }
