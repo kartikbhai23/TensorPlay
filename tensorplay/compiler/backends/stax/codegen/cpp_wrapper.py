@@ -1166,6 +1166,31 @@ class CppWrapperCodegen(PythonWrapperCodegen):
         idx = self._register_sizevar(sym)
         return f"{self._sizevar_name}[{idx}]"
 
+    def _register_outputs(self, output_refs) -> None:
+        """Record what each result of the region sits in.
+
+        A result that is a constant has nothing behind it: the printed program
+        would describe the slot the constant occupies but no call would ever
+        fill it, so the caller would read whatever the allocation happened to
+        hold.  Such a region is refused here, before anything is printed, so
+        it is run the way it was written.
+
+        A result that is a view is named by the expression that spells the
+        window it selects; the buffers it reads are registered where the
+        expression is written.
+        """
+
+        self.output_names = list(output_refs)
+        for name in output_refs:
+            if name in V.graph.constants:
+                raise NotImplementedError(
+                    f"C++ wrapper cannot write a region whose result is the "
+                    f"constant {name!r}: the printed program has no call that "
+                    f"fills its slot"
+                )
+            self._register_tensor(name)
+            self._record_buffer_meta(name)
+
     def _record_buffer_meta(self, name: str) -> None:
         buf = V.graph.try_get_buffer(name)
         if buf is None:
@@ -1912,10 +1937,7 @@ class CppWrapperCodegen(PythonWrapperCodegen):
                         self.wrapper_call.writeline(line)
 
             output_refs = self.get_output_refs()
-            self.output_names = list(output_refs)
-            for name in output_refs:
-                self._register_tensor(name)
-                self._record_buffer_meta(name)
+            self._register_outputs(output_refs)
             self.generate_return(output_refs)
 
         result = IndentedBuffer()

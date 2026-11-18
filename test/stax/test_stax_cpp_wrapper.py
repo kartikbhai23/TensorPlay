@@ -867,3 +867,28 @@ def test_a_scattered_write_is_refused_before_it_is_printed():
     ]
     assert refused, "the region was not refused"
     assert tp.allclose(got, fn(tp.ones(2, 4)))
+
+
+def test_a_result_that_is_a_constant_is_refused_before_it_is_printed():
+    """A region whose whole work is a constant has no call to print.
+
+    The slot is described like any other result, but nothing writes it, so the
+    caller would read an uninitialized allocation.  Refusing the region keeps
+    the answer correct: it is run as it was written, which hands back the
+    constant itself.
+    """
+
+    def fn(a):
+        return tp.nn.functional.one_hot(tp.tensor([0, 2, 1]), 4).to(tp.float32)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        compiled = tp.compile(fn, options={"stax.cuda_codegen": True})
+        got = compiled(tp.ones(2, 4))
+    refused = [
+        str(item.message)
+        for item in caught
+        if "whose result is the constant" in str(item.message)
+    ]
+    assert refused, "the region was not refused"
+    assert tp.allclose(got, fn(tp.ones(2, 4)))
