@@ -80,8 +80,34 @@ Tensor& xlog1py__native(Tensor& self, const Tensor& other) {
 // single-precision value meets it in single precision (the exponent may
 // widen that), while wider and reduced floating values keep their own type
 // for the base so the exponent alone decides any further promotion.
+// Direct exponent scaling for the common elementwise form.  One pass of
+// libm ldexp matches the reference cost; the composite it replaces pays a
+// full power evaluation plus a multiply.
+__attribute__((target("avx2,fma"), noinline))
+static void ldexp_f32_sweep(float* d, const float* x, const float* e,
+                            int64_t n) {
+    for (int64_t i = 0; i < n; ++i) d[i] = std::ldexp(x[i], static_cast<int>(e[i]));
+}
+
 Tensor ldexp_native(const Tensor& self, const Tensor& other) {
     const DType self_dtype = self.dtype();
+    if ((self_dtype == DType::Float32 || self_dtype == DType::Float64) &&
+        other.dtype() == self_dtype && self.is_contiguous() &&
+        other.is_contiguous() && self.numel() == other.numel()) {
+        Tensor out = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
+                                   self_dtype, self.device());
+        const int64_t n = self.numel();
+        if (self_dtype == DType::Float32) {
+            ldexp_f32_sweep(out.data_ptr<float>(), self.data_ptr<float>(),
+                            other.data_ptr<float>(), n);
+        } else {
+            const double* x = self.data_ptr<double>();
+            const double* e = other.data_ptr<double>();
+            double* d = out.data_ptr<double>();
+            for (int64_t i = 0; i < n; ++i) d[i] = std::ldexp(x[i], static_cast<int>(e[i]));
+        }
+        return out;
+    }
     const Tensor power =
         isIntegralType(self_dtype, /*includeBool=*/true) || self_dtype == DType::Float32
             ? ops::pow(Scalar(2.0), other)
