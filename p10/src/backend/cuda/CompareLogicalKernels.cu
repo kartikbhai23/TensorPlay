@@ -61,8 +61,21 @@ Tensor& logical_not_out_cuda(const Tensor& self, Tensor& out) {
                              "logical_not");
 }
 
+// Dtype-preserving in-place negation functor: nvcc rejects generic
+// __host__ __device__ lambdas, so the operation is a callable struct.
+struct LogicalNotDtypeFn {
+    template <typename T>
+    __host__ __device__ T operator()(T value) const {
+        return value == T(0) ? T(1) : T(0);
+    }
+};
+
 Tensor& logical_not__cuda(Tensor& self) {
-    return logical_not_out_cuda(self, self);
+    // Dtype-preserving in-place negation: one kernel writing `self`
+    // directly.  Routing through the out= form would build a Bool temporary
+    // and cast it back, doubling the kernel count on every call.
+    dtype_unary_into(self, self, LogicalNotDtypeFn{}, "logical_not_");
+    return self;
 }
 
 Tensor logical_and_cuda(const Tensor& a, const Tensor& b) {
