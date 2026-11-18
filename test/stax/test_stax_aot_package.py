@@ -290,6 +290,22 @@ def test_region_that_reads_a_weight_through_a_window_is_refused(tmp_path):
         )
 
 
+def test_package_holds_an_attention_call(tmp_path):
+    """The attention call as a package: three operands, no mask.
+
+    The places the call has beyond its operands are written into the entry
+    point, and the package hands over the three buffers it reads.
+    """
+
+    def attend(query, key, value):
+        return tp.nn.functional.scaled_dot_product_attention(query, key, value)
+
+    query = tp.randn(1, 2, 4, 8)
+    path = _build(tmp_path / _PKG, attend, [query, query, query])
+    module = load_package(path)
+    assert tp.allclose(module(query, query, query), attend(query, query, query), atol=1e-4)
+
+
 def test_region_that_returns_a_view_is_refused(tmp_path):
     # A package lays out storage of its own, so there is nowhere for a view to
     # sit: the result would name a window onto nothing.

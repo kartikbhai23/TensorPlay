@@ -489,6 +489,21 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
         "tensorplay::Tensor::divide(t0, tensorplay::Scalar({s0}), {s1})",
         ((None, "real"), ("rounding_mode", "string")),
     ),
+    "scaled_dot_product_attention": (
+        "tp_cpu_sdpa",
+        "tensorplay::Tensor::scaled_dot_product_attention("
+        "t0, t1, t2, {s0}, {s1}, {s2}, {s3}, {s4})",
+        (
+            (None, "tensor"),
+            (None, "tensor"),
+            (None, "tensor"),
+            ("attn_mask", "optional_tensor"),
+            ("dropout_p", "real"),
+            ("is_causal", "flag"),
+            ("scale", "optional_real"),
+            ("enable_gqa", "flag"),
+        ),
+    ),
 }
 
 
@@ -561,6 +576,15 @@ def _write_int(text: str) -> str:
 
 @_literal_writer("real")
 def _write_real(text: str) -> str:
+    return _scalar_literal(text)
+
+
+@_literal_writer("optional_real")
+def _write_optional_real(text: str) -> str:
+    """A number that may not have been supplied at all."""
+
+    if text.strip() == "None":
+        return "std::nullopt"
     return _scalar_literal(text)
 
 

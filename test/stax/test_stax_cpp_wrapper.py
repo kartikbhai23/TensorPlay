@@ -480,3 +480,42 @@ def test_a_group_norm_without_a_scale_or_shift():
         lambda a: tp.nn.functional.group_norm(a, 2, weight, None).relu(),
         [tp.randn(2, 4, 8, 8)],
     )
+
+
+# --------------------------------------------------------------------------
+# attention: three operands and a handful of numbers
+# --------------------------------------------------------------------------
+
+
+def test_scaled_dot_product_attention():
+    """The attention call, with its mask absent and its dropout off.
+
+    Only three of the places it has hold operands; the rest are written as they
+    stand, and the absent ones are written as nothing.
+    """
+
+    qkv = tp.randn(2, 4, 8)
+    _check(
+        lambda a: tp.nn.functional.scaled_dot_product_attention(a, a, a),
+        [qkv],
+    )
+
+
+def test_scaled_dot_product_attention_is_causal():
+    qkv = tp.randn(2, 4, 8)
+    _check(
+        lambda a: tp.nn.functional.scaled_dot_product_attention(
+            a, a, a, is_causal=True
+        ),
+        [qkv],
+    )
+
+
+def test_scaled_dot_product_attention_with_a_scale():
+    qkv = tp.randn(2, 4, 8)
+    _check(
+        lambda a: tp.nn.functional.scaled_dot_product_attention(
+            a, a, a, scale=0.5
+        ),
+        [qkv],
+    )
