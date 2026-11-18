@@ -1624,7 +1624,11 @@ def _planned_constant_component(plan: tuple[Any, ...]) -> tuple[Any, ...]:
             if value is _MISSING:
                 continue
             if not reusable_flags[index]:
-                break
+                # A value described by its contents can be edited in place, so
+                # staying the same object is not enough; only its own
+                # description has to be read again, not every site's.
+                if _constant_entry(value) != cached_entries[index]:
+                    break
         else:
             return last
 
