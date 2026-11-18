@@ -153,6 +153,24 @@ TP_DECLARE_CONV_GRADS(2)
 TP_DECLARE_CONV_GRADS(3)
 #undef TP_DECLARE_CONV_GRADS
 
+// Depthwise 2-D convolution.
+//
+// A depthwise call carries one group per input channel, so its forward pass
+// is a stack of independent single-channel convolutions.  Read as a grouped
+// call, a direct engine walks those groups with one filter tap per pass;
+// these entry points read the whole call with the filter in registers and one
+// thread per output site.
+P10_API bool conv2d_depthwise_forward_eligible(const Tensor& input,
+                                               const Tensor& weight,
+                                               int64_t groups);
+// ``out`` is written in place when it has the result's shape in row-major
+// order; an unusable buffer leaves the call to allocate its own result.
+P10_API Tensor conv2d_depthwise_forward_cuda(
+    const Tensor& input, const Tensor& weight,
+    const std::vector<int64_t>& stride, const std::vector<int64_t>& padding,
+    const std::vector<int64_t>& dilation, int64_t groups,
+    const Tensor& out = {});
+
 // Depthwise 2-D convolution backwards.
 //
 // A depthwise call carries one group per input channel, so its backward pass

@@ -68,6 +68,9 @@ template <> struct DepthwiseMath<tensorplay::BFloat16> { using type = float; };
 
 constexpr int kDepthwiseThreads = 256;
 constexpr int kDepthwiseWarpSize = 32;
+// The filter gradient keeps one accumulator per tap in registers, so callers
+// with a wider filter fall back to the general grouped path.
+constexpr int kMaxDepthwiseTaps = 64;
 
 int depthwise_blocks(int64_t work, int threads) {
     const int64_t blocks = (work + threads - 1) / threads;
@@ -81,6 +84,94 @@ bool depthwise_channels_last_4d(const Tensor& t) {
     const int64_t c = t.size(1), h = t.size(2), w = t.size(3);
     return t.stride(0) == c * h * w && t.stride(1) == 1 &&
            t.stride(2) == w * c && t.stride(3) == c;
+}
+
+// One thread per VEC adjacent output columns.  The window of the VEC sites
+// spans VEC + kw - 1 consecutive positions of one input row, so a row is read
+// once and every tap of every site in the group reuses those values, which
+// keeps the load count below the multiply count.  The weights stay in
+// registers.  A window that leaves the input takes the guarded route, where
+// each site tests its own taps; a group whose sites are strided or dilated
+// also takes it, as the covered positions are then not contiguous.
+template <int KS, int VEC, typename T, typename M>
+__global__ void depthwise_conv2d_forward_kernel(
+    int W, int H, int OW, int OH, int channels, int multiplier, int R, int S,
+    int sh, int sw, int ph, int pw, int dh, int dw,
+    const T* __restrict__ input, const T* __restrict__ weight,
+    T* __restrict__ output) {
+    const int kh = (KS != 0) ? KS : R;
+    const int kw = (KS != 0) ? KS : S;
+    const int taps = kh * kw;
+    const int out_channel = blockIdx.y;
+    const int in_channel = out_channel / multiplier;
+    const int in_plane = H * W;
+    const int out_plane = OH * OW;
+    const int out_channels = channels * multiplier;
+    const int cols = (OW + VEC - 1) / VEC;
+    // A unit-step, unit-dilation row places the group's taps on consecutive
+    // positions, which is what lets one read serve several sites.
+    const bool unit_step = sw == 1 && dw == 1;
+
+    M wreg[kMaxDepthwiseTaps];
+#pragma unroll
+    for (int t = 0; t < taps; ++t) {
+        wreg[t] = static_cast<M>(
+            weight[static_cast<int64_t>(out_channel) * taps + t]);
+    }
+
+    const T* x = input +
+        (static_cast<int64_t>(blockIdx.z) * channels + in_channel) * in_plane;
+    T* y = output +
+        (static_cast<int64_t>(blockIdx.z) * out_channels + out_channel) *
+            out_plane;
+
+    for (int g = blockIdx.x * blockDim.x + threadIdx.x; g < OH * cols;
+         g += blockDim.x * gridDim.x) {
+        const int oh = g / cols;
+        const int ow0 = (g - oh * cols) * VEC;
+        M acc[VEC];
+#pragma unroll
+        for (int j = 0; j < VEC; ++j) acc[j] = M(0);
+#pragma unroll
+        for (int r = 0; r < kh; ++r) {
+            const int hi = oh * sh + r * dh - ph;
+            if (hi < 0 || hi >= H) continue;
+            const T* xrow = x + hi * W;
+            const int base = ow0 - pw;
+            if (KS != 0 && unit_step && base >= 0 &&
+                base + VEC + (KS - 2) < W) {
+                M xv[VEC + KS];
+#pragma unroll
+                for (int t = 0; t < VEC + KS - 1; ++t) {
+                    xv[t] = static_cast<M>(xrow[base + t]);
+                }
+#pragma unroll
+                for (int j = 0; j < VEC; ++j) {
+#pragma unroll
+                    for (int s = 0; s < KS; ++s) {
+                        acc[j] += wreg[r * KS + s] * xv[j + s];
+                    }
+                }
+            } else {
+#pragma unroll
+                for (int j = 0; j < VEC; ++j) {
+                    const int ow = ow0 + j;
+                    if (ow >= OW) continue;
+#pragma unroll
+                    for (int s = 0; s < kw; ++s) {
+                        const int wi = (ow * sw + s * dw) - pw;
+                        if (wi < 0 || wi >= W) continue;
+                        acc[j] += wreg[r * kw + s] * static_cast<M>(xrow[wi]);
+                    }
+                }
+            }
+        }
+#pragma unroll
+        for (int j = 0; j < VEC; ++j) {
+            const int ow = ow0 + j;
+            if (ow < OW) y[oh * OW + ow] = static_cast<T>(acc[j]);
+        }
+    }
 }
 
 // One thread per input site.  A site accumulates every filter tap whose
@@ -157,93 +248,229 @@ __global__ void depthwise_conv2d_grad_input_kernel(
     }
 }
 
-// One block per filter tap of one output channel; the block reduces the tap
-// over the batch and the output sites.  A warp walks one batch item at a
-// time, so the lane stride stays adjacent in memory and the batches beyond
-// the warp count are picked up by the same warps in turn.
-template <typename T, typename M>
+// One block per output channel: the block keeps one accumulator per filter
+// tap and walks the batches and the output sites.  A site contributes to
+// every tap at once, so each operand element is read once per block instead
+// of once per tap, and the accumulators are reduced over the block at the
+// end.  The tap count is a template parameter so the accumulators stay in
+// registers.
+template <int KS, typename T, typename M>
 __global__ void depthwise_conv2d_grad_weight_kernel(
-    int batch, int channels, int multiplier, int in_plane, int W, int H,
-    int out_plane, int OW, int OH, int R, int S, int sh, int sw, int ph,
-    int pw, int dh, int dw, const T* __restrict__ grad_output,
-    const T* __restrict__ input, T* __restrict__ grad_weight) {
-    const int tap = blockIdx.x;
-    const int r = tap / S;
-    const int s = tap - r * S;
-    const int out_channel = blockIdx.y;
+    int batch, int channels, int multiplier, int H, int W, int OH, int OW,
+    int R, int S, int sh, int sw, int ph, int pw, int dh, int dw,
+    const T* __restrict__ grad_output, const T* __restrict__ input,
+    T* __restrict__ grad_weight) {
+    const int kh = (KS != 0) ? KS : R;
+    const int kw = (KS != 0) ? KS : S;
+    const int taps = kh * kw;
+    const int out_channel = blockIdx.x;
     const int in_channel = out_channel / multiplier;
+    const int in_plane = H * W;
+    const int out_plane = OH * OW;
+    const int out_channels = channels * multiplier;
+    const int64_t tap_base = static_cast<int64_t>(out_channel) * taps;
+
+    // One accumulator per tap; for a fixed kernel size the loops below unroll
+    // to that count, so the array stays in registers.
+    M acc[kMaxDepthwiseTaps];
+#pragma unroll
+    for (int t = 0; t < taps; ++t) acc[t] = M(0);
+
+    for (int n = 0; n < batch; ++n) {
+        const T* dy = grad_output +
+            (static_cast<int64_t>(n) * out_channels + out_channel) * out_plane;
+        const T* x = input +
+            (static_cast<int64_t>(n) * channels + in_channel) * in_plane;
+        for (int p = threadIdx.x; p < out_plane; p += blockDim.x) {
+            const int oh = p / OW;
+            const int ow = p - oh * OW;
+            const M dyv = static_cast<M>(dy[p]);
+            for (int r = 0; r < kh; ++r) {
+                const int hi = oh * sh + r * dh - ph;
+                if (hi < 0 || hi >= H) continue;
+#pragma unroll
+                for (int s = 0; s < kw; ++s) {
+                    const int wi = ow * sw + s * dw - pw;
+                    if (wi < 0 || wi >= W) continue;
+                    acc[r * kw + s] +=
+                        dyv * static_cast<M>(x[hi * W + wi]);
+                }
+            }
+        }
+    }
 
     const int lane = threadIdx.x % kDepthwiseWarpSize;
     const int warp = threadIdx.x / kDepthwiseWarpSize;
     const int warps = blockDim.x / kDepthwiseWarpSize;
-
-    const int out_channels = channels * multiplier;
-    const T* dy_batch = grad_output + static_cast<int64_t>(out_channel) * out_plane;
-    const T* x_batch = input + static_cast<int64_t>(in_channel) * in_plane;
-
-    M acc = M(0);
-    for (int n = warp; n < batch; n += warps) {
-        const T* dy = dy_batch + static_cast<int64_t>(n) * out_channels * out_plane;
-        const T* x = x_batch + static_cast<int64_t>(n) * channels * in_plane;
-        for (int i = lane; i < out_plane; i += kDepthwiseWarpSize) {
-            const int oh = i / OW;
-            const int ow = i - oh * OW;
-            const int hi = oh * sh + r * dh - ph;
-            const int wi = ow * sw + s * dw - pw;
-            if (hi < 0 || hi >= H || wi < 0 || wi >= W) continue;
-            acc += static_cast<M>(x[static_cast<int64_t>(hi) * W + wi]) *
-                   static_cast<M>(dy[i]);
+#pragma unroll
+    for (int off = kDepthwiseWarpSize / 2; off > 0; off >>= 1) {
+#pragma unroll
+        for (int t = 0; t < taps; ++t) {
+            acc[t] += __shfl_down_sync(0xffffffffu, acc[t], off);
         }
     }
 
-    for (int off = kDepthwiseWarpSize / 2; off > 0; off >>= 1) {
-        acc += __shfl_down_sync(0xffffffffu, acc, off);
+    __shared__ M warp_sums[8 * kMaxDepthwiseTaps];
+    if (lane == 0) {
+#pragma unroll
+        for (int t = 0; t < taps; ++t) {
+            warp_sums[warp * taps + t] = acc[t];
+        }
     }
-
-    __shared__ M warp_sums[8];
-    if (lane == 0) warp_sums[warp] = acc;
     __syncthreads();
-    if (threadIdx.x == 0) {
+    if (threadIdx.x < taps) {
         M total = M(0);
-        for (int i = 0; i < warps; ++i) total += warp_sums[i];
-        grad_weight[static_cast<int64_t>(out_channel) * R * S + tap] =
-            static_cast<T>(total);
+        for (int w = 0; w < warps; ++w) {
+            total += warp_sums[w * taps + threadIdx.x];
+        }
+        grad_weight[tap_base + threadIdx.x] = static_cast<T>(total);
     }
 }
 
-// The shape, dtype and grouping all depthwise backward calls must share; the
-// layout is checked by the caller that reads the operands.
-bool depthwise_shape_ok(const Tensor& grad_output, const Tensor& input,
-                        const Tensor& weight, int64_t groups) {
-    if (input.dim() != 4 || weight.dim() != 4 || grad_output.dim() != 4) {
-        return false;
-    }
+// The grouping, dtype and operand extent every depthwise call must share; the
+// layout and the gradient's shape are checked by the callers.
+bool depthwise_operands_ok(const Tensor& input, const Tensor& weight,
+                           int64_t groups) {
+    if (input.dim() != 4 || weight.dim() != 4) return false;
     if (groups <= 1 || groups != input.size(1) || weight.size(1) != 1) {
         return false;
     }
     if (weight.size(0) % input.size(1) != 0) return false;
-    if (input.size(0) != grad_output.size(0) ||
-        weight.size(0) != grad_output.size(1)) {
-        return false;
-    }
     const DType dtype = input.dtype();
     if (dtype != DType::Float32 && dtype != DType::Float16 &&
         dtype != DType::BFloat16) {
         return false;
     }
-    if (weight.dtype() != dtype || grad_output.dtype() != dtype) return false;
+    if (weight.dtype() != dtype) return false;
     if (!weight.is_contiguous()) return false;
-    if (input.numel() == 0 || grad_output.numel() == 0 || weight.numel() == 0) {
-        return false;
-    }
+    if (input.numel() == 0 || weight.numel() == 0) return false;
     // The site loops index with 32-bit arithmetic; refuse a call that would
     // not fit rather than wrap.
-    const int64_t batch_sites = input.size(0) * input.size(1) * input.size(2) *
-                                input.size(3);
-    return batch_sites <= 0x7fffffff && grad_output.numel() <= 0x7fffffff;
+    return input.numel() <= 0x7fffffff;
+}
+
+bool depthwise_shape_ok(const Tensor& grad_output, const Tensor& input,
+                        const Tensor& weight, int64_t groups) {
+    if (!depthwise_operands_ok(input, weight, groups)) return false;
+    if (grad_output.dim() != 4) return false;
+    if (input.size(0) != grad_output.size(0) ||
+        weight.size(0) != grad_output.size(1)) {
+        return false;
+    }
+    if (grad_output.dtype() != input.dtype()) return false;
+    if (grad_output.numel() == 0 || grad_output.numel() > 0x7fffffff) {
+        return false;
+    }
+    return true;
 }
 
 } // namespace
+
+bool conv2d_depthwise_forward_eligible(const Tensor& input,
+                                       const Tensor& weight, int64_t groups) {
+    if (weight.size(2) * weight.size(3) > kMaxDepthwiseTaps) return false;
+    return depthwise_operands_ok(input, weight, groups) &&
+           input.is_contiguous();
+}
+
+Tensor conv2d_depthwise_forward_cuda(
+    const Tensor& input, const Tensor& weight,
+    const std::vector<int64_t>& stride, const std::vector<int64_t>& padding,
+    const std::vector<int64_t>& dilation, int64_t groups,
+    const Tensor& out_provided) {
+    (void)groups;
+    const int64_t N = input.size(0), C = input.size(1);
+    const int64_t H = input.size(2), W = input.size(3);
+    const int64_t K = weight.size(0), R = weight.size(2), S = weight.size(3);
+    const auto sh = static_cast<int>(stride[0]), sw = static_cast<int>(stride[1]);
+    const auto ph = static_cast<int>(padding[0]), pw = static_cast<int>(padding[1]);
+    const auto dh = static_cast<int>(dilation[0]), dw = static_cast<int>(dilation[1]);
+    const int64_t OH = (H + 2 * ph - dh * (R - 1) - 1) / sh + 1;
+    const int64_t OW = (W + 2 * pw - dw * (S - 1) - 1) / sw + 1;
+
+    // A buffer the caller handed over is written in place, which spares the
+    // allocation and the copy into it; its arrival in the row-major order this
+    // kernel writes is what makes it usable.
+    Tensor output;
+    if (out_provided.defined() && out_provided.dtype() == input.dtype() &&
+        out_provided.device() == input.device() &&
+        static_cast<std::vector<int64_t>>(out_provided.shape()) ==
+            std::vector<int64_t>{N, K, OH, OW} &&
+        out_provided.is_contiguous()) {
+        output = out_provided;
+    } else {
+        output = Tensor::empty({N, K, OH, OW}, input.dtype(), input.device());
+    }
+    const auto stream = getCurrentCUDAStream().stream();
+    const int h_extent = static_cast<int>(H), w_extent = static_cast<int>(W);
+    const int oh = static_cast<int>(OH), ow = static_cast<int>(OW);
+    const int channels = static_cast<int>(C);
+    const int mult = static_cast<int>(K / C);
+    const int rr = static_cast<int>(R), ss = static_cast<int>(S);
+
+    // Columns per thread: a group spans one row of the input, so the widest
+    // group that still gives every channel a full warp of groups wins.  Small
+    // planes keep a narrower group and a smaller block instead.
+    const int vec = ow >= 14 ? 7 : (ow >= 4 ? 4 : 2);
+    const int group_count = oh * ((ow + vec - 1) / vec);
+    const int threads = group_count >= 256 ? 256
+                        : (group_count >= 128 ? 128 : 32);
+    const dim3 grid(static_cast<unsigned>((group_count + threads - 1) / threads),
+                    static_cast<unsigned>(K), static_cast<unsigned>(N));
+
+    auto launch = [&](auto taps, auto vec_ic) {
+        constexpr int KS = decltype(taps)::value;
+        constexpr int VEC = decltype(vec_ic)::value;
+        switch (input.dtype()) {
+            case DType::Float32:
+                depthwise_conv2d_forward_kernel<KS, VEC, float, float>
+                    <<<grid, threads, 0, stream>>>(
+                        w_extent, h_extent, ow, oh, channels, mult, rr, ss,
+                        sh, sw, ph, pw, dh, dw, input.data_ptr<float>(),
+                        weight.data_ptr<float>(), output.data_ptr<float>());
+                break;
+            case DType::Float16:
+                depthwise_conv2d_forward_kernel<KS, VEC, tensorplay::Half, float>
+                    <<<grid, threads, 0, stream>>>(
+                        w_extent, h_extent, ow, oh, channels, mult, rr, ss,
+                        sh, sw, ph, pw, dh, dw, input.data_ptr<tensorplay::Half>(),
+                        weight.data_ptr<tensorplay::Half>(),
+                        output.data_ptr<tensorplay::Half>());
+                break;
+            case DType::BFloat16:
+                depthwise_conv2d_forward_kernel<KS, VEC, tensorplay::BFloat16,
+                                                float>
+                    <<<grid, threads, 0, stream>>>(
+                        w_extent, h_extent, ow, oh, channels, mult, rr, ss,
+                        sh, sw, ph, pw, dh, dw,
+                        input.data_ptr<tensorplay::BFloat16>(),
+                        weight.data_ptr<tensorplay::BFloat16>(),
+                        output.data_ptr<tensorplay::BFloat16>());
+                break;
+            default:
+                TP_THROW(NotImplementedError, "depthwise conv2d forward");
+        }
+    };
+
+    // The taps are specialised for the two filter sizes the models use;
+    // anything else reads the filter with runtime bounds.
+    if (rr == 7 && ss == 7 && vec == 7) {
+        launch(std::integral_constant<int, 7>{}, std::integral_constant<int, 7>{});
+    } else if (rr == 7 && ss == 7 && vec == 4) {
+        launch(std::integral_constant<int, 7>{}, std::integral_constant<int, 4>{});
+    } else if (rr == 3 && ss == 3 && vec == 7) {
+        launch(std::integral_constant<int, 3>{}, std::integral_constant<int, 7>{});
+    } else if (rr == 3 && ss == 3 && vec == 4) {
+        launch(std::integral_constant<int, 3>{}, std::integral_constant<int, 4>{});
+    } else if (rr == 3 && ss == 3) {
+        launch(std::integral_constant<int, 3>{}, std::integral_constant<int, 2>{});
+    } else if (rr == 7 && ss == 7) {
+        launch(std::integral_constant<int, 7>{}, std::integral_constant<int, 2>{});
+    } else {
+        launch(std::integral_constant<int, 0>{}, std::integral_constant<int, 1>{});
+    }
+    return output;
+}
 
 bool conv2d_depthwise_grad_input_eligible(
     const Tensor& grad_output, const Tensor& input, const Tensor& weight,
@@ -257,6 +484,7 @@ bool conv2d_depthwise_grad_input_eligible(
 bool conv2d_depthwise_grad_weight_eligible(
     const Tensor& grad_output, const Tensor& input, const Tensor& weight,
     int64_t groups) {
+    if (weight.size(2) * weight.size(3) > kMaxDepthwiseTaps) return false;
     return depthwise_shape_ok(grad_output, input, weight, groups) &&
            input.is_contiguous() && grad_output.is_contiguous();
 }
@@ -399,51 +627,64 @@ Tensor conv2d_depthwise_grad_weight_cuda(
 
     Tensor grad_weight = Tensor::empty({K, 1, R, S}, weight.dtype(), weight.device());
     const auto stream = getCurrentCUDAStream().stream();
-    const int threads = static_cast<int>(
-        std::min<int64_t>(N * kDepthwiseWarpSize, kDepthwiseThreads));
-    const dim3 grid(static_cast<unsigned>(R * S), static_cast<unsigned>(K));
+    // One block per output channel, wide enough to keep every lane busy on
+    // the output plane when that plane is small.
+    const int64_t positions = OH * OW;
+    const int threads = static_cast<int>(std::min<int64_t>(
+        kDepthwiseThreads, (positions + kDepthwiseWarpSize - 1) /
+                               kDepthwiseWarpSize * kDepthwiseWarpSize));
+    const dim3 grid(static_cast<unsigned>(K));
     const auto sh = static_cast<int>(stride[0]), sw = static_cast<int>(stride[1]);
     const auto ph = static_cast<int>(padding[0]), pw = static_cast<int>(padding[1]);
     const auto dh = static_cast<int>(dilation[0]), dw = static_cast<int>(dilation[1]);
-    const int in_plane = static_cast<int>(H * W);
-    const int out_plane = static_cast<int>(OH * OW);
+    const int h_extent = static_cast<int>(H), w_extent = static_cast<int>(W);
+    const int oh = static_cast<int>(OH), ow = static_cast<int>(OW);
     const int channels = static_cast<int>(C);
     const int mult = static_cast<int>(multiplier);
     const int batch = static_cast<int>(N);
+    const int rr = static_cast<int>(R), ss = static_cast<int>(S);
 
-    switch (weight.dtype()) {
-        case DType::Float32:
-            depthwise_conv2d_grad_weight_kernel<float, float>
-                <<<grid, threads, 0, stream>>>(
-                    batch, channels, mult, in_plane, static_cast<int>(W),
-                    static_cast<int>(H), out_plane, static_cast<int>(OW),
-                    static_cast<int>(OH), static_cast<int>(R), static_cast<int>(S),
-                    sh, sw, ph, pw, dh, dw, grad_output.data_ptr<float>(),
-                    input.data_ptr<float>(), grad_weight.data_ptr<float>());
-            break;
-        case DType::Float16:
-            depthwise_conv2d_grad_weight_kernel<tensorplay::Half, float>
-                <<<grid, threads, 0, stream>>>(
-                    batch, channels, mult, in_plane, static_cast<int>(W),
-                    static_cast<int>(H), out_plane, static_cast<int>(OW),
-                    static_cast<int>(OH), static_cast<int>(R), static_cast<int>(S),
-                    sh, sw, ph, pw, dh, dw, grad_output.data_ptr<tensorplay::Half>(),
-                    input.data_ptr<tensorplay::Half>(),
-                    grad_weight.data_ptr<tensorplay::Half>());
-            break;
-        case DType::BFloat16:
-            depthwise_conv2d_grad_weight_kernel<tensorplay::BFloat16, float>
-                <<<grid, threads, 0, stream>>>(
-                    batch, channels, mult, in_plane, static_cast<int>(W),
-                    static_cast<int>(H), out_plane, static_cast<int>(OW),
-                    static_cast<int>(OH), static_cast<int>(R), static_cast<int>(S),
-                    sh, sw, ph, pw, dh, dw,
-                    grad_output.data_ptr<tensorplay::BFloat16>(),
-                    input.data_ptr<tensorplay::BFloat16>(),
-                    grad_weight.data_ptr<tensorplay::BFloat16>());
-            break;
-        default:
-            TP_THROW(NotImplementedError, "depthwise conv2d grad_weight");
+    auto launch = [&](auto taps) {
+        constexpr int KS = decltype(taps)::value;
+        switch (weight.dtype()) {
+            case DType::Float32:
+                depthwise_conv2d_grad_weight_kernel<KS, float, float>
+                    <<<grid, threads, 0, stream>>>(
+                        batch, channels, mult, h_extent, w_extent, oh, ow,
+                        rr, ss, sh, sw, ph, pw, dh, dw,
+                        grad_output.data_ptr<float>(), input.data_ptr<float>(),
+                        grad_weight.data_ptr<float>());
+                break;
+            case DType::Float16:
+                depthwise_conv2d_grad_weight_kernel<KS, tensorplay::Half, float>
+                    <<<grid, threads, 0, stream>>>(
+                        batch, channels, mult, h_extent, w_extent, oh, ow,
+                        rr, ss, sh, sw, ph, pw, dh, dw,
+                        grad_output.data_ptr<tensorplay::Half>(),
+                        input.data_ptr<tensorplay::Half>(),
+                        grad_weight.data_ptr<tensorplay::Half>());
+                break;
+            case DType::BFloat16:
+                depthwise_conv2d_grad_weight_kernel<KS, tensorplay::BFloat16,
+                                                    float>
+                    <<<grid, threads, 0, stream>>>(
+                        batch, channels, mult, h_extent, w_extent, oh, ow,
+                        rr, ss, sh, sw, ph, pw, dh, dw,
+                        grad_output.data_ptr<tensorplay::BFloat16>(),
+                        input.data_ptr<tensorplay::BFloat16>(),
+                        grad_weight.data_ptr<tensorplay::BFloat16>());
+                break;
+            default:
+                TP_THROW(NotImplementedError, "depthwise conv2d grad_weight");
+        }
+    };
+
+    if (rr == 7 && ss == 7) {
+        launch(std::integral_constant<int, 7>{});
+    } else if (rr == 3 && ss == 3) {
+        launch(std::integral_constant<int, 3>{});
+    } else {
+        launch(std::integral_constant<int, 0>{});
     }
     return grad_weight;
 }

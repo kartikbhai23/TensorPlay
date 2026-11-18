@@ -267,6 +267,27 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
             input, weight, bias, stride, padding, dilation, groups);
     }
 
+    // A depthwise call is one group per channel, and the grouped engines walk
+    // those groups one filter tap at a time.  The channels are independent, so
+    // the call is read here with the whole filter held at once.
+    if (!fused_relu &&
+        conv2d_depthwise_forward_eligible(input, weight, groups)) {
+        Tensor out = conv2d_depthwise_forward_cuda(
+            input, weight, stride, padding, dilation, groups, out_provided);
+        if (bias.defined() && bias.numel() != 0) {
+            Tensor bias_c = bias.is_contiguous() ? bias : bias.contiguous();
+            Tensor bias_4d = bias_c.reshape({1, K, 1, 1});
+            bool added = false;
+            if (out.dtype() == bias_c.dtype()) {
+                added = add_channel_broadcast_inplace_cuda(out, bias_4d);
+            }
+            if (!added) {
+                out = out + bias_4d.to(out.dtype());
+            }
+        }
+        return out;
+    }
+
     cudnnDataType_t dtype;
     if (input.dtype() == DType::Float32) dtype = CUDNN_DATA_FLOAT;
     else if (input.dtype() == DType::Float64) dtype = CUDNN_DATA_DOUBLE;
