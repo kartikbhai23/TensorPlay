@@ -679,7 +679,55 @@ Tensor remainder_scalar_tensor_cpu(const Scalar& self, const Tensor& other) {
     return remainder_tensor_cpu(Tensor::full({}, self, dt, other.device()), other.to(dt));
 }
 
+// One sweep of the C-fmod form against a per-lane divisor: the sign follows
+// the dividend, so the trunc quotient alone answers every lane.  The target
+// attribute is what keeps the lane loop; the translation unit compiles
+// without the ISA.
+// One sweep of the C-fmod form against a per-lane divisor: the sign follows
+// the dividend, so the trunc quotient alone answers every lane.  A tiny
+// divisor makes the quotient huge and the f32 subtraction x - q*y
+// catastrophically cancels, so the arithmetic runs in f64 lanes -- f32
+// inputs are exact there and the remainder survives to f32 rounding.  The
+// target attribute is what keeps the lane loop; the translation unit
+// compiles without the ISA.
+__attribute__((target("avx2,fma"), noinline))
+static void fmod_f32_sweep(const float* sp, const float* yp, float* dp,
+                           int64_t n) {
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        // f32 inputs are exact in f64, so the quotient, product and
+        // subtraction there keep the remainder accurate to f32 rounding.
+        const __m256d x0 = _mm256_cvtps_pd(_mm_loadu_ps(sp + i));
+        const __m256d x1 = _mm256_cvtps_pd(_mm_loadu_ps(sp + i + 4));
+        const __m256d y0 = _mm256_cvtps_pd(_mm_loadu_ps(yp + i));
+        const __m256d y1 = _mm256_cvtps_pd(_mm_loadu_ps(yp + i + 4));
+        const __m256d q0 = _mm256_round_pd(_mm256_div_pd(x0, y0),
+                                           _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
+        const __m256d q1 = _mm256_round_pd(_mm256_div_pd(x1, y1),
+                                           _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
+        const __m256d r0 = _mm256_fnmadd_pd(q0, y0, x0);
+        const __m256d r1 = _mm256_fnmadd_pd(q1, y1, x1);
+        const __m128 r0f = _mm256_cvtpd_ps(r0);
+        const __m128 r1f = _mm256_cvtpd_ps(r1);
+        _mm_storeu_ps(dp + i, r0f);
+        _mm_storeu_ps(dp + i + 4, r1f);
+    }
+    for (; i < n; ++i) {
+        dp[i] = sp[i] - __builtin_truncf(sp[i] / yp[i]) * yp[i];
+    }
+}
+
 Tensor fmod_tensor_cpu(const Tensor& self, const Tensor& other) {
+    // Contiguous float pairs answer in one lane-division sweep; the pair
+    // kernel falls back to libm fmod per element.
+    if (self.dtype() == DType::Float32 && self.is_contiguous() &&
+        other.is_contiguous() && self.numel() == other.numel()) {
+        Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
+                                      self.dtype(), self.device());
+        fmod_f32_sweep(self.data_ptr<float>(), other.data_ptr<float>(),
+                       result.data_ptr<float>(), self.numel());
+        return result;
+    }
     // C fmod: sign follows the dividend
     return fmod_like_pair_kernel<vecbinary::BOp::Fmod>(self, other,
         [](auto x, auto y) -> decltype(x) {
