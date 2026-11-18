@@ -82,8 +82,11 @@ Tensor& xlog1py__native(Tensor& self, const Tensor& other) {
 // for the base so the exponent alone decides any further promotion.
 // Direct exponent scaling for the common elementwise form.  One pass of
 // libm ldexp matches the reference cost; the composite it replaces pays a
-// full power evaluation plus a multiply.
+// full power evaluation plus a multiply.  The attribute belongs to the x86
+// GNU toolchains; the walk itself is portable.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 __attribute__((target("avx2,fma"), noinline))
+#endif
 static void ldexp_f32_sweep(float* d, const float* x, const float* e,
                             int64_t n) {
     for (int64_t i = 0; i < n; ++i) d[i] = std::ldexp(x[i], static_cast<int>(e[i]));

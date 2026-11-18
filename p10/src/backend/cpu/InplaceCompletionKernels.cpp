@@ -394,8 +394,10 @@ Tensor& mish_inplace_kernel(Tensor& self) {
 // One sweep of the NaN/±inf replacement for float lanes.  Three lane
 // selects: unordered comparison catches NaN, equality against the two
 // infinities catches the saturation values.  The target attribute is what
-// makes the compiler keep the lane loop; the translation unit itself
-// compiles without the ISA, so no __AVX2__ macro guard belongs here.
+// makes the compiler keep the lane loop; the guard below is about the
+// toolchain that offers the attribute and the lane names, not about the
+// ISA the translation unit is compiled with.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 __attribute__((target("avx2,fma"), noinline))
 static void nan_to_num_f32_sweep(float* dp, int64_t n, float nan_c,
                                  float pv, float nv) {
@@ -420,6 +422,7 @@ static void nan_to_num_f32_sweep(float* dp, int64_t n, float nan_c,
         dp[i] = (r == -std::numeric_limits<float>::infinity()) ? nv : r;
     }
 }
+#endif  // __x86_64__ && (__GNUC__ || __clang__)
 
 Tensor& nan_to_num_inplace_kernel(Tensor& self, const Scalar& nan, const std::optional<Scalar>& posinf, const std::optional<Scalar>& neginf) {
     NoGradGuard __tp_nograd;
@@ -437,6 +440,7 @@ Tensor& nan_to_num_inplace_kernel(Tensor& self, const Scalar& nan, const std::op
     double pos_v = has_pos ? posinf->toDouble() : std::numeric_limits<double>::infinity();
     double neg_v = has_neg ? neginf->toDouble() : -std::numeric_limits<double>::infinity();
     switch (self.dtype()) {
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
     case DType::Float32: {
         float* __restrict dp = self.data_ptr<float>();
         float pv = has_pos ? static_cast<float>(pos_v) : std::numeric_limits<float>::max();
@@ -445,6 +449,7 @@ Tensor& nan_to_num_inplace_kernel(Tensor& self, const Scalar& nan, const std::op
         nan_to_num_f32_sweep(dp, n, nan_c, pv, nv);
         break;
     }
+#endif
     case DType::Float64: {
         double* __restrict dp = self.data_ptr<double>();
         double pv = has_pos ? pos_v : std::numeric_limits<double>::max();

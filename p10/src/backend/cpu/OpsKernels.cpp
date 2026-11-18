@@ -599,7 +599,10 @@ Tensor remainder_tensor_cpu(const Tensor& self, const Tensor& other) {
 // One sweep of the Python-modulo form against a single divisor held in a
 // register.  The quotient comes from a lane division, the sign fix from a
 // lane select; the target attribute is what makes the compiler keep the
-// lane loop, since the translation unit compiles without the ISA.
+// lane loop, since the translation unit compiles without the ISA.  Both
+// the attribute and the lane names belong to the x86 GNU toolchains, so
+// every other toolchain takes the generic walk below.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 __attribute__((target("avx2,fma"), noinline))
 static void remainder_f32_sweep(const float* sp, float* dp, float y,
                                 int64_t n) {
@@ -626,11 +629,12 @@ static void remainder_f32_sweep(const float* sp, float* dp, float y,
     }
     for (; i < n; ++i) {
         const float x = sp[i];
-        float r = x - __builtin_truncf(x / y) * y;
+        float r = x - std::trunc(x / y) * y;
         if (r != 0.0f && ((r < 0.0f) != (y < 0.0f))) r += y;
         dp[i] = r;
     }
 }
+#endif  // __x86_64__ && (__GNUC__ || __clang__)
 
 Tensor remainder_scalar_cpu(const Tensor& self, const Scalar& other) {
     // Python scalars keep the tensor's dtype on floating-point tensors, so a
@@ -644,6 +648,7 @@ Tensor remainder_scalar_cpu(const Tensor& self, const Scalar& other) {
     // Scalar fast path: the divisor sits in a register, so one sweep answers
     // without materializing a full broadcast tensor and re-reading it.
     if (self.device().is_cpu() && dt == self.dtype() && self.is_contiguous()) {
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
         if (self.dtype() == DType::Float32) {
             Tensor out = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
                                        self.dtype(), self.device());
@@ -651,6 +656,7 @@ Tensor remainder_scalar_cpu(const Tensor& self, const Scalar& other) {
                                 other.to<float>(), self.numel());
             return out;
         }
+#endif
         if (self.dtype() == DType::Float64) {
             Tensor out = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
                                        self.dtype(), self.device());
@@ -658,7 +664,7 @@ Tensor remainder_scalar_cpu(const Tensor& self, const Scalar& other) {
             double* dp = out.data_ptr<double>();
             const double y = other.to<double>();
             for (int64_t i = 0; i < self.numel(); ++i) {
-                double r = sp[i] - __builtin_trunc(sp[i] / y) * y;
+                double r = sp[i] - std::trunc(sp[i] / y) * y;
                 if (r != 0.0 && ((r < 0.0) != (y < 0.0))) r += y;
                 dp[i] = r;
             }
@@ -1101,8 +1107,10 @@ Tensor& i0_out_cpu(const Tensor& self, Tensor& out) {
 // contiguous source and writing the sanitized values out.  Three lane
 // selects: unordered comparison catches NaN, equality against the two
 // infinities catches the saturation values.  The target attribute is what
-// makes the compiler keep the lane loop; the translation unit itself
-// compiles without the ISA, so no __AVX2__ macro guard belongs here.
+// makes the compiler keep the lane loop; the guard below is about the
+// toolchain that offers the attribute and the lane names, not about the
+// ISA the translation unit is compiled with.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 __attribute__((target("avx2,fma"), noinline))
 static void nan_to_num_f32_sweep(float* dp, const float* sp, int64_t n,
                                  float nan_c, float pv, float nv) {
@@ -1127,6 +1135,7 @@ static void nan_to_num_f32_sweep(float* dp, const float* sp, int64_t n,
         dp[i] = (r == -std::numeric_limits<float>::infinity()) ? nv : r;
     }
 }
+#endif  // __x86_64__ && (__GNUC__ || __clang__)
 
 Tensor nan_to_num_cpu(const Tensor& self, const Scalar& nan,
                       const std::optional<Scalar>& posinf, const std::optional<Scalar>& neginf) {
@@ -1137,6 +1146,7 @@ Tensor nan_to_num_cpu(const Tensor& self, const Scalar& nan,
     bool has_pos = posinf.has_value(), has_neg = neginf.has_value();
     double pos_v = has_pos ? posinf->toDouble() : std::numeric_limits<double>::infinity();
     double neg_v = has_neg ? neginf->toDouble() : -std::numeric_limits<double>::infinity();
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
     if (self.dtype() == DType::Float32 && self.is_contiguous()) {
         nan_to_num_f32_sweep(
             out.data_ptr<float>(), sc.data_ptr<float>(), n,
@@ -1147,6 +1157,7 @@ Tensor nan_to_num_cpu(const Tensor& self, const Scalar& nan,
                     : std::numeric_limits<float>::lowest());
         return out;
     }
+#endif
 #define TP_NTN_CASE(ctype, name_) \
     case DType::name_: { \
         const ctype* sp = sc.data_ptr<ctype>(); \

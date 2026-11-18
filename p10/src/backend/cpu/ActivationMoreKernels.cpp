@@ -499,7 +499,9 @@ Tensor& _log_softmax_backward_data_out_cpu(const Tensor& grad_output,
 // One sweep of the per-layer PReLU form (single-element slope).  Positive
 // lanes pass through, negative lanes scale; a lane select preserves the
 // negative answers.  The target attribute is what makes the compiler keep
-// the lane loop instead of falling back to a scalar walk.
+// the lane loop instead of falling back to a scalar walk; the guard below
+// is about the toolchain that offers the attribute, not the ISA macro.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 __attribute__((target("avx2,fma"), noinline))
 static void prelu_f32_sweep(const float* x, float* d, float w, int64_t n) {
     int64_t i = 0;
@@ -519,6 +521,7 @@ static void prelu_f32_sweep(const float* x, float* d, float w, int64_t n) {
         d[i] = v > 0.0f ? v : v * w;
     }
 }
+#endif  // __x86_64__ && (__GNUC__ || __clang__)
 
 Tensor _prelu_kernel_cpu(const Tensor& self, const Tensor& weight_in) {
     if (isQuantizedType(self.dtype())) return quantized::prelu(self, weight_in);
@@ -535,11 +538,13 @@ Tensor _prelu_kernel_cpu(const Tensor& self, const Tensor& weight_in) {
     const int64_t n = self.numel();
     if (n > 0 && weight.numel() == 1 && self.is_contiguous() &&
         result.is_contiguous()) {
+        #if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
         if (self.dtype() == DType::Float32) {
             prelu_f32_sweep(self.data_ptr<float>(), result.data_ptr<float>(),
                             weight.data_ptr<float>()[0], n);
             return result;
         }
+#endif
         if (self.dtype() == DType::Float64) {
             const double* x = self.data_ptr<double>();
             double* d = result.data_ptr<double>();
