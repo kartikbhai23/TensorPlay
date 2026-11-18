@@ -521,6 +521,25 @@ static void prelu_f32_sweep(const float* x, float* d, float w, int64_t n) {
         d[i] = v > 0.0f ? v : v * w;
     }
 }
+
+// One sweep of the elementwise PReLU form (a slope per element).  Positive
+// lanes pass through, negative lanes scale by their own slope.
+__attribute__((target("avx2,fma"), noinline))
+static void prelu_f32_sweep_elementwise(const float* x, const float* w,
+                                        float* d, int64_t n) {
+    int64_t i = 0;
+    const __m256 zero = _mm256_setzero_ps();
+    for (; i + 8 <= n; i += 8) {
+        const __m256 v = _mm256_loadu_ps(x + i);
+        const __m256 neg = _mm256_mul_ps(v, _mm256_loadu_ps(w + i));
+        const __m256 mask = _mm256_cmp_ps(v, zero, _CMP_GT_OQ);
+        _mm256_storeu_ps(d + i, _mm256_blendv_ps(neg, v, mask));
+    }
+    for (; i < n; ++i) {
+        const float v = x[i];
+        d[i] = v > 0.0f ? v : v * w[i];
+    }
+}
 #endif  // __x86_64__ && (__GNUC__ || __clang__)
 
 Tensor _prelu_kernel_cpu(const Tensor& self, const Tensor& weight_in) {
@@ -536,23 +555,31 @@ Tensor _prelu_kernel_cpu(const Tensor& self, const Tensor& weight_in) {
     // form) answers in one vectorizable sweep: the slope product replaces
     // the negative branch with a blend of the two candidates.
     const int64_t n = self.numel();
-    if (n > 0 && weight.numel() == 1 && self.is_contiguous() &&
-        result.is_contiguous()) {
+    if (n > 0 && self.is_contiguous() && result.is_contiguous() &&
+        (weight.numel() == 1 || weight.numel() == n) &&
+        weight.is_contiguous()) {
         #if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
         if (self.dtype() == DType::Float32) {
-            prelu_f32_sweep(self.data_ptr<float>(), result.data_ptr<float>(),
-                            weight.data_ptr<float>()[0], n);
+            const float* x = self.data_ptr<float>();
+            const float* wp = weight.data_ptr<float>();
+            float* d = result.data_ptr<float>();
+            if (weight.numel() == 1) {
+                prelu_f32_sweep(x, d, wp[0], n);
+            } else {
+                prelu_f32_sweep_elementwise(x, wp, d, n);
+            }
             return result;
         }
 #endif
         if (self.dtype() == DType::Float64) {
             const double* x = self.data_ptr<double>();
             double* d = result.data_ptr<double>();
-            const double w = weight.data_ptr<double>()[0];
+            const bool scalar_w = weight.numel() == 1;
+            const double* wp = weight.data_ptr<double>();
             for (int64_t i = 0; i < n; ++i) {
+                const double w = scalar_w ? wp[0] : wp[i];
                 const double v = x[i];
-                const double nv = v * w;
-                d[i] = v > 0.0 ? v : nv;
+                d[i] = v > 0.0 ? v : v * w;
             }
             return result;
         }
