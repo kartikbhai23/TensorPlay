@@ -421,3 +421,62 @@ def test_a_symbolic_region_serves_every_size():
         )
     for rows, answer in zip((2, 3, 5), answers):
         assert tuple(answer.shape) == (rows, 3)
+
+
+# --------------------------------------------------------------------------
+# an operand that is a window onto a buffer
+# --------------------------------------------------------------------------
+
+
+def test_a_product_whose_operand_is_a_window():
+    """A reshaped weight is read through the window, not through the buffer.
+
+    The window is a place to read elements from as much as the buffer is, so
+    it is one of the call's operands: the entry point is given the address its
+    first element sits at, and the kernel reads the elements it selects.
+    """
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(1, 4, 3) / 7
+    _check(
+        lambda a: tp.matmul(a, weight.reshape(4, 3)),
+        [tp.arange(8, dtype=tp.float32).reshape(2, 4)],
+    )
+
+
+def test_a_product_of_two_windows():
+    """Both operands are windows, and neither is the buffer it sits on."""
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(1, 4, 3) / 7
+    _check(
+        lambda a: tp.matmul(
+            a.reshape(2, 1, 4), weight
+        ),
+        [tp.arange(8, dtype=tp.float32).reshape(2, 4)],
+    )
+
+
+def test_a_group_norm():
+    """A normalization whose scale and shift are optional.
+
+    The call is written with every place it has whether or not a value stands in
+    each, so the two forms are told apart by how many operands are handed over.
+    """
+
+    weight = tp.arange(4, dtype=tp.float32) / 5 + 0.5
+    bias = tp.arange(4, dtype=tp.float32) / 7
+    _check(
+        lambda a: tp.nn.functional.group_norm(a, 2, weight, bias),
+        [tp.randn(2, 4, 8, 8)],
+    )
+
+
+def test_a_group_norm_without_a_scale_or_shift():
+    weight = tp.arange(4, dtype=tp.float32) / 5 + 0.5
+    _check(
+        lambda a: tp.nn.functional.group_norm(a, 2, None, None, eps=1e-3),
+        [tp.randn(2, 4, 8, 8)],
+    )
+    _check(
+        lambda a: tp.nn.functional.group_norm(a, 2, weight, None).relu(),
+        [tp.randn(2, 4, 8, 8)],
+    )

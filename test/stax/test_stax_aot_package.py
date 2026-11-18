@@ -273,6 +273,23 @@ def test_package_holds_a_topk(tmp_path):
     assert tp.allclose(module(x), fn(x))
 
 
+def test_region_that_reads_a_weight_through_a_window_is_refused(tmp_path):
+    """The region compiles; the package does not lay out a window's storage.
+
+    A package describes each slot by a shape and a stride of its own, and a
+    window has neither of its own: it is the same bytes read another way.  The
+    boundary is stated rather than guessed at, so a caller knows the region has
+    to be written against the weight's own shape to ship.
+    """
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(1, 4, 3) / 7
+    x = tp.arange(8, dtype=tp.float32).reshape(2, 4)
+    with pytest.raises(PackageError, match="is a view of another buffer"):
+        _build(
+            tmp_path / _PKG, lambda a: tp.matmul(a, weight.reshape(4, 3)), [x]
+        )
+
+
 def test_region_that_returns_a_view_is_refused(tmp_path):
     # A package lays out storage of its own, so there is nowhere for a view to
     # sit: the result would name a window onto nothing.

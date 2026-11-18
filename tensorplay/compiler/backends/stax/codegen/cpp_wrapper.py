@@ -417,6 +417,44 @@ _EXTERN_KERNEL_ARITY_SHIMS: dict[
             _CONVOLUTION_LITERALS,
         ),
     },
+    # A group norm's scale and shift are optional, and the call is written with
+    # every place it has whether or not a value stands in it, so the places are
+    # what each form is described by.
+    "group_norm": {
+        1: (
+            "tp_cpu_group_norm",
+            "tensorplay::Tensor::group_norm(t0, {s0}, {s1}, {s2}, {s3})",
+            (
+                (None, "tensor"),
+                ("num_groups", "int"),
+                ("weight", "optional_tensor"),
+                ("bias", "optional_tensor"),
+                ("eps", "real"),
+            ),
+        ),
+        3: (
+            "tp_cpu_group_norm_bias",
+            "tensorplay::Tensor::group_norm(t0, {s0}, t1, t2, {s1})",
+            (
+                (None, "tensor"),
+                ("num_groups", "int"),
+                (None, "tensor"),
+                (None, "tensor"),
+                ("eps", "real"),
+            ),
+        ),
+        2: (
+            "tp_cpu_group_norm_weight",
+            "tensorplay::Tensor::group_norm(t0, {s0}, t1, std::nullopt, {s2})",
+            (
+                (None, "tensor"),
+                ("num_groups", "int"),
+                (None, "tensor"),
+                ("bias", "optional_tensor"),
+                ("eps", "real"),
+            ),
+        ),
+    },
 }
 
 
@@ -679,6 +717,17 @@ def _extern_shim(
         return None, None, ()
     shim_name, template, literals = found
     return shim_name, template, literals
+
+
+def _is_tensor_operand(node: Any) -> bool:
+    """Whether a call's argument is read as memory rather than as a value.
+
+    A buffer is, and so is a window onto one: both are handed to the call as a
+    place to read elements from, and both are written into the entry point's
+    table by the same route.
+    """
+
+    return isinstance(node, (ir.Buffer, ir.MutableBox, ir.ReinterpretView))
 
 
 def _split_named(arg: Any) -> tuple[str | None, str, str]:
@@ -1113,8 +1162,11 @@ class CppWrapperCodegen(PythonWrapperCodegen):
 
         tensor_args = list(getattr(extern_kernel, "tensor_args", None) or [])
         if not tensor_args:
+            # A window onto a buffer is as much an operand as the buffer is:
+            # the call reads the elements it selects, so it is counted and
+            # handed over as one.
             tensor_args = [
-                a for a in extern_kernel.inputs if isinstance(a, ir.Buffer)
+                a for a in extern_kernel.inputs if _is_tensor_operand(a)
             ]
         if not tensor_args:
             raise NotImplementedError(
@@ -1203,6 +1255,11 @@ class CppWrapperCodegen(PythonWrapperCodegen):
 
         if not literals:
             return ()
+        if any(kind == "tensor" for _, kind in literals):
+            # A call written with its operands in fixed positions says so: each
+            # argument is matched with the place it stands in, and a place that
+            # holds an operand contributes nothing to what is written.
+            return self._extern_literals_in_order(op_name, literals, args)
         by_name = {}
         positional = []
         for arg in args:
@@ -1242,6 +1299,36 @@ class CppWrapperCodegen(PythonWrapperCodegen):
                     f"without its {name!r} argument"
                 )
             values.append(_literal_value(kind, by_name[name]))
+        return tuple(values)
+
+    def _extern_literals_in_order(
+        self, op_name: str, literals, args
+    ) -> tuple[str, ...]:
+        """The arguments of a call written in fixed positions.
+
+        A call whose operands and values alternate is described by the places
+        they stand in: each entry of the form says what is at that place, and an
+        entry that names an operand contributes nothing, because the operand is
+        handed over as a slot rather than written here.
+        """
+
+        values = []
+        for index, (name, kind) in enumerate(literals):
+            if index >= len(args):
+                raise NotImplementedError(
+                    f"C++ wrapper extern kernel {op_name!r} was called with "
+                    f"fewer arguments than its {kind!r} argument"
+                )
+            arg = args[index]
+            if kind == "tensor":
+                continue
+            _, _, value = _split_named(arg)
+            values.append(_literal_value(kind, value))
+        if len(args) != len(literals):
+            raise NotImplementedError(
+                f"C++ wrapper extern kernel {op_name!r} was called with "
+                f"{len(args) - len(literals)} argument(s) nothing describes"
+            )
         return tuple(values)
 
     def codegen_multi_output(self, node: ir.MultiOutput) -> None:
@@ -1368,8 +1455,11 @@ class CppWrapperCodegen(PythonWrapperCodegen):
 
         tensor_args = list(getattr(extern_kernel, "tensor_args", None) or [])
         if not tensor_args:
+            # A window onto a buffer is as much an operand as the buffer is:
+            # the call reads the elements it selects, so it is counted and
+            # handed over as one.
             tensor_args = [
-                a for a in extern_kernel.inputs if isinstance(a, ir.Buffer)
+                a for a in extern_kernel.inputs if _is_tensor_operand(a)
             ]
         if not tensor_args:
             raise NotImplementedError(
@@ -1548,6 +1638,12 @@ class CppWrapperCodegen(PythonWrapperCodegen):
             for name in V.graph.graph_input_names
             if name in V.graph.graph_inputs_original
         ]
+        # Every value the caller hands over is described, whether the generated
+        # code names it or only reads it through a window: the caller fills the
+        # slot from the shape it was given, and a package has to be able to
+        # check that against the value it was built for.
+        for name in tensor_input_names:
+            self._record_buffer_meta(name)
         code = CppWrapperCode(
             value=value,
             line_map=full_source.line_map,
