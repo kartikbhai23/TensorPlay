@@ -219,11 +219,13 @@ resnet18 的 `nhwcToNchwKernel` 24 次/步随之消失（0.289 → 0.004 ms/步�
 
 - `convertTensor_kernel` 240 次/步、1.92 ms：通道序卷积 plan 自带的一次重排（输入行主序时换成 `nchwToNhwc` + `nhwcToNchw`，共 0.017 ms/次；两端都是通道序时只有这一个，0.020 ms/次）。plan 计时是含这次重排的端到端时间（`TP_CONV_PLAN_DEBUG` 的 0.112 ms 与实测 0.111 ms 相符），所以这不是“选错引擎”，而是该形状在通道序下的下限。
 - Triton 里 `triton_per_fused_*` 459 次/步（参考 99 次）：densenet 有 120 个 BN，每个 BN 的反向被展成 4 个小核（两个梯度归约 + 两个逐点）。
-- 设备内拷贝 489 次/步，来源已定位：`aot_autograd` 的 input_updates 回写。每个 BN 三次（running_mean / running_var / num_batches_tracked），resnet18 60 次/步、googlenet 252 次/步、densenet121 487 次/步，单次约 1.4 µs。参考侧为 0：它把归一化统计写在图内。要消掉只有两条路——让区域自己写（回到图内写，需重新处理 cudagraph tree 的写集合），或加一个多张量拷贝核。
+- 设备内拷贝 489 次/步，来源已定位。`input_update_placeholders` 只有 121 个（每个 BN 的 `num_batches_tracked`），其余是**梯度累加**：区域把每个参数的梯度算在自己的缓冲里，再由引擎拷进 `.grad`（densenet 120 个 BN 的 weight+bias 各一次，加上卷积权重）。resnet18 同样：20 次 `num_batches_tracked` + 40 次 BN 参数梯度 + 4 次 147 KB + 3 次 filter 梯度 repack。参考侧为 0：它的图直接写 `.grad`。
+- 试过的替代方案（未采纳）：让训练 BN 直接走框架原生 `batch_norm` / `batch_norm_backward`（`remember_batch_statistics` 已在）。数值更准（单步梯度相对误差 1.2e-6，Triton 分解是 1.2e-3），但训练一步：resnet18 7.74 → 7.54、googlenet 11.20 → 11.38、resnet50 18.28 → 18.40、densenet121 23.87 → 25.06——通道序下原生核反而更贵，且它自己写 running stats 与“区域不写输入”的约定冲突。代码已回退。
 
 ### 6.2 下一步
 
-1. BN 前反向改走框架原生 kernel：`p10` 已有 `batch_norm` / `batch_norm_backward` 与 `remember_batch_statistics`，能替掉 Triton 的 Welford + 4 个逐点核；但前向必须一起换，否则反向 recall 不到统计、会退回重算。
-2. input_updates 的 489 次小拷贝：先做多张量拷贝核（一次启动写完所有归一化统计），再评估图内写的可行性。
+1. 梯度累加不再每步拷贝：区域把梯度算在自己的缓冲里，引擎再拷进 `.grad`。需要在池上做 live 记账（录制输出可被后续回放复用而不失效），否则调用方跨步持有时会静默看到新值；这是 densenet121 上最大的一块（约 0.7 ms/步）。
+2. input_updates 的 20~121 次 8 字节拷贝（`num_batches_tracked`）：合并成一个多张量拷贝核。
 3. 卷积 plan 的候选集：densenet 里 `cutlass__5x_cudnn` 48 次/步 1.77 ms，参考 38 次 0.51 ms，说明有些形状可选的引擎集合里没有参考侧那一个——值得按形状核对 INSTANT 列表与 `drop` 过滤。
-4. 其余同 5.3 的第 2、3、5 条。
+4. 推理侧（批 8，`--mode reduce-overhead`）现状：convnext_tiny 9.21 vs 6.79（0.74）、swin_t 10.24 vs 7.87（0.77）、maxvit_t 13.44 vs 13.06（0.97）、efficientnet_b7 13.28 vs 14.16（1.07）。convnext 的差距集中在 18 个 depthwise 卷积（`conv2d_grouped_direct_kernel` 1.19 ms，参考的同名族 0.61 ms）：把 depthwise 也改成通道序（`TP_STAX_CONV_CHANNELS_LAST_MODE=depthwise`）反而更慢（9.21 → 13.93 ms），说明该模式下权重没有真的按通道序传递，cuDNN 每次调用都重排。
+5. 其余同 5.3 的第 2、3、5 条。
