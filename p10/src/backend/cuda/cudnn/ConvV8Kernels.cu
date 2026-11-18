@@ -563,11 +563,11 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
         if (candidates.size() == 1) return candidates[0];
 
         // Hand the candidates to the library timer, which warms each plan up
-        // once, times a single run, and returns them ordered by that time.
-        // A home-grown timing loop is not equivalent: with one sample per
-        // candidate the ordering follows the sample, and a loop that keeps
-        // only the minimum of a few back-to-back runs ranks candidates by a
-        // different statistic than the one the sorted result is built from.
+        // once and returns them ordered by their measured time.  Three samples
+        // per candidate cost a fraction of a millisecond and give the ordering
+        // a median to stand on: with one sample the ordering follows the
+        // sample, and the winner is cached for the rest of the process.
+        const std::string ranked_head = candidates.front()->getTag();
         int64_t max_ws = 0;
         for (auto& cand : candidates) {
             max_ws = std::max(max_ws, cand->getWorkspaceSize());
@@ -594,12 +594,43 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
                                .setUids(3, uids)
                                .build());
         }
-        auto timed = fe::time_sorted_plan<fe::CudnnFindSamplingTechnique::CUDNN_FIND_SAMPLE_ONCE>(
+        auto timed = fe::time_sorted_plan<fe::CudnnFindSamplingTechnique::CUDNN_FIND_SAMPLE_MEDIAN_OF_THREE>(
             handle, std::move(plans), *variant_pack, kConvBenchmarkPlanLimit);
         if (timed.empty()) {
             TP_THROW(RuntimeError, "cuDNN: no candidate plan could be timed");
         }
-        return std::make_shared<fe::ExecutionPlan>(std::move(timed.front()));
+        // The ranked head is what the plain path takes and is normally within
+        // a few percent of the best.  A timed winner replaces it only when it
+        // is clearly ahead: a candidate that measures marginally faster on a
+        // handful of samples is as likely to be noise, and the answer stays
+        // cached, so a noise-driven swap costs every later call.
+        const fe::ExecutionPlan* chosen = &timed.front();
+        float head_time = 0.0f;
+        const fe::ExecutionPlan* head_plan = nullptr;
+        for (auto& plan : timed) {
+            if (plan.getTag() == ranked_head) {
+                head_time = plan.getExecutionTime();
+                head_plan = &plan;
+                break;
+            }
+        }
+        if (head_plan != nullptr && chosen->getExecutionTime() > 0.97f * head_time) {
+            chosen = head_plan;
+        }
+        if (const char* debug = std::getenv("TP_CONV_PLAN_DEBUG"); debug && debug[0] != '0') {
+            std::fprintf(
+                stderr,
+                "[conv plan] N=%lld K=%lld C=%lld H=%lld W=%lld R=%lld S=%lld g=%lld "
+                "ranked_head=%.3fms chosen=%.3fms candidates=%zu %s\n",
+                static_cast<long long>(N), static_cast<long long>(K),
+                static_cast<long long>(C), static_cast<long long>(H),
+                static_cast<long long>(W), static_cast<long long>(R),
+                static_cast<long long>(S), static_cast<long long>(groups),
+                static_cast<double>(head_time),
+                static_cast<double>(chosen->getExecutionTime()),
+                timed.size(), chosen->getTag().c_str());
+        }
+        return std::make_shared<fe::ExecutionPlan>(*chosen);
     };
 
     std::shared_ptr<fe::ExecutionPlan> plan;
@@ -1712,7 +1743,15 @@ Tensor conv2d_grad_input_cuda(const Tensor& grad_output, const Tensor& input, co
         }
         if (!have) {
             ConvBwdAlgo entry;
-            if (conv_autotune_enabled()) {
+            // The same rule as the forward call: a shape whose engine is
+            // worth choosing is chosen once, when its first call arrives.
+            const bool time_candidates =
+                conv_autotune_enabled() ||
+                conv_large_enough_to_tune(input_c.size(0), weight_c.size(0),
+                                          input_c.size(1), weight_c.size(2),
+                                          weight_c.size(3), grad_output.size(2),
+                                          grad_output.size(3), groups);
+            if (time_candidates) {
                 entry = autotune_conv_bwd_data(handle, *w_desc, weight_c.data_ptr(),
                                                *dy_desc, grad_output_c.data_ptr(), *conv_desc,
                                                *dx_desc, grad_input.data_ptr(), input_c.device());
@@ -1893,7 +1932,15 @@ Tensor conv2d_grad_weight_cuda(const Tensor& grad_output, const Tensor& input, c
         }
         if (!have) {
             ConvBwdAlgo entry;
-            if (conv_autotune_enabled()) {
+            // The same rule as the forward call: a shape whose engine is
+            // worth choosing is chosen once, when its first call arrives.
+            const bool time_candidates =
+                conv_autotune_enabled() ||
+                conv_large_enough_to_tune(input_c.size(0), weight_c.size(0),
+                                          input_c.size(1), weight_c.size(2),
+                                          weight_c.size(3), grad_output.size(2),
+                                          grad_output.size(3), groups);
+            if (time_candidates) {
                 entry = autotune_conv_bwd_filter(handle, *x_desc, input_c.data_ptr(),
                                                  *dy_desc, grad_output_c.data_ptr(), *conv_desc,
                                                  *dw_desc, grad_weight_compute.data_ptr(), input_c.device());
