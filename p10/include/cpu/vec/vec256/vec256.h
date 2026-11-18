@@ -77,6 +77,9 @@ std::enable_if_t<
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ MASK GATHER ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#ifndef _MSC_VER
+// The two lane forms below are ambiguous with the generic walk in that
+// compiler's overload resolution, so it keeps the generic walk.
 template <int64_t scale = 1>
 std::
     enable_if_t<scale == 1 || scale == 2 || scale == 4 || scale == 8, Vectorized<double>> inline mask_gather(
@@ -96,6 +99,7 @@ std::
         Vectorized<float>& mask) {
   return _mm256_mask_i32gather_ps(src, base_addr, vindex, mask, scale);
 }
+#endif
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ CONVERT ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // Between a floating type and the integer type of the same width, lane for

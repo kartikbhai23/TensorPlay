@@ -72,6 +72,9 @@ std::enable_if_t<
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ MASK GATHER ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#ifndef _MSC_VER
+// The two lane forms below are ambiguous with the generic walk in that
+// compiler's overload resolution, so it keeps the generic walk.
 template <int64_t scale = 1>
 std::enable_if_t<scale == 1 || scale == 2 || scale == 4 || scale == 8, Vectorized<double>> inline mask_gather(
     const Vectorized<double>& src,
@@ -103,6 +106,7 @@ std::
       base_addr,
       scale);
 }
+#endif
 
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ CONVERT ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -7,7 +7,9 @@
 // The CPU and CUDA copies of this file are textually identical apart from
 // namespace and library key; no device-specific kernel code lives here.
 #include <algorithm>
+#if defined(__x86_64__)
 #include <immintrin.h>
+#endif
 #include <limits>
 #include <optional>
 #include <string>
