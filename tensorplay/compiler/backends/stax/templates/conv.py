@@ -1490,19 +1490,30 @@ def channels_last_call(x, ndim: int, groups: int, transposed: bool) -> bool:
         return False
     if V.graph.layout_opt:
         return True
+    if transposed or ir.get_device_type(x) != "cuda":
+        return False
     dtype = x.get_dtype()
-    return (
-        config.conv_channels_last_reduced_precision
-        and groups == 1
-        and not transposed
-        and ir.get_device_type(x) == "cuda"
-        and (
-            dtype in (tp.float16, tp.bfloat16)
-            # Single precision runs on the same channels-last tensor-core
-            # engines when it may round through TF32.
-            or (dtype == tp.float32 and _tf32_allowed())
-        )
-    )
+    # Single precision runs on the same channels-last tensor-core engines when
+    # it may round through TF32; without that permission those engines are not
+    # legal and the row-major ones are the only ones left.
+    if not (
+        dtype in (tp.float16, tp.bfloat16)
+        or (dtype == tp.float32 and _tf32_allowed())
+    ):
+        return False
+    mode = config.conv_channels_last_mode
+    if mode == "all":
+        return True
+    if mode in ("depthwise", "grouped"):
+        # A grouped call holds one filter channel per group, so the engines
+        # that suit it read the channels of both operands adjacently.
+        in_channels = x.get_size()[1]
+        grouped = V.graph.sizevars.statically_known_equals(groups, in_channels)
+        if grouped:
+            return True
+        if mode == "grouped" and groups > 1:
+            return True
+    return config.conv_channels_last_reduced_precision and groups == 1
 
 
 #: Whether a kernel is written for the reduced-precision path of this build.

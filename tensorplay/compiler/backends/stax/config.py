@@ -90,6 +90,17 @@ conv_channels_last_reduced_precision = (
     os.environ.get("TP_STAX_CONV_CHANNELS_LAST", "1") == "1"
 )
 
+# Which two-dimensional calls on the GPU ask for their operands channels last
+# on their own, for regions whose layouts are not chosen as a whole.  A call
+# the library runs channels last anyway is handed that order directly, so the
+# kernel writing the operand writes it that way instead of repacking it.
+#   "precision" - the reduced-precision ungrouped calls (the historical set);
+#   "depthwise" - those and every grouped call, where one output per channel
+#                 pair means the channel-major engines dominate;
+#   "grouped"   - every call but the ungrouped ones;
+#   "all"       - every call, ungrouped ones included.
+conv_channels_last_mode = os.environ.get("TP_STAX_CONV_CHANNELS_LAST_MODE", "precision")
+
 # Whether strides are padded when the extents they belong to are symbolic.
 pad_dynamic_shapes = False
 
