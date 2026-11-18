@@ -1405,6 +1405,32 @@ def _module_state_part(modules: list[Any]) -> tuple[Any, ...]:
     )
 
 
+def _module_state_part_unchanged(
+    modules: list[Any], recorded: tuple[Any, ...]
+) -> bool:
+    """Whether the tree still reads as it was recorded, without naming it again.
+
+    Naming the tree builds a tuple per module and one per child binding, and
+    this question is asked on every call where nothing has moved.  Walking the
+    live tree against what was recorded answers it without building anything.
+    """
+
+    if len(modules) != len(recorded):
+        return False
+    for module, entry in zip(modules, recorded):
+        _index, module_id, training, children = entry
+        if module_id != id(module) or training is not module.training:
+            return False
+        live = module._modules
+        if len(live) != len(children):
+            return False
+        for position, (child_name, child) in enumerate(live.items()):
+            recorded_name, child_id = children[position]
+            if child_id != id(child) or recorded_name != child_name:
+                return False
+    return True
+
+
 def _module_state_component(program: Any) -> tuple[Any, ...]:
     """Read live module identities, training modes and child bindings.
 
@@ -1424,13 +1450,12 @@ def _module_state_component(program: Any) -> tuple[Any, ...]:
 
     roots = _cached_state_roots(program)
     if roots is not None:
-        modules, functions, shape, recorded_part, recorded_component = roots
-        module_part = _module_state_part(modules)
-        if module_part == recorded_part:
+        modules, functions, shape, recorded_part, recorded_component, pair = roots
+        if _module_state_part_unchanged(modules, recorded_part):
             plan = _state_plan(program, shape, modules, functions)
             component = _planned_constant_component(plan)
             if component is recorded_component:
-                return (module_part, component)
+                return pair
             # A value a capture baked moved, and with it the module tree the
             # walk reached (a rebound closure cell or global is how a program
             # is pointed at another tree): discover the roots again.
@@ -1440,8 +1465,9 @@ def _module_state_component(program: Any) -> tuple[Any, ...]:
     shape = (tuple(id(module) for module in modules), tuple(id(f) for f in functions))
     plan = _state_plan(program, shape, modules, functions)
     component = _planned_constant_component(plan)
-    _store_state_roots(program, modules, functions, shape, module_part, component)
-    return (module_part, component)
+    pair = (module_part, component)
+    _store_state_roots(program, modules, functions, shape, module_part, component, pair)
+    return pair
 
 
 #: The modules and functions a program's call reaches, with the readings that
@@ -1463,10 +1489,11 @@ def _store_state_roots(
     shape: Any,
     module_part: tuple[Any, ...],
     component: tuple[Any, ...],
+    pair: tuple[Any, ...],
 ) -> None:
     try:
         _state_roots_cache[program] = (
-            modules, functions, shape, module_part, component
+            modules, functions, shape, module_part, component, pair
         )
     except TypeError:
         pass
@@ -1502,7 +1529,7 @@ def _state_certificate_plan(program: Any) -> Any:
     roots = _cached_state_roots(program)
     if roots is None:
         return None
-    modules, functions, shape, _module_part, component = roots
+    modules, functions, shape, _module_part, component, _pair = roots
     try:
         cached = _state_certificate_cache.get(program)
     except TypeError:

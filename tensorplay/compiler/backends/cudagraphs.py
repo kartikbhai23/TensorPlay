@@ -141,6 +141,33 @@ def _output_structure(value: Any) -> Tuple:
     return ("unsupported",)
 
 
+#: Whether a value's dtype and device compare by value rather than by
+#: identity.  The runtime's types do; a stand-in's may not, and then the
+#: signature spells them out.  The answer belongs to the type, so it is asked
+#: once, and it is asked of the comparison each type supplies rather than of
+#: one instance compared to itself, because two instances of a stand-in are
+#: what a replay is compared against.
+_self_comparing_operands: dict[type, bool] = {}
+
+
+def _operand_identity(value: Any) -> tuple:
+    """The dtype and device of a value, as themselves when they compare."""
+
+    value_type = type(value)
+    compares = _self_comparing_operands.get(value_type)
+    if compares is None:
+        dtype = value.dtype
+        device = value.device
+        compares = (
+            type(dtype).__eq__ is not object.__eq__
+            and type(device).__eq__ is not object.__eq__
+        )
+        _self_comparing_operands[value_type] = compares
+    if compares:
+        return (value.dtype, value.device)
+    return (str(value.dtype), str(value.device))
+
+
 def _shape_signature(args: Sequence[Any]) -> Tuple:
     signature: List[Any] = []
     for a in args:
@@ -150,9 +177,8 @@ def _shape_signature(args: Sequence[Any]) -> Tuple:
             # a same-shape view with a different layout (e.g. a transpose)
             # must not reuse the entry.  Shape and stride are recorded as the
             # tensor hands them over rather than rebuilt as tuples, since each
-            # is compared by value anyway; the dtype and device are spelled out
-            # because a stand-in's device need not compare equal to itself.
-            signature.append((a.shape, a.stride(), str(a.dtype), str(a.device)))
+            # is compared by value anyway.
+            signature.append((a.shape, a.stride(), *_operand_identity(a)))
         else:
             # Non-tensor inputs are baked into the capture; their value
             # joins the signature so a drift is refused at replay instead
@@ -1124,6 +1150,12 @@ class CudagraphCompiledCallable:
         # versions, and the layout key resolved from them.  See _layout_matches.
         self._layout_memo: Optional[Tuple[Tuple, Tuple]] = None
         self._layout_key_cache: Optional[str] = None
+        # Whether every argument of the recorded call is a tensor, and whether
+        # any of them carries a version counter that an in-place write moves.
+        # Both belong to the recorded call and are asked once, because the memo
+        # that uses them is only consulted for the very same arguments.
+        self._all_tensor_args = False
+        self._versioned_args = False
         self._drifts = 0
         # Arguments the recording reads from a private buffer because they
         # move between calls, and a counter of re-recordings taken to get
@@ -1181,13 +1213,16 @@ class CudagraphCompiledCallable:
 
         A region's arguments include every parameter it reads, so both the
         layout signature and the address check cost a scan of hundreds of
-        values.  Identical objects with unchanged versions describe the same
-        layout at the same storage, which is what those checks establish.
+        values.  Identical objects describe the same layout at the same
+        storage, which is what those checks establish.  The scan for version
+        counters is only made for arguments that carry them: a framework whose
+        tensors do not expose one has already said, once, that an identity
+        match is the whole of what can be certified.
         """
 
         ids = tuple(map(id, args))
         mutated = self._mutated
-        if self._ignores_versions:
+        if self._ignores_versions or not self._versioned_args:
             versions = None
         else:
             versions = tuple(
@@ -1195,13 +1230,8 @@ class CudagraphCompiledCallable:
                 for index, value in enumerate(args)
             )
         memo = self._layout_memo
-        if (
-            memo is not None
-            and memo[0] == ids
-            and memo[1] == versions
-            and all(_looks_tensor(value) for value in args)
-        ):
-            return True
+        if memo is not None and memo[0] == ids and memo[1] == versions:
+            return self._all_tensor_args
         self._layout_memo = (ids, versions)
         self._layout_key_cache = None
         return False
@@ -1219,6 +1249,11 @@ class CudagraphCompiledCallable:
         if key is None:
             key = self._layout_key(args) if self._trees else self._key
         first = self._state != "live"
+        # Asked once for the arguments of this recording: whether they are all
+        # tensors, and whether any of them carries a version counter.  The memo
+        # that reads both is only consulted for these very arguments.
+        self._all_tensor_args = all(_looks_tensor(value) for value in args)
+        self._versioned_args = any(hasattr(value, "_version") for value in args)
         # Remembered for the C trampoline, which replays without passing
         # through ``__call__`` again: it needs the same autograd guard.
         self._needs_eager_when_grad = (
