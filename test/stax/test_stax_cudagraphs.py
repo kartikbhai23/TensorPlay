@@ -12,6 +12,7 @@ import pytest
 import tensorplay as tp
 from tensorplay._stax.cudagraphs import (
     CudaGraphError,
+    CudaGraphManager,
     CudagraphCompiledCallable,
     cudagraph_wrap,
     wrap_skip_reason,
@@ -278,6 +279,76 @@ def test_drifted_input_is_staged_onto_the_recording(fake_cuda_probe):
     # input replayed like any other call
     assert calls == [[3.0], [3.0]]
     assert wrapped._state == "live"
+
+
+def test_moved_argument_is_staged_without_staging_the_rest(fake_cuda_probe):
+    """A region with one fresh argument per call stages only that one.
+
+    A training step hands its backward region parameters that never move and
+    one gradient that does; recording the gradient against a buffer of its
+    own keeps every other argument free of a copy.
+    """
+
+    gm = _clean_gm()
+    graph = FakeGraph()
+    native = SimpleNamespace(CUDAGraph=lambda: graph)
+    calls = []
+
+    def artifact(weight, grad):
+        calls.append((weight.data.tolist(), grad.data.tolist()))
+        out = FakeTensor(weight.data * grad.data)
+        if graph.in_capture:
+
+            def recompute(source=weight, other=grad, result=out):
+                result.data = source.data * other.data
+
+            graph.recompute = recompute
+        return out
+
+    weight = FakeTensor(tp.tensor([2.0]))
+    wrapped, _ = cudagraph_wrap(
+        artifact, gm, [weight, FakeTensor(tp.tensor([3.0]))], native=native,
+        trees=False,
+    )
+    grad = FakeTensor(tp.tensor([3.0]))
+    assert wrapped(weight, grad).tolist() == [6.0]
+
+    grad = FakeTensor(tp.tensor([5.0]))  # a fresh tensor, so a new address
+    assert wrapped(weight, grad).tolist() == [10.0]
+    # The recording was taken again, reading the gradient from a buffer of
+    # its own; the weight keeps being read where the caller keeps it.
+    assert wrapped._trees is False
+    assert wrapped._state == "live"
+    assert wrapped._staged == frozenset({1})
+    assert calls[-2:] == [([2.0], [5.0]), ([2.0], [5.0])]
+
+    before = len(calls)
+    grad = FakeTensor(tp.tensor([7.0]))
+    assert wrapped(weight, grad).tolist() == [14.0]
+    # The moved argument is copied onto the recording's own buffer, so the
+    # artifact does not run again.
+    assert len(calls) == before
+
+
+def test_capture_binds_an_input_whose_layout_cannot_be_staged(fake_cuda_probe):
+    """An expanded input has no private buffer of its own layout.
+
+    Copying it into a dense buffer would hand the recording a layout its
+    kernels were not compiled for, so the recording reads it where the caller
+    keeps it instead.
+    """
+
+    graph = FakeGraph()
+    manager = CudaGraphManager(native=SimpleNamespace(CUDAGraph=lambda: graph))
+    expanded = FakeTensor(tp.tensor([1.0]).expand(2))
+    entry = manager.capture("k", lambda x: x, expanded, staged=(0,))
+    assert entry.staged_positions == frozenset()
+    assert entry.static_inputs[0] is expanded
+
+    dense = FakeTensor(tp.tensor([1.0, 2.0]))
+    entry = manager.capture("dense", lambda x: x, dense, staged=(0,))
+    assert entry.staged_positions == frozenset({0})
+    assert entry.static_inputs[0] is not dense
 
 
 def test_direct_binding_runs_the_artifact_for_drifted_inputs(fake_cuda_probe):

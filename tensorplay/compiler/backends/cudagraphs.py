@@ -41,7 +41,15 @@ class CudaGraphInputDrift(CudaGraphError):
     captured storage directly, so a moved input cannot be seen) or their
     shape/layout signature changed.  Transient by nature: the next call
     with matching arguments replays again.
+
+    ``positions`` names the arguments that moved, when that is what
+    happened; a layout mismatch names none because no argument of the new
+    vector describes the recorded graph.
     """
+
+    def __init__(self, message: str, positions: Sequence[int] = ()) -> None:
+        super().__init__(message)
+        self.positions: Tuple[int, ...] = tuple(int(p) for p in positions)
 
 
 def _default_native() -> Any:
@@ -75,6 +83,32 @@ def _clone_if_tensor(value: Any) -> Any:
     """A tensor's own storage for a warmup run that must not write through."""
 
     return value.clone() if _looks_tensor(value) else value
+
+
+def _stage_input(value: Any) -> Any:
+    """A private buffer for one recorded input, holding its values.
+
+    The buffer keeps the input's layout where it can: a recording reads it
+    with the strides its kernels were compiled against, so a contiguous copy
+    of a strided view would be read at the wrong positions.  A layout that
+    shares one element between positions (an expanded view) cannot be a copy
+    destination, and materialising it into another layout would hand the
+    recording a layout its kernels were not compiled for, so such an input
+    gets no buffer at all and ``None`` is returned: the caller then records
+    against that tensor wherever it lives.
+    """
+
+    cloned = value.clone()
+    if tuple(cloned.stride()) == tuple(value.stride()):
+        return cloned
+    try:
+        staged = value.new_empty_strided(
+            tuple(value.shape), tuple(value.stride())
+        )
+        staged.copy_(value)
+    except Exception:  # noqa: BLE001 - overlapping or stand-in layout
+        return None
+    return staged
 
 
 def _output_structure(value: Any) -> Tuple:
@@ -200,12 +234,13 @@ def _pin_launch_stream_to_capture():
 class _GraphEntry:
     __slots__ = ("key", "signature", "graph", "static_inputs",
                  "static_outputs", "tensor_positions", "warmup_structure",
-                 "replays", "input_ptrs")
+                 "replays", "input_ptrs", "staged_positions")
 
     def __init__(self, key: str, signature: Tuple, graph: Any,
                  static_inputs: List[Any], static_outputs: List[Any],
                  tensor_positions: Tuple[int, ...],
-                 warmup_structure: Tuple) -> None:
+                 warmup_structure: Tuple,
+                 staged_positions: Sequence[int] = ()) -> None:
         self.key = key
         self.signature = signature
         self.graph = graph
@@ -224,6 +259,10 @@ class _GraphEntry:
         self.warmup_structure = warmup_structure
         self.replays = 0
         self.input_ptrs: Tuple[Optional[int], ...] = ()
+        # Arguments the recording reads from a private buffer rather than
+        # from the caller's tensor, because that argument moves between
+        # calls.  Replay writes the caller's current values onto it first.
+        self.staged_positions: frozenset = frozenset(int(p) for p in staged_positions)
 
 
 class CudaGraphManager:
@@ -250,7 +289,8 @@ class CudaGraphManager:
     # -- API ------------------------------------------------------------------
 
     def capture(self, key: str, fn: Callable[..., Any], *sample_args: Any,
-                warmup_on_copies: bool = False) -> _GraphEntry:
+                warmup_on_copies: bool = False,
+                staged: Sequence[int] = ()) -> _GraphEntry:
         if self.capturing is not None:
             raise CudaGraphError(
                 f"nested capture attempted ({self.capturing!r} already active)"
@@ -269,6 +309,36 @@ class CudaGraphManager:
                 f"graph cache full ({self.max_entries}); clear stale entries"
             )
 
+        # The graph is captured against the caller's own tensors: the
+        # recorded kernels read their storage live, so replay needs no
+        # staging copy.  An argument that moves between calls cannot be read
+        # that way, so it is recorded against a private buffer of its own
+        # layout which replay refills from the call's tensor.  The manager
+        # keeps references for the entry's lifetime, which also stops the
+        # allocator from recycling those addresses for unrelated allocations
+        # while the entry exists.
+        tensor_positions = tuple(
+            index for index, arg in enumerate(sample_args)
+            if _looks_tensor(arg)
+        )
+        requested = frozenset(int(index) for index in staged)
+        static_inputs: List[Any] = []
+        staged_positions = set()
+        for index, arg in enumerate(sample_args):
+            buffer = (
+                _stage_input(arg)
+                if index in requested and _looks_tensor(arg)
+                else None
+            )
+            if buffer is None:
+                # No buffer of this layout: the recording reads the argument
+                # where the caller keeps it.
+                static_inputs.append(arg)
+                continue
+            static_inputs.append(buffer)
+            staged_positions.add(index)
+        staged_positions = frozenset(staged_positions)
+
         graph = self._new_graph()
         try:
             # Warmup executes lazy initialisations outside capture (cuBLAS
@@ -278,22 +348,12 @@ class CudaGraphManager:
             # once for real, and the caller's buffers must see that write
             # exactly once.
             warmup_args = (
-                [_clone_if_tensor(arg) for arg in sample_args]
+                [_clone_if_tensor(arg) for arg in static_inputs]
                 if warmup_on_copies
-                else list(sample_args)
+                else list(static_inputs)
             )
             warmup_output = fn(*warmup_args)
             warmup_structure: Tuple = _output_structure(warmup_output)
-            # The graph is captured against the caller's own tensors: the
-            # recorded kernels read their storage live, so replay needs no
-            # staging copy.  The manager keeps references for the entry's
-            # lifetime, which also stops the allocator from recycling those
-            # addresses for unrelated allocations while the entry exists.
-            static_inputs = list(sample_args)
-            tensor_positions = tuple(
-                index for index, arg in enumerate(sample_args)
-                if _looks_tensor(arg)
-            )
             self.capturing = key
             graph.capture_begin()
             restore_stream = _pin_launch_stream_to_capture()
@@ -322,7 +382,7 @@ class CudaGraphManager:
             self.capturing = None
         out_list = list(outputs) if isinstance(outputs, (list, tuple)) else [outputs]
         entry = _GraphEntry(key, signature, graph, static_inputs, out_list,
-                            tensor_positions, warmup_structure)
+                            tensor_positions, warmup_structure, staged_positions)
         entry.input_ptrs = tuple(
             _input_data_ptr(sample_args[position])
             for position in tensor_positions
@@ -350,15 +410,31 @@ class CudaGraphManager:
             # captured storage is not an option, that storage is the caller's
             # own tensor.  A call whose arguments are the very objects the
             # last call passed, unchanged, is already known to live there.
+            moved: List[int] = []
+            first: Optional[Tuple[Optional[int], Optional[int]]] = None
             for position, recorded in zip(entry.tensor_positions, entry.input_ptrs):
+                if position in entry.staged_positions:
+                    # Replay writes this one onto the recorded private buffer.
+                    continue
                 actual = _input_data_ptr(args[position])
-                if actual != recorded:
-                    raise CudaGraphInputDrift(
-                        f"entry {key!r} input at position {position} lives at "
-                        f"{actual!r}, but the graph was captured against "
-                        f"{recorded!r}; run the artifact directly for drifted "
-                        "inputs"
-                    )
+                if actual == recorded:
+                    continue
+                if first is None:
+                    first = (actual, recorded)
+                moved.append(position)
+            if first is not None:
+                raise CudaGraphInputDrift(
+                    f"entry {key!r} input at position {moved[0]} lives at "
+                    f"{first[0]!r}, but the graph was captured against "
+                    f"{first[1]!r}; run the artifact directly for drifted "
+                    "inputs",
+                    moved,
+                )
+        # Arguments the recording reads from a private buffer get the call's
+        # current values; every other argument is read where the caller keeps
+        # it, so no copy is needed.
+        for position in entry.staged_positions:
+            entry.static_inputs[position].copy_(args[position])
         entry.graph.replay()
         entry.replays += 1
         return list(entry.static_outputs)
@@ -413,6 +489,11 @@ _OUT_OF_PLACE_EXCEPTIONS = frozenset({"requires_grad_", "retain_grad_"})
 #: Consecutive input drifts after which a compiled artifact stops replaying
 #: against the caller's storage and starts staging its inputs instead.
 _DRIFT_LIMIT = 2
+
+#: Re-recordings allowed while moving arguments onto private buffers one
+#: drift at a time, before a region that moves everything falls back to
+#: staging every argument.
+_PROMOTION_LIMIT = 8
 
 
 def format_default_skip_message(reason: str) -> str:
@@ -1031,6 +1112,11 @@ class CudagraphCompiledCallable:
         self._layout_memo: Optional[Tuple[Tuple, Tuple]] = None
         self._layout_key_cache: Optional[str] = None
         self._drifts = 0
+        # Arguments the recording reads from a private buffer because they
+        # move between calls, and a counter of re-recordings taken to get
+        # there.  See _promote_moved_inputs.
+        self._staged: frozenset = frozenset()
+        self._promotions = 0
         self.__name__ = getattr(compiled, "__name__", "cudagraph_compiled")
 
     def _replays_under_autograd(self) -> bool:
@@ -1154,7 +1240,13 @@ class CudagraphCompiledCallable:
             return self._manager.capture(
                 key, self._compiled, *args, warmup_on_copies=True
             )
-        return self._manager.capture(key, self._compiled, *args)
+        # The tree manager copies every argument onto a recording's own
+        # inputs already, so a promoted position needs no special handling
+        # there; the direct manager reads the caller's storage and is told
+        # which positions it cannot read there.
+        if self._trees:
+            return self._manager.capture(key, self._compiled, *args)
+        return self._manager.capture(key, self._compiled, *args, staged=self._staged)
 
     def _shape_outputs(self, outputs: Sequence[Any]) -> Any:
         """Give a recorded run's results the shape the caller reads."""
@@ -1184,17 +1276,24 @@ class CudagraphCompiledCallable:
             return self._capture(args, key=key)
         try:
             outputs = self._manager.replay(key, *args, verify=not certified)
-        except CudaGraphInputDrift:
+        except CudaGraphInputDrift as drift:
             if self._trees:
                 # The layout is new (e.g. a different arity): record it.
                 if retry:
                     return self._capture(args, key=key)
                 return self._compiled(*args)
             # A direct recording replays from the caller's own storage, so a
-            # call whose tensors moved cannot use it.  Once that repeats, the
-            # caller clearly moves its inputs every call: switch to staging.
-            # A region that writes an input must not: the staged copy would
-            # take the write instead of the caller's buffer.
+            # call whose tensors moved cannot use it.  Re-record reading just
+            # the arguments that moved from private buffers: the rest keep
+            # costing nothing, which is what a region with many parameters
+            # and one fresh gradient depends on.  A region that writes an
+            # input must not stage at all -- the staged copy would take the
+            # write instead of the caller's buffer -- and a call whose
+            # arguments all move is staged wholesale, which is what the tree
+            # manager does from its first call.
+            promoted = self._promote_moved_inputs(args, drift.positions)
+            if promoted is not None:
+                return promoted
             self._drifts += 1
             if self._drifts >= _DRIFT_LIMIT and not self._mutates_inputs:
                 return self._switch_to_staging(args)
@@ -1212,6 +1311,46 @@ class CudagraphCompiledCallable:
             return self._compiled(*args)
         self._drifts = 0
         return self._shape_outputs(outputs)
+
+    def _promote_moved_inputs(
+        self, args: Tuple[Any, ...], positions: Sequence[int]
+    ) -> Optional[Any]:
+        """Re-record reading the arguments that moved from private buffers.
+
+        A training step hands a backward region its saved values and gradients
+        afresh every call while the region's parameters never move, so a
+        recording that reads every argument where the caller keeps it drifts
+        on one position per step.  Recording that one position against a
+        buffer of its own costs one copy per replay and keeps every other
+        argument free.  ``None`` means this call is not worth promoting: the
+        region writes its inputs, or so many arguments move that the tree
+        manager's wholesale staging is the better shape.
+        """
+
+        if self._mutates_inputs or not positions:
+            return None
+        staged = self._staged | frozenset(int(p) for p in positions)
+        if staged == self._staged:
+            # Already recording these from private buffers: the recording
+            # cannot be the one this call drifted against.
+            return None
+        tensors = sum(1 for value in args if _looks_tensor(value))
+        if not tensors or len(staged) * 2 > tensors:
+            return None
+        if self._promotions >= _PROMOTION_LIMIT:
+            return None
+        self._staged = staged
+        self._promotions += 1
+        self._layout_memo = None
+        self._layout_key_cache = None
+        # The entry records where its arguments lived: drop it and record
+        # again, this time against a private buffer for the moved ones.
+        self._manager.clear(self._key)
+        log.info(
+            "cudagraph input at position %s moves every call; staging it",
+            ", ".join(str(position) for position in sorted(staged)),
+        )
+        return self._capture(args)
 
     def _switch_to_staging(self, args: Tuple[Any, ...]) -> Any:
         """Re-record against private buffers after repeated input drift.
@@ -1231,6 +1370,7 @@ class CudagraphCompiledCallable:
         self._trees = True
         self._state = "cold"
         self._drifts = 0
+        self._staged = frozenset()
         self._layout_memo = None
         self._layout_key_cache = None
         log.info(

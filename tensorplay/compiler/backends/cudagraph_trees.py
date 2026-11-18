@@ -26,32 +26,13 @@ from typing import Any, Optional, Sequence
 from .cudagraphs import (
     CudaGraphError,
     CudaGraphInputDrift,
+    _input_data_ptr as _input_ptr,
     _looks_tensor,
     _output_structure,
     _pin_launch_stream_to_capture,
     _shape_signature,
+    _stage_input,
 )
-
-
-def _stage_input(value: Any) -> Any:
-    """A private buffer for one captured input, holding its values.
-
-    The buffer keeps the input's layout: a recording reads it with the strides
-    the kernels were compiled against, so a contiguous copy of a strided view
-    would be read at the wrong positions.
-    """
-
-    cloned = value.clone()
-    if tuple(cloned.stride()) == tuple(value.stride()):
-        return cloned
-    try:
-        staged = value.new_empty_strided(
-            tuple(value.shape), tuple(value.stride())
-        )
-    except Exception:  # noqa: BLE001 - stand-ins have no such factory
-        return cloned
-    staged.copy_(value)
-    return staged
 
 
 class GraphNode:
@@ -69,6 +50,7 @@ class GraphNode:
         "warmup_structure",
         "replays",
         "last_used",
+        "bound_positions",
     )
 
     def __init__(
@@ -81,6 +63,7 @@ class GraphNode:
         static_outputs: list[Any],
         tensor_positions: tuple[int, ...],
         warmup_structure: tuple,
+        bound_positions: frozenset = frozenset(),
     ) -> None:
         self.key = key
         self.signature = signature
@@ -93,6 +76,10 @@ class GraphNode:
         self.warmup_structure = warmup_structure
         self.replays = 0
         self.last_used = 0
+        # Arguments whose layout has no private buffer: the recording reads
+        # them where the caller keeps them, so a replay checks their address
+        # instead of copying.
+        self.bound_positions = bound_positions
 
     def path(self) -> tuple[tuple, ...]:
         """The signatures from the root down to this node."""
@@ -189,11 +176,20 @@ class CUDAGraphTreeManager:
 
         # Recording against the call's own tensors would bake their addresses
         # in; private buffers stay with the node and are written before each
-        # replay, so the graph sees a stable address and fresh values.
-        static_inputs = [
-            _stage_input(arg) if _looks_tensor(arg) else arg
-            for arg in sample_args
-        ]
+        # replay, so the graph sees a stable address and fresh values.  An
+        # input whose layout cannot be reproduced (an expanded view) has no
+        # private buffer: the node reads it where the caller keeps it, and a
+        # call that moves it falls back to the artifact.
+        static_inputs: list[Any] = []
+        bound: set[int] = set()
+        for index, arg in enumerate(sample_args):
+            buffer = _stage_input(arg) if _looks_tensor(arg) else None
+            if buffer is None:
+                if _looks_tensor(arg):
+                    bound.add(index)
+                static_inputs.append(arg)
+            else:
+                static_inputs.append(buffer)
         tensor_positions = tuple(
             index for index, arg in enumerate(sample_args) if _looks_tensor(arg)
         )
@@ -236,6 +232,7 @@ class CUDAGraphTreeManager:
             static_outputs,
             tensor_positions,
             structure,
+            frozenset(bound),
         )
         node.last_used = self._next_tick()
         parent.children.setdefault(signature, node)
@@ -261,12 +258,29 @@ class CUDAGraphTreeManager:
                 )
         static = [node.static_inputs[i] for i in node.tensor_positions]
         tensors = [args[i] for i in node.tensor_positions]
+        bound = node.bound_positions
+        if bound:
+            # A bound argument is read where the recording found it, so it
+            # must still be there; every other argument is copied below.
+            for position in sorted(bound):
+                recorded = _input_ptr(node.static_inputs[position])
+                if _input_ptr(args[position]) != recorded:
+                    raise CudaGraphInputDrift(
+                        f"node {key!r} input at position {position} lives at "
+                        f"{_input_ptr(args[position])!r}, but the recording "
+                        f"reads it at {recorded!r}",
+                        (position,),
+                    )
         stage = getattr(node.graph, "stage_and_launch", None)
-        if stage is not None:
+        if stage is not None and not bound:
             # One native call stages every input and launches the graph.
             stage(static, tensors)
         else:
-            for destination, source in zip(static, tensors):
+            for position, destination, source in zip(
+                node.tensor_positions, static, tensors
+            ):
+                if position in bound:
+                    continue
                 destination.copy_(source)
             node.graph.replay()
         node.replays += 1
