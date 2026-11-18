@@ -163,25 +163,47 @@ def synchronize(device: str) -> None:
         tp.cuda.synchronize()
 
 
-def time_call(fn: Callable[[], Any], device: str, warmup: int, repeats: int) -> float:
-    for _ in range(warmup):
+def timed_once(fn: Callable[[], Any], device: str) -> float:
+    if device == "cuda":
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
         fn()
+        end.record()
+        synchronize(device)
+        return start.elapsed_time(end)
+    started = time.perf_counter()
+    fn()
+    return (time.perf_counter() - started) * 1e3
+
+
+def time_sides(
+    sides: Sequence[tuple[str, Callable[[], Any]]],
+    device: str,
+    warmup: int,
+    repeats: int,
+) -> dict[str, float]:
+    """Time several sides of one case against the same device state.
+
+    The accelerator's clock and its caches settle while a case runs, so a
+    side measured in its own block carries whatever the block before it left
+    behind -- and the two sides of a comparison would then differ by the
+    order they were measured in rather than by what they compute.  Every side
+    warms up first, and the measured rounds rotate through them, so each one
+    is sampled at the head, the middle and the tail of the case alike.
+    """
+
+    for _ in range(warmup):
+        for _, fn in sides:
+            fn()
     synchronize(device)
-    samples = []
-    for _ in range(repeats):
-        if device == "cuda":
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            start.record()
-            fn()
-            end.record()
-            synchronize(device)
-            samples.append(start.elapsed_time(end))
-        else:
-            started = time.perf_counter()
-            fn()
-            samples.append((time.perf_counter() - started) * 1e3)
-    return statistics.median(samples)
+    samples: dict[str, list[float]] = {name: [] for name, _ in sides}
+    count = len(sides)
+    for round_index in range(repeats):
+        for offset in range(count):
+            name, fn = sides[(round_index + offset) % count]
+            samples[name].append(timed_once(fn, device))
+    return {name: statistics.median(values) for name, values in samples.items()}
 
 
 def to_tensorplay_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -370,15 +392,6 @@ def run_case(
         if "infer" in tasks:
             if cold_compile:
                 torch.compiler.reset()
-            with tp.no_grad():
-                record["tp_eager_infer_ms"] = time_call(
-                    lambda: tp_model(tp_input), device, warmup, repeats
-                )
-            with torch.no_grad():
-                record["reference_eager_infer_ms"] = time_call(
-                    lambda: reference_model(reference_input), device, warmup, repeats
-                )
-
             stax, stax_compile = compile_tensorplay(tp_model, mode)
             started = time.perf_counter()
             with tp.no_grad():
@@ -398,17 +411,8 @@ def run_case(
                 reference_scale,
             )
             record["stax_codegens"] = codegens(stax)
-            with tp.no_grad():
-                record["stax_infer_ms"] = time_call(
-                    lambda: stax(tp_input), device, warmup, repeats
-                )
-            record["stax_vs_eager"] = (
-                record["tp_eager_infer_ms"] / record["stax_infer_ms"]
-            )
-            record["stax_vs_reference_eager"] = (
-                record["reference_eager_infer_ms"] / record["stax_infer_ms"]
-            )
 
+            reference = None
             if run_reference_compile:
                 reference, reference_compile = compile_reference(reference_model, mode)
                 started = time.perf_counter()
@@ -428,10 +432,43 @@ def run_case(
                 record["compiled_vs_reference_compiled_max_abs_error"] = float(
                     np.max(np.abs(compiled_logits - reference_logits))
                 )
+
+            def tp_compiled_infer() -> Any:
+                with tp.no_grad():
+                    return stax(tp_input)
+
+            def tp_eager_infer() -> Any:
+                with tp.no_grad():
+                    return tp_model(tp_input)
+
+            def reference_eager_infer() -> Any:
                 with torch.no_grad():
-                    record["reference_compiled_infer_ms"] = time_call(
-                        lambda: reference(reference_input), device, warmup, repeats
-                    )
+                    return reference_model(reference_input)
+
+            sides = [
+                ("stax", tp_compiled_infer),
+                ("tp_eager", tp_eager_infer),
+                ("reference_eager", reference_eager_infer),
+            ]
+            if reference is not None:
+
+                def reference_compiled_infer() -> Any:
+                    with torch.no_grad():
+                        return reference(reference_input)
+
+                sides.append(("reference_compiled", reference_compiled_infer))
+            timings = time_sides(sides, device, warmup, repeats)
+            record["stax_infer_ms"] = timings["stax"]
+            record["tp_eager_infer_ms"] = timings["tp_eager"]
+            record["reference_eager_infer_ms"] = timings["reference_eager"]
+            record["stax_vs_eager"] = (
+                record["tp_eager_infer_ms"] / record["stax_infer_ms"]
+            )
+            record["stax_vs_reference_eager"] = (
+                record["reference_eager_infer_ms"] / record["stax_infer_ms"]
+            )
+            if reference is not None:
+                record["reference_compiled_infer_ms"] = timings["reference_compiled"]
                 record["stax_vs_reference_compiled"] = (
                     record["reference_compiled_infer_ms"] / record["stax_infer_ms"]
                 )
@@ -462,13 +499,6 @@ def run_case(
                 loss.backward()
                 reference_optimizer.step()
 
-            record["tp_eager_train_ms"] = time_call(
-                tp_step, device, train_warmup, train_repeats
-            )
-            record["reference_eager_train_ms"] = time_call(
-                reference_step, device, train_warmup, train_repeats
-            )
-
             if cold_compile:
                 torch.compiler.reset()
             stax_train, stax_train_compile = compile_tensorplay(tp_model, mode)
@@ -491,16 +521,11 @@ def run_case(
             record["stax_train_first_step_seconds"] = time.perf_counter() - started
             record["stax_backward_codegens"] = backward_codegens(stax_train)
 
-            record["stax_train_ms"] = time_call(
-                stax_step, device, train_warmup, train_repeats
-            )
-            record["stax_train_vs_eager"] = (
-                record["tp_eager_train_ms"] / record["stax_train_ms"]
-            )
-            record["stax_train_vs_reference_eager"] = (
-                record["reference_eager_train_ms"] / record["stax_train_ms"]
-            )
-
+            train_sides = [
+                ("stax", stax_step),
+                ("tp_eager", tp_step),
+                ("reference_eager", reference_step),
+            ]
             if run_reference_compile:
                 reference_train, reference_train_compile = compile_reference(
                     reference_model, mode
@@ -521,10 +546,24 @@ def run_case(
                 record["reference_train_first_step_seconds"] = (
                     time.perf_counter() - started
                 )
+                train_sides.append(("reference_compiled", reference_compiled_step))
 
-                record["reference_compiled_train_ms"] = time_call(
-                    reference_compiled_step, device, train_warmup, train_repeats
-                )
+            train_timings = time_sides(
+                train_sides, device, train_warmup, train_repeats
+            )
+            record["stax_train_ms"] = train_timings["stax"]
+            record["tp_eager_train_ms"] = train_timings["tp_eager"]
+            record["reference_eager_train_ms"] = train_timings["reference_eager"]
+            record["stax_train_vs_eager"] = (
+                record["tp_eager_train_ms"] / record["stax_train_ms"]
+            )
+            record["stax_train_vs_reference_eager"] = (
+                record["reference_eager_train_ms"] / record["stax_train_ms"]
+            )
+            if run_reference_compile:
+                record["reference_compiled_train_ms"] = train_timings[
+                    "reference_compiled"
+                ]
                 record["stax_train_vs_reference_compiled"] = (
                     record["reference_compiled_train_ms"] / record["stax_train_ms"]
                 )
