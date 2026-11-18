@@ -902,18 +902,23 @@ inline __m256 v_gelu_tanh_f32(__m256 x, __m256 one) {
     return _mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(0.5f), x), cdf);
 }
 
-// acosh from the library kernel, repaired where the kernel's own formula
-// leaves the float range.  That formula needs sqrt(x*x - 1); for
-// x > 1.8e19 the square overflows and the kernel reports inf where the
-// answer is about log(2x).  Above the same bound the discarded -1 sits far
-// below the spacing of x, so log(x) + log(2) is the value to within a couple
-// of ulp, and the repair is a single logarithm on the lanes that need it.
+// acosh from the identity log(x + sqrt((x+1)(x-1))).  The product form has
+// no cancellation for x >= 1 (both factors share the sign), so one square
+// root and one lane logarithm answer the whole domain; below one the square
+// turns negative and the logarithm of the NaN sum carries the domain error
+// through.  For x > 1.8e19 the product overflows while the discarded -1
+// sits far below the spacing of x, so log(x) + log(2) is the value to
+// within a couple of ulp, and the repair is a single logarithm on the lanes
+// that need it.
 __attribute__((target("avx2,fma"), always_inline))
 inline __m256 v_acosh_f32x8(__m256 x) {
-    const __m256 r = tensorplay::tpsleef::acosh(x);
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 s = _mm256_mul_ps(_mm256_add_ps(x, one),
+                                   _mm256_sub_ps(x, one));
+    const __m256 r = v_log_f32(_mm256_add_ps(x, _mm256_sqrt_ps(s)));
     const __m256 big = _mm256_cmp_ps(x, _mm256_set1_ps(1.8446744e19f), _CMP_GE_OQ);
     if (_mm256_movemask_ps(big) == 0) return r;
-    const __m256 fixed = _mm256_add_ps(tensorplay::tpsleef::log(x),
+    const __m256 fixed = _mm256_add_ps(v_log_f32(x),
                                        _mm256_set1_ps(0.69314718055994530942f));
     return _mm256_blendv_ps(r, fixed, big);
 }
