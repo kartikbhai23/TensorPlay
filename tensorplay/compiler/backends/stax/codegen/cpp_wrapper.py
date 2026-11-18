@@ -458,6 +458,44 @@ _EXTERN_KERNEL_ARITY_SHIMS: dict[
             ),
         ),
     },
+    # Attention reads three operands and, when the program supplies one, a
+    # mask as a fourth.  The mask stands between them and the numbers, so the
+    # two forms are separate: one writes the absent mask, the other hands the
+    # mask over as the operand it is.
+    "scaled_dot_product_attention": {
+        3: (
+            "tp_cpu_sdpa",
+            "tensorplay::Tensor::scaled_dot_product_attention("
+            "t0, t1, t2, std::nullopt, {s1}, {s2}, {s3}, {s4})",
+            (
+                (None, "tensor"),
+                (None, "tensor"),
+                (None, "tensor"),
+                # The absent mask is still a place in the call, written as
+                # nothing rather than left out.
+                ("attn_mask", "optional_tensor"),
+                ("dropout_p", "real"),
+                ("is_causal", "flag"),
+                ("scale", "optional_real"),
+                ("enable_gqa", "flag"),
+            ),
+        ),
+        4: (
+            "tp_cpu_sdpa_mask",
+            "tensorplay::Tensor::scaled_dot_product_attention("
+            "t0, t1, t2, t3, {s0}, {s1}, {s2}, {s3})",
+            (
+                (None, "tensor"),
+                (None, "tensor"),
+                (None, "tensor"),
+                (None, "tensor"),
+                ("dropout_p", "real"),
+                ("is_causal", "flag"),
+                ("scale", "optional_real"),
+                ("enable_gqa", "flag"),
+            ),
+        ),
+    },
 }
 
 
@@ -502,21 +540,6 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
         "tp_cpu_divide_scalar_mode",
         "tensorplay::Tensor::divide(t0, tensorplay::Scalar({s0}), {s1})",
         ((None, "real"), ("rounding_mode", "string")),
-    ),
-    "scaled_dot_product_attention": (
-        "tp_cpu_sdpa",
-        "tensorplay::Tensor::scaled_dot_product_attention("
-        "t0, t1, t2, {s0}, {s1}, {s2}, {s3}, {s4})",
-        (
-            (None, "tensor"),
-            (None, "tensor"),
-            (None, "tensor"),
-            ("attn_mask", "optional_tensor"),
-            ("dropout_p", "real"),
-            ("is_causal", "flag"),
-            ("scale", "optional_real"),
-            ("enable_gqa", "flag"),
-        ),
     ),
 }
 

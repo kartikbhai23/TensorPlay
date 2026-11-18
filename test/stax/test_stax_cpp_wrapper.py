@@ -606,3 +606,39 @@ def test_adaptive_max_pool_with_indices():
         )[1],
         [image],
     )
+
+
+def test_scaled_dot_product_attention_with_a_mask():
+    """The mask is an operand, and it stands between the three and the numbers.
+
+    When the program supplies a mask it is handed over as the operand it is,
+    so the call has four operands rather than three and an absent one.
+    """
+
+    qkv = tp.randn(2, 4, 8)
+    mask = tp.zeros(4, 4)
+    _check(
+        lambda a: tp.nn.functional.scaled_dot_product_attention(
+            a, a, a, attn_mask=mask
+        ),
+        [qkv],
+    )
+    _check(
+        lambda a: tp.nn.functional.scaled_dot_product_attention(
+            a, a, a, attn_mask=mask, scale=0.3
+        ),
+        [qkv],
+    )
+
+
+def test_scaled_dot_product_attention_with_shared_heads():
+    """Fewer key heads than query heads: the query heads are grouped."""
+
+    query = tp.randn(1, 2, 4, 8)
+    key = tp.randn(1, 1, 4, 8)
+    _check(
+        lambda q, k: tp.nn.functional.scaled_dot_product_attention(
+            q, k, k, enable_gqa=True
+        ),
+        [query, key],
+    )
