@@ -7,6 +7,8 @@
 // The CPU and CUDA copies of this file are textually identical apart from
 // namespace and library key; no device-specific kernel code lives here.
 #include <algorithm>
+#include <immintrin.h>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -389,6 +391,36 @@ Tensor& mish_inplace_kernel(Tensor& self) {
     return self;
 }
 
+// One sweep of the NaN/±inf replacement for float lanes.  Three lane
+// selects: unordered comparison catches NaN, equality against the two
+// infinities catches the saturation values.  The target attribute is what
+// makes the compiler keep the lane loop; the translation unit itself
+// compiles without the ISA, so no __AVX2__ macro guard belongs here.
+__attribute__((target("avx2,fma"), noinline))
+static void nan_to_num_f32_sweep(float* dp, int64_t n, float nan_c,
+                                 float pv, float nv) {
+    int64_t i = 0;
+    const __m256 vnan = _mm256_set1_ps(nan_c);
+    const __m256 vpos = _mm256_set1_ps(std::numeric_limits<float>::infinity());
+    const __m256 vneg = _mm256_set1_ps(-std::numeric_limits<float>::infinity());
+    const __m256 vpv = _mm256_set1_ps(pv);
+    const __m256 vnv = _mm256_set1_ps(nv);
+    for (; i + 8 <= n; i += 8) {
+        const __m256 v = _mm256_loadu_ps(dp + i);
+        __m256 r = _mm256_blendv_ps(v, vnan,
+                                    _mm256_cmp_ps(v, v, _CMP_UNORD_Q));
+        r = _mm256_blendv_ps(r, vpv, _mm256_cmp_ps(r, vpos, _CMP_EQ_OQ));
+        r = _mm256_blendv_ps(r, vnv, _mm256_cmp_ps(r, vneg, _CMP_EQ_OQ));
+        _mm256_storeu_ps(dp + i, r);
+    }
+    for (; i < n; ++i) {
+        float v = dp[i];
+        float r = (v != v) ? nan_c : v;
+        r = (r == std::numeric_limits<float>::infinity()) ? pv : r;
+        dp[i] = (r == -std::numeric_limits<float>::infinity()) ? nv : r;
+    }
+}
+
 Tensor& nan_to_num_inplace_kernel(Tensor& self, const Scalar& nan, const std::optional<Scalar>& posinf, const std::optional<Scalar>& neginf) {
     NoGradGuard __tp_nograd;
     using tensorplay::parallel::parallel_for;
@@ -410,14 +442,7 @@ Tensor& nan_to_num_inplace_kernel(Tensor& self, const Scalar& nan, const std::op
         float pv = has_pos ? static_cast<float>(pos_v) : std::numeric_limits<float>::max();
         float nv = has_neg ? static_cast<float>(neg_v) : std::numeric_limits<float>::lowest();
         float nan_c = static_cast<float>(nan_v);
-        parallel_for(0, n, GRAIN_SIZE, [&](int64_t b, int64_t e) {
-            for (int64_t i = b; i < e; ++i) {
-                float v = dp[i];
-                float r = (v != v) ? nan_c : v;
-                r = (r == std::numeric_limits<float>::infinity()) ? pv : r;
-                dp[i] = (r == -std::numeric_limits<float>::infinity()) ? nv : r;
-            }
-        });
+        nan_to_num_f32_sweep(dp, n, nan_c, pv, nv);
         break;
     }
     case DType::Float64: {

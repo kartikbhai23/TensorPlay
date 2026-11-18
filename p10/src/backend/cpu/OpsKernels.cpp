@@ -1068,6 +1068,37 @@ Tensor& i0_out_cpu(const Tensor& self, Tensor& out) {
     }
     return float_math_out_kernel(self, out, i0_cpu, I0Scalar{}, "i0");
 }
+// One sweep of the NaN/±inf replacement for float lanes, reading from a
+// contiguous source and writing the sanitized values out.  Three lane
+// selects: unordered comparison catches NaN, equality against the two
+// infinities catches the saturation values.  The target attribute is what
+// makes the compiler keep the lane loop; the translation unit itself
+// compiles without the ISA, so no __AVX2__ macro guard belongs here.
+__attribute__((target("avx2,fma"), noinline))
+static void nan_to_num_f32_sweep(float* dp, const float* sp, int64_t n,
+                                 float nan_c, float pv, float nv) {
+    int64_t i = 0;
+    const __m256 vnan = _mm256_set1_ps(nan_c);
+    const __m256 vpos = _mm256_set1_ps(std::numeric_limits<float>::infinity());
+    const __m256 vneg = _mm256_set1_ps(-std::numeric_limits<float>::infinity());
+    const __m256 vpv = _mm256_set1_ps(pv);
+    const __m256 vnv = _mm256_set1_ps(nv);
+    for (; i + 8 <= n; i += 8) {
+        const __m256 v = _mm256_loadu_ps(sp + i);
+        __m256 r = _mm256_blendv_ps(v, vnan,
+                                    _mm256_cmp_ps(v, v, _CMP_UNORD_Q));
+        r = _mm256_blendv_ps(r, vpv, _mm256_cmp_ps(r, vpos, _CMP_EQ_OQ));
+        r = _mm256_blendv_ps(r, vnv, _mm256_cmp_ps(r, vneg, _CMP_EQ_OQ));
+        _mm256_storeu_ps(dp + i, r);
+    }
+    for (; i < n; ++i) {
+        float v = sp[i];
+        float r = (v != v) ? nan_c : v;
+        r = (r == std::numeric_limits<float>::infinity()) ? pv : r;
+        dp[i] = (r == -std::numeric_limits<float>::infinity()) ? nv : r;
+    }
+}
+
 Tensor nan_to_num_cpu(const Tensor& self, const Scalar& nan,
                       const std::optional<Scalar>& posinf, const std::optional<Scalar>& neginf) {
     Tensor sc = self.contiguous();
@@ -1077,6 +1108,16 @@ Tensor nan_to_num_cpu(const Tensor& self, const Scalar& nan,
     bool has_pos = posinf.has_value(), has_neg = neginf.has_value();
     double pos_v = has_pos ? posinf->toDouble() : std::numeric_limits<double>::infinity();
     double neg_v = has_neg ? neginf->toDouble() : -std::numeric_limits<double>::infinity();
+    if (self.dtype() == DType::Float32 && self.is_contiguous()) {
+        nan_to_num_f32_sweep(
+            out.data_ptr<float>(), sc.data_ptr<float>(), n,
+            static_cast<float>(nan_v),
+            has_pos ? static_cast<float>(pos_v)
+                    : std::numeric_limits<float>::max(),
+            has_neg ? static_cast<float>(neg_v)
+                    : std::numeric_limits<float>::lowest());
+        return out;
+    }
 #define TP_NTN_CASE(ctype, name_) \
     case DType::name_: { \
         const ctype* sp = sc.data_ptr<ctype>(); \
