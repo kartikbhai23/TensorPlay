@@ -5320,7 +5320,6 @@ def lower_upsample_bicubic2d(input, output_size, align_corners,
     border the clamped index names, and the blend weights make the edge hold
     still: a weight of one on the border element and none on the rest.
     """
-    _no_scale_hint((scales_h, scales_w))
     in_dtype = input.get_dtype()
     out = _static_ints(output_size) if output_size is not None else None
     in_size = _static_ints(input.get_size())
@@ -5338,6 +5337,10 @@ def lower_upsample_bicubic2d(input, output_size, align_corners,
         )
     _n, _c, ih, iw = in_size
     oh, ow = out
+    # A scale named beside the extents is a hint about the ratio between
+    # them; the blend is written against that ratio, so the two descriptions
+    # have to agree for the hint to describe the same grid.
+    _require_scales_agree((scales_h, scales_w), (ih, iw), out)
     dev = input.get_device()
     acc = tp.float32 if in_dtype in (tp.float16, tp.bfloat16) else in_dtype
 
@@ -5401,8 +5404,9 @@ def lower_upsample_bicubic2d(input, output_size, align_corners,
 
 @register("_upsample_nearest_exact1d.default")
 def lower_upsample_nearest_exact1d(x, output_size, scales_d=None, **kwargs):
-    _no_scale_hint((scales_d,))
-    return _upsample_nearestnd(x, output_size, 1, exact=True, **kwargs)
+    return _upsample_nearestnd(
+        x, output_size, 1, scales=(scales_d,), exact=True, **kwargs
+    )
 
 
 @register("_upsample_nearest_exact1d.vec", "_upsample_nearest_exact2d.vec",
