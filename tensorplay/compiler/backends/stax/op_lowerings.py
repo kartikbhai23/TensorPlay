@@ -8877,6 +8877,19 @@ def philox_rand(
     return random_values_node, offset_node
 
 
+def _draw_sizes(args: tuple[Any, ...]) -> tuple[Any, ...]:
+    """The extents of a draw, however the call spelled them.
+
+    ``randn(3, 4)`` and ``randn((3, 4))`` are the same call, and what the
+    operation takes is the one list of extents; a region captured from the
+    first spelling records them as separate arguments instead.
+    """
+
+    if len(args) == 1 and isinstance(args[0], (list, tuple)):
+        return (list(args[0]),)
+    return (list(args),)
+
+
 _fallback_randn_default = fallback_handler(tp_ops.randn.default)
 _fallback_randn_generator = fallback_handler(tp_ops.randn.generator)
 
@@ -8894,7 +8907,14 @@ def randn(*args: Any, **kwargs: Any) -> Any:
 
     if kwargs.get("generator") is not None:
         return _fallback_randn_generator(*args, **kwargs)
-    return _fallback_randn_default(*args, **kwargs)
+    # A draw that names no generator is the default overload, and the default
+    # has no generator place at all: a capture that records the absent one
+    # beside the rest would be asking that overload for an argument it does
+    # not take.
+    return _fallback_randn_default(
+        *_draw_sizes(args),
+        **{name: value for name, value in kwargs.items() if name != "generator"},
+    )
 
 
 def to_dtype_bitcast(x: Any, dtype: Any, *, copy: bool = False) -> Any:
@@ -10710,7 +10730,25 @@ LOWERINGS["native_dropout.default"] = _fallback_native_dropout
 
 _fallback_rand = fallback_handler(tp_ops.rand.default)
 _fallback_rand_generator = fallback_handler(tp_ops.rand.generator)
-LOWERINGS["rand.default"] = _fallback_rand
+
+
+def _lower_rand(*args: Any, **kwargs: Any) -> Any:
+    """Uniform values handed to the framework, generator and all.
+
+    The default overload has no generator place, so an absent one recorded
+    beside the rest is dropped rather than passed on; a generator the program
+    did name reaches the overload that takes one.
+    """
+
+    if kwargs.get("generator") is not None:
+        return _fallback_rand_generator(*args, **kwargs)
+    return _fallback_rand(
+        *_draw_sizes(args),
+        **{name: value for name, value in kwargs.items() if name != "generator"},
+    )
+
+
+LOWERINGS["rand.default"] = _lower_rand
 LOWERINGS["rand.generator"] = _fallback_rand_generator
 
 

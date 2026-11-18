@@ -48,6 +48,41 @@ def _check(fn, args):
             )
 
 
+def _check_seeded(fn, args):
+    """Compile ``fn`` and compare, with the draws on both sides the same.
+
+    A region that draws numbers has nothing to compare its answer against
+    unless both sides start from the same state, so the generator is set to
+    the same state before each of them runs.  The region still has to be
+    written rather than fallen back from, which is checked first.
+    """
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        compiled = tp.compile(fn, options={"stax.cuda_codegen": True})
+        tp.manual_seed(1234)
+        got = compiled(*args)
+    fell_back = [
+        str(item.message)
+        for item in caught
+        if "Stax lowering failed" in str(item.message)
+    ]
+    if fell_back:
+        raise AssertionError(
+            f"the region fell back instead of being written: {fell_back[0]}"
+        )
+    tp.manual_seed(1234)
+    expected = fn(*args)
+    for one, other in zip(
+        got if isinstance(got, tuple) else (got,),
+        expected if isinstance(expected, tuple) else (expected,),
+    ):
+        if not tp.allclose(one, other):
+            raise AssertionError(
+                f"got {one.tolist()}, expected {other.tolist()}"
+            )
+
+
 # --------------------------------------------------------------------------
 # elementwise regions
 # --------------------------------------------------------------------------
@@ -674,3 +709,24 @@ def test_scaled_dot_product_attention_with_shared_heads():
         ),
         [query, key],
     )
+
+
+# --------------------------------------------------------------------------
+# a draw, which reads nothing
+# --------------------------------------------------------------------------
+
+
+def test_a_draw_beside_a_computed_value():
+    """A draw has no operand: its extents, type and device are the whole call.
+
+    What it produces stays random, so the two sides are compared from the same
+    starting state of the generator rather than value by value.
+    """
+
+    x = tp.randn(2, 4)
+    _check_seeded(lambda a: a + tp.randn(2, 4), [x])
+    _check_seeded(lambda a: a * tp.rand(2, 4), [x])
+
+
+def test_a_region_that_is_only_a_draw():
+    _check_seeded(lambda: tp.randn(3, 4), [])

@@ -543,6 +543,27 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
         "tensorplay::Tensor::div(t0, tensorplay::Scalar({s0}), {s1})",
         ((None, "real"), ("rounding_mode", "string")),
     ),
+    # A draw has nothing to read: the extents it fills and the type and device
+    # the program asked for are the whole of the call, and the shim fills the
+    # buffer it is handed.
+    "randn": (
+        "tp_cpu_randn",
+        "tensorplay::Tensor::randn({s0}, {s1}, {s2})",
+        (
+            (None, "ints"),
+            ("dtype", "optional_dtype"),
+            ("device", "optional_device"),
+        ),
+    ),
+    "rand": (
+        "tp_cpu_rand",
+        "tensorplay::Tensor::rand({s0}, {s1}, {s2})",
+        (
+            (None, "ints"),
+            ("dtype", "optional_dtype"),
+            ("device", "optional_device"),
+        ),
+    ),
     "divide_Scalar_mode": (
         "tp_cpu_divide_scalar_mode",
         "tensorplay::Tensor::divide(t0, tensorplay::Scalar({s0}), {s1})",
@@ -755,6 +776,23 @@ def _write_optional_tensor(text: str) -> str:
             f"C++ wrapper cannot write the argument {text!r}"
         )
     return "std::nullopt"
+
+
+@_literal_writer("optional_device")
+def _write_optional_device(text: str) -> str:
+    """The device a result is to live on, when one was named.
+
+    The spelling is the one the program used -- ``'cpu'`` or ``'cuda:1'`` --
+    and the device parses that spelling itself, so it is handed the word
+    rather than a table of types that would have to grow with every device.
+    """
+
+    if text == "None":
+        return "std::nullopt"
+    body = text.strip()
+    if len(body) >= 2 and body[0] == body[-1] and body[0] in "'\"":
+        body = body[1:-1]
+    return f'tensorplay::Device("{body}")'
 
 
 def _literal_value(kind: str, text: str) -> str:
@@ -1285,11 +1323,6 @@ class CppWrapperCodegen(PythonWrapperCodegen):
             tensor_args = [
                 a for a in extern_kernel.inputs if _is_tensor_operand(a)
             ]
-        if not tensor_args:
-            raise NotImplementedError(
-                "C++ wrapper does not support extern kernels without "
-                "tensor inputs"
-            )
 
         # The shim table is keyed by the operation, and the name the generated
         # code calls this by is the one that carries it.  Where nothing settled
@@ -1305,6 +1338,11 @@ class CppWrapperCodegen(PythonWrapperCodegen):
             name = getattr(target, "__name__", None)
         shim_name, template, literals = _extern_shim(name, len(tensor_args))
         if shim_name is None:
+            if not tensor_args:
+                raise NotImplementedError(
+                    "C++ wrapper does not support extern kernels without "
+                    "tensor inputs"
+                )
             raise NotImplementedError(
                 f"C++ wrapper has no shim for extern kernel {name!r}"
             )

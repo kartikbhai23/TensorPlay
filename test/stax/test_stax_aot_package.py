@@ -280,6 +280,23 @@ def test_package_holds_a_cumulative_product_and_a_running_maximum(tmp_path):
     assert tp.allclose(places, expected_places)
 
 
+def test_package_holds_a_draw(tmp_path):
+    """A draw has nothing to read; the package fills the buffer it is given.
+
+    The numbers stay random, so the two sides start from the same state of the
+    generator.
+    """
+
+    x = tp.randn(2, 4)
+    fn = lambda a: a + tp.randn(2, 4)
+    path = _build(tmp_path / _PKG, fn, [x])
+    module = load_package(path)
+    tp.manual_seed(11)
+    expected = fn(x)
+    tp.manual_seed(11)
+    assert tp.allclose(module(x), expected)
+
+
 def test_package_holds_a_topk(tmp_path):
     """The k largest, and which of them they were."""
 
