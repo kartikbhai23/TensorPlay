@@ -1630,6 +1630,28 @@ inline void f64_256(const double* in, double* out, int64_t n, double lo, double 
     }
 }
 #endif
+// Elementwise bound clamps for the .Tensor overloads: each lane compares
+// against its own bound.  The target attribute is what keeps the lane loop;
+// the translation unit compiles without the ISA.
+__attribute__((target("avx2,fma"), noinline))
+static void f32_256_elementwise(const float* in, const float* b, float* out,
+                                int64_t n, bool is_min) {
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        const __m256 x = _mm256_loadu_ps(in + i);
+        const __m256 m = _mm256_loadu_ps(b + i);
+        // The lane select mirrors the scalar form exactly -- a NaN bound or
+        // a NaN input compares false and keeps the input lane.
+        const __m256 mask = is_min ? _mm256_cmp_ps(m, x, _CMP_GT_OQ)
+                                   : _mm256_cmp_ps(m, x, _CMP_LT_OQ);
+        _mm256_storeu_ps(out + i, _mm256_blendv_ps(x, m, mask));
+    }
+    for (; i < n; ++i) {
+        out[i] = is_min ? (in[i] > b[i] ? in[i] : b[i])
+                        : (in[i] < b[i] ? in[i] : b[i]);
+    }
+}
+
 }  // namespace clamp_row
 
 namespace {
@@ -1726,12 +1748,30 @@ Tensor clamp_max_scalar_cpu(const Tensor& self, Scalar max) {
     }, "clamp_max");
 }
 Tensor clamp_min_tensor_cpu(const Tensor& self, const Tensor& min) {
+    // Contiguous float pairs clamp in one vector pass with per-lane bounds;
+    // the scalar lambda fallback pays a libm-double round trip per element.
+    if (self.dtype() == DType::Float32 && self.is_contiguous() &&
+        min.is_contiguous() && self.numel() == min.numel()) {
+        Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
+                                      self.dtype(), self.device());
+        clamp_row::f32_256_elementwise(self.data_ptr<float>(), min.data_ptr<float>(),
+                                       result.data_ptr<float>(), self.numel(), true);
+        return result;
+    }
     return binary_same_kernel(self, min, [](auto x, auto m) -> decltype(x) {
         using T = decltype(x);
         return static_cast<double>(m) > static_cast<double>(x) ? static_cast<T>(m) : static_cast<T>(x);
     }, "clamp_min");
 }
 Tensor clamp_max_tensor_cpu(const Tensor& self, const Tensor& max) {
+    if (self.dtype() == DType::Float32 && self.is_contiguous() &&
+        max.is_contiguous() && self.numel() == max.numel()) {
+        Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
+                                      self.dtype(), self.device());
+        clamp_row::f32_256_elementwise(self.data_ptr<float>(), max.data_ptr<float>(),
+                                       result.data_ptr<float>(), self.numel(), false);
+        return result;
+    }
     return binary_same_kernel(self, max, [](auto x, auto m) -> decltype(x) {
         using T = decltype(x);
         return static_cast<double>(m) < static_cast<double>(x) ? static_cast<T>(m) : static_cast<T>(x);
