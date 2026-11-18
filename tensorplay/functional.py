@@ -585,7 +585,7 @@ def div(input, other, rounding_mode=None, *, out=None):
         input = _as_left_operand(input, other)
     if rounding_mode is None:
         return input.div(other=other)
-    return input.div(other=other, rounding_mode=rounding_mode)
+    return _C.div(input, other, rounding_mode=rounding_mode)
 
 def divide(input, other, rounding_mode=None, *, out=None):
     if out is not None:
@@ -611,7 +611,7 @@ def divide(input, other, rounding_mode=None, *, out=None):
         input = _as_left_operand(input, other)
     if rounding_mode is None:
         return input.divide(other=other)
-    return input.divide(other=other, rounding_mode=rounding_mode)
+    return _C.divide(input, other, rounding_mode=rounding_mode)
 
 def true_divide(input, other, *, out=None):
     if out is not None:
@@ -2845,9 +2845,7 @@ def sum(input, dim=None, keepdim=False, *, dtype=DType.undefined):
         if _captured is not None:
             return _captured
     if dim is None:
-        if not keepdim:
-            return _C.sum(input, dtype=dtype)
-        dim = []
+        return _C.sum(input, dtype=dtype)
     return _C.sum(input, dim, keepdim, dtype=dtype)
 
 def mean(input, dim=None, keepdim=False, *, dtype=DType.undefined):
@@ -2856,9 +2854,7 @@ def mean(input, dim=None, keepdim=False, *, dtype=DType.undefined):
         if _captured is not None:
             return _captured
     if dim is None:
-        if not keepdim:
-            return _C.mean(input, dtype=dtype)
-        dim = []
+        return _C.mean(input, dtype=dtype)
     return _C.mean(input, dim, keepdim, dtype=dtype)
 
 def sum_squared_error(input, other, dim=[], keepdim=False):
@@ -2976,12 +2972,10 @@ def var(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if correction is None:
         correction = 1 if (unbiased is None or unbiased) else 0
     if dim is None:
-        dim = []
-    elif isinstance(dim, int) and not isinstance(dim, bool):
+        return _C.var(input, correction=correction, keepdim=keepdim)
+    if isinstance(dim, int) and not isinstance(dim, bool):
         dim = [dim]
-    else:
-        dim = list(dim)
-    return _C.var(input, dim, correction, keepdim)
+    return _C.var(input, list(dim), correction, keepdim)
 
 def std(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if _capturing():
@@ -2991,12 +2985,10 @@ def std(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if correction is None:
         correction = 1 if (unbiased is None or unbiased) else 0
     if dim is None:
-        dim = []
-    elif isinstance(dim, int) and not isinstance(dim, bool):
+        return _C.std(input, correction=correction, keepdim=keepdim)
+    if isinstance(dim, int) and not isinstance(dim, bool):
         dim = [dim]
-    else:
-        dim = list(dim)
-    return _C.std(input, dim, correction, keepdim)
+    return _C.std(input, list(dim), correction, keepdim)
 
 def median(input, dim=None, keepdim=False):
     if _capturing():
@@ -3013,9 +3005,7 @@ def norm(input, p=2.0, dim=None, keepdim=False):
         if _captured is not None:
             return _captured
     if dim is None:
-        if not keepdim:
-            return _C.norm(input, p)
-        dim = []
+        return _C.norm(input, p)
     return _C.norm(input, dim, p, keepdim)
 
 def exponential_(input, lambd=1.0, generator=None):
@@ -6025,8 +6015,6 @@ def nanmedian(input, dim=None, keepdim=False):
     return _C.nanmedian(input, dim, keepdim)
 
 def nansum(input, dim=[], keepdim=False, *, out=None):
-    if dim is None:
-        dim = []
     if out is not None:
         if _capturing():
             _captured = _capture_call(nansum, (input, dim, keepdim), {'out': out})
@@ -6039,15 +6027,6 @@ def nansum(input, dim=[], keepdim=False, *, out=None):
             return _captured
     return _C.nansum(self=input, dim=dim, keepdim=keepdim)
 
-def _moment_pair(op, input, dim, correction, keepdim):
-    # The plain boolean overload is the first candidate the binding checks;
-    # spelling the call as (dim, unbiased, keepdim) keeps 0/1 corrections off
-    # the keyword ladder, which otherwise formats a mismatch for every
-    # earlier candidate before reaching the correction form.
-    if correction == 0 or correction == 1:
-        return op(input, [] if dim is None else dim, correction == 1, keepdim)
-    return op(input, dim, correction=correction, keepdim=keepdim)
-
 def std_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if _capturing():
         _captured = _capture_call(std_mean, (input, dim, unbiased, keepdim), {"correction": correction})
@@ -6059,7 +6038,7 @@ def std_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
         dim = [dim]
     elif dim is not None:
         dim = list(dim)
-    return _moment_pair(_C.std_mean, input, dim, correction, keepdim)
+    return _C.std_mean(input, dim, correction=correction, keepdim=keepdim)
 
 def var_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if _capturing():
@@ -6072,7 +6051,7 @@ def var_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
         dim = [dim]
     elif dim is not None:
         dim = list(dim)
-    return _moment_pair(_C.var_mean, input, dim, correction, keepdim)
+    return _C.var_mean(input, dim, correction=correction, keepdim=keepdim)
 
 def trace(input, *, out=None):
     if out is not None:

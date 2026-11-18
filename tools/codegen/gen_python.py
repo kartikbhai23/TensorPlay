@@ -526,6 +526,23 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                 g.out_args and 'method' in g.variants
                 and len(g.args) > 1 and g.args[1].type.kind == 'Scalar'
                 for g in group)
+            # A mode-taking overload is not always reachable as a method: a
+            # schema may declare it as a function only, in which case the
+            # receiver's method has no such form and the call has to go
+            # through the extension's function instead.  Reaching for the
+            # method anyway is a TypeError at the call rather than a wrong
+            # answer, so which of the two exists is asked here.
+            method_takes_mode = any(
+                'method' in g.variants and not g.out_args
+                and any(a.name == 'rounding_mode' for a in g.args)
+                for g in group)
+            mode_call = (
+                [f'    return input.{name}(other=other, '
+                 'rounding_mode=rounding_mode)']
+                if method_takes_mode else
+                [f'    return _C.{name}(input, other, '
+                 'rounding_mode=rounding_mode)']
+            )
             scalar_out = [
                 '        if rounding_mode is None:',
                 f'            return input.{name}(other=other, out=out)',
@@ -560,7 +577,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                 '        input = _as_left_operand(input, other)',
                 '    if rounding_mode is None:',
                 f'        return input.{name}(other=other)',
-                f'    return input.{name}(other=other, rounding_mode=rounding_mode)',
+                *mode_call,
                 '',
             ]
             continue

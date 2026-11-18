@@ -343,9 +343,12 @@ def test_rounded_division_has_no_gradient():
 
 
 def test_unrounded_mode_overload_still_carries_the_quotient_rule():
+    # The mode-taking spellings are operators in their own right rather than
+    # methods on the receiver, so the unrounded form is spelled through the
+    # wrapper with the mode left unset.
     a = tp.tensor([7.0, -7.0], dtype=tp.float64, requires_grad=True)
     b = tp.tensor([3.0, 4.0], dtype=tp.float64, requires_grad=True)
-    a.div(b, rounding_mode=None).sum().backward()
+    tp.div(a, b, rounding_mode=None).sum().backward()
     assert a.grad.tolist() == pytest.approx([1 / 3, 1 / 4])
     assert b.grad.tolist() == pytest.approx([-7 / 9, 7 / 16])
 
