@@ -193,3 +193,37 @@ vit_b_32 的差距是另一组成分：
 3. 原生注意力反向内部的逐点算子合并；残差加法融进注意力尾声。
 4. densenet121 的 Triton 启动数 1421/步（参考 679），逐点融合链仍不足——这是小通道卷积网络的共性差距。
 5. 全量 sweep 时注意：某用例的内存压力会让下一个用例的 `cuBLASLt` 工作区在捕获窗口内分配失败（`cuBLASLt Error 13`），该区域随即退回未录制执行（vit_b_32 一次 23.2 → 21.3 ms）。
+
+## 6. 反向卷积的梯度布局（2026-11-18）
+
+`conv2d_grad_weight_cudnn_v8` 原来固定用行主序描述符建 filter 梯度：算子是通道序时，cuDNN 仍选行主序引擎（`wgrad_alg0_engine`），于是在**每次读算子**时把通道序的激活/梯度输出重排一遍（`nhwcToNchwKernel`）。改为梯度描述符跟随算子布局（K-R-S-C），结果再 repack 回行主序——参数住在行主序。开关 `TP_CONV_BWD_FILTER_ROW_MAJOR=1` 回到旧行为，用于同一次构建上的 A/B。
+
+| 模型（批 8，训练一步，设备忙 ms） | 旧行为 | 现在 | 参考编译 | 占比 |
+| --- | ---: | ---: | ---: | ---: |
+| resnet18 | 8.25 | 7.74 | 6.92 | 0.89 |
+| resnet50 | — | 18.28 | 16.92 | 0.93 |
+| googlenet | — | 11.20 | 9.93 | 0.89 |
+| densenet121 | — | 23.87 | 18.47 | 0.77 |
+
+resnet18 的 `nhwcToNchwKernel` 24 次/步随之消失（0.289 → 0.004 ms/步），代价是 3 个 filter 大小的 repack（`Memcpy DtoD` 9.4/2.4/0.6 MB 各一次）。
+
+### 6.1 densenet121 的差距离谱（设备忙，批 8）
+
+| 类别 | stax | 参考 | 差 |
+| --- | ---: | ---: | ---: |
+| 卷积/矩阵乘 | 9.75 | 7.31 | +2.44 |
+| Triton 逐点/归约 | 10.11 | 6.77 | +3.34 |
+| cuDNN 布局转换 | 2.07 | 0.67 | +1.40 |
+| 框架原生核 | 1.07 | 0.00 | +1.07 |
+| 设备内拷贝 | 0.70 | 0.00 | +0.70 |
+
+- `convertTensor_kernel` 240 次/步、1.92 ms：通道序卷积 plan 自带的一次重排（输入行主序时换成 `nchwToNhwc` + `nhwcToNchw`，共 0.017 ms/次；两端都是通道序时只有这一个，0.020 ms/次）。plan 计时是含这次重排的端到端时间（`TP_CONV_PLAN_DEBUG` 的 0.112 ms 与实测 0.111 ms 相符），所以这不是“选错引擎”，而是该形状在通道序下的下限。
+- Triton 里 `triton_per_fused_*` 459 次/步（参考 99 次）：densenet 有 120 个 BN，每个 BN 的反向被展成 4 个小核（两个梯度归约 + 两个逐点）。
+- 设备内拷贝 489 次/步，来源已定位：`aot_autograd` 的 input_updates 回写。每个 BN 三次（running_mean / running_var / num_batches_tracked），resnet18 60 次/步、googlenet 252 次/步、densenet121 487 次/步，单次约 1.4 µs。参考侧为 0：它把归一化统计写在图内。要消掉只有两条路——让区域自己写（回到图内写，需重新处理 cudagraph tree 的写集合），或加一个多张量拷贝核。
+
+### 6.2 下一步
+
+1. BN 前反向改走框架原生 kernel：`p10` 已有 `batch_norm` / `batch_norm_backward` 与 `remember_batch_statistics`，能替掉 Triton 的 Welford + 4 个逐点核；但前向必须一起换，否则反向 recall 不到统计、会退回重算。
+2. input_updates 的 489 次小拷贝：先做多张量拷贝核（一次启动写完所有归一化统计），再评估图内写的可行性。
+3. 卷积 plan 的候选集：densenet 里 `cutlass__5x_cudnn` 48 次/步 1.77 ms，参考 38 次 0.51 ms，说明有些形状可选的引擎集合里没有参考侧那一个——值得按形状核对 INSTANT 列表与 `drop` 过滤。
+4. 其余同 5.3 的第 2、3、5 条。
