@@ -791,6 +791,45 @@ def test_adaptive_average_pool_of_each_rank():
     _check(lambda a: tp.nn.functional.adaptive_avg_pool3d(a, (1, 1, 2)), [cube])
 
 
+def test_the_three_dimensional_adaptive_maximum_pool():
+    """The values and the places they came from, over three axes."""
+
+    cube = tp.randn(1, 2, 2, 4, 8)
+    _check(
+        lambda a: tp.nn.functional.adaptive_max_pool3d_with_indices(
+            a, (1, 2, 4)
+        ),
+        [cube],
+    )
+
+
+def test_a_one_dimensional_maximum_pool():
+    """The window, step, padding, spacing and border rule are five places.
+
+    They are written in the order the call writes them, and a window that
+    cannot slide a whole extra step keeps the same five places, so the border
+    rule is spelled rather than assumed.
+    """
+
+    line = tp.randn(1, 2, 8)
+    _check(lambda a: tp.nn.functional.max_pool1d(a, 2), [line])
+    _check(
+        lambda a: tp.nn.functional.max_pool1d(a, 3, stride=2, padding=1), [line]
+    )
+    _check(
+        lambda a: tp.nn.functional.max_pool1d(a, 3, stride=2, ceil_mode=True),
+        [line],
+    )
+    _check(
+        lambda a: tp.nn.functional.max_pool1d_with_indices(a, 3, stride=2),
+        [line],
+    )
+    _check(
+        lambda a: tp.nn.functional.max_pool1d_with_indices(a, 3, stride=2)[1],
+        [line],
+    )
+
+
 def test_scaled_dot_product_attention_with_a_mask():
     """The mask is an operand, and it stands between the three and the numbers.
 

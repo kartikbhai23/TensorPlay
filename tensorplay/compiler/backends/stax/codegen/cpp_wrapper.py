@@ -602,10 +602,19 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
         "tensorplay::Tensor::adaptive_avg_pool2d(t0, {s0})",
         ((None, "tensor"), (None, "ints")),
     ),
-    "adaptive_avg_pool3d": (
-        "tp_cpu_adaptive_avg_pool3d",
-        "tensorplay::Tensor::adaptive_avg_pool3d(t0, {s0})",
-        ((None, "tensor"), (None, "ints")),
+    # A one-dimensional maximum reads a window, a step, a padding, a spacing
+    # and whether a window may reach past the border.
+    "max_pool1d": (
+        "tp_cpu_max_pool1d",
+        "tensorplay::Tensor::max_pool1d(t0, {s0}, {s1}, {s2}, {s3}, {s4})",
+        (
+            (None, "tensor"),
+            (None, "ints"),
+            (None, "ints"),
+            (None, "ints"),
+            (None, "ints"),
+            (None, "flag"),
+        ),
     ),
     "cumsum": (
         "tp_cpu_cumsum",
@@ -740,6 +749,28 @@ _EXTERN_KERNEL_MULTI_SHIMS: dict[
         "tp_cpu_adaptive_max_pool2d_with_indices",
         "tensorplay::Tensor::adaptive_max_pool2d_with_indices(t0, {s0})",
         ((None, "tensor"), (None, "ints")),
+    ),
+    "tp_adaptive_max_pool3d": (
+        "tp_cpu_adaptive_max_pool3d",
+        "tensorplay::Tensor::adaptive_max_pool3d(t0, {s0})",
+        ((None, "tensor"), (None, "ints")),
+    ),
+    # The one-dimensional maximum reads a window, a step, a padding, a spacing
+    # and whether a window may reach past the border, and leaves the places it
+    # chose behind.  The three-dimensional maximum asks for the same five
+    # values as the one-dimensional one.
+    "tp_max_pool1d_with_indices": (
+        "tp_cpu_max_pool1d_with_indices",
+        "tensorplay::Tensor::max_pool1d_with_indices(t0, {s0}, {s1}, {s2}, "
+        "{s3}, {s4})",
+        (
+            (None, "tensor"),
+            (None, "ints"),
+            (None, "ints"),
+            (None, "ints"),
+            (None, "ints"),
+            (None, "flag"),
+        ),
     ),
     # A bag of embeddings answers with the sums, the bag each value landed in,
     # how many values each bag held and where the largest one sat; all four
