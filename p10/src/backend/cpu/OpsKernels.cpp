@@ -844,8 +844,88 @@ struct DivRoundedPair {
     }
 };
 
+// One sweep of the rounded division for float32 pairs.  The lane formula
+// replicates floor_div_value exactly -- fmod correction toward the divisor's
+// sign, then a floor with a round-half-up nudge -- running in f64 lanes so
+// f32 inputs stay exact and the per-lane branches become lane selects.  The
+// target attribute is what keeps the lane loop; the translation unit
+// compiles without the ISA.
+__attribute__((target("avx2,fma"), noinline))
+static void floor_div_f32_sweep(const float* ap, const float* bp,
+                                float* dp, int64_t n) {
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        const __m256d a0 = _mm256_cvtps_pd(_mm_loadu_ps(ap + i));
+        const __m256d a1 = _mm256_cvtps_pd(_mm_loadu_ps(ap + i + 4));
+        const __m256d b0 = _mm256_cvtps_pd(_mm_loadu_ps(bp + i));
+        const __m256d b1 = _mm256_cvtps_pd(_mm_loadu_ps(bp + i + 4));
+        // mod = a - trunc(a/b) * b, the f64-safe C fmod for exact f32 input.
+        const __m256d q0 = _mm256_round_pd(_mm256_div_pd(a0, b0),
+                                           _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
+        const __m256d q1 = _mm256_round_pd(_mm256_div_pd(a1, b1),
+                                           _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
+        const __m256d mod0 = _mm256_fnmadd_pd(q0, b0, a0);
+        const __m256d mod1 = _mm256_fnmadd_pd(q1, b1, a1);
+        // div = (a - mod) / b, nudged toward the divisor's sign.
+        __m256d div0 = _mm256_div_pd(_mm256_sub_pd(a0, mod0), b0);
+        __m256d div1 = _mm256_div_pd(_mm256_sub_pd(a1, mod1), b1);
+        const __m256d zero = _mm256_setzero_pd();
+        const __m256d one = _mm256_set1_pd(1.0);
+        const __m256d half = _mm256_set1_pd(0.5);
+        // mod != 0 and sign(mod) != sign(b): div -= 1.  The product mod*b
+        // is negative exactly when the signs differ.
+        const __m256d mod_nz = _mm256_cmp_pd(mod0, zero, _CMP_NEQ_OQ);
+        const __m256d sign_fix0 = _mm256_and_pd(
+            mod_nz, _mm256_cmp_pd(_mm256_mul_pd(mod0, b0), zero, _CMP_LT_OQ));
+        div0 = _mm256_blendv_pd(div0, _mm256_sub_pd(div0, one), sign_fix0);
+        const __m256d mod_nz1 = _mm256_cmp_pd(mod1, zero, _CMP_NEQ_OQ);
+        const __m256d sign_fix1 = _mm256_and_pd(
+            mod_nz1, _mm256_cmp_pd(_mm256_mul_pd(mod1, b1), zero, _CMP_LT_OQ));
+        div1 = _mm256_blendv_pd(div1, _mm256_sub_pd(div1, one), sign_fix1);
+        // fd = floor(div); if div - fd > 0.5, fd += 1 (round half up).
+        __m256d fd0 = _mm256_round_pd(div0, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC);
+        __m256d fd1 = _mm256_round_pd(div1, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC);
+        fd0 = _mm256_blendv_pd(fd0, _mm256_add_pd(fd0, one),
+                               _mm256_cmp_pd(_mm256_sub_pd(div0, fd0), half,
+                                             _CMP_GT_OQ));
+        fd1 = _mm256_blendv_pd(fd1, _mm256_add_pd(fd1, one),
+                               _mm256_cmp_pd(_mm256_sub_pd(div1, fd1), half,
+                                             _CMP_GT_OQ));
+        // div == 0 keeps the sign of a / b: the zero already carries it.
+        fd0 = _mm256_blendv_pd(fd0, _mm256_and_pd(fd0, _mm256_set1_pd(-0.0)),
+                               _mm256_cmp_pd(div0, zero, _CMP_EQ_OQ));
+        fd1 = _mm256_blendv_pd(fd1, _mm256_and_pd(fd1, _mm256_set1_pd(-0.0)),
+                               _mm256_cmp_pd(div1, zero, _CMP_EQ_OQ));
+        _mm_storeu_ps(dp + i, _mm256_cvtpd_ps(fd0));
+        _mm_storeu_ps(dp + i + 4, _mm256_cvtpd_ps(fd1));
+    }
+    for (; i < n; ++i) {
+        const float a = ap[i], b = bp[i];
+        if (b == 0.0f) { dp[i] = a / b; continue; }
+        const float mod = a - __builtin_truncf(a / b) * b;
+        float div = (a - mod) / b;
+        if (mod != 0.0f && ((b < 0.0f) != (mod < 0.0f))) div -= 1.0f;
+        float fd = std::floor(div);
+        if (div - fd > 0.5f) fd += 1.0f;
+        dp[i] = div != 0.0f ? fd : std::copysign(0.0f, a / b);
+    }
+}
+
 Tensor div_rounded_core(const Tensor& a, const Tensor& b, DivRounding rounding) {
     if (rounding == DivRounding::kTrue) return true_divide_core(a, b);
+    // Contiguous float32 pairs answer in one AVX2 pass.  The lane formula
+    // replicates floor_div_value exactly: the fmod correction, the floor and
+    // the round-half-up nudge, all in f64 lanes -- f32 inputs are exact there
+    // and the divisor's sign rules flow through the compares.
+    if (rounding == DivRounding::kFloor && a.dtype() == DType::Float32 &&
+        b.dtype() == DType::Float32 && a.is_contiguous() && b.is_contiguous() &&
+        a.numel() == b.numel()) {
+        Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(a.shape()),
+                                      a.dtype(), a.device());
+        floor_div_f32_sweep(a.data_ptr<float>(), b.data_ptr<float>(),
+                            result.data_ptr<float>(), a.numel());
+        return result;
+    }
     // A floating pair of one width, in one shape and packed, is answered a
     // vector at a time; an integral pair keeps the flat map.
     if (pair_vector_takes(a, b)) {
