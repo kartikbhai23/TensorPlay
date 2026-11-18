@@ -369,6 +369,9 @@ _EXTERN_KERNEL_SHIMS: dict[str, tuple[str, str]] = {
     "sqrt": ("tp_cpu_sqrt", _DISPATCH_UNARY_TEMPLATE.replace("{op}", "sqrt")),
     "abs": ("tp_cpu_abs", _DISPATCH_UNARY_TEMPLATE.replace("{op}", "abs")),
     "neg": ("tp_cpu_neg", _DISPATCH_UNARY_TEMPLATE.replace("{op}", "neg")),
+    # A nan-median over every element is one value: the middle element with
+    # the NaNs left out, so there is no order to hand back beside it.
+    "nanmedian": ("tp_cpu_nanmedian", "t0.nanmedian()"),
 }
 
 #: The arguments a convolution is given beyond its operands, in the order the
@@ -479,6 +482,17 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
         "t0.cumsum({s0}, {s1})",
         (("dim", "int"), ("dtype", "optional_dtype")),
     ),
+    # A contraction takes its operands as a list rather than as separate
+    # arguments, and the places it has beyond that list are the equation and
+    # an optional path.  The list itself is the operands: each entry is a
+    # buffer or a window, and the shim builds the vector from the slots it is
+    # handed.  A call recorded from the variadic spelling writes the operands
+    # one after another instead of in a list; both shapes are read.
+    "einsum": (
+        "tp_cpu_einsum",
+        "tensorplay::Tensor::einsum({s0}, {tlist}, {s1})",
+        ((None, "string"), (None, "tensor_list"), ("path", "optional_ints")),
+    ),
     "div_Scalar_mode": (
         "tp_cpu_div_scalar_mode",
         "tensorplay::Tensor::div(t0, tensorplay::Scalar({s0}), {s1})",
@@ -549,6 +563,14 @@ _EXTERN_KERNEL_MULTI_SHIMS: dict[
         "tp_cpu_kthvalue",
         "t0.kthvalue({s0}, {s1}, {s2})",
         ((None, "int"), (None, "int"), (None, "flag")),
+    ),
+    # Adaptive pooling answers with the pooled values and where in each window
+    # the chosen one sat.  Its output size alternates with its operand, so the
+    # places are what describes the call.
+    "tp_adaptive_max_pool2d_with_indices": (
+        "tp_cpu_adaptive_max_pool2d_with_indices",
+        "tensorplay::Tensor::adaptive_max_pool2d_with_indices(t0, {s0})",
+        ((None, "tensor"), (None, "ints")),
     ),
 }
 
@@ -671,6 +693,17 @@ def _write_ints(text: str) -> str:
     return "std::vector<int64_t>{" + ", ".join(items) + "}"
 
 
+@_literal_writer("optional_ints")
+def _write_optional_ints(text: str) -> str:
+    """A list of extents that may not have been supplied at all.
+
+    An absent list and an empty one ask the operation for the same thing --
+    every default the call provides -- so the absent case is the empty vector.
+    """
+
+    return _write_ints("[]" if text is None else text)
+
+
 @_literal_writer("optional_tensor")
 def _write_optional_tensor(text: str) -> str:
     """A value that was not supplied, where the call takes an optional one."""
@@ -754,6 +787,16 @@ def _is_tensor_operand(node: Any) -> bool:
     return isinstance(node, (ir.Buffer, ir.MutableBox, ir.ReinterpretView))
 
 
+def _is_list_text(text: Any) -> bool:
+    """Whether an argument as written spells a list."""
+
+    return (
+        isinstance(text, str)
+        and text.strip().startswith("[")
+        and text.strip().endswith("]")
+    )
+
+
 def _split_named(arg: Any) -> tuple[str | None, str, str]:
     """A call argument that was passed by name, split into its parts.
 
@@ -815,25 +858,33 @@ def _build_extern_shim_impl(
     substitutions.update(
         {f"s{i}": value for i, value in enumerate(literal_values)}
     )
+    # An operation that takes its operands as a list is handed the vector it
+    # reads them from; the entries are the shim's own tensor parameters, in
+    # the order the call wrote them.
+    substitutions["tlist"] = (
+        "std::vector<tensorplay::Tensor>{"
+        + ", ".join(f"t{i}" for i in range(n_tensors))
+        + "}"
+    )
     expr = template.format(
         *[f"t{i}" for i in range(n_tensors)], **substitutions
     )
     if n_outputs == 1:
         lines.append(f"tensorplay::Tensor result = {expr};")
-        lines.append(
-            "std::memcpy(out0->data, result.data_ptr(),"
-            " result.numel() * result.itemsize());"
-        )
+        # The call's result is written into the buffer it belongs in.  The
+        # copy is by value rather than by bytes because neither side is
+        # necessarily laid out the obvious way: a contraction answers in the
+        # order that suits it, and the buffer it belongs in is described by
+        # its own shape and stride.
+        lines.append("tp_buffer_to_tensor(*out0).copy_(result);")
     else:
         # An operation that answers with several results answers with them
         # together, so what is copied is each part of what came back, in the
-        # order the operation returns them.
+        # order the operation answers.
         lines.append(f"auto result = {expr};")
         for i in range(n_outputs):
             lines.append(
-                f"std::memcpy(out{i}->data, std::get<{i}>(result).data_ptr(),"
-                f" std::get<{i}>(result).numel()"
-                f" * std::get<{i}>(result).itemsize());"
+                f"tp_buffer_to_tensor(*out{i}).copy_(std::get<{i}>(result));"
             )
     body = "\n        ".join(lines)
     return f"""
@@ -1279,10 +1330,11 @@ class CppWrapperCodegen(PythonWrapperCodegen):
 
         if not literals:
             return ()
-        if any(kind == "tensor" for _, kind in literals):
+        if any(kind in ("tensor", "tensor_list") for _, kind in literals):
             # A call written with its operands in fixed positions says so: each
             # argument is matched with the place it stands in, and a place that
-            # holds an operand contributes nothing to what is written.
+            # holds an operand -- or the list an operation takes its operands
+            # in -- contributes nothing to what is written.
             return self._extern_literals_in_order(op_name, literals, args)
         by_name = {}
         positional = []
@@ -1334,26 +1386,68 @@ class CppWrapperCodegen(PythonWrapperCodegen):
         they stand in: each entry of the form says what is at that place, and an
         entry that names an operand contributes nothing, because the operand is
         handed over as a slot rather than written here.
+
+        The operands of a call that takes them as a list may arrive as one list
+        or as a run of arguments written one after another -- a call recorded
+        from a variadic spelling has no list at all.  Both are the same call,
+        so both are consumed here.
         """
 
         values = []
-        for index, (name, kind) in enumerate(literals):
+        index = 0
+        for name, kind in literals:
+            if kind == "tensor":
+                if index >= len(args):
+                    raise NotImplementedError(
+                        f"C++ wrapper extern kernel {op_name!r} was called "
+                        f"with fewer arguments than its {kind!r} argument"
+                    )
+                index += 1
+                continue
+            if kind == "tensor_list":
+                if index < len(args) and _is_list_text(args[index]):
+                    # The operands arrived as the list the operation declares.
+                    index += 1
+                    continue
+                # The operands arrived one after another, each an argument of
+                # its own; they are consumed for as long as they name memory.
+                first = index
+                while index < len(args) and self._is_operand_text(args[index]):
+                    index += 1
+                if index == first:
+                    raise NotImplementedError(
+                        f"C++ wrapper extern kernel {op_name!r} was called "
+                        "without the operands it takes as a list"
+                    )
+                continue
             if index >= len(args):
+                if kind == "optional_ints":
+                    # An absent list asks for the operation's defaults, which
+                    # is the empty vector.
+                    values.append(_literal_value(kind, None))
+                    continue
                 raise NotImplementedError(
                     f"C++ wrapper extern kernel {op_name!r} was called with "
-                    f"fewer arguments than its {kind!r} argument"
+                    f"fewer arguments than its {name or kind!r} argument"
                 )
             arg = args[index]
-            if kind == "tensor":
-                continue
+            index += 1
             _, _, value = _split_named(arg)
             values.append(_literal_value(kind, value))
-        if len(args) != len(literals):
+        if index != len(args):
             raise NotImplementedError(
                 f"C++ wrapper extern kernel {op_name!r} was called with "
-                f"{len(args) - len(literals)} argument(s) nothing describes"
+                f"{len(args) - index} argument(s) nothing describes"
             )
         return tuple(values)
+
+    def _is_operand_text(self, text: Any) -> bool:
+        """Whether an argument as written names memory the call reads."""
+
+        return (
+            isinstance(text, str)
+            and (text in V.graph.name_to_buffer or text in self.view_meta)
+        )
 
     def codegen_multi_output(self, node: ir.MultiOutput) -> None:
         """One of several results of a single call.

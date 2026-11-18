@@ -306,6 +306,21 @@ def test_package_holds_an_attention_call(tmp_path):
     assert tp.allclose(module(query, query, query), attend(query, query, query), atol=1e-4)
 
 
+def test_package_holds_a_contraction(tmp_path):
+    """A contraction whose operands arrive in a list, baked as a package.
+
+    The list is the operands; the package hands the entry point the buffers it
+    reads and writes, and the equation stays part of the call.
+    """
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) / 7
+    x = tp.tensor([[1.0, 2.0, 3.0, 4.0], [-1.0, 0.5, 2.0, 0.0]])
+    fn = lambda a: tp.einsum("ij,jk->ik", a, weight)
+    path = _build(tmp_path / _PKG, fn, [x])
+    module = load_package(path)
+    assert tp.allclose(module(x), fn(x), atol=1e-4)
+
+
 def test_region_that_returns_a_view_is_refused(tmp_path):
     # A package lays out storage of its own, so there is nowhere for a view to
     # sit: the result would name a window onto nothing.
@@ -320,14 +335,14 @@ def test_region_that_returns_a_view_is_refused(tmp_path):
 
 
 def test_region_without_a_cpp_wrapper_is_refused(tmp_path):
-    # A contraction written as one call takes its operands as a list rather
-    # than as buffers, and there is no host form of it to put in a package.
-    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3)
+    # The number of values a unique call answers with depends on the values
+    # themselves, so nothing can size the rest of the region ahead of time and
+    # there is no host form of it to put in a package.
     with pytest.raises(PackageError, match=r"no C\+\+ wrapper"):
         _build(
             tmp_path / _PKG,
-            lambda a: tp.einsum("ij,jk->ik", a, weight),
-            [tp.ones(2, 4)],
+            lambda a: tp.unique(a),
+            [tp.tensor([1.0, 2.0, 1.0, 3.0])],
         )
 
 

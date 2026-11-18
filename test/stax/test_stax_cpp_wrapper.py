@@ -519,3 +519,90 @@ def test_scaled_dot_product_attention_with_a_scale():
         ),
         [qkv],
     )
+
+
+# --------------------------------------------------------------------------
+# a contraction whose operands are a list
+# --------------------------------------------------------------------------
+
+
+def _einsum_operands():
+    return [
+        tp.tensor([[1.0, 2.0, 3.0, 4.0], [-1.0, 0.5, 2.0, 0.0]]),
+        tp.arange(12, dtype=tp.float32).reshape(4, 3) / 7,
+    ]
+
+
+def test_einsum():
+    """A contraction takes its operands in a list rather than as arguments.
+
+    The list is the operands, and the places it has beyond the list are the
+    equation and the path; the shim builds the vector from the slots.
+    """
+
+    a, weight = _einsum_operands()
+    _check(lambda x: tp.einsum("ij,jk->ik", x, weight), [a])
+
+
+def test_einsum_with_three_operands_and_a_window():
+    """The third operand is a transposed weight, read through its window."""
+
+    a, weight = _einsum_operands()
+    _check(
+        lambda x: tp.einsum("ij,jk,kl->il", x, weight, weight.transpose(0, 1)),
+        [a],
+    )
+
+
+def test_einsum_over_a_batch():
+    a, weight = _einsum_operands()
+    _check(
+        lambda x: tp.einsum(
+            "bij,bjk->bik", x.reshape(2, 1, 4), weight.reshape(1, 4, 3)
+        ),
+        [a],
+    )
+
+
+def test_einsum_of_a_buffer_with_itself():
+    a, _ = _einsum_operands()
+    _check(lambda x: tp.einsum("ij,ij->i", x, x), [a])
+
+
+def test_einsum_then_pointwise():
+    a, weight = _einsum_operands()
+    _check(lambda x: tp.einsum("ij,jk->ik", x, weight).relu(), [a])
+
+
+# --------------------------------------------------------------------------
+# a middle value with the NaNs left out, and adaptive pooling
+# --------------------------------------------------------------------------
+
+
+def test_nanmedian():
+    """The middle element with the NaNs left out is a single value."""
+
+    _check(
+        lambda a: tp.nanmedian(a),
+        [tp.tensor([[1.0, 2.0, float("nan"), 4.0], [-1.0, 0.5, 2.0, 0.0]])],
+    )
+
+
+def test_adaptive_max_pool_with_indices():
+    """Adaptive pooling answers with the values and the places they sat.
+
+    Its output size alternates with its operand, so the places are what
+    describes the call.
+    """
+
+    image = tp.randn(1, 3, 8, 8)
+    _check(
+        lambda a: tp.nn.functional.adaptive_max_pool2d_with_indices(a, (4, 4)),
+        [image],
+    )
+    _check(
+        lambda a: tp.nn.functional.adaptive_max_pool2d_with_indices(
+            a, (3, 5)
+        )[1],
+        [image],
+    )
