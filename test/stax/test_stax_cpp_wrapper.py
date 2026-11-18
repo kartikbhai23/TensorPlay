@@ -376,6 +376,38 @@ def test_a_cumulative_sum_in_another_type():
     )
 
 
+def test_a_cumulative_product():
+    """The product along an axis accumulates like the sum, in either type."""
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    _check(
+        lambda a: tp.mm(a, weight).cumprod(dim=-1),
+        [_pair_input()],
+    )
+    _check(
+        lambda a: tp.mm(a, weight).cumprod(dim=1, dtype=tp.float64),
+        [_pair_input()],
+    )
+
+
+def test_a_running_maximum():
+    """A running maximum keeps the place each maximum came from."""
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    _check(
+        lambda a: tp.mm(a, weight).cummax(dim=-1),
+        [_pair_input()],
+    )
+
+
+def test_a_running_minimum():
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) - 5
+    _check(
+        lambda a: tp.mm(a, weight).cummin(dim=-1),
+        [_pair_input()],
+    )
+
+
 def test_a_rounded_division():
     """A division that rounds keeps the rounding as part of the call.
 

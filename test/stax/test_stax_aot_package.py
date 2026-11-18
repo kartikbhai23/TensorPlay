@@ -262,6 +262,24 @@ def test_package_holds_a_sort(tmp_path):
     assert tp.allclose(module(x), tp.mm(x, weight).sort(dim=-1)[0])
 
 
+def test_package_holds_a_cumulative_product_and_a_running_maximum(tmp_path):
+    """Both scans: one answers with values only, one with values and places."""
+
+    x = tp.tensor([[1.0, 2.0, 3.0, 4.0], [0.0, -1.0, 0.5, 2.0]])
+    product = lambda a: tp.cumprod(a, dim=-1)
+    path = _build(tmp_path / "product", product, [x])
+    module = load_package(path)
+    assert tp.allclose(module(x), product(x))
+
+    running = lambda a: tp.cummax(a, dim=-1)
+    path = _build(tmp_path / "running", running, [x])
+    module = load_package(path)
+    values, places = module(x)
+    expected_values, expected_places = running(x)
+    assert tp.allclose(values, expected_values)
+    assert tp.allclose(places, expected_places)
+
+
 def test_package_holds_a_topk(tmp_path):
     """The k largest, and which of them they were."""
 

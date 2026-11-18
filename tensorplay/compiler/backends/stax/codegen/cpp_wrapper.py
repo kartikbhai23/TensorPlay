@@ -520,6 +520,13 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
         "t0.cumsum({s0}, {s1})",
         (("dim", "int"), ("dtype", "optional_dtype")),
     ),
+    # The product along one axis accumulates the same way the sum does, and it
+    # takes the same pair of places: the axis, and the type to accumulate in.
+    "cumprod": (
+        "tp_cpu_cumprod",
+        "t0.cumprod({s0}, {s1})",
+        (("dim", "int"), ("dtype", "optional_dtype")),
+    ),
     # A contraction takes its operands as a list rather than as separate
     # arguments, and the places it has beyond that list are the equation and
     # an optional path.  The list itself is the operands: each entry is a
@@ -586,6 +593,18 @@ _EXTERN_KERNEL_MULTI_SHIMS: dict[
         "tp_cpu_kthvalue",
         "t0.kthvalue({s0}, {s1}, {s2})",
         ((None, "int"), (None, "int"), (None, "flag")),
+    ),
+    # The running maximum along one axis answers with the maxima and the place
+    # each came from, so it leaves two buffers behind like a sort does.
+    "tp_cummax": (
+        "tp_cpu_cummax",
+        "t0.cummax({s0})",
+        (("dim", "int"),),
+    ),
+    "tp_cummin": (
+        "tp_cpu_cummin",
+        "t0.cummin({s0})",
+        (("dim", "int"),),
     ),
     # Adaptive pooling answers with the pooled values and where in each window
     # the chosen one sat.  Its output size alternates with its operand, so the
