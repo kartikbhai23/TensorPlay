@@ -623,6 +623,20 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
             ("device", "optional_device"),
         ),
     ),
+    # A product of a matrix and a vector, added to a value: the two numbers
+    # that scale the value and the product are places of their own.
+    "addmv": (
+        "tp_cpu_addmv",
+        "t0.addmv(t1, t2, {s0}, {s1})",
+        (("beta", "real"), ("alpha", "real")),
+    ),
+    # The distance between two rows over every pair of rows: the order of the
+    # norm and how the pairs are traversed are the call's two places.
+    "cdist": (
+        "tp_cpu_cdist",
+        "tensorplay::Tensor::cdist(t0, t1, {s0}, {s1})",
+        ((None, "real"), ("compute_mode", "optional_int")),
+    ),
     "divide_Scalar_mode": (
         "tp_cpu_divide_scalar_mode",
         "tensorplay::Tensor::divide(t0, tensorplay::Scalar({s0}), {s1})",
@@ -694,6 +708,22 @@ _EXTERN_KERNEL_MULTI_SHIMS: dict[
         "tensorplay::Tensor::adaptive_max_pool2d_with_indices(t0, {s0})",
         ((None, "tensor"), (None, "ints")),
     ),
+    # A bag of embeddings answers with the sums, the bag each value landed in,
+    # how many values each bag held and where the largest one sat; all four
+    # are written before the caller picks the one it wants.
+    "tp__embedding_bag": (
+        "tp_cpu_embedding_bag",
+        "tensorplay::Tensor::_embedding_bag(t0, t1, t2, {s0}, {s1}, {s2}, "
+        "{s3}, {s4}, {s5})",
+        (
+            (None, "flag"),
+            (None, "int"),
+            (None, "flag"),
+            (None, "optional_tensor"),
+            (None, "flag"),
+            (None, "int"),
+        ),
+    ),
 }
 
 
@@ -730,6 +760,15 @@ def _write_optional_real(text: str) -> str:
     if text.strip() == "None":
         return "std::nullopt"
     return _scalar_literal(text)
+
+
+@_literal_writer("optional_int")
+def _write_optional_int(text: str) -> str:
+    """A whole number that may not have been supplied at all."""
+
+    if text.strip() == "None":
+        return "std::nullopt"
+    return f"std::optional<int64_t>({_write_int(text)})"
 
 
 @_literal_writer("flag")

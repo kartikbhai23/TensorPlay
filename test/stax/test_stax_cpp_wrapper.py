@@ -800,6 +800,45 @@ def test_a_region_that_is_only_a_draw():
 
 
 # --------------------------------------------------------------------------
+# a product with a vector, distances between rows, and bags of embeddings
+# --------------------------------------------------------------------------
+
+
+def test_a_matrix_times_a_vector_added_to_a_value():
+    """The two scalars that scale the value and the product are places."""
+
+    weight = tp.arange(20, dtype=tp.float32).reshape(4, 5) / 7
+    vec = tp.arange(5, dtype=tp.float32) / 7
+    _check(lambda a: tp.addmv(a, weight, vec), [tp.randn(4)])
+    _check(
+        lambda a: tp.addmv(a, weight, vec, beta=0.5, alpha=2.0),
+        [tp.randn(4)],
+    )
+
+
+def test_a_distance_between_every_pair_of_rows():
+    """The order of the norm is a place; how pairs are traversed is another."""
+
+    _check(lambda a: tp.cdist(a, a * 2), [tp.randn(2, 4)])
+    _check(lambda a: tp.cdist(a, a * 2, p=1.5), [tp.randn(2, 4)])
+
+
+def test_a_bag_of_embeddings():
+    """Every bag is combined into one row, in each of the three ways."""
+
+    weight = tp.arange(15, dtype=tp.float32).reshape(5, 3) / 7
+    indices = tp.tensor([0, 3, 1], dtype=tp.int64)
+    offsets = tp.tensor([0, 2], dtype=tp.int64)
+    for mode in ("sum", "mean", "max"):
+        _check(
+            lambda a: tp.nn.functional.embedding_bag(
+                indices, weight, offsets, mode=mode
+            ),
+            [tp.randn(2, 4)],
+        )
+
+
+# --------------------------------------------------------------------------
 # what is refused rather than written
 # --------------------------------------------------------------------------
 
