@@ -452,20 +452,28 @@ Tensor conv2d_depthwise_forward_cuda(
         }
     };
 
-    // The taps are specialised for the two filter sizes the models use;
-    // anything else reads the filter with runtime bounds.
-    if (rr == 7 && ss == 7 && vec == 7) {
-        launch(std::integral_constant<int, 7>{}, std::integral_constant<int, 7>{});
-    } else if (rr == 7 && ss == 7 && vec == 4) {
-        launch(std::integral_constant<int, 7>{}, std::integral_constant<int, 4>{});
-    } else if (rr == 3 && ss == 3 && vec == 7) {
-        launch(std::integral_constant<int, 3>{}, std::integral_constant<int, 7>{});
-    } else if (rr == 3 && ss == 3 && vec == 4) {
-        launch(std::integral_constant<int, 3>{}, std::integral_constant<int, 4>{});
+    // The tap count is a template parameter: the tap loop unrolls and the
+    // accumulators stay in registers.  Filter sizes the models do not use
+    // read it at run time instead.
+    auto pick_vec = [&](auto taps) {
+        constexpr int KS = decltype(taps)::value;
+        if (vec == 7) {
+            launch(std::integral_constant<int, KS>{}, std::integral_constant<int, 7>{});
+        } else if (vec == 4) {
+            launch(std::integral_constant<int, KS>{}, std::integral_constant<int, 4>{});
+        } else {
+            launch(std::integral_constant<int, KS>{}, std::integral_constant<int, 2>{});
+        }
+    };
+
+    if (rr == 7 && ss == 7) {
+        pick_vec(std::integral_constant<int, 7>{});
+    } else if (rr == 5 && ss == 5) {
+        pick_vec(std::integral_constant<int, 5>{});
     } else if (rr == 3 && ss == 3) {
-        launch(std::integral_constant<int, 3>{}, std::integral_constant<int, 2>{});
-    } else if (rr == 7 && ss == 7) {
-        launch(std::integral_constant<int, 7>{}, std::integral_constant<int, 2>{});
+        pick_vec(std::integral_constant<int, 3>{});
+    } else if (rr == 1 && ss == 1) {
+        pick_vec(std::integral_constant<int, 1>{});
     } else {
         launch(std::integral_constant<int, 0>{}, std::integral_constant<int, 1>{});
     }
@@ -485,8 +493,12 @@ bool conv2d_depthwise_grad_weight_eligible(
     const Tensor& grad_output, const Tensor& input, const Tensor& weight,
     int64_t groups) {
     if (weight.size(2) * weight.size(3) > kMaxDepthwiseTaps) return false;
+    // Each operand is read in whichever of the two dense 4-D orders it already
+    // has, so neither has to be repacked for this call.
     return depthwise_shape_ok(grad_output, input, weight, groups) &&
-           input.is_contiguous() && grad_output.is_contiguous();
+           (input.is_contiguous() || depthwise_channels_last_4d(input)) &&
+           (grad_output.is_contiguous() ||
+            depthwise_channels_last_4d(grad_output));
 }
 
 Tensor conv2d_depthwise_grad_input_cuda(
@@ -625,6 +637,14 @@ Tensor conv2d_depthwise_grad_weight_cuda(
     const int64_t OH = grad_output.size(2), OW = grad_output.size(3);
     const int64_t multiplier = K / C;
 
+    // The kernel walks one channel's sites as a dense run, which is how the
+    // row-major order stores them.  An operand in the other order is repacked
+    // once here rather than read a channel apart at every position, which
+    // would cost a separate transaction per element.
+    Tensor dy = grad_output.is_contiguous() ? grad_output
+                                            : grad_output.contiguous();
+    Tensor x = input.is_contiguous() ? input : input.contiguous();
+
     Tensor grad_weight = Tensor::empty({K, 1, R, S}, weight.dtype(), weight.device());
     const auto stream = getCurrentCUDAStream().stream();
     // One block per output channel, wide enough to keep every lane busy on
@@ -652,7 +672,7 @@ Tensor conv2d_depthwise_grad_weight_cuda(
                     <<<grid, threads, 0, stream>>>(
                         batch, channels, mult, h_extent, w_extent, oh, ow,
                         rr, ss, sh, sw, ph, pw, dh, dw,
-                        grad_output.data_ptr<float>(), input.data_ptr<float>(),
+                        dy.data_ptr<float>(), x.data_ptr<float>(),
                         grad_weight.data_ptr<float>());
                 break;
             case DType::Float16:
@@ -660,8 +680,8 @@ Tensor conv2d_depthwise_grad_weight_cuda(
                     <<<grid, threads, 0, stream>>>(
                         batch, channels, mult, h_extent, w_extent, oh, ow,
                         rr, ss, sh, sw, ph, pw, dh, dw,
-                        grad_output.data_ptr<tensorplay::Half>(),
-                        input.data_ptr<tensorplay::Half>(),
+                        dy.data_ptr<tensorplay::Half>(),
+                        x.data_ptr<tensorplay::Half>(),
                         grad_weight.data_ptr<tensorplay::Half>());
                 break;
             case DType::BFloat16:
@@ -670,8 +690,8 @@ Tensor conv2d_depthwise_grad_weight_cuda(
                     <<<grid, threads, 0, stream>>>(
                         batch, channels, mult, h_extent, w_extent, oh, ow,
                         rr, ss, sh, sw, ph, pw, dh, dw,
-                        grad_output.data_ptr<tensorplay::BFloat16>(),
-                        input.data_ptr<tensorplay::BFloat16>(),
+                        dy.data_ptr<tensorplay::BFloat16>(),
+                        x.data_ptr<tensorplay::BFloat16>(),
                         grad_weight.data_ptr<tensorplay::BFloat16>());
                 break;
             default:
@@ -681,8 +701,12 @@ Tensor conv2d_depthwise_grad_weight_cuda(
 
     if (rr == 7 && ss == 7) {
         launch(std::integral_constant<int, 7>{});
+    } else if (rr == 5 && ss == 5) {
+        launch(std::integral_constant<int, 5>{});
     } else if (rr == 3 && ss == 3) {
         launch(std::integral_constant<int, 3>{});
+    } else if (rr == 1 && ss == 1) {
+        launch(std::integral_constant<int, 1>{});
     } else {
         launch(std::integral_constant<int, 0>{});
     }
