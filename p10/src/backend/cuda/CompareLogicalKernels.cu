@@ -78,6 +78,87 @@ Tensor& logical_not__cuda(Tensor& self) {
     return self;
 }
 
+// Dtype-preserving in-place binary connective functor: nvcc rejects generic
+// __host__ __device__ lambdas, so the operation is a callable struct.
+struct LogicalAndDtypeFn {
+    template <typename T>
+    __host__ __device__ T operator()(T a, T b) const {
+        const bool truth = (a != T(0)) && (b != T(0));
+        return truth ? T(1) : T(0);
+    }
+};
+
+struct LogicalOrDtypeFn {
+    template <typename T>
+    __host__ __device__ T operator()(T a, T b) const {
+        const bool truth = (a != T(0)) || (b != T(0));
+        return truth ? T(1) : T(0);
+    }
+};
+
+struct LogicalXorDtypeFn {
+    template <typename T>
+    __host__ __device__ T operator()(T a, T b) const {
+        const bool truth = (a != T(0)) != (b != T(0));
+        return truth ? T(1) : T(0);
+    }
+};
+
+template <typename F>
+Tensor& logical_binary_dtype_into(Tensor& self, const Tensor& other, F f,
+                                  const char* name) {
+    if (self.numel() == 0) return self;
+    TensorIterator iter = TensorIteratorConfig()
+        .check_all_same_dtype(true)
+        .add_output(self)
+        .add_const_input(self)
+        .add_const_input(other)
+        .build();
+#define TP_LOGICAL_BIN_INPLACE(ctype, name_) \
+    case DType::name_: \
+        gpu_kernel(iter, [f] __host__ __device__(ctype a, ctype b) -> ctype { \
+            return f(a, b); \
+        }); \
+        break;
+    switch (self.dtype()) {
+        TENSORPLAY_FORALL_SCALAR_TYPES(TP_LOGICAL_BIN_INPLACE)
+        default: TP_THROW(TypeError, name, ": unsupported dtype");
+    }
+#undef TP_LOGICAL_BIN_INPLACE
+    CUDA_CHECK(cudaGetLastError());
+    return self;
+}
+
+Tensor& logical_and__cuda(Tensor& self, const Tensor& other) {
+    if (other.dtype() != self.dtype()) {
+        logical_binary_dtype_into(self, other.to(self.dtype()),
+                                  LogicalAndDtypeFn{}, "logical_and_");
+        return self;
+    }
+    return logical_binary_dtype_into(self, other, LogicalAndDtypeFn{},
+                                     "logical_and_");
+}
+
+Tensor& logical_or__cuda(Tensor& self, const Tensor& other) {
+    if (other.dtype() != self.dtype()) {
+        logical_binary_dtype_into(self, other.to(self.dtype()),
+                                  LogicalOrDtypeFn{}, "logical_or_");
+        return self;
+    }
+    return logical_binary_dtype_into(self, other, LogicalOrDtypeFn{},
+                                     "logical_or_");
+}
+
+Tensor& logical_xor__cuda(Tensor& self, const Tensor& other) {
+    if (other.dtype() != self.dtype()) {
+        logical_binary_dtype_into(self, other.to(self.dtype()),
+                                  LogicalXorDtypeFn{}, "logical_xor_");
+        return self;
+    }
+    return logical_binary_dtype_into(self, other, LogicalXorDtypeFn{},
+                                     "logical_xor_");
+}
+
 Tensor logical_and_cuda(const Tensor& a, const Tensor& b) {
     return logical_binary_cuda(a, b, HFn17{}, "logical_and");
 }
@@ -131,6 +212,9 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, CompareLogicalKernels) {
     m.impl("logical_and", logical_and_cuda);
     m.impl("logical_or", logical_or_cuda);
     m.impl("logical_xor", logical_xor_cuda);
+    m.impl("logical_and_", logical_and__cuda);
+    m.impl("logical_or_", logical_or__cuda);
+    m.impl("logical_xor_", logical_xor__cuda);
     m.impl("isfinite", isfinite_cuda);
     m.impl("isinf", isinf_cuda);
     m.impl("isnan", isnan_cuda);

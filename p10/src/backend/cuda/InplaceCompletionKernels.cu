@@ -310,30 +310,6 @@ Tensor& log_inplace_kernel(Tensor& self) {
     return self;
 }
 
-Tensor& logical_and_inplace_kernel(Tensor& self, const Tensor& other) {
-    NoGradGuard __tp_nograd;
-    self.copy_(Tensor::logical_and(self, other));
-    return self;
-}
-
-Tensor& logical_not_inplace_kernel(Tensor& self) {
-    NoGradGuard __tp_nograd;
-    tensorplay::detail::redispatch_logical_not_out_function(self, self);
-    return self;
-}
-
-Tensor& logical_or_inplace_kernel(Tensor& self, const Tensor& other) {
-    NoGradGuard __tp_nograd;
-    self.copy_(Tensor::logical_or(self, other));
-    return self;
-}
-
-Tensor& logical_xor_inplace_kernel(Tensor& self, const Tensor& other) {
-    NoGradGuard __tp_nograd;
-    self.copy_(Tensor::logical_xor(self, other));
-    return self;
-}
-
 Tensor& logit_inplace_kernel(Tensor& self, const std::optional<Scalar>& eps) {
     NoGradGuard __tp_nograd;
     tensorplay::detail::redispatch_logit_out_function(
@@ -567,9 +543,6 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, InplaceCompletionKernels) {
     m.impl("log1p_", log1p_inplace_kernel);
     m.impl("log2_", log2_inplace_kernel);
     m.impl("log_", log_inplace_kernel);
-    m.impl("logical_and_", logical_and_inplace_kernel);
-    m.impl("logical_or_", logical_or_inplace_kernel);
-    m.impl("logical_xor_", logical_xor_inplace_kernel);
     m.impl("logit_", logit_inplace_kernel);
     m.impl("masked_scatter_", masked_scatter_inplace_kernel);
     m.impl("mish_", mish_inplace_kernel);
