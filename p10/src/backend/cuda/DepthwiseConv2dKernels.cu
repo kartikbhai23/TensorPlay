@@ -98,7 +98,7 @@ __global__ void depthwise_conv2d_forward_kernel(
     int W, int H, int OW, int OH, int channels, int multiplier, int R, int S,
     int sh, int sw, int ph, int pw, int dh, int dw,
     const T* __restrict__ input, const T* __restrict__ weight,
-    T* __restrict__ output) {
+    const T* __restrict__ bias, T* __restrict__ output) {
     const int kh = (KS != 0) ? KS : R;
     const int kw = (KS != 0) ? KS : S;
     const int taps = kh * kw;
@@ -118,6 +118,9 @@ __global__ void depthwise_conv2d_forward_kernel(
         wreg[t] = static_cast<M>(
             weight[static_cast<int64_t>(out_channel) * taps + t]);
     }
+    // The bias is one number per output channel, so it starts the
+    // accumulator rather than being added to the result afterwards.
+    const M bias_value = bias ? static_cast<M>(bias[out_channel]) : M(0);
 
     const T* x = input +
         (static_cast<int64_t>(blockIdx.z) * channels + in_channel) * in_plane;
@@ -131,7 +134,7 @@ __global__ void depthwise_conv2d_forward_kernel(
         const int ow0 = (g - oh * cols) * VEC;
         M acc[VEC];
 #pragma unroll
-        for (int j = 0; j < VEC; ++j) acc[j] = M(0);
+        for (int j = 0; j < VEC; ++j) acc[j] = bias_value;
 #pragma unroll
         for (int r = 0; r < kh; ++r) {
             const int hi = oh * sh + r * dh - ph;
@@ -377,7 +380,7 @@ Tensor conv2d_depthwise_forward_cuda(
     const Tensor& input, const Tensor& weight,
     const std::vector<int64_t>& stride, const std::vector<int64_t>& padding,
     const std::vector<int64_t>& dilation, int64_t groups,
-    const Tensor& out_provided) {
+    const Tensor& bias, const Tensor& out_provided) {
     (void)groups;
     const int64_t N = input.size(0), C = input.size(1);
     const int64_t H = input.size(2), W = input.size(3);
@@ -407,6 +410,11 @@ Tensor conv2d_depthwise_forward_cuda(
     const int channels = static_cast<int>(C);
     const int mult = static_cast<int>(K / C);
     const int rr = static_cast<int>(R), ss = static_cast<int>(S);
+    // A bias of the output's own type, one number per output channel, starts
+    // the accumulator; anything else is left to the caller.
+    const bool has_bias = bias.defined() && bias.numel() == K &&
+                          bias.dtype() == input.dtype() &&
+                          bias.is_contiguous();
 
     // Columns per thread: a group spans one row of the input, so the widest
     // group that still gives every channel a full warp of groups wins.  Small
@@ -427,7 +435,9 @@ Tensor conv2d_depthwise_forward_cuda(
                     <<<grid, threads, 0, stream>>>(
                         w_extent, h_extent, ow, oh, channels, mult, rr, ss,
                         sh, sw, ph, pw, dh, dw, input.data_ptr<float>(),
-                        weight.data_ptr<float>(), output.data_ptr<float>());
+                        weight.data_ptr<float>(),
+                        has_bias ? bias.data_ptr<float>() : nullptr,
+                        output.data_ptr<float>());
                 break;
             case DType::Float16:
                 depthwise_conv2d_forward_kernel<KS, VEC, tensorplay::Half, float>
@@ -435,6 +445,7 @@ Tensor conv2d_depthwise_forward_cuda(
                         w_extent, h_extent, ow, oh, channels, mult, rr, ss,
                         sh, sw, ph, pw, dh, dw, input.data_ptr<tensorplay::Half>(),
                         weight.data_ptr<tensorplay::Half>(),
+                        has_bias ? bias.data_ptr<tensorplay::Half>() : nullptr,
                         output.data_ptr<tensorplay::Half>());
                 break;
             case DType::BFloat16:
@@ -445,6 +456,8 @@ Tensor conv2d_depthwise_forward_cuda(
                         sh, sw, ph, pw, dh, dw,
                         input.data_ptr<tensorplay::BFloat16>(),
                         weight.data_ptr<tensorplay::BFloat16>(),
+                        has_bias ? bias.data_ptr<tensorplay::BFloat16>()
+                                 : nullptr,
                         output.data_ptr<tensorplay::BFloat16>());
                 break;
             default:

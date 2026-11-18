@@ -163,13 +163,15 @@ TP_DECLARE_CONV_GRADS(3)
 P10_API bool conv2d_depthwise_forward_eligible(const Tensor& input,
                                                const Tensor& weight,
                                                int64_t groups);
+// A bias of the result's own type with one number per output channel is
+// added as the accumulator starts; any other bias is left to the caller.
 // ``out`` is written in place when it has the result's shape in row-major
 // order; an unusable buffer leaves the call to allocate its own result.
 P10_API Tensor conv2d_depthwise_forward_cuda(
     const Tensor& input, const Tensor& weight,
     const std::vector<int64_t>& stride, const std::vector<int64_t>& padding,
     const std::vector<int64_t>& dilation, int64_t groups,
-    const Tensor& out = {});
+    const Tensor& bias = {}, const Tensor& out = {});
 
 // Depthwise 2-D convolution backwards.
 //

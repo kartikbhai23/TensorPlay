@@ -273,8 +273,13 @@ static Tensor conv2d_cuda_impl(const Tensor& input, const Tensor& weight, const 
     if (!fused_relu &&
         conv2d_depthwise_forward_eligible(input, weight, groups)) {
         Tensor out = conv2d_depthwise_forward_cuda(
-            input, weight, stride, padding, dilation, groups, out_provided);
-        if (bias.defined() && bias.numel() != 0) {
+            input, weight, stride, padding, dilation, groups, bias, out_provided);
+        // A bias the kernel could not start the accumulator with is added
+        // here, one channel-wide pass over the result.
+        const bool bias_fused = bias.defined() && bias.numel() == K &&
+                                bias.dtype() == input.dtype() &&
+                                bias.is_contiguous();
+        if (bias.defined() && bias.numel() != 0 && !bias_fused) {
             Tensor bias_c = bias.is_contiguous() ? bias : bias.contiguous();
             Tensor bias_4d = bias_c.reshape({1, K, 1, 1});
             bool added = false;
