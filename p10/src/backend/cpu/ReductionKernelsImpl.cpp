@@ -440,6 +440,9 @@ static bool try_normsq_real(const void* xv, int64_t n, DType dt, double* out) {
     return normsq_reduced(xv, n, dt, nslots, out);
 }
 
+// --- 256-bit packed reduction walks (x86, per-function target) --------------
+#if defined(TP_VECREDUCED_X86)
+
 // The plain sum of a reduced-width stream, in single precision like the
 // squares above: one row of twenty-four lanes folded through four chains.
 template <bool BFloat>
@@ -1166,6 +1169,8 @@ inline std::optional<Tensor> try_product_leading_reduced(
     return out;
 }
 
+#endif  // TP_VECREDUCED_X86
+
 // A slice of columns multiplied row after row in the slice's own width; four
 // rows are folded among themselves first, which is what keeps the chain of
 // multiplies on one column from being the loop's critical path.
@@ -1215,6 +1220,7 @@ inline void product_blocks_real(const Tensor& input, Tensor& out, int64_t outer,
     });
 }
 
+#if defined(TP_VECREDUCED_X86)
 // The scaling a half-precision band carries applied to its totals, with the
 // columns whose answer the width cannot tell from zero taken out first: a
 // scaling step on such a column would produce a value below the smallest a
@@ -1462,6 +1468,8 @@ inline std::optional<Tensor> try_sum_leading_reduced(
     }
     return out;
 }
+
+#endif  // TP_VECREDUCED_X86
 
 }  // namespace
 
@@ -4869,6 +4877,7 @@ inline std::optional<Tensor> review_permuted_reduction(
     return back.contiguous();
 }
 
+#if defined(TP_VECREDUCED_X86)
 // Four answers of a band summed into the wider integer the total is kept in.
 __attribute__((target("avx2"), always_inline)) inline
 int64_t sum_band_i64(__m256i v) {
@@ -5360,6 +5369,9 @@ inline std::optional<Tensor> try_sum_middle_int(
     return out;
 }
 
+#endif  // TP_VECREDUCED_X86
+
+#if defined(TP_VECREDUCED_X86)
 // Four factors of one row widened into the wide integer, so that a band of
 // columns is multiplied in the width its answer is kept in.
 template <typename T>
@@ -5664,6 +5676,8 @@ inline std::optional<Tensor> try_prod_middle_int(
     return out;
 }
 
+#endif  // TP_VECREDUCED_X86
+
 Tensor sum_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims, bool keepdim, DType dtype) {
     DType out_dtype = dtype;
     if (out_dtype == DType::Undefined) {
@@ -5958,6 +5972,7 @@ Tensor sum_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims,
     // An integral tensor whose answer is a wide integer is summed where it
     // lies, one contiguous row at a time, instead of through a converted copy
     // of the whole input first.
+#if defined(TP_VECREDUCED_X86)
     if (acc_dtype == DType::Int64 && dims.size() == 1) {
         const int64_t rank = self.dim();
         const int64_t axis = dims[0] < 0 ? dims[0] + rank : dims[0];
@@ -5978,6 +5993,7 @@ Tensor sum_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims,
             }
         }
     }
+#endif  // TP_VECREDUCED_X86
 
     Tensor out = Tensor::zeros(out_shape, acc_dtype, self.device());
     
@@ -6726,6 +6742,7 @@ inline int nan_lanes(const Vectorized<ctype>& value) {
 }
 #endif
 
+#if defined(TP_VECREDUCED_X86)
 // A compare that reports a not-a-number from either operand.
 template <bool WantMax>
 __attribute__((target("avx2,fma,f16c"), always_inline)) inline
@@ -6733,6 +6750,7 @@ __m256 extremum_step8(const __m256& a, const __m256& b) {
     const __m256 pick = WantMax ? _mm256_max_ps(a, b) : _mm256_min_ps(a, b);
     return _mm256_or_ps(pick, _mm256_cmp_ps(a, b, _CMP_UNORD_Q));
 }
+#endif  // TP_VECREDUCED_X86
 
 // A run shorter than one step still reads a whole step per row: the lanes past
 // the run are replaced by the identity, so a row's compare cannot see the next
@@ -6937,6 +6955,7 @@ inline void fold_short_rows(const ctype* data, int64_t run, int64_t begin,
 // its horizontal fold run on eight single-precision lanes rather than one
 // element at a time.  A row that holds a not-a-number takes the exact walk, and
 // the tensor's own last row reads through a padded copy.
+#if defined(TP_VECREDUCED_X86)
 template <bool BFloat, bool WantMax>
 __attribute__((target("avx2,fma,f16c"), noinline))
 void fold_step_rows_hw(const uint16_t* in, int64_t run, int64_t begin,
@@ -7114,6 +7133,8 @@ void fold_short_rows_hw(const uint16_t* in, int64_t run, int64_t begin,
     }
 }
 
+#endif  // TP_VECREDUCED_X86
+
 // A single trailing dimension of a dense tensor is one contiguous run per row,
 // so the rows can go straight to the pool and skip the reduction iterator with
 // its identity fill and its per-element stride machinery.  Answers agree with
@@ -7147,10 +7168,23 @@ inline ctype fold_run_integral(const ctype* data, int64_t n) {
 }
 
 #if defined(CPU_CAPABILITY_AVX2)
+// This copy is compiled with its ISA flags for the whole translation unit, so
+// a per-function target only restates them; the two inlining forms are spelled
+// for compilers without the GNU attribute.
+#if defined(_MSC_VER)
+#define TP_REDUCTION_AVX2_INLINE __forceinline
+#define TP_REDUCTION_AVX2_NOINLINE __declspec(noinline)
+#else
+#define TP_REDUCTION_AVX2_INLINE \
+    __attribute__((target("avx2,fma,f16c"), always_inline)) inline
+#define TP_REDUCTION_AVX2_NOINLINE \
+    __attribute__((target("avx2,fma,f16c"), noinline))
+#endif
+
 // One extremum step between two registers of any integral width, chosen at
 // compile time so the sign of the element and the instruction exist.
 template <typename ctype, bool WantMax>
-__attribute__((target("avx2"), always_inline)) inline
+TP_REDUCTION_AVX2_INLINE
 __m256i extrema_reg_step(const __m256i& a, const __m256i& b) {
     if constexpr (sizeof(ctype) == 1) {
         if constexpr (std::is_signed_v<ctype>) {
@@ -7187,7 +7221,7 @@ __m256i extrema_reg_step(const __m256i& a, const __m256i& b) {
 
 // The identity of an integral extremum, broadcast in the width it is carried in.
 template <typename ctype>
-__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+TP_REDUCTION_AVX2_INLINE
 __m256i integral_seed(bool maximum_value) {
     const ctype value = extrema_identity<ctype>(maximum_value);
     if constexpr (sizeof(ctype) == 1) {
@@ -7207,7 +7241,7 @@ __m256i integral_seed(bool maximum_value) {
 // unsigned eight-byte value flips its sign bit before the compare and comes
 // back unchanged.
 template <typename ctype, bool WantMax>
-__attribute__((target("avx2,fma,f16c"), always_inline)) inline
+TP_REDUCTION_AVX2_INLINE
 __m256i integral_step(const __m256i& a, const __m256i& b) {
     if constexpr (sizeof(ctype) == 1) {
         if constexpr (std::is_signed_v<ctype>) {
@@ -7244,7 +7278,7 @@ __m256i integral_step(const __m256i& a, const __m256i& b) {
 
 // One step of an integral extremum over half a register.
 template <typename ctype, bool WantMax>
-__attribute__((target("avx2"), always_inline)) inline
+TP_REDUCTION_AVX2_INLINE
 __m128i integral_step128(const __m128i& a, const __m128i& b) {
     if constexpr (sizeof(ctype) == 1) {
         if constexpr (std::is_signed_v<ctype>) {
@@ -7284,7 +7318,7 @@ __m128i integral_step128(const __m128i& a, const __m128i& b) {
 // holds the answer.  A walk that reads its answer back from memory pays a
 // store-forwarding step for every row it answers.
 template <typename ctype, bool WantMax>
-__attribute__((target("avx2"), always_inline)) inline
+TP_REDUCTION_AVX2_INLINE
 ctype integral_horizontal(const __m256i& v) {
     __m128i m = integral_step128<ctype, WantMax>(
         _mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
@@ -7314,7 +7348,7 @@ ctype integral_horizontal(const __m256i& v) {
 // and the answer is reduced from the registers instead of being read back from
 // a slice written once per row.
 template <typename ctype, bool WantMax>
-__attribute__((target("avx2"), noinline))
+TP_REDUCTION_AVX2_NOINLINE
 void fold_integral_rows_reg(const ctype* in, int64_t run, int64_t begin,
                             int64_t end, ctype* out) {
     constexpr int64_t W = 32 / sizeof(ctype);
@@ -7370,7 +7404,7 @@ void fold_integral_rows_reg(const ctype* in, int64_t run, int64_t begin,
 // The tail past the last whole vector is compared scalar-wise against the
 // answer reduced from the registers, which keeps the result exact.
 template <typename ctype, bool WantMax>
-__attribute__((target("avx2"), noinline))
+TP_REDUCTION_AVX2_NOINLINE
 void fold_integral_rows_narrow(const ctype* in, int64_t run, int64_t begin,
                                int64_t end, ctype* out) {
     constexpr int64_t W = 32 / sizeof(ctype);
@@ -7400,7 +7434,7 @@ void fold_integral_rows_narrow(const ctype* in, int64_t run, int64_t begin,
 // a single dependent chain; the lanes are combined once per row and the
 // columns past the last full band are compared one at a time.
 template <typename ctype, bool WantMax>
-__attribute__((target("avx2,fma,f16c"), noinline))
+TP_REDUCTION_AVX2_NOINLINE
 void fold_integral_rows(const ctype* in, int64_t run, int64_t begin,
                         int64_t end, ctype* out) {
     constexpr int64_t W = 32 / sizeof(ctype);
@@ -7438,6 +7472,8 @@ void fold_integral_rows(const ctype* in, int64_t run, int64_t begin,
         out[r] = best;
     }
 }
+#undef TP_REDUCTION_AVX2_INLINE
+#undef TP_REDUCTION_AVX2_NOINLINE
 #endif
 
 // One extremum step on a vector of any width: an integral width compares in its
@@ -7676,6 +7712,7 @@ bool fold_whole_extrema(Tensor& result, const Tensor& self, int64_t ndim,
 // store: the crossing and the move that puts the answers where they lie are
 // the two instructions the packed layout costs, instead of one crossing per
 // answer through a call that cannot be inlined.
+#if defined(TP_VECREDUCED_X86)
 template <bool BFloat>
 __attribute__((target("avx2,fma,f16c"), always_inline)) inline
 void store_band_hw(uint16_t* acc, int64_t j, const __m256& a) {
@@ -7787,6 +7824,8 @@ void fold_leading_block_hw(const uint16_t* in, uint16_t* acc, int64_t cols,
         }
     }
 }
+
+#endif  // TP_VECREDUCED_X86
 
 // One block of rows folded into a column slice held by the task that owns it.
 // The slice is read once and written once per group of four rows rather than per
@@ -8542,6 +8581,7 @@ bool fold_narrow_extrema(Tensor& result, const Tensor& self, int64_t ndim,
         // A leading axis wide enough to hold four registers is folded with the
         // column totals in registers across the whole run, instead of through
         // a staging slice the iterator would have to build first.
+#if defined(__x86_64__)
         if (inner == 1 && red > 4 * Vectorized<ctype>::size() &&
             red * static_cast<int64_t>(sizeof(ctype)) <= 32768) {
             if (maximum_value) {
@@ -8553,6 +8593,7 @@ bool fold_narrow_extrema(Tensor& result, const Tensor& self, int64_t ndim,
             }
             return true;
         }
+#endif  // __x86_64__
         // Under one outer block the middle slice is a leading axis of its own:
         // its columns keep their totals over the whole run and are read once.
         // A slice that fits the first-level cache is walked row after row, which
@@ -9494,6 +9535,7 @@ Tensor prod_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims
 
     // An integral tensor reduced over the last axis keeps each row contiguous,
     // so the rows are multiplied where they lie.
+#if defined(TP_VECREDUCED_X86)
     if (dims.size() == 1 && out_dtype == DType::Int64) {
         const int64_t rank = self.dim();
         const int64_t axis = dims[0] < 0 ? dims[0] + rank : dims[0];
@@ -9519,6 +9561,7 @@ Tensor prod_dim_kernel_impl(const Tensor& self, const std::vector<int64_t>& dims
             }
         }
     }
+#endif  // TP_VECREDUCED_X86
 
     Tensor out = Tensor::empty(out_shape, out_dtype, self.device());
 
