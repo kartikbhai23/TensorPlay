@@ -1697,6 +1697,15 @@ Tensor conv2d_grad_input_cuda(const Tensor& grad_output, const Tensor& input, co
     auto padding = expand_param_if_needed(padding_arg, 2, 0);
     auto dilation = expand_param_if_needed(dilation_arg, 2, 1);
 
+    // A depthwise call is one group per input channel, and the grouped
+    // backward engines walk those groups one at a time.  The channels are
+    // independent, so the call is read here in a single launch.
+    if (conv2d_depthwise_grad_input_eligible(grad_output, input, weight, groups)) {
+        return conv2d_depthwise_grad_input_cuda(grad_output, input, weight,
+                                                stride, padding, dilation,
+                                                groups);
+    }
+
     // Backward grads can arrive as broadcast views (e.g. after .sum()); the
     // cuDNN kernels here read either a contiguous NCHW tensor or a
     // channels-last one, and anything else is copied to a contiguous form.
@@ -1892,6 +1901,12 @@ Tensor conv2d_grad_weight_cuda(const Tensor& grad_output, const Tensor& input, c
     auto stride = expand_param_if_needed(stride_arg, 2, 1);
     auto padding = expand_param_if_needed(padding_arg, 2, 0);
     auto dilation = expand_param_if_needed(dilation_arg, 2, 1);
+
+    if (conv2d_depthwise_grad_weight_eligible(grad_output, input, weight, groups)) {
+        return conv2d_depthwise_grad_weight_cuda(grad_output, input, weight,
+                                                 stride, padding, dilation,
+                                                 groups);
+    }
 
     const bool grad_out_cl = is_channels_last_4d(grad_output);
     const bool input_cl = is_channels_last_4d(input);

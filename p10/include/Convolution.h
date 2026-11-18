@@ -153,6 +153,31 @@ TP_DECLARE_CONV_GRADS(2)
 TP_DECLARE_CONV_GRADS(3)
 #undef TP_DECLARE_CONV_GRADS
 
+// Depthwise 2-D convolution backwards.
+//
+// A depthwise call carries one group per input channel, so its backward pass
+// is a stack of independent single-channel convolutions that share nothing
+// but the kernel taps.  Read as a grouped call, that stack costs one
+// reduction pass per group; these entry points read the whole call in a
+// single launch.  The eligibility predicates report whether the operands are
+// the layout and dtype the kernels read, and false leaves the call to the
+// general path: the data gradient reads either 4-D order, while the filter
+// gradient reads the row-major one.
+P10_API bool conv2d_depthwise_grad_input_eligible(
+    const Tensor& grad_output, const Tensor& input, const Tensor& weight,
+    int64_t groups);
+P10_API bool conv2d_depthwise_grad_weight_eligible(
+    const Tensor& grad_output, const Tensor& input, const Tensor& weight,
+    int64_t groups);
+P10_API Tensor conv2d_depthwise_grad_input_cuda(
+    const Tensor& grad_output, const Tensor& input, const Tensor& weight,
+    const std::vector<int64_t>& stride, const std::vector<int64_t>& padding,
+    const std::vector<int64_t>& dilation, int64_t groups);
+P10_API Tensor conv2d_depthwise_grad_weight_cuda(
+    const Tensor& grad_output, const Tensor& input, const Tensor& weight,
+    const std::vector<int64_t>& stride, const std::vector<int64_t>& padding,
+    const std::vector<int64_t>& dilation, int64_t groups);
+
 #define TP_DECLARE_CONV_TRANSPOSE_GRADS(rank)                                           \
     Tensor conv_transpose##rank##d_grad_input_cuda(                                     \
         const Tensor& grad_output, const Tensor& input, const Tensor& weight,           \
