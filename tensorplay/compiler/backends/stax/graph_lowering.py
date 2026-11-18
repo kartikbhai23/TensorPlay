@@ -2426,6 +2426,14 @@ class GraphLowering(Interpreter):
         with self.set_current_node(node), set_current_node(node):
             if lowering is not None:
                 result = lowering(*args, **kwargs)
+                if result is None and _is_tensor(node.meta.get("val")):
+                    # The lowering answered nothing, which is how one says the
+                    # call is not a shape it covers -- a product measured under
+                    # extents no candidate was written for, say.  The program
+                    # computed a value here when it ran, so the call is handed
+                    # to the framework rather than left as a name nothing ever
+                    # fills.
+                    result = self.make_extern(node, args, kwargs)
             else:
                 result = self.make_extern(node, args, kwargs)
             result = self._in_recorded_dtype(node.meta.get("val"), result)

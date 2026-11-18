@@ -392,3 +392,32 @@ def test_a_rounded_division():
         lambda a: tp.divide(tp.mm(a, weight) * 10, 3.0, rounding_mode="trunc"),
         [_pair_input()],
     )
+
+
+def test_a_symbolic_region_serves_every_size():
+    """One region, written once, answering for more than one number of rows.
+
+    A product has no candidate written for extents that are not known, so the
+    region keeps the product as a call of its own; the point of capturing
+    symbolically is that the same region answers for every size afterwards.
+    """
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) / 7
+    fn = lambda a: tp.mm(a, weight).relu()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        compiled = tp.compile(
+            fn, options={"stax.cuda_codegen": True}, dynamic=True
+        )
+        answers = [compiled(tp.randn(rows, 4)) for rows in (2, 3, 5)]
+    fell_back = [
+        str(item.message)
+        for item in caught
+        if "Stax lowering failed" in str(item.message)
+    ]
+    if fell_back:
+        raise AssertionError(
+            f"the region fell back instead of being written: {fell_back[0]}"
+        )
+    for rows, answer in zip((2, 3, 5), answers):
+        assert tuple(answer.shape) == (rows, 3)

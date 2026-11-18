@@ -322,3 +322,20 @@ def test_disallow_in_graph_refuses_to_absorb_the_call():
     )
     with pytest.raises(GraphCaptureError, match="disallowed"):
         compiled(tp.randn(3))
+
+def test_a_symbolic_region_can_hold_a_product():
+    """A product under symbolic extents, served at more than one size.
+
+    No candidate of the product templates is written for extents that are not
+    known, so the lowering answers nothing there -- which used to leave the
+    region's result as a name nothing ever filled.  A lowering that answers
+    nothing has said the call is not one it covers, and the framework computes
+    it: the region keeps the product as a call of its own and answers for every
+    size the one artifact was captured for.
+    """
+
+    weight = tp.arange(12, dtype=tp.float32).reshape(4, 3) / 7
+    compiled = tp.compile(lambda a: tp.mm(a, weight).relu(), dynamic=True)
+    for rows in (2, 3, 5):
+        value = tp.randn(rows, 4)
+        assert tp.allclose(compiled(value), tp.mm(value, weight).relu(), atol=1e-5)

@@ -257,6 +257,14 @@ for _ in range(3):
   已修复：`mark_static` 在编译前把轴从形状策略中移除，在捕获中钉住样例尺寸并保留
   等式守卫；`disallow_in_graph` 登记被禁目标，捕获适配器和 `Tracer.create_proxy`
   两条路径都会抛 `GraphCaptureError`，不再静默吸收。
+- ~~`dynamic=True` 下乘积返回空结果：符号范围里没有候选模板，下降返回 `None`，
+  而调用点并不会因此回退，于是区域里留下一个没人填的名字
+  （`'NoneType' object has no attribute 'shape'` / C++ 侧 `output buffer 'nullptr'`）。~~
+  已修复：`find_lowering('mm')` 给的是裸的 `tuned_mm`，它返回 `None` 表示“这个形状没有
+  候选”；现在下降把“返回 `None` 且该节点在捕获时算出的是张量”当成“这条下降不覆盖”，
+  改走 `make_extern` 把整个调用交给框架（`graph_lowering.py::call_function`）。
+  乘积因此在符号形状下与逐点/归约一样可用，一个工件服务多个尺寸（实测 2/3/5 行都正确，
+  Python 与 C++ 两条路都是）。
 - 仍无 `mark_dynamic` / `constrain_as_size` / `mark_unbacked` / `explain` 对应物；
   单区域捕获模型没有图中断，“禁止吸收”只能整段拒绝，不能把前后两段拆成两个图。
 
@@ -582,6 +590,7 @@ pytest test/fx test/test_public_surface.py test/higher_order_ops test/export -q
 
 测试覆盖缺口（与上游 `test/inductor` 对比）：
 
+- 动态形状补一条 `test/stax/test_stax_dynamic_shapes.py::test_a_symbolic_region_can_hold_a_product`（符号范围下乘积改走框架调用，一个工件服务 2/3/5 行）；C++ wrapper 侧同路径由 `test_stax_cpp_wrapper.py::test_a_symbolic_region_serves_every_size` 覆盖。
 - 无 `torchinductor_opinfo` 全量算子对拍；
 - 无 max-autotune 全量、mkldnn、quantization、AOTI、cudagraph trees、compile_worker、fx_passes、pattern_matcher、select_algorithm、templates、foreach、multi_kernel、pad_mm、freezing、jagged、serialization 的对应测试（本轮补了 `test/stax/test_stax_post_grad_passes.py`，覆盖断言删除、局部性重排、随机算子保持、`rsqrt` 改写、切分与合并互为逆运算时的整对删除及乱序/错位保留；以及 `test/stax/test_stax_profiler_spans.py`，覆盖 span 进图与删除、开关默认关闭、训练区域、profiler 会话可见性）；
 - `compile_worker` 本轮补 `test/stax/test_stax_compile_worker.py`（8 项）：定时器静默期只触发一次、
@@ -972,6 +981,7 @@ pytest test/stax -q -p no:randomly
 | CUDA Graph Trees | 新增 `backends/cudagraph_trees.py` 与 `triton.cudagraph_trees`（默认开）：按输入布局分节点记录在一条树上，节点共享一个分配器池；录制持有私有输入副本，回放经 `stage_and_launch`（无该入口时逐张量 `copy_`）写入后启动；输出克隆返回，调用者结果跨回放有效；上限按最近最少使用淘汰。`CudagraphCompiledCallable` 按布局派生节点键，布局变化录制子节点而不是回退到未捕获工件；树关时保留原直连路径。新增 `test/stax/test_cudagraph_trees.py`（17 项），改写的 wrapper 用例覆盖换地址回放、输出独立与跨布局录制（§8.2） |
 | host wrapper 的正确性与覆盖面 | `_op_name_from_kernel` 去掉尾部的 `_out` / `_default` 重载后缀，`matmul.default` 能对上已注册的 `matmul`；`ExternKernel.set_cpp_kernel_name` 把 `name` 当方法调用（此前当成字段，取到绑定方法后 `.replace` 抛 `AttributeError`，`a @ w` 因此在 C++ wrapper 下静默降级）；新增 `linear` 与 `addmm` 的 shim（前者按张量个数分表，后者把 `beta`/`alpha` 按原样写进调用）；`CppWrapperCodegen.can_reuse` 返回 `False`，因为该路径没有 `codegen_inplace_reuse` 的对应实现——此前调度器把“读一个缓冲写一个缓冲”的逐点 kernel 判成原地，wrapper 却把**结果**缓冲传给 kernel，输入缓冲从未被读（`mm(x,W).tanh()` 之类返回未初始化内存，只有幂等逐点偶然正确）；视图（`transpose`/`reshape`/切片）此前没有槽位也没有元数据：作为输出时 `call` 报 `was not allocated`，作为参数时读到空指针；现在 `codegen_reinterpret_view` 记下“名字 → 底层缓冲 + 形状/步长/偏移/类型”，`call` 逐层解析后把视图槽位指到底层地址 + 偏移，输出用 `as_strided` 还原，包侧则明确拒绝含视图的区域；新增 `test/stax/test_stax_cpp_wrapper.py`（29 项，该路径此前无任何测试，§8.7） |
 | 卷积：数值参数与字面量 shim | `convolution` 的下降对 `stride`/`padding`/`dilation`/`output_padding` 直接 `tuple(...)`，而调用是按写的样子记录的（`padding=1` 记成整数），于是从 `Tracer` 出来的图在下降期 `TypeError`，部署包路径因此无法打包带 padding 的卷积；现在下降先把单个数补成单元素序列，前反向两条下降一致。C++ wrapper 侧新增 `convolution` 的 shim，参数分“张量”与“字面量”两类（整数/实数/列表/标志/缺省），同一运算的不同字面量各自生成一个 shim 并以名字后缀区分（§8.7） |
+| 符号形状下的乘积 | `dynamic=True` 时乘积的候选模板都不覆盖未知范围，`tuned_mm` 返回 `None`；而 `find_lowering('mm')` 给的是裸的 `tuned_mm`，调用点把 `None` 当成“算出来了，只是结果是空”，区域里于是留下一个没人填的名字（Python 侧 `'NoneType' object has no attribute 'shape'`，C++ 侧 `output buffer 'nullptr'`）。现在“返回 `None` 且节点在捕获时算出的是张量”被当成“这条下降不覆盖”，改走 `make_extern` 交给框架；乘积因此在符号形状下可用，一个工件服务多个尺寸（§3.2） |
 | 一次给出多个结果的调用 | `sort`/`topk`/`median`/`mode`/`kthvalue` 都回答一对值，此前 C++ wrapper 一律拒绝（`does not yet generate multi-output fallback kernels`），部署包同样装不下；现在每个结果有自己的槽位，shim 调用一次运算再按返回顺序把每一半拷进各自的缓冲，字面量按位置或按名字都认。顺带修掉两处打印出非 C++ 的代码：`MultiOutput` 的取值行（`buf3[0]`）与形状断言（Python 的 `assert_tensor_metadata`）——前者在这一路本就不存在（调用已把每一半写进各自的缓冲），后者的缓冲由入口自己按记录的形状分配，不必再断言（§8.7） |
 | 下降路径：调用读到仍在计算的值 | `InputsKernel.unwrap_storage_for_input` 此前只对 `BaseView` 走 `realize_input`，其它 IR 节点直接 `raise AssertionError`，于是 `mm(relu(x), W)`、`mm(x + b, W)`、`mm(cat([x, x]), W)` 这类写法在下降期被拒（CPU/CUDA 两条路一样）；现在非 `Buffer`/`ReinterpretView` 的 IR 节点也会被落成缓冲，调用读那份拷贝，产出它的 kernel 排在其前（§8.7） |
 | AOT 部署包 | 新增 `backends/stax/aot_package.py` 与 `compiler.build_aot_package` / `compiler.load_aot_package`：区域写成 `model.so` + `weights.bin` + `metadata.json` + `aoti_metadata.h` + `aoti_entry.cpp`，入口 `aoti_entry(inputs, outputs, sizevars)`；常量在编译期转成连续缓冲后烘进权重文件，元数据同时给出 JSON 与 C++ `constexpr` 两种形式；包只依赖运行期库，不需要 Python。构建脚本与 `_build_cpp_wrapper` 共用 `cpp_wrapper_build_options()`；包以 `-Wl,-Bsymbolic` 链接、头文件常量用内部链接，同一进程加载多个包不会互相串符号。新增 `test/stax/test_stax_aot_package.py`（18 项，含两层网络、无 Python 的 `ctypes` 子进程与编译出的 C++ 程序两条运行路径） |
