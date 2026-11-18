@@ -71,6 +71,12 @@ def _looks_tensor(value: Any) -> bool:
     return device is not None and callable(getattr(device, "is_cuda", None))
 
 
+def _clone_if_tensor(value: Any) -> Any:
+    """A tensor's own storage for a warmup run that must not write through."""
+
+    return value.clone() if _looks_tensor(value) else value
+
+
 def _output_structure(value: Any) -> Tuple:
     """The shape of a recorded result, one level deep.
 
@@ -243,7 +249,8 @@ class CudaGraphManager:
 
     # -- API ------------------------------------------------------------------
 
-    def capture(self, key: str, fn: Callable[..., Any], *sample_args: Any) -> _GraphEntry:
+    def capture(self, key: str, fn: Callable[..., Any], *sample_args: Any,
+                warmup_on_copies: bool = False) -> _GraphEntry:
         if self.capturing is not None:
             raise CudaGraphError(
                 f"nested capture attempted ({self.capturing!r} already active)"
@@ -266,8 +273,16 @@ class CudaGraphManager:
         try:
             # Warmup executes lazy initialisations outside capture (cuBLAS
             # workspaces etc.); the native capture stream matches the stream
-            # capture will run on.
-            warmup_output = fn(*sample_args)
+            # capture will run on.  A region that writes its inputs gets the
+            # warmup's writes on copies instead: the recording below runs it
+            # once for real, and the caller's buffers must see that write
+            # exactly once.
+            warmup_args = (
+                [_clone_if_tensor(arg) for arg in sample_args]
+                if warmup_on_copies
+                else list(sample_args)
+            )
+            warmup_output = fn(*warmup_args)
             warmup_structure: Tuple = _output_structure(warmup_output)
             # The graph is captured against the caller's own tensors: the
             # recorded kernels read their storage live, so replay needs no
@@ -508,6 +523,29 @@ def declared_input_mutations(gm: Any) -> set[int]:
     return set(gm.meta.get("input_update_placeholders", ()))
 
 
+def region_writes_inputs(gm: Any) -> bool:
+    """Whether a run of this graph may write one of its inputs.
+
+    ``find_input_mutations`` reads the writes the graph spells out.  A fused
+    operator can update one of its tensor arguments without the graph showing
+    a separate write node -- a normalization call that updates the running
+    statistics it was handed is one -- so an operator tagged as possibly
+    aliasing or mutating makes the whole region count as writing its inputs.
+    Only such a region needs the treatment that keeps the write on the
+    caller's own storage; a region that does not may stage and replay freely.
+    """
+
+    if find_input_mutations(gm) or declared_input_mutations(gm):
+        return True
+    for node in gm.graph.nodes:
+        if node.op not in ("call_function", "call_method"):
+            continue
+        tags = getattr(node.target, "tags", None)
+        if tags and "maybe_aliasing_or_mutating" in tags:
+            return True
+    return False
+
+
 def get_device_node_mapping(gm: Any) -> dict[str, Any]:
     from ..._higher_order_ops._hop_base import value_device
 
@@ -592,9 +630,9 @@ def _iter_index_values(value: Any):
         yield value
 
 
-def check_for_skip(gm: Any) -> str | None:
+def check_for_skip(gm: Any, *, allow_input_mutations: bool = False) -> str | None:
     mutated = find_input_mutations(gm) | declared_input_mutations(gm)
-    if mutated:
+    if mutated and not allow_input_mutations:
         return format_default_skip_message(f"mutated inputs ({len(mutated)} instances)")
     if skip := check_multiple_devices_or_any_cpu_nodes(get_device_node_mapping(gm)):
         return skip
@@ -845,8 +883,16 @@ def wrap_skip_reason(
     example_inputs: Sequence[Any],
     *,
     dynamic: bool | None = None,
+    allow_input_mutations: bool = False,
 ) -> str | None:
-    """Why a compiled artifact may not run behind a captured CUDA graph."""
+    """Why a compiled artifact may not run behind a captured CUDA graph.
+
+    ``allow_input_mutations`` admits a region that writes one of its inputs.
+    A recording binds the caller's own storage, so such a write lands where
+    the caller keeps it, exactly as an eager call's would; the wrapper that
+    takes this option is told not to stage its arguments, because a copy
+    would leave the write on a private buffer instead.
+    """
 
     if dynamic:
         return format_default_skip_message("dynamic shape specialization")
@@ -868,10 +914,10 @@ def wrap_skip_reason(
             )
     if not saw_cuda_tensor:
         return format_default_skip_message("no CUDA tensor input")
-    if getattr(compiled, "_mutations", None):
+    if getattr(compiled, "_mutations", None) and not allow_input_mutations:
         return format_default_skip_message("artifact replays input mutations")
     mutated = find_input_mutations(gm) | declared_input_mutations(gm)
-    if mutated:
+    if mutated and not allow_input_mutations:
         names = ", ".join(gm.graph.placeholders[i].name for i in sorted(mutated))
         return format_default_skip_message(f"mutated inputs ({names})")
     if (node := get_first_incompatible_cudagraph_node(gm)) is not None:
@@ -919,6 +965,8 @@ class CudagraphCompiledCallable:
         *,
         trees: Optional[bool] = None,
         visible_outputs: Optional[Sequence[int]] = None,
+        mutates_inputs: bool = False,
+        mutated_positions: Optional[Sequence[int]] = None,
     ) -> None:
         self._compiled = compiled
         self._native = native
@@ -930,7 +978,24 @@ class CudagraphCompiledCallable:
             # _switch_to_staging), which is what the tree mode does from the
             # start.
             trees = _cudagraph_trees_enabled()
-        self._trees = bool(trees)
+        # A region that writes an input keeps that write on the caller's own
+        # storage only while the recording reads the caller's storage: staged
+        # replay copies the argument onto a private buffer first, and the
+        # write would land there instead of where the caller looks for it.
+        # Such a region therefore never stages, and never keeps recordings as
+        # a tree of argument layouts.
+        self._mutates_inputs = bool(mutates_inputs)
+        self._trees = bool(trees) and not self._mutates_inputs
+        # The placeholders the recording itself writes.  Their version rises
+        # on every replay, which says nothing about whether the caller's
+        # buffers moved, so the identity memo does not watch it.  A region
+        # whose write is inside a fused operator names none of them, and then
+        # no version is watched at all: the recording reads the caller's own
+        # storage, so the addresses are what a replay depends on.
+        self._mutated: frozenset[int] = frozenset(
+            0 if index is None else int(index) for index in (mutated_positions or ())
+        )
+        self._ignores_versions = self._mutates_inputs and not self._mutated
         # Which results the program's caller reads.  Every other result a
         # region hands back is an intermediate for a consumer that is not the
         # caller (the partition's saved values); copying them out on every
@@ -968,9 +1033,25 @@ class CudagraphCompiledCallable:
         self._drifts = 0
         self.__name__ = getattr(compiled, "__name__", "cudagraph_compiled")
 
+    def _replays_under_autograd(self) -> bool:
+        """Whether the caller supplies the history a replay cannot write.
+
+        A ahead-of-time autograd region runs below the autograd function that
+        owns the backward, so the tensors the recording hands back are given
+        their gradient edge by that function.  Such a region replays even
+        while it is handed parameters that demand grad; any other caller gets
+        the artifact itself for those calls.
+        """
+
+        return bool(
+            getattr(self._compiled, "_tensorplay_replays_under_autograd", False)
+        )
+
     def _records_autograd(self, args: Sequence[Any]) -> bool:
         """Whether this call is recording history a replay cannot supply."""
 
+        if self._replays_under_autograd():
+            return False
         if not any(_is_tensor(value) and value.requires_grad for value in args):
             return False
         return _grad_enabled()
@@ -1006,7 +1087,14 @@ class CudagraphCompiledCallable:
         """
 
         ids = tuple(map(id, args))
-        versions = tuple(getattr(value, "_version", None) for value in args)
+        mutated = self._mutated
+        if self._ignores_versions:
+            versions = None
+        else:
+            versions = tuple(
+                None if index in mutated else getattr(value, "_version", None)
+                for index, value in enumerate(args)
+            )
         memo = self._layout_memo
         if (
             memo is not None
@@ -1034,11 +1122,12 @@ class CudagraphCompiledCallable:
         first = self._state != "live"
         # Remembered for the C trampoline, which replays without passing
         # through ``__call__`` again: it needs the same autograd guard.
-        self._needs_eager_when_grad = any(
-            _is_tensor(value) and value.requires_grad for value in args
+        self._needs_eager_when_grad = (
+            not self._replays_under_autograd()
+            and any(_is_tensor(value) and value.requires_grad for value in args)
         )
         try:
-            node = self._manager.capture(key, self._compiled, *args)
+            node = self._record(key, args)
         except (CudaGraphError, NotImplementedError, RuntimeError, TypeError) as exc:
             if first:
                 self._state = "fallback"
@@ -1057,6 +1146,29 @@ class CudagraphCompiledCallable:
         self._arity = len(args)
         self._state = "live"
         return self._replay(args, key=key, retry=False)
+
+    def _record(self, key: str, args: Tuple[Any, ...]) -> Any:
+        """Record this call, keeping a mutating region's warmup off the caller."""
+
+        if self._mutates_inputs:
+            return self._manager.capture(
+                key, self._compiled, *args, warmup_on_copies=True
+            )
+        return self._manager.capture(key, self._compiled, *args)
+
+    def _shape_outputs(self, outputs: Sequence[Any]) -> Any:
+        """Give a recorded run's results the shape the caller reads."""
+
+        shaped = [
+            value.clone()
+            if _looks_tensor(value)
+            and (self._visible is None or index in self._visible)
+            else value
+            for index, value in enumerate(outputs)
+        ]
+        if self._single_output:
+            return shaped[0]
+        return tuple(shaped)
 
     def _replay(
         self, args: Tuple[Any, ...], *, key: Optional[str] = None, retry: bool = True
@@ -1081,8 +1193,10 @@ class CudagraphCompiledCallable:
             # A direct recording replays from the caller's own storage, so a
             # call whose tensors moved cannot use it.  Once that repeats, the
             # caller clearly moves its inputs every call: switch to staging.
+            # A region that writes an input must not: the staged copy would
+            # take the write instead of the caller's buffer.
             self._drifts += 1
-            if self._drifts >= _DRIFT_LIMIT:
+            if self._drifts >= _DRIFT_LIMIT and not self._mutates_inputs:
                 return self._switch_to_staging(args)
             return self._compiled(*args)
         except (CudaGraphError, RuntimeError, TypeError) as exc:
@@ -1097,16 +1211,7 @@ class CudagraphCompiledCallable:
             )
             return self._compiled(*args)
         self._drifts = 0
-        outputs = [
-            value.clone()
-            if _looks_tensor(value)
-            and (self._visible is None or index in self._visible)
-            else value
-            for index, value in enumerate(outputs)
-        ]
-        if self._single_output:
-            return outputs[0]
-        return tuple(outputs)
+        return self._shape_outputs(outputs)
 
     def _switch_to_staging(self, args: Tuple[Any, ...]) -> Any:
         """Re-record against private buffers after repeated input drift.
@@ -1211,20 +1316,37 @@ def cudagraph_wrap(
     dynamic: bool | None = None,
     native: Any = None,
     trees: Optional[bool] = None,
+    allow_input_mutations: bool = False,
 ) -> tuple[Any, str | None]:
     """Wrap a compiled CUDA artifact for reduce-overhead replay.
 
     Returns ``(wrapped, None)`` when the artifact is eligible, otherwise
-    ``(compiled, reason)`` with the skip reason.
+    ``(compiled, reason)`` with the skip reason.  ``allow_input_mutations``
+    admits a region that writes one of its inputs; the recording then binds
+    the caller's storage so the write lands where the caller keeps it.
     """
-    reason = wrap_skip_reason(compiled, gm, example_inputs, dynamic=dynamic)
+    reason = wrap_skip_reason(
+        compiled,
+        gm,
+        example_inputs,
+        dynamic=dynamic,
+        allow_input_mutations=allow_input_mutations,
+    )
     if reason is not None:
         log.warning(reason)
         return compiled, reason
+    mutates_inputs = allow_input_mutations and region_writes_inputs(gm)
+    mutated_positions: Sequence[int] = ()
+    if mutates_inputs:
+        mutated_positions = tuple(
+            sorted(find_input_mutations(gm) | declared_input_mutations(gm))
+        )
     return (
         CudagraphCompiledCallable(
             compiled, native=native, trees=trees,
             visible_outputs=_visible_output_indices(gm),
+            mutates_inputs=mutates_inputs,
+            mutated_positions=mutated_positions,
         ),
         None,
     )

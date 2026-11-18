@@ -656,14 +656,25 @@ def test_reduce_overhead_replays_compiled_region():
 
 
 @requires_cuda
-def test_reduce_overhead_skips_mutating_regions(caplog):
+def test_reduce_overhead_replays_a_region_that_writes_its_input(caplog):
     compiled = tp.compile(lambda a: a.add_(1.0), mode="reduce-overhead")
     import logging
 
     with caplog.at_level(logging.WARNING, logger="tensorplay._stax.cudagraphs"):
         x = tp.zeros(4, device="cuda")
-        compiled(x)
-    assert "mutated inputs" in caplog.text
+        first = compiled(x)
+        # The recording binds the caller's storage, so the write lands where
+        # the caller keeps it -- on the recording call and on every replay
+        # alike.
+        assert float(x.sum()) == 4.0
+        assert float(first.sum()) == 4.0
+        second = compiled(x)
+        assert float(x.sum()) == 8.0
+        assert float(second.sum()) == 8.0
+        # The recorded result is read before the next replay overwrites it:
+        # what a caller holds is a copy, not the graph's own buffer.
+        assert float(first.sum()) == 4.0
+    assert "mutated inputs" not in caplog.text
 
 
 @requires_cuda
@@ -736,7 +747,7 @@ def test_stax_mode_patch_overlaid_by_explicit_options(monkeypatch):
 
     wrapped: list = []
 
-    def fake_wrap(compiled, graph_module, example_inputs, dynamic=None):
+    def fake_wrap(compiled, graph_module, example_inputs, dynamic=None, **kwargs):
         wrapped.append(compiled)
         return compiled, None
 
@@ -849,3 +860,51 @@ def test_steady_state_follows_a_training_flag_flip():
         # The flag is part of what the module tree certifies; the call has to
         # come back through the wrapper rather than replay a stale tree.
         assert compiled(x).tolist() == [2.0, 2.0, 2.0]
+
+
+class _ConvNormStep(tp.nn.Module):
+    """A conv/normalization stack whose step also updates running statistics."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.conv = tp.nn.Conv2d(3, 4, 3, padding=1)
+        self.norm = tp.nn.BatchNorm2d(4)
+        self.head = tp.nn.Conv2d(4, 2, 1)
+
+    def forward(self, x):
+        return self.head(self.norm(self.conv(x))).mean(dim=(2, 3))
+
+
+@requires_cuda
+def test_reduce_overhead_replays_a_training_region():
+    """A training step replays without changing what the step computes.
+
+    The forward's write to the normalization buffers and the backward below
+    the region's autograd function both survive a recording: the same seeds
+    and the same parameters have to produce the same gradients, the same
+    parameter updates and the same buffer statistics as the eager module.
+    """
+
+    model = _ConvNormStep().cuda().train()
+    reference = _ConvNormStep().cuda().train()
+    reference.load_state_dict(model.state_dict())
+    compiled = tp.compile(model, backend="stax", fullgraph=True, mode="reduce-overhead")
+    optimizer = tp.optim.SGD(model.parameters(), lr=0.01)
+    reference_optimizer = tp.optim.SGD(reference.parameters(), lr=0.01)
+    x = tp.randn(2, 3, 8, 8, device="cuda")
+
+    for _ in range(3):
+        optimizer.zero_grad(set_to_none=True)
+        compiled(x).sum().backward()
+        optimizer.step()
+        reference_optimizer.zero_grad(set_to_none=True)
+        reference(x).sum().backward()
+        reference_optimizer.step()
+
+    for name, parameter in model.named_parameters():
+        expected = dict(reference.named_parameters())[name]
+        assert (parameter - expected).abs().max().item() < 1e-5, name
+        assert (parameter.grad - expected.grad).abs().max().item() < 1e-5, name
+    for name, buffer in model.named_buffers():
+        expected = dict(reference.named_buffers())[name]
+        assert (buffer - expected).abs().max().item() < 1e-5, name

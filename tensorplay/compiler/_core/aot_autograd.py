@@ -197,6 +197,21 @@ def _trace_inputs(primals: Sequence[Any]) -> list[Any]:
     return copies
 
 
+def _mark_replays_under_autograd(compiled: Any) -> None:
+    """Record that a compiled region is driven by an autograd function.
+
+    A replaying wrapper writes no autograd history, so it only replays under
+    an ambient grad switch when the caller supplies that history itself.  The
+    function that owns this region's backward does, which is what this flag
+    tells the wrapper.
+    """
+
+    try:
+        compiled._tensorplay_replays_under_autograd = True  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - a stand-in artifact may refuse attributes
+        pass
+
+
 def _detach_input_updates(
     gm: GraphModule,
 ) -> tuple[GraphModule, list[tuple[int, int]]]:
@@ -597,6 +612,14 @@ def aot_function(
     fw_inputs = [
         trace_primals[primal_names.index(p.name)] for p in fw_module.graph.placeholders
     ]
+    # A forward that writes one of its inputs ends the run with a copy into it.
+    # The write is moved out of the graph and handed back to the caller: a
+    # region that leaves its inputs alone can be recorded and replayed without
+    # running twice at capture time, and the write then happens exactly once
+    # per call, in the caller's own buffers.
+    input_updates: list[tuple[int, int]] = []
+    if not keep_inference_input_mutations:
+        fw_module, input_updates = _detach_input_updates(fw_module)
     # The forward returns the program's results followed by what it keeps for
     # the backward; only the first are read by the caller.  The backward's
     # results go to the engine, which lays each gradient out for its leaf.
@@ -604,6 +627,10 @@ def aot_function(
     _mark_user_outputs(bw_module, 0)
     bw_module.meta["aot_backward"] = True
     compiled_fw = fw_compiler(fw_module, fw_inputs)
+    # The forward runs below the autograd function below, which attaches the
+    # history a replay cannot write.  Saying so lets a replaying wrapper keep
+    # its recording while parameters, which demand grad, are handed to it.
+    _mark_replays_under_autograd(compiled_fw)
     from .api import _release_recorded_values
 
     _release_recorded_values(joint)
@@ -624,7 +651,15 @@ def aot_function(
     class CompiledFunction(Function):
         @staticmethod
         def forward(ctx, *run_primals):
-            outputs = _call(compiled_fw, [run_primals[i] for i in fw_input_order])
+            run_args = [run_primals[i] for i in fw_input_order]
+            # A boxed call hands the list itself to the code it runs, which may
+            # consume it; the buffers a write goes back into are taken first.
+            written = [run_args[argument] for argument, _ in input_updates]
+            outputs = _call(compiled_fw, run_args)
+            if input_updates:
+                for target, (_, position) in zip(written, input_updates):
+                    target.copy_(outputs[position])
+                outputs = outputs[: len(outputs) - len(input_updates)]
             user = outputs[:num_fwd]
             saved = list(zip(saved_names, outputs[num_fwd:]))
             # Saved through the context, so the engine releases them when it
@@ -684,6 +719,7 @@ def aot_function(
                 with tensorplay.no_grad():
                     ShapeProp(inputs, record_values=False)(bw_module)
                 compiled_bw_box.append(bw_compiler(bw_module, inputs))
+                _mark_replays_under_autograd(compiled_bw_box[0])
                 _release_recorded_values(bw_module)
                 run_training._tensorplay_backward_codegen = getattr(
                     compiled_bw_box[0], "_tensorplay_codegen", None

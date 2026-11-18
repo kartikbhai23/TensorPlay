@@ -164,7 +164,11 @@ def stax(
     from ..cudagraphs import cudagraph_wrap
 
     wrapped, reason = cudagraph_wrap(
-        compiled, graph_module, example_inputs, dynamic=dynamic
+        compiled,
+        graph_module,
+        example_inputs,
+        dynamic=dynamic,
+        allow_input_mutations=True,
     )
     if reason is not None:
         graph_module._stax_cudagraph_skip_reason = reason
