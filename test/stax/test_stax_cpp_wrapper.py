@@ -229,6 +229,40 @@ def test_matrix_multiply_over_a_bias_then_pointwise():
     )
 
 
+def test_a_batch_of_products_added_onto_one_value():
+    """Every product in the batch lands on the same value, scaled two ways.
+
+    The batched forms are separate calls from the unbatched ones, and the two
+    numbers that weight the value and the products are places of their own.
+    """
+
+    weight = tp.arange(20, dtype=tp.float32).reshape(4, 5) / 7
+    addend = tp.ones(2, 5)
+    rows = tp.tensor([[1.0, 2.0, 3.0, 4.0], [-1.0, 0.5, 2.0, 0.0]])
+
+    def batch(a):
+        return a.reshape(1, 2, 4)
+
+    def batched(a):
+        return weight.reshape(1, 4, 5)
+
+    _check(lambda a: tp.addbmm(addend, batch(a), batched(a)), [rows])
+    _check(
+        lambda a: tp.addbmm(addend, batch(a), batched(a), beta=0.5, alpha=2.0),
+        [rows],
+    )
+    _check(
+        lambda a: tp.baddbmm(addend.reshape(1, 2, 5), batch(a), batched(a)),
+        [rows],
+    )
+    _check(
+        lambda a: tp.baddbmm(
+            addend.reshape(1, 2, 5), batch(a), batched(a), beta=0.5, alpha=2.0
+        ),
+        [rows],
+    )
+
+
 # --------------------------------------------------------------------------
 # views: the same bytes read another way
 # --------------------------------------------------------------------------
@@ -740,6 +774,21 @@ def test_adaptive_max_pool_with_indices():
         )[1],
         [image],
     )
+
+
+def test_adaptive_average_pool_of_each_rank():
+    """Adaptive average pooling reads the extents after its operand.
+
+    Each rank is a call of its own; the extents alternate with the operand, so
+    the places of the call are what describes it.
+    """
+
+    line = tp.randn(1, 2, 8)
+    grid = tp.randn(1, 2, 4, 4)
+    cube = tp.randn(1, 2, 2, 2, 4)
+    _check(lambda a: tp.nn.functional.adaptive_avg_pool1d(a, 4), [line])
+    _check(lambda a: tp.nn.functional.adaptive_avg_pool2d(a, (2, 2)), [grid])
+    _check(lambda a: tp.nn.functional.adaptive_avg_pool3d(a, (1, 1, 2)), [cube])
 
 
 def test_scaled_dot_product_attention_with_a_mask():

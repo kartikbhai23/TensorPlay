@@ -574,6 +574,39 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
         "tensorplay::Scalar({s0}), tensorplay::Scalar({s1}))",
         (("beta", "real"), ("alpha", "real")),
     ),
+    # A batch of products, all added onto one value: the two numbers that
+    # weight the sum and the products are places of their own, exactly as they
+    # are for the unbatched product.
+    "addbmm": (
+        "tp_cpu_addbmm",
+        "tensorplay::Tensor::addbmm(t0, t1, t2, tensorplay::Scalar({s0}), "
+        "tensorplay::Scalar({s1}))",
+        (("beta", "real"), ("alpha", "real")),
+    ),
+    "baddbmm": (
+        "tp_cpu_baddbmm",
+        "tensorplay::Tensor::baddbmm(t0, t1, t2, tensorplay::Scalar({s0}), "
+        "tensorplay::Scalar({s1}))",
+        (("beta", "real"), ("alpha", "real")),
+    ),
+    # Adaptive pooling in each rank: the operand, then the extents the windows
+    # are laid over.  The extents alternate with the operand, so the call is
+    # read by the places its arguments stand in.
+    "adaptive_avg_pool1d": (
+        "tp_cpu_adaptive_avg_pool1d",
+        "tensorplay::Tensor::adaptive_avg_pool1d(t0, {s0})",
+        ((None, "tensor"), (None, "ints")),
+    ),
+    "adaptive_avg_pool2d": (
+        "tp_cpu_adaptive_avg_pool2d",
+        "tensorplay::Tensor::adaptive_avg_pool2d(t0, {s0})",
+        ((None, "tensor"), (None, "ints")),
+    ),
+    "adaptive_avg_pool3d": (
+        "tp_cpu_adaptive_avg_pool3d",
+        "tensorplay::Tensor::adaptive_avg_pool3d(t0, {s0})",
+        ((None, "tensor"), (None, "ints")),
+    ),
     "cumsum": (
         "tp_cpu_cumsum",
         "t0.cumsum({s0}, {s1})",
