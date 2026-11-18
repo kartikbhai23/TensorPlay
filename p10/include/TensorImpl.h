@@ -482,8 +482,13 @@ public:
     void set_sizes_and_strides(const std::vector<int64_t>& new_sizes,
                                const std::vector<int64_t>& new_strides) {
         sizes_and_strides_.set_sizes_and_strides(new_sizes, new_strides);
-        is_contiguous_ =
-            new_strides == SizesAndStrides::compute_contiguous_strides(new_sizes);
+        // Whether the elements sit consecutively is decided by walking the
+        // strides in from the last dimension: a dimension of one element
+        // occupies no distance, so the stride written there says nothing
+        // about the layout.  Comparing against the canonical strides instead
+        // would call a densely packed tensor with a permutation of its
+        // one-element dimensions non-contiguous.
+        is_contiguous_ = sizes_and_strides_.is_contiguous();
         if (is_contiguous_) {
             memory_format_ = MemoryFormat::Contiguous;
         } else if (new_strides == get_channels_last_strides(new_sizes)) {
