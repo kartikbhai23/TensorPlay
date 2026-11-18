@@ -496,6 +496,30 @@ Tensor& _log_softmax_backward_data_out_cpu(const Tensor& grad_output,
 // _prelu_kernel
 // ---------------------------------------------------------------------------
 
+// One sweep of the per-layer PReLU form (single-element slope).  Positive
+// lanes pass through, negative lanes scale; a lane select preserves the
+// negative answers.  The target attribute is what makes the compiler keep
+// the lane loop instead of falling back to a scalar walk.
+__attribute__((target("avx2,fma"), noinline))
+static void prelu_f32_sweep(const float* x, float* d, float w, int64_t n) {
+    int64_t i = 0;
+    // The target attribute above enables the AVX2 ISA for this function even
+    // though the translation unit compiles without it, so no __AVX2__ guard
+    // belongs here -- the macro stays undefined and would cut the lanes out.
+    const __m256 vw = _mm256_set1_ps(w);
+    const __m256 zero = _mm256_setzero_ps();
+    for (; i + 8 <= n; i += 8) {
+        const __m256 v = _mm256_loadu_ps(x + i);
+        const __m256 neg = _mm256_mul_ps(v, vw);
+        const __m256 mask = _mm256_cmp_ps(v, zero, _CMP_GT_OQ);
+        _mm256_storeu_ps(d + i, _mm256_blendv_ps(neg, v, mask));
+    }
+    for (; i < n; ++i) {
+        const float v = x[i];
+        d[i] = v > 0.0f ? v : v * w;
+    }
+}
+
 Tensor _prelu_kernel_cpu(const Tensor& self, const Tensor& weight_in) {
     if (isQuantizedType(self.dtype())) return quantized::prelu(self, weight_in);
 
@@ -505,6 +529,29 @@ Tensor _prelu_kernel_cpu(const Tensor& self, const Tensor& weight_in) {
         weight_in.dtype() == self.dtype() ? weight_in : weight_in.to(self.dtype());
     Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
                                   self.dtype(), self.device());
+    // Contiguous input with a single-element weight (the common per-layer
+    // form) answers in one vectorizable sweep: the slope product replaces
+    // the negative branch with a blend of the two candidates.
+    const int64_t n = self.numel();
+    if (n > 0 && weight.numel() == 1 && self.is_contiguous() &&
+        result.is_contiguous()) {
+        if (self.dtype() == DType::Float32) {
+            prelu_f32_sweep(self.data_ptr<float>(), result.data_ptr<float>(),
+                            weight.data_ptr<float>()[0], n);
+            return result;
+        }
+        if (self.dtype() == DType::Float64) {
+            const double* x = self.data_ptr<double>();
+            double* d = result.data_ptr<double>();
+            const double w = weight.data_ptr<double>()[0];
+            for (int64_t i = 0; i < n; ++i) {
+                const double v = x[i];
+                const double nv = v * w;
+                d[i] = v > 0.0 ? v : nv;
+            }
+            return result;
+        }
+    }
     ti_apply_binary(result, self, weight, [](auto x, auto w) {
         using T = decltype(x);
         return x > static_cast<T>(0) ? x : static_cast<T>(w * x);
