@@ -397,32 +397,45 @@ _CONVOLUTION_NO_BIAS_LITERALS: tuple[tuple[str, str], ...] = (
 #: take different arguments.  Each entry is the C++ function to call, the call
 #: as it is spelled, and the arguments that are not buffers and how to write
 #: each of them.
-def _conv_transpose_shims(function: str) -> dict[int, tuple]:
-    """The forms of a transposed convolution, keyed by how many operands.
+#: What a forward convolution of one rank takes after its operands.
+_CONVOLUTION_TAIL: tuple[tuple[str, str], ...] = (
+    (None, "ints"),
+    (None, "ints"),
+    (None, "ints"),
+    (None, "int"),
+)
+
+#: What a transposed convolution takes after its operands: the same set with
+#: the extra padding the transpose needs to size its result.
+_CONVOLUTION_TRANSPOSE_TAIL: tuple[tuple[str, str], ...] = (
+    (None, "ints"),
+    (None, "ints"),
+    (None, "ints"),
+    (None, "int"),
+    (None, "ints"),
+)
+
+
+def _convolution_forms(
+    function: str, tail: tuple[tuple[str, str], ...]
+) -> dict[int, tuple]:
+    """The forms of a convolution, keyed by how many operands.
 
     The bias is an operand when the program gives one and an absent place
-    otherwise, so there are two forms; the stride, the padding, the extra
-    padding, the groups and the dilation follow the operands.
+    otherwise, so there are two forms; ``tail`` is what follows the operands.
     """
 
-    tail = (
-        (None, "ints"),
-        (None, "ints"),
-        (None, "ints"),
-        (None, "int"),
-        (None, "ints"),
-    )
+    after_bias = ", ".join(f"{{s{index}}}" for index in range(1, len(tail) + 1))
+    after_operands = ", ".join(f"{{s{index}}}" for index in range(len(tail)))
     return {
         2: (
             f"tp_cpu_{function}",
-            f"tensorplay::Tensor::{function}("
-            "t0, t1, std::nullopt, {s1}, {s2}, {s3}, {s4}, {s5})",
+            f"tensorplay::Tensor::{function}(t0, t1, std::nullopt, {after_bias})",
             ((None, "tensor"), (None, "tensor"), ("bias", "optional_tensor"), *tail),
         ),
         3: (
             f"tp_cpu_{function}_bias",
-            f"tensorplay::Tensor::{function}("
-            "t0, t1, t2, {s0}, {s1}, {s2}, {s3}, {s4})",
+            f"tensorplay::Tensor::{function}(t0, t1, t2, {after_operands})",
             ((None, "tensor"), (None, "tensor"), (None, "tensor"), *tail),
         ),
     }
@@ -531,9 +544,17 @@ _EXTERN_KERNEL_ARITY_SHIMS: dict[
     # filter rather than gathering a window in.  What it is given after the
     # operands is the same set as a forward convolution's, in the same order,
     # so the two forms differ only in whether the bias is there.
-    "conv_transpose1d": _conv_transpose_shims("conv_transpose1d"),
-    "conv_transpose2d": _conv_transpose_shims("conv_transpose2d"),
-    "conv_transpose3d": _conv_transpose_shims("conv_transpose3d"),
+    "conv1d": _convolution_forms("conv1d", _CONVOLUTION_TAIL),
+    "conv3d": _convolution_forms("conv3d", _CONVOLUTION_TAIL),
+    "conv_transpose1d": _convolution_forms(
+        "conv_transpose1d", _CONVOLUTION_TRANSPOSE_TAIL
+    ),
+    "conv_transpose2d": _convolution_forms(
+        "conv_transpose2d", _CONVOLUTION_TRANSPOSE_TAIL
+    ),
+    "conv_transpose3d": _convolution_forms(
+        "conv_transpose3d", _CONVOLUTION_TRANSPOSE_TAIL
+    ),
 }
 
 

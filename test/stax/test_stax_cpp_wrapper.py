@@ -358,6 +358,29 @@ def test_a_transposed_convolution():
     )
 
 
+def test_convolutions_of_other_ranks():
+    """One- and three-dimensional convolutions take the same places.
+
+    They are separate calls from the two-dimensional one, and what they take
+    after the operands is the same set in the same order.
+    """
+
+    one = tp.arange(36, dtype=tp.float32).reshape(4, 3, 3) / 7
+    three = tp.arange(324, dtype=tp.float32).reshape(4, 3, 3, 3, 3) / 7
+    _check(
+        lambda a: tp.conv1d(a, one, padding=1),
+        [tp.randn(1, 3, 8)],
+    )
+    _check(
+        lambda a: tp.conv1d(a, one, tp.arange(4, dtype=tp.float32) / 5, stride=2),
+        [tp.randn(1, 3, 8)],
+    )
+    _check(
+        lambda a: tp.conv3d(a, three, padding=1),
+        [tp.randn(1, 3, 4, 4, 4)],
+    )
+
+
 def test_transposed_convolutions_of_each_rank():
     one = tp.arange(18, dtype=tp.float32).reshape(2, 3, 3) / 7
     three = tp.arange(162, dtype=tp.float32).reshape(2, 3, 3, 3, 3) / 7
