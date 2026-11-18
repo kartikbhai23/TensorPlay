@@ -29,12 +29,13 @@ from tensorplay._C import DType
 from ._atfork import register_after_fork
 
 # Descriptor transport. A persistent local connection per peer keeps the
-# per-message cost at a single request/reply round trip; elsewhere the
-# one-shot transport of the runtime is used.
+# per-message cost at a single request/reply round trip; platforms with a
+# one-shot transport of their own use that instead, and platforms without
+# descriptor sharing (Windows) get no transport at all.
 if sys.platform == "linux":
     from ._fdsharer import SharedFd
 else:
-    SharedFd = reduction.DupFd
+    SharedFd = getattr(reduction, "DupFd", None)
 
 # Early load resource_sharer to prevent a partially initialized instance from
 # being inherited in a forked child process. The descriptor-based reducer needs
@@ -153,14 +154,17 @@ def rebuild_shared_tensor(
     try:
         shm = SharedMemory(name=name, create=False, track=False)
     except TypeError:
-        # Runtimes without per-instance tracking control register the segment
-        # with the resource tracker on attach. Drop that registration again:
-        # this process must not unlink a segment its sender still owns.
+        # Runtimes without per-instance tracking control register a POSIX
+        # segment with the resource tracker on attach. Drop that registration
+        # again: this process must not unlink a segment its sender still owns.
+        # Windows sections are not tracked at all, so unregistering a name the
+        # tracker never saw would make the tracker abort.
         shm = SharedMemory(name=name, create=False)
-        try:
-            _tracker_unregister(shm._name, "shared_memory")
-        except (ValueError, KeyError):
-            pass
+        if sys.platform != "win32":
+            try:
+                _tracker_unregister(shm._name, "shared_memory")
+            except (ValueError, KeyError):
+                pass
     tensor = cls.__new__(cls)
     tensor.__setstate__(
         ("shm", shm, shape, strides, dtype, device_type, device_index, requires_grad)
@@ -265,6 +269,10 @@ def _reduce_tensor_fd(tensor):
     # private memfd-backed region; the recipient maps the received descriptor
     # and rebuilds a tensor aliasing those pages. The sending tensor itself
     # keeps its original (private) storage.
+    if SharedFd is None:
+        raise RuntimeError(
+            "descriptor sharing is not available on this platform"
+        )
     shape = tuple(tensor.shape)
     nbytes = tensor.numel() * tensor.itemsize()
     fd = os.memfd_create(_MEMFD_PREFIX + str(os.getpid()), flags=os.MFD_CLOEXEC)
