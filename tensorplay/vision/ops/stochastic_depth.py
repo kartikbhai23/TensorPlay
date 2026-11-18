@@ -30,13 +30,16 @@ def stochastic_depth(input: Tensor, p: float, mode: str, training: bool = True) 
 
     survival_rate = 1.0 - p
     if mode == "row":
-        size = [input.shape[0], 1]
+        # One coin per row, broadcast over every trailing axis the row carries.
+        size = [input.shape[0]] + [1] * (input.dim() - 1)
     else:
-        size = [input.shape[0]]
+        # One coin for the value as a whole.
+        size = [1] * input.dim()
     noise = tensorplay.empty(size, dtype=input.dtype, device=input.device)
     noise = noise.bernoulli_(survival_rate)
-    input.div(survival_rate).mul(noise)
-    return input
+    if survival_rate > 0.0:
+        noise.div_(survival_rate)
+    return input * noise
 
 
 class StochasticDepth(nn.Module):
