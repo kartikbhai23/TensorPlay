@@ -397,6 +397,37 @@ _CONVOLUTION_NO_BIAS_LITERALS: tuple[tuple[str, str], ...] = (
 #: take different arguments.  Each entry is the C++ function to call, the call
 #: as it is spelled, and the arguments that are not buffers and how to write
 #: each of them.
+def _conv_transpose_shims(function: str) -> dict[int, tuple]:
+    """The forms of a transposed convolution, keyed by how many operands.
+
+    The bias is an operand when the program gives one and an absent place
+    otherwise, so there are two forms; the stride, the padding, the extra
+    padding, the groups and the dilation follow the operands.
+    """
+
+    tail = (
+        (None, "ints"),
+        (None, "ints"),
+        (None, "ints"),
+        (None, "int"),
+        (None, "ints"),
+    )
+    return {
+        2: (
+            f"tp_cpu_{function}",
+            f"tensorplay::Tensor::{function}("
+            "t0, t1, std::nullopt, {s1}, {s2}, {s3}, {s4}, {s5})",
+            ((None, "tensor"), (None, "tensor"), ("bias", "optional_tensor"), *tail),
+        ),
+        3: (
+            f"tp_cpu_{function}_bias",
+            f"tensorplay::Tensor::{function}("
+            "t0, t1, t2, {s0}, {s1}, {s2}, {s3}, {s4})",
+            ((None, "tensor"), (None, "tensor"), (None, "tensor"), *tail),
+        ),
+    }
+
+
 _EXTERN_KERNEL_ARITY_SHIMS: dict[
     str, dict[int, tuple[str, str, tuple[tuple[str, str], ...]]]
 ] = {
@@ -496,6 +527,13 @@ _EXTERN_KERNEL_ARITY_SHIMS: dict[
             ),
         ),
     },
+    # A transposed convolution spreads each input element out through the
+    # filter rather than gathering a window in.  What it is given after the
+    # operands is the same set as a forward convolution's, in the same order,
+    # so the two forms differ only in whether the bias is there.
+    "conv_transpose1d": _conv_transpose_shims("conv_transpose1d"),
+    "conv_transpose2d": _conv_transpose_shims("conv_transpose2d"),
+    "conv_transpose3d": _conv_transpose_shims("conv_transpose3d"),
 }
 
 
@@ -748,6 +786,14 @@ def _write_ints(text: str) -> str:
         body = body[1:-1]
     elif body.startswith("[") and body.endswith("]"):
         body = body[1:-1]
+    elif body and all(
+        item.strip().lstrip("-").isdigit()
+        for item in body.split(",")
+        if item.strip()
+    ):
+        # A place that takes a list may be given one number instead: an extent
+        # written on its own is the list holding just it.
+        return "std::vector<int64_t>{" + body + "}"
     else:
         raise NotImplementedError(
             f"C++ wrapper cannot write the list {text!r}"

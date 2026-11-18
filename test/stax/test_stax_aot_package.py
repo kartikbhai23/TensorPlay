@@ -280,6 +280,20 @@ def test_package_holds_a_cumulative_product_and_a_running_maximum(tmp_path):
     assert tp.allclose(places, expected_places)
 
 
+def test_package_holds_a_transposed_convolution(tmp_path):
+    """An upsampling decoder's call: each input element spreads through the
+    filter rather than a window being gathered in."""
+
+    weight = tp.arange(54, dtype=tp.float32).reshape(2, 3, 3, 3) / 7
+    x = tp.randn(1, 2, 8, 8)
+    fn = lambda a: tp.conv_transpose2d(
+        a, weight, stride=2, padding=1, output_padding=1
+    ).relu()
+    path = _build(tmp_path / _PKG, fn, [x])
+    module = load_package(path)
+    assert tp.allclose(module(x), fn(x), atol=1e-4)
+
+
 def test_package_holds_a_draw(tmp_path):
     """A draw has nothing to read; the package fills the buffer it is given.
 

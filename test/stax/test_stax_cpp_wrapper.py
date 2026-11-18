@@ -331,6 +331,50 @@ def test_two_convolutions():
     _check(network, [tp.randn(1, 3, 8, 8)])
 
 
+def test_a_transposed_convolution():
+    """The transposed call spreads each input element out through the filter.
+
+    Its weight is read with the input's channels first, and the places after
+    the operands are the ones a forward convolution has.
+    """
+
+    weight = _conv_weight()
+    _check(
+        lambda a: tp.conv_transpose2d(
+            a, weight, stride=2, padding=1, output_padding=1
+        ),
+        [tp.randn(1, 2, 8, 8)],
+    )
+    _check(
+        lambda a: tp.conv_transpose2d(
+            a,
+            weight,
+            tp.arange(3, dtype=tp.float32) / 5,
+            stride=2,
+            padding=1,
+            output_padding=1,
+        ),
+        [tp.randn(1, 2, 8, 8)],
+    )
+
+
+def test_transposed_convolutions_of_each_rank():
+    one = tp.arange(18, dtype=tp.float32).reshape(2, 3, 3) / 7
+    three = tp.arange(162, dtype=tp.float32).reshape(2, 3, 3, 3, 3) / 7
+    _check(
+        lambda a: tp.conv_transpose1d(
+            a, one, stride=2, padding=1, output_padding=1
+        ),
+        [tp.randn(1, 2, 8)],
+    )
+    _check(
+        lambda a: tp.conv_transpose3d(
+            a, three, stride=2, padding=1, output_padding=1
+        ),
+        [tp.randn(1, 2, 4, 4, 4)],
+    )
+
+
 # --------------------------------------------------------------------------
 # a call that answers with more than one result
 # --------------------------------------------------------------------------
