@@ -49,6 +49,20 @@ void gemm_strided_batched_3d_ops(const Tensor& self_3d, const Tensor& other_3d,
                                  bool transpose_a, bool transpose_b,
                                  double alpha, double beta);
 
+// The same product for operand stacks whose stored row length is not the
+// matrix extent and whose result rows are not packed -- layouts that arise
+// when an operand is a window of a wider buffer (padded rows, a transposed
+// view, a result written straight into a column slice of a larger tensor).
+// `ld_other`/`ld_self` are the stored row lengths of the two operands and
+// `stride_c` the step between result matrices.
+void gemm_strided_batched_3d_window(const Tensor& self_3d, const Tensor& other_3d,
+                                    Tensor& result_3d, int64_t batch_size,
+                                    int64_t M, int64_t N, int64_t K,
+                                    long long stride_a, long long stride_b,
+                                    long long stride_c, int64_t ld_self,
+                                    int64_t ld_other, bool transpose_a,
+                                    bool transpose_b, double alpha, double beta);
+
 // Ragged grouped GEMM fast path: one persistent tensor-op kernel covers all
 // groups.  A is row-major (M_total, K); B stacks G per-expert [K, N]
 // matrices -- dense [G, K, N] row-major stacks read as RowMajor, stacks of

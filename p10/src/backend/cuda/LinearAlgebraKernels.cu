@@ -262,6 +262,84 @@ Tensor materialize_batched_cuda(
     return normalized.reshape({batch_size, rows, cols});
 }
 
+namespace {
+
+// Where the matrices of one batched-product operand sit in memory.  The last
+// two dimensions form an ordinary matrix, possibly read transposed and possibly
+// with padded rows.  The batch dimensions either collapse into a single regular
+// step, or interleave the innermost one inside each matrix row -- the head axis
+// of a fused projection -- in which case that axis is handed over one launch at
+// a time instead of being gathered into a packed stack.
+struct MatrixStack {
+    bool usable = false;
+    bool needs_split = false;     // the matrix rows interleave the inner axis
+    int64_t inner_dim = -1;       // innermost batch dimension
+    int64_t inner_count = 1;      // matrices along it
+    int64_t sliced_batches = 1;   // matrices per launch when stepping it
+    long long sliced_stride = 0;
+    int64_t total_batches = 1;    // matrices in the whole stack
+    long long total_stride = 0;
+    int64_t ld = 0;               // stored row length
+    bool transposed = false;
+};
+
+// Beyond this many interleaved slices the extra launches cost more than the
+// one reshaping copy they replace.
+constexpr int64_t kMaxSplitBatches = 8;
+
+MatrixStack describe_matrix_stack(const Tensor& input, int64_t rows, int64_t cols) {
+    MatrixStack stack;
+    const int64_t dims = input.dim();
+    if (dims < 3) return stack;
+    const int64_t row_stride = input.stride(dims - 2);
+    const int64_t col_stride = input.stride(dims - 1);
+    long long span = 0;
+    if (col_stride == 1 && row_stride >= cols) {
+        stack.ld = row_stride;
+        span = static_cast<long long>(rows - 1) * row_stride + cols;
+    } else if (row_stride == 1 && col_stride >= rows) {
+        stack.ld = col_stride;
+        stack.transposed = true;
+        span = static_cast<long long>(cols - 1) * col_stride + rows;
+    } else {
+        return stack;
+    }
+    const int64_t inner = dims - 3;
+    stack.inner_dim = inner;
+    stack.inner_count = input.size(inner);
+    if (input.stride(inner) < span && stack.inner_count > 1) {
+        // The innermost axis lives inside each matrix row, so only one slice of
+        // it can be read per launch.
+        stack.needs_split = true;
+    }
+    long long expected = 0;
+    int64_t total = 1;
+    int64_t sliced = 1;
+    long long sliced_step = 0;
+    const int64_t start = stack.needs_split ? inner - 1 : inner;
+    for (int64_t dim = start; dim >= 0; --dim) {
+        const int64_t extent = input.size(dim);
+        if (extent == 1) continue;
+        const long long stride = input.stride(dim);
+        if (stride < span) return stack;
+        if (total == 1) stack.total_stride = stride;
+        if (total > 1 && stride != expected) return stack;
+        expected = stride * extent;
+        total *= extent;
+        if (dim < inner) {
+            if (sliced_step == 0) sliced_step = stride;
+            sliced *= extent;
+        }
+    }
+    stack.total_batches = total;
+    stack.sliced_batches = sliced;
+    stack.sliced_stride = sliced_step;
+    stack.usable = true;
+    return stack;
+}
+
+} // namespace
+
 long long batched_matrix_stride_cuda(
     const std::vector<int64_t>& input_batch_shape,
     const std::vector<int64_t>& output_batch_shape,
@@ -339,6 +417,72 @@ Tensor matmul_batched_2d_cuda(
         Tensor result_2d = result.reshape({batch_size * M, N});
         gemm_impl(self_2d, other, result_2d, 1.0, 0.0, nullptr);
         return result;
+    }
+
+    // Both operands already carry the full batch shape, but the batch dimensions
+    // are not necessarily packed behind each matrix: a stack gathered out of a
+    // fused projection interleaves the head axis inside every matrix row, and a
+    // product whose result is read as one wide row leaves padded row steps.
+    // The library reads either shape in place, so the reshaping copy is skipped.
+    if (self_batch_shape == batch_shape && other_batch_shape == batch_shape &&
+        destination == nullptr) {
+        const MatrixStack self_stack = describe_matrix_stack(self, M, K);
+        const MatrixStack other_stack = describe_matrix_stack(other, K, N);
+        if (std::getenv("TP_DEBUG_MM") != nullptr) {
+            std::fprintf(stderr, "[mm-stack] M=%ld K=%ld N=%ld | self use=%d split=%d cnt=%ld sliced=%ld tot=%ld shape=",
+                         (long)M, (long)K, (long)N, (int)self_stack.usable,
+                         (int)self_stack.needs_split, (long)self_stack.inner_count,
+                         (long)self_stack.sliced_batches, (long)self_stack.total_batches);
+            for (const int64_t s : self.sizes()) std::fprintf(stderr, "%ld,", (long)s);
+            std::fprintf(stderr, " stride=");
+            for (const int64_t s : self.strides()) std::fprintf(stderr, "%ld,", (long)s);
+            std::fprintf(stderr, "\n");
+            std::fflush(stderr);
+        }
+        if (self_stack.usable && other_stack.usable) {
+            const long long packed_stride_c = static_cast<long long>(M) * N;
+            if (!self_stack.needs_split && !other_stack.needs_split &&
+                self_stack.total_batches == other_stack.total_batches) {
+                gemm_strided_batched_3d_window(
+                    self, other, result, self_stack.total_batches, M, N, K,
+                    self_stack.total_stride, other_stack.total_stride,
+                    packed_stride_c, self_stack.ld, other_stack.ld,
+                    self_stack.transposed, other_stack.transposed, 1.0, 0.0);
+                return result;
+            }
+            // An interleaved axis can only be read one slice at a time.  The
+            // other operand is stepped the same way so both stacks advance
+            // through matching slices.
+            const int64_t slices = self_stack.needs_split
+                                       ? self_stack.inner_count
+                                       : other_stack.inner_count;
+            if (slices > 1 && slices <= kMaxSplitBatches &&
+                self_stack.inner_count == slices &&
+                other_stack.inner_count == slices &&
+                self_stack.sliced_batches == other_stack.sliced_batches) {
+                const int64_t result_dim = result.dim() - 3;
+                // The matrices of one launch are separated by the step of the
+                // innermost batch dimension that remains after the slice axis.
+                const long long stride_c =
+                    result_dim > 0 ? result.stride(result_dim - 1) : 0;
+                for (int64_t slice = 0; slice < slices; ++slice) {
+                    const Tensor a = self_stack.inner_count > 1
+                                         ? self.select(self_stack.inner_dim, slice)
+                                         : self;
+                    const Tensor b = other_stack.inner_count > 1
+                                         ? other.select(other_stack.inner_dim, slice)
+                                         : other;
+                    Tensor c = result.select(result_dim, slice);
+                    gemm_strided_batched_3d_window(
+                        a, b, c, self_stack.sliced_batches, M, N, K,
+                        self_stack.sliced_stride, other_stack.sliced_stride,
+                        stride_c, self_stack.ld, other_stack.ld,
+                        self_stack.transposed, other_stack.transposed, 1.0,
+                        0.0);
+                }
+                return result;
+            }
+        }
     }
 
     Tensor self_3d = materialize_batched_cuda(
