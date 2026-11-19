@@ -2678,6 +2678,49 @@ std::tuple<Tensor, Tensor> fake_quantize_per_channel_affine_cachemask_cpu(
             const float* in = input.data_ptr<float>();
             float* op = out.data_ptr<float>();
             bool* mp = mask.data_ptr<bool>();
+            // The channel-block walk hoists the scale, zero point and the
+            // channel index out of the element loop: a contiguous layout
+            // splits into channels * outer blocks of stride_on_axis.
+            if (stride_on_axis > 0 && channels * stride_on_axis == numel) {
+                const int64_t outer = numel / (channels * stride_on_axis);
+                for (int64_t o = 0; o < outer; ++o) {
+                    for (int64_t c = 0; c < channels; ++c) {
+                        const float inv_scale = 1.0f / sc_ptr[c];
+                        const int64_t base = (o * channels + c) * stride_on_axis;
+                        if (zp_float_flag) {
+                            const float zpf = static_cast<float>(zpf_ptr[c]);
+                            const float zpv = static_cast<float>(zpf_ptr[c]);
+                            const float scv = sc_ptr[c];
+                            for (int64_t j = 0; j < stride_on_axis; ++j) {
+                                const float x = in[base + j];
+                                const double raw = std::lrintf(
+                                    static_cast<float>(zpf + x * inv_scale));
+                                const int64_t q = static_cast<int64_t>(std::fmin(
+                                    static_cast<double>(quant_max),
+                                    std::fmax(static_cast<double>(quant_min), raw)));
+                                op[base + j] = static_cast<float>((q - zpv) * scv);
+                                mp[base + j] = raw >= static_cast<double>(quant_min) &&
+                                               raw <= static_cast<double>(quant_max);
+                            }
+                        } else {
+                            const int64_t zpv = zp_ptr[c];
+                            const float scv = sc_ptr[c];
+                            for (int64_t j = 0; j < stride_on_axis; ++j) {
+                                const float x = in[base + j];
+                                const double raw = std::nearbyint(x * inv_scale) +
+                                                   static_cast<double>(zpv);
+                                const int64_t q = static_cast<int64_t>(std::fmin(
+                                    static_cast<double>(quant_max),
+                                    std::fmax(static_cast<double>(quant_min), raw)));
+                                op[base + j] = static_cast<float>(q - zpv) * scv;
+                                mp[base + j] = raw >= static_cast<double>(quant_min) &&
+                                               raw <= static_cast<double>(quant_max);
+                            }
+                        }
+                    }
+                }
+                break;
+            }
             for (int64_t i = 0; i < numel; ++i) {
                 auto r = element(i, in[i]);
                 op[i] = static_cast<float>(r.first);
