@@ -291,12 +291,18 @@ def shifted_window_attention(
         attn = F.softmax(attn, dim=-1)
         attn = F.dropout(attn, p=attention_dropout, training=training)
         x = attn.matmul(v).transpose(1, 2).reshape(rows, tokens, C)
-    x = F.linear(x, proj_weight, proj_bias)
+    x = F.linear(x, proj_weight, None)
     x = F.dropout(x, p=dropout, training=training)
 
     # reverse windows
     x = x.view(B, pad_H // window_size[0], pad_W // window_size[1], window_size[0], window_size[1], C)
     x = x.permute(0, 1, 3, 2, 4, 5).reshape(B, pad_H, pad_W, C)
+
+    # The bias lands once the tokens are back in the map's own order: it is
+    # the same per-channel shift wherever it is added, and here it joins the
+    # shift that follows instead of taking a pass of its own.
+    if proj_bias is not None:
+        x = x + proj_bias
 
     # reverse cyclic shift
     if sum(shift_size) > 0:
