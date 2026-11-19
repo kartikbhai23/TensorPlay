@@ -9,7 +9,7 @@ from typing_extensions import Self
 import tensorplay
 from tensorplay.nn.parameter import Parameter
 
-from .module import Module
+from .module import Module, _module_write_epoch
 
 
 if TYPE_CHECKING:
@@ -274,6 +274,9 @@ class Sequential(Module):
             raise IndexError(f"Index out of range: {index}")
         if index < 0:
             index += n
+        # Shifting children keeps their names, so this moves the tree without
+        # rebinding an attribute; the write count still has to move.
+        _module_write_epoch[0] += 1
         for i in range(n, index, -1):
             self._modules[str(i)] = self._modules[str(i - 1)]
         self._modules[str(index)] = module
@@ -434,6 +437,9 @@ class ModuleList(Module):
             index (int): index to insert.
             module (nn.Module): module to insert
         """
+        # Shifting children keeps their names, so this moves the tree without
+        # rebinding an attribute; the write count still has to move.
+        _module_write_epoch[0] += 1
         for i in range(len(self._modules), index, -1):
             self._modules[str(i)] = self._modules[str(i - 1)]
         self._modules[str(index)] = module
@@ -526,6 +532,7 @@ class ModuleDict(Module):
         self.add_module(key, module)
 
     def __delitem__(self, key: str) -> None:
+        _module_write_epoch[0] += 1
         del self._modules[key]
 
     # @_copy_to_script_wrapper
@@ -542,6 +549,7 @@ class ModuleDict(Module):
 
     def clear(self) -> None:
         """Remove all items from the ModuleDict."""
+        _module_write_epoch[0] += 1
         self._modules.clear()
 
     def pop(self, key: str) -> Module:

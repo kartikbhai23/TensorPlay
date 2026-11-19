@@ -1446,15 +1446,39 @@ def _module_state_component(program: Any) -> tuple[Any, ...]:
     The set of places to read is fixed once the part of the program's world
     that the call reaches has the same shape as last time, so the per-call
     work is reading those places rather than working out which they are.
+
+    A module write count says whether anything a plan names on a module can
+    have moved at all: a rebound attribute, a registered parameter or buffer,
+    a replaced child all raise it, and then the plan is read in full.  While
+    it holds still, only the sites a module write cannot explain are read --
+    globals, closure cells, and attributes whose value is described by its
+    contents and can be edited in place.
     """
 
     roots = _cached_state_roots(program)
+    epoch = _module_write_epoch()
     if roots is not None:
-        modules, functions, shape, recorded_part, recorded_component, pair = roots
-        if _module_state_part_unchanged(modules, recorded_part):
+        (
+            modules,
+            functions,
+            shape,
+            recorded_part,
+            recorded_component,
+            pair,
+            recorded_epoch,
+        ) = roots
+        settled = recorded_epoch == epoch
+        if settled or _module_state_part_unchanged(modules, recorded_part):
             plan = _state_plan(program, shape, modules, functions)
-            component = _planned_constant_component(plan)
+            component = _planned_constant_component(plan, attributes_settled=settled)
             if component is recorded_component:
+                if not settled:
+                    # The plan was read in full under this count, so this
+                    # reading is the one a later call can compare against.
+                    _store_state_roots(
+                        program, modules, functions, shape, recorded_part,
+                        component, pair, epoch,
+                    )
                 return pair
             # A value a capture baked moved, and with it the module tree the
             # walk reached (a rebound closure cell or global is how a program
@@ -1466,7 +1490,9 @@ def _module_state_component(program: Any) -> tuple[Any, ...]:
     plan = _state_plan(program, shape, modules, functions)
     component = _planned_constant_component(plan)
     pair = (module_part, component)
-    _store_state_roots(program, modules, functions, shape, module_part, component, pair)
+    _store_state_roots(
+        program, modules, functions, shape, module_part, component, pair, epoch
+    )
     return pair
 
 
@@ -1490,13 +1516,28 @@ def _store_state_roots(
     module_part: tuple[Any, ...],
     component: tuple[Any, ...],
     pair: tuple[Any, ...],
+    epoch: int,
 ) -> None:
     try:
         _state_roots_cache[program] = (
-            modules, functions, shape, module_part, component, pair
+            modules, functions, shape, module_part, component, pair, epoch,
         )
     except TypeError:
         pass
+
+
+_module_write_epoch_value: Any = None
+
+
+def _module_write_epoch() -> int:
+    """How many writes to module state have happened, as the modules count them."""
+
+    global _module_write_epoch_value
+    if _module_write_epoch_value is None:
+        from tensorplay.nn.modules.module import _module_write_epoch_now
+
+        _module_write_epoch_value = _module_write_epoch_now
+    return _module_write_epoch_value()
 
 
 #: Read plans and the last value seen at each site, per compiled program.  A
@@ -1529,7 +1570,7 @@ def _state_certificate_plan(program: Any) -> Any:
     roots = _cached_state_roots(program)
     if roots is None:
         return None
-    modules, functions, shape, _module_part, component, _pair = roots
+    modules, functions, shape, _module_part, component, _pair, _epoch = roots
     try:
         cached = _state_certificate_cache.get(program)
     except TypeError:
@@ -1551,7 +1592,8 @@ def _build_state_certificate(
 
     plan = _state_plan(program, shape, modules, functions)
     sites = plan[:-1]
-    values, _cached_entries, last, reusable_flags = plan[-1][4]
+    memo = plan[-1][4]
+    values, last, reusable_flags = memo[0], memo[2], memo[3]
     if last is None or len(values) < len(sites):
         return None
     entries: list[tuple[Any, ...]] = []
@@ -1643,7 +1685,11 @@ def _build_read_plan(modules: list[Any], functions: list[Any]) -> tuple[Any, ...
             plan.append(
                 ("attribute", module, None, name, None, _site_reader("attribute", module, name))
             )
-    plan.append(("values", None, None, None, [[], [], None, []], None))
+    # The last entry is not a site: it holds what the scan reads and what it
+    # remembers -- the value at each place, the description it produced, the
+    # component together, whether the value is reusable by identity, and the
+    # places a module write cannot explain.
+    plan.append(("values", None, None, None, [[], [], None, [], None], None))
     return tuple(plan)
 
 
@@ -1664,43 +1710,74 @@ def _read_site(reader: tuple[Any, ...]) -> Any:
         return _MISSING
 
 
-def _planned_constant_component(plan: tuple[Any, ...]) -> tuple[Any, ...]:
-    """Read every planned site, reusing the description of an unchanged value."""
+def _site_holds(
+    index: int,
+    reader: tuple[Any, ...],
+    values: list[Any],
+    cached_entries: list[Any],
+    reusable_flags: list[bool],
+) -> bool:
+    """Whether the site at ``index`` still reads as it did when recorded."""
 
-    values, cached_entries, last, reusable_flags = plan[-1][4]
+    code = reader[0]
+    if code == 0:
+        value = reader[1].get(reader[3], _MISSING)
+        if value is _MISSING:
+            value = reader[2].get(reader[3], _MISSING)
+    elif code == 1:
+        value = reader[1].get(reader[3])
+    else:
+        try:
+            value = reader[1].cell_contents
+        except ValueError:
+            value = _MISSING
+    # A site that reads nothing contributes no entry, but the slot records
+    # that, so the scan can certify it like any other site.
+    if value is not values[index]:
+        return False
+    if value is _MISSING or reusable_flags[index]:
+        return True
+    # A value described by its contents can be edited in place, so staying the
+    # same object is not enough; its own description has to match again.
+    return _constant_entry(value) == cached_entries[index]
+
+
+def _planned_constant_component(
+    plan: tuple[Any, ...], attributes_settled: bool = False
+) -> tuple[Any, ...]:
+    """Read every planned site, reusing the description of an unchanged value.
+
+    ``attributes_settled`` says no module has been written since these readings
+    were taken, which is exactly the condition under which no module attribute
+    can have been rebound.  A site whose value is described by its identity
+    then needs no reading at all: the write count is the evidence that it still
+    holds the same object.  Sites described by their contents are still read,
+    since editing the object in place is not a module write.
+
+    The sites a module write cannot explain are collected after each full
+    reading, so a settled call reads only those instead of walking the plan.
+    """
+
+    memo = plan[-1][4]
+    values, cached_entries, last, reusable_flags = memo[0], memo[1], memo[2], memo[3]
     sites = plan[:-1]
     # Steady state: every site still holds the object it held last time, which
     # for a reusable value is the same value, so the description cannot have
     # moved.  Establishing that costs one comparison per site and nothing else.
     if last is not None and len(values) >= len(sites):
-        for index, site in enumerate(sites):
-            reader = site[5]
-            code = reader[0]
-            if code == 0:
-                value = reader[1].get(reader[3], _MISSING)
-                if value is _MISSING:
-                    value = reader[2].get(reader[3], _MISSING)
-            elif code == 1:
-                value = reader[1].get(reader[3])
-            else:
-                try:
-                    value = reader[1].cell_contents
-                except ValueError:
-                    value = _MISSING
-            # A site that reads nothing contributes no entry, but the slot
-            # records that, so the scan can certify it like any other site.
-            if value is not values[index]:
-                break
-            if value is _MISSING:
-                continue
-            if not reusable_flags[index]:
-                # A value described by its contents can be edited in place, so
-                # staying the same object is not enough; only its own
-                # description has to be read again, not every site's.
-                if _constant_entry(value) != cached_entries[index]:
-                    break
+        settled_sites = memo[4]
+        if attributes_settled and settled_sites is not None:
+            if all(_site_holds(index, reader, values, cached_entries, reusable_flags)
+                   for index, reader in settled_sites):
+                return last
         else:
-            return last
+            for index, site in enumerate(sites):
+                if not _site_holds(
+                    index, site[5], values, cached_entries, reusable_flags
+                ):
+                    break
+            else:
+                return last
 
     entries: list[tuple[Any, ...]] = []
     for index, site in enumerate(sites):
@@ -1736,7 +1813,16 @@ def _planned_constant_component(plan: tuple[Any, ...]) -> tuple[Any, ...]:
         else:
             entries.append(("closure", label, name, entry))
     component = tuple(entries)
-    plan[-1][4][2] = component
+    memo[2] = component
+    # Every site a module write cannot explain: globals, closure cells and
+    # attributes whose value is described by its contents.  A settled call
+    # reads these and nothing else.
+    memo[4] = [
+        (index, site[5])
+        for index, site in enumerate(sites)
+        if site[5][0] != 0
+        or (values[index] is not _MISSING and not reusable_flags[index])
+    ]
     return component
 
 

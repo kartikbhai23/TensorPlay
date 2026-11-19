@@ -210,3 +210,25 @@ def test_helper_method_attribute_change_recompiles_with_new_value():
 
     module.scale = 7.0
     assert compiled(value).tolist() == [7.0, 7.0, 7.0]
+
+
+class _ListScaledModule(tp.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.scale = [2.0]
+
+    def forward(self, x):
+        return x * self.scale[0]
+
+
+def test_module_list_attribute_edited_in_place_recompiles():
+    module = _ListScaledModule()
+    value = tp.ones(3)
+    compiled = tp.compile(module, fullgraph=True)
+    assert compiled(value).tolist() == [2.0, 2.0, 2.0]
+
+    entry = compiled._tensorplay_cache
+    before = len(entry)
+    module.scale[0] = 3.0
+    assert compiled(value).tolist() == [3.0, 3.0, 3.0]
+    assert len(entry) > before

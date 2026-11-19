@@ -29,6 +29,21 @@ __all__ = [
     "Module",
 ]
 
+
+#: Counts the writes that can move what a captured program read from a module:
+#: a rebound attribute, a registered parameter or buffer, a replaced child.
+#: A reader that already holds a reading of a module tree compares this count
+#: against the one it recorded instead of re-reading every site; the count
+#: only moves forward, so an older reading never matches by accident.
+_module_write_epoch: list[int] = [0]
+
+
+def _module_write_epoch_now() -> int:
+    """The current number of writes to module state."""
+
+    return _module_write_epoch[0]
+
+
 _grad_t = Union[tuple[Tensor, ...], Tensor]
 # See https://mypy.readthedocs.io/en/latest/generics.html#generic-methods-and-generic-self for the use
 # of `T` to annotate `self`. Many methods of `Module` return `self` and we want those return values to be
@@ -542,6 +557,7 @@ class Module:
             >>> self.register_buffer('running_mean', tensorplay.zeros(num_features))
 
         """
+        _module_write_epoch[0] += 1
         if "_buffers" not in self.__dict__:
             raise AttributeError("cannot assign buffer before Module.__init__() call")
         elif not isinstance(name, str):
@@ -585,6 +601,7 @@ class Module:
                 are ignored. If ``None``, the parameter is **not** included in the
                 module's :attr:`state_dict`.
         """
+        _module_write_epoch[0] += 1
         if "_parameters" not in self.__dict__:
             raise AttributeError(
                 "cannot assign parameter before Module.__init__() call"
@@ -632,6 +649,7 @@ class Module:
                 accessed from this module using the given name
             module (Module): child module to be added to the module.
         """
+        _module_write_epoch[0] += 1
         if not isinstance(module, Module) and module is not None:
             raise TypeError(f"{tensorplay.typename(module)} is not a Module subclass")
         elif not isinstance(name, str):
@@ -911,6 +929,9 @@ class Module:
         )
 
     def _apply(self, fn, recurse=True):
+        # Replacing a buffer puts the module's state somewhere else, which is
+        # what the write count reports to readers that cached a reading.
+        _module_write_epoch[0] += 1
         if recurse:
             for module in self.children():
                 module._apply(fn)
@@ -1686,6 +1707,8 @@ class Module:
         )
 
     def __setattr__(self, name: str, value: Union[Tensor, "Module"]) -> None:
+        _module_write_epoch[0] += 1
+
         def remove_from(*dicts_or_sets) -> None:
             for d in dicts_or_sets:
                 if name in d:
@@ -1791,6 +1814,7 @@ class Module:
                     super().__setattr__(name, value)
 
     def __delattr__(self, name) -> None:
+        _module_write_epoch[0] += 1
         if name in self._parameters:
             del self._parameters[name]
         elif name in self._buffers:
