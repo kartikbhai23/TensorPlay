@@ -238,37 +238,6 @@ Tensor c2c_plane(const Tensor& input, bool forward, FFTNorm norm,
     Tensor output(sizes, input.dtype(), input.device());
     const auto shape = pocket_shape(sizes);
     const auto strides = byte_strides(sizes, sizeof(C));
-    // A two-axis plane walks rows then columns: each 1D transform answers
-    // alone, so the rows spread over the pool and the norm factor lands on
-    // the last pass.  Other layouts keep the single multi-axis call.
-    if (axes.size() == 2 && input.is_contiguous()) {
-        const int64_t last = sizes.back();
-        const int64_t first = sizes[sizes.size() - 2];
-        const int64_t outer = input.numel() / (first * last);
-        const std::complex<T>* src = pocketfft_complex_input<T>(input.data_ptr());
-        std::complex<T>* dst = pocketfft_complex_output<T>(output.data_ptr());
-        const pocketfft::stride_t row_stride{sizeof(C)};
-        // Rows along the last axis: contiguous, one transform each.
-        const pocketfft::shape_t rows_shape{static_cast<size_t>(last)};
-        tensorplay::parallel::parallel_for(0, outer * first, 16, [&](int64_t lo, int64_t hi) {
-            for (int64_t r = lo; r < hi; ++r) {
-                pocketfft::c2c<T>(rows_shape, row_stride, row_stride, {0}, forward,
-                                  src + r * last, dst + r * last, 1.0, 1);
-            }
-        });
-        // Columns along the second-to-last axis: strided, in place on the
-        // pass-1 buffer, and the norm factor applies once here.
-        const double fct = norm_factor<T>(norm, transform_size);
-        const pocketfft::shape_t cols_shape{static_cast<size_t>(first)};
-        const pocketfft::stride_t col_stride{static_cast<size_t>(last) * sizeof(C)};
-        tensorplay::parallel::parallel_for(0, outer * last, 16, [&](int64_t lo, int64_t hi) {
-            for (int64_t c = lo; c < hi; ++c) {
-                pocketfft::c2c<T>(cols_shape, col_stride, col_stride,
-                                  {0}, forward, dst + c, dst + c, fct, 1);
-            }
-        });
-        return output;
-    }
     pocketfft::c2c<T>(shape, strides, strides, axes, forward,
                       pocketfft_complex_input<T>(input.data_ptr()),
                       pocketfft_complex_output<T>(output.data_ptr()),
