@@ -2533,6 +2533,40 @@ static bool conv2d_grad_weight_onednn(const Tensor& grad_output, const Tensor& i
     Tensor input_c = (input.is_contiguous() || input.is_contiguous(MemoryFormat::ChannelsLast) || input.unsafeGetTensorImpl()->has_onednn_md()) ? input : detail::contiguous_clone(input);
     Tensor grad_output_c = (grad_output.is_contiguous() || grad_output.is_contiguous(MemoryFormat::ChannelsLast) || grad_output.unsafeGetTensorImpl()->has_onednn_md()) ? grad_output : detail::contiguous_clone(grad_output);
 
+#ifdef _OPENMP
+    // A oneDNN jit primitive bakes the OpenMP team size into the kernel it
+    // builds, so execute() must run with the team the primitive was created
+    // for.  Shrinking the team only around execute() (as this used to) left
+    // the primitive built for the full team while a single thread ran it:
+    // the threads that no longer showed up never contributed their share, so
+    // only the first block of output channels reached diff_weights and the
+    // rest of the blocked buffer stayed uninitialized; once the spatial
+    // extent was large enough for the kernel to spread work across the team,
+    // its barrier then waited for threads that would never arrive and
+    // backward() never returned (issue #113).
+    // The restriction depends only on the batch size and the weight element
+    // count, both of which are part of the primitive cache key, so a cached
+    // primitive is always replayed with the team it was created with.
+    struct TeamSizeScope {
+        int saved = omp_get_max_threads();
+        bool restricted = false;
+        explicit TeamSizeScope(bool restrict) {
+            if (restrict && saved > 1) {
+                omp_set_num_threads(1);
+                restricted = true;
+            }
+        }
+        ~TeamSizeScope() {
+            if (restricted) omp_set_num_threads(saved);
+        }
+    };
+    // Heuristic: a small batch with small weights pays more in cross-team
+    // reduction than it gains in parallelism, so run it single-threaded.
+    const bool shrink_team = input_c.size(0) < omp_get_max_threads() * 2 &&
+                             weight.numel() < 20000;
+    TeamSizeScope team_size_scope(shrink_team);
+#endif
+
     try {
         auto& eng = OneDNNContext::get_engine();
         auto& s = OneDNNContext::get_stream();
@@ -2783,16 +2817,6 @@ static bool conv2d_grad_weight_onednn(const Tensor& grad_output, const Tensor& i
              diff_weights_mem = memory(expected_diff_weights_md, eng, grad_weight.data_ptr<float>());
         }
 
-#ifdef _OPENMP
-        int original_threads = omp_get_max_threads();
-        bool adjusted = false;
-        // Heuristic: For small batches (N < threads*2) and small weights, reduce threads to avoid reduction overhead.
-        if (input_c.size(0) < original_threads * 2 && weight.numel() < 20000) {
-            omp_set_num_threads(1);
-            adjusted = true;
-        }
-#endif
-
         std::unordered_map<int, memory> bwd_w_args = {
             {DNNL_ARG_SRC, src_mem},
             {DNNL_ARG_DIFF_DST, diff_dst_mem},
@@ -2803,12 +2827,6 @@ static bool conv2d_grad_weight_onednn(const Tensor& grad_output, const Tensor& i
         }
         bwd_w.execute(s, bwd_w_args);
 
-#ifdef _OPENMP
-        if (adjusted) {
-            omp_set_num_threads(original_threads);
-        }
-#endif
-        
         if (need_reorder_diff_weights) {
              auto user_mem = memory(user_diff_weights_md, eng, grad_weight.data_ptr<float>());
              reorder(diff_weights_mem, user_mem).execute(s, diff_weights_mem, user_mem);
