@@ -334,6 +334,11 @@ def dropout(input, p=0.5, training=True, inplace=False):
             return captured
     if p < 0 or p > 1:
         raise ValueError("dropout probability has to be between 0 and 1, but got {}".format(p))
+    # Nothing is dropped when the layer is not in training mode, so the input
+    # is already the answer: handing it back avoids materialising a keep mask
+    # and a full copy of the tensor.
+    if not training:
+        return input
     if inplace:
         return tensorplay.dropout_(input, p, training)
     return _C.dropout(input, p, training)
