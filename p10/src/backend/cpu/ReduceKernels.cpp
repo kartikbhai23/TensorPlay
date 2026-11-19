@@ -793,19 +793,45 @@ std::tuple<Tensor, Tensor> mode_cpu(const Tensor& self, int64_t dim,
             using pair_t = std::pair<ctype, int64_t>; \
             static thread_local std::vector<pair_t> buf; \
             if (static_cast<int64_t>(buf.size()) < d_size) buf.resize(static_cast<size_t>(d_size)); \
+            static thread_local std::vector<ctype> vbuf; \
+            if (static_cast<int64_t>(vbuf.size()) < d_size) vbuf.resize(static_cast<size_t>(d_size)); \
             for (int64_t si = b; si < e; ++si) { \
                 const int64_t o = si / inner, in2 = si % inner; \
                 const ctype* src = sp + o * d_size * inner + in2; \
-                for (int64_t j = 0; j < d_size; ++j) buf[j] = {src[j * inner], j}; \
-                std::sort(buf.begin(), buf.begin() + d_size, summary_value_less<ctype>); \
-                ctype best_value = buf[0].first; \
-                int64_t best_count = 0, best_index = buf[0].second, run = 0; \
+                for (int64_t j = 0; j < d_size; ++j) vbuf[j] = src[j * inner]; \
+                /* A slice free of NaN sorts as bare values -- a four-byte \
+                 * element halves the sort's traffic against the pair form, \
+                 * and the winning value's first occurrence answers the \
+                 * index afterwards. */ \
+                bool has_nan = false; \
                 for (int64_t j = 0; j < d_size; ++j) { \
-                    const bool same = j > 0 && \
-                        summary_same_value(buf[j].first, buf[j - 1].first); \
-                    run = same ? run + 1 : 1; \
-                    if (run > best_count) { \
-                        best_count = run; best_value = buf[j].first; best_index = buf[j].second; \
+                    if (summary_value_is_nan(vbuf[j])) { has_nan = true; break; } \
+                } \
+                ctype best_value; \
+                int64_t best_index; \
+                if (!has_nan) { \
+                    std::sort(vbuf.begin(), vbuf.begin() + d_size); \
+                    int64_t best_count = 0, run = 0; \
+                    for (int64_t j = 0; j < d_size; ++j) { \
+                        run = (j > 0 && vbuf[j] == vbuf[j - 1]) ? run + 1 : 1; \
+                        if (run > best_count) { best_count = run; best_value = vbuf[j]; } \
+                    } \
+                    best_index = -1; \
+                    for (int64_t j = 0; j < d_size && best_index < 0; ++j) { \
+                        if (src[j * inner] == best_value) best_index = j; \
+                    } \
+                } else { \
+                    for (int64_t j = 0; j < d_size; ++j) buf[j] = {vbuf[j], j}; \
+                    std::sort(buf.begin(), buf.begin() + d_size, summary_value_less<ctype>); \
+                    int64_t best_count = 0, run = 0; \
+                    best_value = buf[0].first; best_index = buf[0].second; \
+                    for (int64_t j = 0; j < d_size; ++j) { \
+                        const bool same = j > 0 && \
+                            summary_same_value(buf[j].first, buf[j - 1].first); \
+                        run = same ? run + 1 : 1; \
+                        if (run > best_count) { \
+                            best_count = run; best_value = buf[j].first; best_index = buf[j].second; \
+                        } \
                     } \
                 } \
                 vp[si] = best_value; ip[si] = best_index; \
