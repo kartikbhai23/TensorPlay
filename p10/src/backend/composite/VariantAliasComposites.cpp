@@ -73,7 +73,9 @@ std::vector<Tensor> alias_wrap_meshgrid_indexing(const std::vector<Tensor>& tens
 }
 
 Tensor alias_wrap_min_other(const Tensor& self, const Tensor& other) {
-    return ops::min(self, other);
+    // Element-wise min: route to minimum, not back to ops::min, whose
+    // binary overload resolves to this very alias and would recurse.
+    return ops::minimum(self, other);
 }
 
 Tensor alias_wrap_movedim_intlist(const Tensor& self, const std::vector<int64_t>& source, const std::vector<int64_t>& destination) {
