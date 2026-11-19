@@ -591,6 +591,18 @@ def test_the_nan_median_along_an_axis():
     _check(lambda a: tp.nanmedian(a, 1)[1], [values])
 
 
+def test_a_value_split_into_its_mantissa_and_exponent():
+    """A float read as a mantissa and the power of two it carries.
+
+    The call answers with both, so both are written and the caller picks one.
+    """
+
+    values = tp.tensor([[1.0, 2.0, 0.5, -8.0], [3.0, 0.25, 1024.0, -0.125]])
+    _check(lambda a: tp.frexp(a), [values])
+    _check(lambda a: tp.frexp(a)[0], [values])
+    _check(lambda a: tp.frexp(a)[1], [values])
+
+
 def test_the_norm_of_a_matrix():
     """A matrix norm names what it measures, either by word or by number.
 

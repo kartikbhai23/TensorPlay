@@ -857,6 +857,13 @@ _EXTERN_KERNEL_MULTI_SHIMS: dict[
         "t0.nanmedian({s0}, {s1})",
         ((None, "int"), (None, "flag")),
     ),
+    # A value split into its mantissa and its exponent answers with both, so
+    # both are written before the caller picks one.
+    "tp_frexp": (
+        "tp_cpu_frexp",
+        "tensorplay::Tensor::frexp(t0)",
+        ((None, "tensor"),),
+    ),
     # The one-dimensional maximum reads a window, a step, a padding, a spacing
     # and whether a window may reach past the border, and leaves the places it
     # chose behind.  The three-dimensional maximum asks for the same five
