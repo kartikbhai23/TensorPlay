@@ -183,18 +183,16 @@ Tensor chalf_impl(const Tensor& self, std::optional<int64_t> memory_format) {
 
 // ---- _shape_as_tensor: sizes as an int64 tensor
 Tensor _shape_as_tensor_impl(const Tensor& self) {
-    std::vector<int64_t> s(self.dim());
-    for (int64_t i = 0; i < self.dim(); ++i) {
+    const int64_t ndim = self.dim();
+    std::vector<int64_t> s(ndim);
+    for (int64_t i = 0; i < ndim; ++i) {
         s[i] = self.size(i);
     }
-    // assign each element through a one-element view
-    Tensor r2 = ops::empty({static_cast<int64_t>(s.size())}, DType::Int64,
-                           self.device(), false, false);
-    for (int64_t i = 0; i < static_cast<int64_t>(s.size()); ++i) {
-        Tensor cell = r2.select(0, i);
-        ops::fill_(cell, Scalar(s[static_cast<size_t>(i)]));
-    }
-    return r2;
+    // Build on the host and issue a single device copy: the per-element
+    // select/fill chain launched two kernels per dimension.
+    Tensor host = Tensor({ndim}, DType::Int64, Device(DeviceType::CPU));
+    std::copy(s.begin(), s.end(), host.data_ptr<int64_t>());
+    return host.to(self.device());
 }
 
 Tensor _dim_arange_impl(const Tensor& like, int64_t dim) {
