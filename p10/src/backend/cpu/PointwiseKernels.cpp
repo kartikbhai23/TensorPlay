@@ -2194,7 +2194,69 @@ Tensor& mish_out_cpu(const Tensor& self, Tensor& out) {
                                   vecunary::VOp::Mish);
 }
 
+// One sweep of the mish gradient for contiguous float32 pairs.  softplus,
+// tanh and sigmoid run in the lane helpers; tanh comes from sigmoid as
+// 2*sigmoid(2z) - 1.  The target attribute is what keeps the lane loop; the
+// translation unit compiles without the ISA.
+__attribute__((target("avx2,fma"), noinline))
+static void mish_backward_f32_sweep(const float* gp, const float* xp,
+                                    float* dp, int64_t n) {
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 zero = _mm256_setzero_ps();
+    const __m256 signbit = _mm256_set1_ps(-0.0f);
+    const __m256 beta = _mm256_set1_ps(1.0f);
+    const __m256 threshold = _mm256_set1_ps(20.0f);
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        // The whole chain runs in f64 lanes: the gradient is a difference of
+        // near-equal terms for a wide band of x, and f32 rounding there
+        // costs the answer most of its digits.
+        const __m256d x0 = _mm256_cvtps_pd(_mm_loadu_ps(xp + i));
+        const __m256d x1 = _mm256_cvtps_pd(_mm_loadu_ps(xp + i + 4));
+        const __m256d beta = _mm256_set1_pd(1.0);
+        const __m256d threshold = _mm256_set1_pd(20.0);
+        const __m256d one = _mm256_set1_pd(1.0);
+        const __m256d sp0 = vecunary::v_softplus_f64(beta, threshold, x0);
+        const __m256d sp1 = vecunary::v_softplus_f64(beta, threshold, x1);
+        const __m256d t0 = vecunary::v_tanh_f64(sp0);
+        const __m256d t1 = vecunary::v_tanh_f64(sp1);
+        const __m256d sech0 = _mm256_sub_pd(one, _mm256_mul_pd(t0, t0));
+        const __m256d sech1 = _mm256_sub_pd(one, _mm256_mul_pd(t1, t1));
+        const __m256d g0 = _mm256_div_pd(one, _mm256_add_pd(
+            one, vecunary::v_exp_f64(_mm256_sub_pd(_mm256_setzero_pd(), x0))));
+        const __m256d g1 = _mm256_div_pd(one, _mm256_add_pd(
+            one, vecunary::v_exp_f64(_mm256_sub_pd(_mm256_setzero_pd(), x1))));
+        const __m256d inner0 = _mm256_fmadd_pd(
+            _mm256_mul_pd(x0, sech0), g0, t0);
+        const __m256d inner1 = _mm256_fmadd_pd(
+            _mm256_mul_pd(x1, sech1), g1, t1);
+        _mm_storeu_ps(dp + i, _mm256_cvtpd_ps(_mm256_mul_pd(
+            _mm256_cvtps_pd(_mm_loadu_ps(gp + i)), inner0)));
+        _mm_storeu_ps(dp + i + 4, _mm256_cvtpd_ps(_mm256_mul_pd(
+            _mm256_cvtps_pd(_mm_loadu_ps(gp + i + 4)), inner1)));
+    }
+    for (; i < n; ++i) {
+        const float x = xp[i];
+        const float sp = std::log1p(std::exp(x));
+        const float tanh_sp = std::tanh(sp);
+        const float sech2 = 1.0f - tanh_sp * tanh_sp;
+        const float gsp = 1.0f / (1.0f + std::exp(-x));
+        dp[i] = gp[i] * (tanh_sp + x * sech2 * gsp);
+    }
+}
+
 Tensor mish_backward_kernel_impl(const Tensor& grad_output, const Tensor& self) {
+    // Contiguous float32 pairs answer in one lane sweep; the composite map
+    // below falls back to scalar libm calls per element.
+    if (grad_output.dtype() == DType::Float32 &&
+        grad_output.is_contiguous() && self.is_contiguous() &&
+        grad_output.numel() == self.numel()) {
+        Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(grad_output.shape()),
+                                      grad_output.dtype(), grad_output.device());
+        mish_backward_f32_sweep(grad_output.data_ptr<float>(), self.data_ptr<float>(),
+                                result.data_ptr<float>(), grad_output.numel());
+        return result;
+    }
     //   sp = log1p(exp(x)); tanh_sp = tanh(sp); sech2 = 1 - tanh_sp^2
     //   return dy * (tanh_sp + x * sech2 * sigmoid(x))
     return activation_backward_kernel(grad_output, self,
