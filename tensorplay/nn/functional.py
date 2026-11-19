@@ -2920,14 +2920,15 @@ def pixel_unshuffle(input: Tensor, downscale_factor: int) -> Tensor:
     r = int(downscale_factor)
     if input.dim() != 4:
         raise ValueError(f"pixel_unshuffle expects 4D input, got {input.dim()}D")
-    N, C, H, W = input.shape
+    H, W = input.shape[-2], input.shape[-1]
     if H % r != 0 or W % r != 0:
         raise ValueError(
             f"pixel_unshuffle expects input height and width divisible by downscale_factor, "
             f"but got H={H}, W={W} and downscale_factor={r}")
-    x = input.reshape(N, C, H // r, r, W // r, r)
-    x = x.permute(0, 1, 3, 5, 2, 4).contiguous()
-    return x.reshape(N, C * r * r, H // r, W // r)
+    # The op maps the (C, H, r, W, r) block grid in one pass; a
+    # reshape/permute/contiguous here copies through a generic strided walk
+    # over the permuted view.
+    return tensorplay.pixel_unshuffle(input, r)
 
 
 def channel_shuffle(input: Tensor, groups: int) -> Tensor:
@@ -2937,16 +2938,17 @@ def channel_shuffle(input: Tensor, groups: int) -> Tensor:
     g = int(groups)
     if input.dim() != 4:
         raise ValueError(f"channel_shuffle expects 4D input, got {input.dim()}D")
-    N, C, H, W = input.shape
+    C = input.shape[1]
     if C % g != 0:
         raise ValueError(f"channel_shuffle expects channel count divisible by groups, got C={C}, groups={g}")
-    x = input.reshape(N, g, C // g, H, W)
-    x = x.transpose(1, 2).contiguous()
-    return x.reshape(N, C, H, W)
+    # The op transposes the (groups, C/g) channel grid with one block copy per
+    # row; a reshape/transpose/contiguous here copies through a generic
+    # strided walk.
+    return tensorplay.channel_shuffle(input, g)
 
 
 def native_channel_shuffle(input: Tensor, groups: int) -> Tensor:
-    return channel_shuffle(input, groups)
+    return tensorplay.native_channel_shuffle(input, groups)
 
 
 GRID_SAMPLE_INTERPOLATION_MODES = ('bilinear', 'nearest', 'bicubic')
