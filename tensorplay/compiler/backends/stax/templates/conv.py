@@ -22,7 +22,7 @@ import tensorplay as tp
 from .triton import CHOICES, dtype_size
 
 from ..codegen.common import KernelTemplate
-from ..utils import sympy_product
+from ..utils import make_channels_last_strides_for, sympy_product
 from ..virtualized import V
 from ..heuristics.template.base import SymbolicGridFn, TemplateConfigHeuristics
 
@@ -1260,6 +1260,14 @@ def constrain_conv_bwd_to_fx_strides(fx_node, *args, **kwargs):
     return args, kwargs
 
 
+def _empty_conv_operand(shape, dtype, device, *, channels_last):
+    if channels_last:
+        return tp.empty_strided(
+            shape, make_channels_last_strides_for(shape), dtype=dtype, device=device
+        )
+    return tp.empty(shape, dtype=dtype, device=device)
+
+
 def conv_bwd_layouts(
     grad_out, input, weight, stride, padding, dilation, transposed,
     output_padding, groups, output_mask, channels_last,
@@ -1271,19 +1279,16 @@ def conv_bwd_layouts(
         return None, None
     guard = V.graph.sizevars.guard_int_seq
     device = input.get_device_or_error()
-    if channels_last and all(len(node.get_size()) == 4 for node in (grad_out, input, weight)):
-        zeros = lambda node: tp.empty(
-            [int(dim) for dim in node.get_size()],
-            dtype=node.get_dtype(),
-            device=device,
-            memory_format=tp.channels_last,
+    channels_last = channels_last and all(
+        len(node.get_size()) == 4 for node in (grad_out, input, weight)
+    )
+
+    def zeros(node):
+        return _empty_conv_operand(
+            [int(dim) for dim in node.get_size()], node.get_dtype(), device,
+            channels_last=channels_last,
         ).zero_()
-    else:
-        zeros = lambda node: tp.zeros(
-            [int(dim) for dim in node.get_size()],
-            dtype=node.get_dtype(),
-            device=device,
-        )
+
     dx, dw, _ = framework.convolution_backward(
         zeros(grad_out), zeros(input), zeros(weight), None,
         guard(stride), guard(padding), guard(dilation), transposed,
@@ -1318,13 +1323,10 @@ def call_framework_dw(
     receives the gradient and is returned instead of a fresh tensor.
     """
 
-    if x_t.is_contiguous(memory_format=tp.channels_last):
-        memory_fmt = tp.channels_last
-    else:
-        memory_fmt = tp.contiguous_format
     dtype = x_t.get_dtype() if hasattr(x_t, "get_dtype") else x_t.dtype
-    dummy_weight = tp.empty(
-        w_shape, dtype=dtype, device=x_t.device, memory_format=memory_fmt
+    dummy_weight = _empty_conv_operand(
+        w_shape, dtype, x_t.device,
+        channels_last=len(w_shape) == 4 and x_t.is_contiguous(memory_format=tp.channels_last),
     )
     result = framework.convolution_backward(
         grad_output=go_t, input=x_t,
@@ -1351,13 +1353,10 @@ def call_framework_dx(
     returned instead of a fresh tensor.
     """
 
-    if go_t.is_contiguous(memory_format=tp.channels_last):
-        memory_fmt = tp.channels_last
-    else:
-        memory_fmt = tp.contiguous_format
     dtype = go_t.get_dtype() if hasattr(go_t, "get_dtype") else go_t.dtype
-    dummy_input = tp.empty(
-        x_shape, dtype=dtype, device=go_t.device, memory_format=memory_fmt
+    dummy_input = _empty_conv_operand(
+        x_shape, dtype, go_t.device,
+        channels_last=len(x_shape) == 4 and go_t.is_contiguous(memory_format=tp.channels_last),
     )
     result = framework.convolution_backward(
         grad_output=go_t, input=dummy_input,
@@ -1994,8 +1993,8 @@ def convolution_backward_lowering(
             "convolution_bwd_input", choices_dx, args_x, layout_dx
         )
     db = None
-    if output_mask[2] and bias_sizes is not None:
+    if output_mask[2]:
         # A bias gradient is the gradient summed over everything the bias did not
         # vary along, which is every axis but the channel one.
-        db = grad_out.sum(axis=[0] + list(range(2, ndim + 2)))
+        db = LOWERINGS["sum.dim_IntList"](grad_out, [0, *range(2, ndim + 2)])
     return (dx, dw, db)

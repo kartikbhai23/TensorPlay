@@ -119,3 +119,25 @@ def test_batch_norm_after_a_channels_last_convolution():
     for (name, p), q in zip(net.named_parameters(), ref.parameters()):
         err = ((p.grad - q.grad).abs().max() / (q.grad.abs().max() + 1e-3)).item()
         assert err < 3e-2, (name, err)
+
+
+@pytest.mark.parametrize("output_mask", [(True, True, True), (False, False, True)])
+def test_generic_convolution_backward_with_channels_last_operands(output_mask):
+    def backward(grad, x, weight):
+        return tp.ops.tp.convolution_backward.default(
+            grad, x, weight, None, (1, 1), (1, 1), (1, 1), False, (0, 0), 1,
+            output_mask,
+        )
+
+    tp.manual_seed(0)
+    x = tp.randn(2, 8, 12, 12, device="cuda", dtype=tp.float16)
+    weight = tp.randn(16, 8, 3, 3, device="cuda", dtype=tp.float16)
+    grad = tp.randn(2, 16, 12, 12, device="cuda", dtype=tp.float16)
+    expected = backward(grad, x, weight)
+    compiled = tp.compile(backward, fullgraph=True, strict_native=True)
+    actual = compiled(grad, x, weight)
+    for result, reference, requested in zip(actual, expected, output_mask, strict=True):
+        if requested:
+            assert tp.allclose(result, reference, rtol=1e-2, atol=3e-2)
+        else:
+            assert not result.defined()

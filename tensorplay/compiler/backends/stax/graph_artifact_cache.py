@@ -144,6 +144,10 @@ def _host_bytes(tensor: object) -> bytes | None:
     rather than keying it as if it were unchanged.
     """
 
+    defined = getattr(tensor, "defined", None)
+    if callable(defined) and not defined():
+        return None
+
     device = getattr(tensor, "device", None)
     if device is not None and getattr(device, "type", None) not in (None, "cpu"):
         return None
