@@ -198,17 +198,15 @@ def shifted_window_attention(
         q = q + bq
         k = k + bk
         v = v + bv
+    if logit_scale is None:
+        q = q * (C // num_heads) ** -0.5
     if logit_scale is not None:
         # cosine attention
         attn = F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1)
         logit_scale = tensorplay.clamp(logit_scale, max=math.log(100.0)).exp()
         attn = attn * logit_scale
     else:
-        q = q * (C // num_heads) ** -0.5
         attn = q.matmul(k.transpose(-2, -1))
-    # add relative position bias
-    attn = attn + relative_position_bias
-
     if sum(shift_size) > 0:
         # Tokens split a padded axis into three ranges: the unshifted head, the
         # wrap-around middle moved in by the shift, and the tail.  Labelling
@@ -226,9 +224,15 @@ def shifted_window_attention(
         attn_mask = attn_mask.view(pad_H // window_size[0], window_size[0], pad_W // window_size[1], window_size[1])
         attn_mask = attn_mask.permute(0, 2, 1, 3).reshape(num_windows, window_size[0] * window_size[1])
         attn_mask = (attn_mask.unsqueeze(1) != attn_mask.unsqueeze(2)).to(tensorplay.float32) * float(-100.0)
+        # The position bias is shared by every batch, so it is summed with the
+        # window mask once up front.  The result is then a single broadcast add
+        # against the scores instead of two full-size adds landing in sequence.
+        bias = relative_position_bias + attn_mask.unsqueeze(1)
         attn = attn.view(x.size(0) // num_windows, num_windows, num_heads, x.size(1), x.size(1))
-        attn = attn + attn_mask.unsqueeze(1).unsqueeze(0)
+        attn = attn + bias.unsqueeze(0)
         attn = attn.view(-1, num_heads, x.size(1), x.size(1))
+    else:
+        attn = attn + relative_position_bias
 
     attn = F.softmax(attn, dim=-1)
     attn = F.dropout(attn, p=attention_dropout, training=training)
