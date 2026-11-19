@@ -7277,9 +7277,14 @@ class ExternKernel(InputsKernel):
 
         if is_contiguous_storage_and_layout(x):
             return x
-        x = cls._shared_layout_copy(x, layout_key=("contiguous",))
-        assert is_contiguous_storage_and_layout(x)
-        return x
+        # Repack through the stride machinery the channels-last asks use: the
+        # row-major order (fastest along the last axis) is the reverse of the
+        # axis order, and freezing a fresh copy's layout to it makes the kernel
+        # that writes the copy write it consecutively.  A plain copy_input only
+        # relabels, so a value an earlier kernel wrote channels last would be
+        # handed back still channels last under a row-major name.
+        order = list(reversed(range(len(x.get_size()))))
+        return cls.require_stride_order(x, order)
 
     @classmethod
     def require_contiguous_strides(cls, x: "IRNode") -> "IRNode":
