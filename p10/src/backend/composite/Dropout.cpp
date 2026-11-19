@@ -30,6 +30,17 @@ Tensor zero_like_mul(const Tensor& input) {
     return ops::mul(input, ops::zeros({}, input.dtype(), input.device()));
 }
 
+Tensor make_feature_noise(const Tensor& input) {
+    if (input.dim() < 2) {
+        TP_THROW(RuntimeError,
+                 "Feature dropout requires at least 2 dimensions in the input");
+    }
+    std::vector<int64_t> shape(input.dim(), 1);
+    shape[0] = input.size(0);
+    shape[1] = input.size(1);
+    return ops::new_empty(input, shape);
+}
+
 } // anonymous namespace
 
 Tensor dropout_native(const Tensor& input, double p, bool train) {
@@ -59,17 +70,9 @@ Tensor feature_alpha_dropout_native(const Tensor& input, double p, bool train) {
     check_dropout_p(p);
     if (p == 0 || !train || input.numel() == 0) return input;
     if (p == 1) return zero_like_mul(input);
-    if (input.dim() < 2) {
-        TP_THROW(RuntimeError,
-                 "Feature dropout requires at least 2 dimensions in the input");
-    }
     constexpr double alpha = 1.7580993408473766;
     const double a = 1.0 / std::sqrt((alpha * alpha * p + 1.0) * (1.0 - p));
-    std::vector<int64_t> noise_shape(input.dim(), 1);
-    noise_shape[0] = input.size(0);
-    noise_shape[1] = input.size(1);
-    Tensor noise = ops::full(noise_shape, Scalar(1.0 - p), input.dtype(),
-                             input.device());
+    Tensor noise = make_feature_noise(input);
     ops::bernoulli_(noise, 1.0 - p, std::nullopt);
     // out = input * (noise * a) + (noise - 1) * (alpha * a) + alpha * a * p
     const Tensor b = ops::add(ops::mul(ops::sub(noise, Scalar(1)),
@@ -80,29 +83,44 @@ Tensor feature_alpha_dropout_native(const Tensor& input, double p, bool train) {
 
 namespace {
 
-template <typename Fn>
-Tensor& dropout_inplace(Tensor& self, double p, bool train, Fn&& out_of_place) {
-    Tensor result = out_of_place(self, p, train);
-    if (result.impl() != self.impl()) ops::copy_(self, result);
-    return self;
+Tensor& dropout_inplace(Tensor& self, double p, bool train, bool feature, bool alpha_dropout) {
+    check_dropout_p(p);
+    if (p == 0 || !train || self.numel() == 0) return self;
+    if (p == 1) return ops::mul_(self, ops::zeros({}, self.dtype(), self.device()));
+
+    Tensor noise = feature ? make_feature_noise(self) : ops::empty_like(self);
+    ops::bernoulli_(noise, 1.0 - p, std::nullopt);
+    if (!alpha_dropout) {
+        ops::div_(noise, Scalar(1.0 - p));
+        return ops::mul_(self, noise);
+    }
+
+    constexpr double alpha = 1.7580993408473766;
+    const double scale = 1.0 / std::sqrt((alpha * alpha * p + 1.0) * (1.0 - p));
+    Tensor bias = ops::sub(noise, Scalar(1));
+    ops::mul_(bias, Scalar(alpha * scale));
+    ops::add_(bias, Scalar(alpha * scale * p));
+    ops::mul_(noise, Scalar(scale));
+    ops::mul_(self, noise);
+    return ops::add_(self, bias);
 }
 
 } // anonymous namespace
 
 Tensor& dropout__native(Tensor& self, double p, bool train) {
-    return dropout_inplace(self, p, train, dropout_native);
+    return dropout_inplace(self, p, train, false, false);
 }
 
 Tensor& alpha_dropout__native(Tensor& self, double p, bool train) {
-    return dropout_inplace(self, p, train, alpha_dropout_native);
+    return dropout_inplace(self, p, train, false, true);
 }
 
 Tensor& feature_dropout__native(Tensor& self, double p, bool train) {
-    return dropout_inplace(self, p, train, feature_dropout_native);
+    return dropout_inplace(self, p, train, true, false);
 }
 
 Tensor& feature_alpha_dropout__native(Tensor& self, double p, bool train) {
-    return dropout_inplace(self, p, train, feature_alpha_dropout_native);
+    return dropout_inplace(self, p, train, true, true);
 }
 
 TENSORPLAY_LIBRARY_IMPL(Composite, DropoutComposite) {

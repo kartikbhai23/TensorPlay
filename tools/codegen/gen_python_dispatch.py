@@ -206,7 +206,14 @@ def _emit_kernel(out: list[str], f: NativeFunction, derivative=None) -> str:
         f"{num_positional}, {_cpp_string(','.join(sorted(tags)))}, nullptr}};")
     out.append(f"{ret} kernel_{sym}({', '.join(params)}) {{")
     differentiable = [a.name for a in args if a.type.is_tensor_like]
-    if differentiable and not mutable and any(r.type.is_tensor_like for r in f.returns) and kind not in ("void", "mut_ref"):
+    implicit_inplace = (
+        kind == "mut_ref" and f.is_inplace and derivative is None
+    )
+    functional_result = (
+        not mutable and kind not in ("void", "mut_ref")
+        and any(r.type.is_tensor_like for r in f.returns)
+    )
+    if differentiable and (functional_result or implicit_inplace):
         # Differentiated through its composite kernel when it has no
         # derivative of its own (see implicit_autograd_kernel).  The guard
         # variable is spelled to stay clear of every schema argument name.

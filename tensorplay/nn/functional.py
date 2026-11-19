@@ -328,24 +328,14 @@ def embedding(input, weight, padding_idx=None, max_norm=None, norm_type=2.0, sca
 # Add more functionals as needed
 
 def dropout(input, p=0.5, training=True, inplace=False):
-    if _capturing():
+    if _capturing() and not inplace:
         captured = _capture_call(dropout, (input, p, training, inplace), {})
         if captured is not None:
             return captured
     if p < 0 or p > 1:
         raise ValueError("dropout probability has to be between 0 and 1, but got {}".format(p))
-    if not training or p == 0:
-        return input
-
-    if p == 1:
-        result = _C.zeros_like(input)
-        return input.copy_(result) if inplace else result
-
     if inplace:
-        # dropout_ mutates self and records the mask for backward).
-        mask = (_C.rand(input.shape, device=input.device) > p).to(input.dtype)
-        return input.mul_(mask).mul_(1.0 / (1.0 - p))
-
+        return tensorplay.dropout_(input, p, training)
     return _C.dropout(input, p, training)
 
 def dropout2d(input, p=0.5, training=True, inplace=False):
@@ -358,32 +348,34 @@ def dropout2d(input, p=0.5, training=True, inplace=False):
     if input.dim() < 2:
          raise ValueError("Feature dropout requires at least 2 dimensions")
 
-    if p == 1:
-        result = _C.zeros_like(input)
-        return input.copy_(result) if inplace else result
-
-    result, _mask = _C.native_feature_dropout(input, p)
     if inplace:
-        return input.copy_(result)
-    return result
+        return tensorplay.feature_dropout_(input, p, training)
+    return tensorplay.feature_dropout(input, p, training)
 
 def dropout3d(input, p=0.5, training=True, inplace=False):
+    if input.dim() == 4:
+        if p < 0 or p > 1:
+            raise ValueError("dropout probability has to be between 0 and 1, but got {}".format(p))
+        return _unbatched_feature_dropout(input, p, training, inplace)
     return dropout2d(input, p, training, inplace)
+
+def _unbatched_feature_dropout(input, p, training, inplace):
+    if not training or p == 0 or input.numel() == 0:
+        return input
+    if inplace:
+        input.unsqueeze_(0)
+        try:
+            return tensorplay.feature_dropout_(input, p, training)
+        finally:
+            input.squeeze_(0)
+    return tensorplay.feature_dropout(input.unsqueeze(0), p, training).squeeze(0)
 
 def alpha_dropout(input, p=0.5, training=True, inplace=False):
     if p < 0 or p > 1:
         raise ValueError("dropout probability has to be between 0 and 1, but got {}".format(p))
-    if not training or p == 0:
-        return input
-
-    # Native fused forward plus generated backward through the saved mask.
-    if p == 1:
-        result = _C.zeros_like(input)
-    else:
-        result, _mask = _C.native_alpha_dropout(input, p)
     if inplace:
-        return input.copy_(result)
-    return result
+        return tensorplay.alpha_dropout_(input, p, training)
+    return tensorplay.alpha_dropout(input, p, training)
 
 
 def feature_dropout(input, p=0.5, training=False, inplace=False):
@@ -394,17 +386,9 @@ def feature_dropout(input, p=0.5, training=False, inplace=False):
         raise RuntimeError(
             f"Feature dropout requires at least 2 dimensions in the input, "
             f"but got {input.dim()}")
-    if not training or p == 0 or input.numel() == 0:
-        return input
-
-    if p == 1:
-        result = _C.zeros_like(input)
-        return input.copy_(result) if inplace else result
-
-    result, _mask = _C.native_feature_dropout(input, p)
     if inplace:
-        return input.copy_(result)
-    return result
+        return tensorplay.feature_dropout_(input, p, training)
+    return tensorplay.feature_dropout(input, p, training)
 
 
 def dropout_(input, p=0.5, training=True):
@@ -1962,22 +1946,11 @@ def dropout1d(
             "spatial dimension, a channel dimension, and an optional batch dimension "
             "(i.e. 2D or 3D inputs)."
         )
-    if not training or p == 0:
-        return input
-
-    if p == 1:
-        result = _C.zeros_like(input)
-        return input.copy_(result) if inplace else result
-
-    is_batched = inp_dim == 3
-    x = input if is_batched else input.unsqueeze(0)
-
-    result, _mask = _C.native_feature_dropout(x, p)
-    if not is_batched:
-        result = result.squeeze(0)
+    if inp_dim == 2:
+        return _unbatched_feature_dropout(input, p, training, inplace)
     if inplace:
-        return input.copy_(result)
-    return result
+        return tensorplay.feature_dropout_(input, p, training)
+    return tensorplay.feature_dropout(input, p, training)
 
 
 def feature_alpha_dropout(
@@ -2000,27 +1973,9 @@ def feature_alpha_dropout(
             f"but got {input.dim()}"
         )
 
-    if not training or p == 0 or input.numel() == 0:
-        return input
-
-    if p == 1:
-        result = _C.zeros_like(input)
-        return input.copy_(result) if inplace else result
-
-    alpha_c = 1.7580993408473766
-    a = 1.0 / math.sqrt((alpha_c * alpha_c * p + 1) * (1 - p))
-    b_coeff = alpha_c * a
-
-    mask_shape = list(input.shape)
-    mask_shape[2:] = [1] * (input.dim() - 2)
-    noise = (_C.rand(mask_shape, device=input.device) > p).to(input.dtype)
-    b = (noise - 1).mul(b_coeff).add(b_coeff * p)
-    noise = noise.mul(a)
-
-    result = input * noise + b
     if inplace:
-        return input.copy_(result)
-    return result
+        return tensorplay.feature_alpha_dropout_(input, p, training)
+    return tensorplay.feature_alpha_dropout(input, p, training)
 
 
 # -----------------------------------------------------------------------------

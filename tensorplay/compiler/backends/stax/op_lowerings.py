@@ -10695,8 +10695,10 @@ def _lower_empty_like(
     memory_format: Any = None,
 ) -> Any:
     del memory_format
+    if dtype is None or dtype == tp.undefined:
+        dtype = x.get_dtype()
     return empty_strided(
-        list(x.get_size()), None, dtype=dtype or x.get_dtype(), layout=layout,
+        list(x.get_size()), None, dtype=dtype, layout=layout,
         device=decode_device(device) if device is not None else x.get_device(),
         pin_memory=pin_memory,
     )

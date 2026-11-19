@@ -280,6 +280,67 @@ def test_dropout_train_statistics():
     np.testing.assert_allclose(nonzero, 2.0, rtol=1e-6)
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"] if tp.cuda.is_available() else ["cpu"])
+@pytest.mark.parametrize(
+    "name, shape, alpha, functional",
+    [
+        ("dropout", (2, 32), False, True),
+        ("dropout1d", (32, 4), False, True),
+        ("dropout2d", (2, 32, 4, 4), False, True),
+        ("dropout3d", (2, 32, 4, 4, 4), False, True),
+        ("dropout3d", (32, 4, 4, 4), False, True),
+        ("alpha_dropout", (2, 32), True, True),
+        ("feature_dropout", (2, 32, 4), False, True),
+        ("feature_alpha_dropout", (2, 32, 4), True, True),
+        ("dropout_", (2, 32), False, False),
+        ("alpha_dropout_", (2, 32), True, False),
+        ("feature_dropout_", (2, 32, 4), False, False),
+        ("feature_alpha_dropout_", (2, 32, 4), True, False),
+    ],
+    ids=[
+        "dropout", "dropout1d", "dropout2d", "dropout3d", "dropout3d_unbatched",
+        "alpha_dropout", "feature_dropout", "feature_alpha_dropout",
+        "dropout_", "alpha_dropout_", "feature_dropout_", "feature_alpha_dropout_",
+    ],
+)
+@pytest.mark.parametrize("p", [0.5, 1.0])
+def test_dropout_gradients_follow_sampled_mask(device, name, shape, alpha, functional, p):
+    activation = getattr(tp.nn.functional if functional else tp_F, name)
+
+    def apply_inplace(input):
+        if functional:
+            return activation(input, p, training=True, inplace=True)
+        return activation(input, p, True)
+
+    def compiled_input(x):
+        input = x * 1.0
+        apply_inplace(input)
+        return input
+
+    tp.manual_seed(1)
+    x = tp.ones(shape, device=device, requires_grad=True)
+    input = x * 1.0
+    result = apply_inplace(input)
+    assert result is input
+    y = tp.ones_like(x).requires_grad_()
+    compiled = tp.compile(compiled_input, fullgraph=True, strict_native=True)(y)
+    for leaf, output in ((x, result), (y, compiled)):
+        output.sum().backward()
+        assert output.shape == shape
+        if p == 1.0:
+            assert tp.equal(output, tp.zeros_like(output))
+            assert tp.equal(leaf.grad, tp.zeros_like(leaf.grad))
+        else:
+            kept = output > 0
+            assert bool(kept.any()) and not bool(kept.all())
+            if name == "dropout3d" and len(shape) == 4:
+                assert tp.equal(kept, kept[:, :1, :1, :1].expand(shape))
+            scale = 1.0 / (1.0 - p)
+            if alpha:
+                scale = ((1.0 - p) * (1.0 + p * 1.7580993408473766 ** 2)) ** -0.5
+            assert tp.allclose(leaf.grad, kept.to(leaf.dtype) * scale)
+
+
 def test_rrelu_eval():
     x = torch.tensor([-2.0, -0.5, 0.0, 0.5, 2.0])
     assert_reference_close(tp_F.rrelu(_tp(x), 0.125, 0.5, False),
