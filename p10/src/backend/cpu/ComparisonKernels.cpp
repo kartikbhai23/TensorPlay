@@ -306,12 +306,37 @@ inline bool op_pred(T x, T y) {
     }
 }
 
-// One sweep of the f32/f64 comparison for contiguous same-shape pairs: the
-// lane compare answers eight (f32) or four (f64) boolean bytes per step, the
-// mask expanded with a short unrolled store.  The predicate instantiates per
-// comparison kind, ordered everywhere except ne, whose NaN lanes compare
-// unequal like the scalar form does.  The target attribute is what keeps the
-// lane loop; the translation unit compiles without the ISA.
+// One sweep of the f32/f64 comparison against a broadcast scalar: the same
+// lane compare as the pair form, with the scalar held in a broadcast
+// register.  The predicate instantiates per comparison kind.
+template <int PRED, typename T>
+__attribute__((target("avx2,fma"), noinline))
+static void compare_scalar_sweep(const T* xp, T val, bool* rp, int64_t n) {
+    if constexpr (std::is_same_v<T, float>) {
+        const __m256 v = _mm256_set1_ps(val);
+        int64_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            const __m256 x = _mm256_loadu_ps(xp + i);
+            const int mask = _mm256_movemask_ps(_mm256_cmp_ps(x, v, PRED));
+            alignas(8) unsigned char tmp[8];
+            for (int k = 0; k < 8; ++k) tmp[k] = (unsigned char)((mask >> k) & 1);
+            std::memcpy(rp + i, tmp, 8);
+        }
+        for (; i < n; ++i) rp[i] = op_pred<T, PRED>(xp[i], val);
+    } else {
+        const __m256d v = _mm256_set1_pd(val);
+        int64_t i = 0;
+        for (; i + 4 <= n; i += 4) {
+            const __m256d x = _mm256_loadu_pd(xp + i);
+            const int mask = _mm256_movemask_pd(_mm256_cmp_pd(x, v, PRED));
+            alignas(8) unsigned char tmp[4];
+            for (int k = 0; k < 4; ++k) tmp[k] = (unsigned char)((mask >> k) & 1);
+            std::memcpy(rp + i, tmp, 4);
+        }
+        for (; i < n; ++i) rp[i] = op_pred<T, PRED>(xp[i], val);
+    }
+}
+
 template <int PRED, typename T>
 __attribute__((target("avx2,fma"), noinline))
 static void compare_sweep(const T* xp, const T* yp, bool* rp, int64_t n) {
@@ -347,6 +372,35 @@ void comparison_pass(Tensor& result, const Tensor& self, const Tensor& other,
                      DType common_dtype, Op op) {
     Tensor self_casted = (self.dtype() == common_dtype) ? self : self.to(common_dtype);
     Tensor other_casted = (other.dtype() == common_dtype) ? other : other.to(common_dtype);
+    // A scalar other broadcasts over the base: the lane compare runs with
+    // the scalar in a broadcast register.  The predicate instantiates per
+    // comparison kind.
+    if ((common_dtype == DType::Float32 || common_dtype == DType::Float64) &&
+        self_casted.is_contiguous() && other_casted.dim() == 0 &&
+        self_casted.numel() == result.numel()) {
+        const int64_t n = self_casted.numel();
+        if (common_dtype == DType::Float32) {
+            const float val = other_casted.data_ptr<float>()[0];
+            switch (C) {
+                case NarrowCmp::Eq: compare_scalar_sweep<_CMP_EQ_OQ>(self_casted.data_ptr<float>(), val, result.data_ptr<bool>(), n); return;
+                case NarrowCmp::Ne: compare_scalar_sweep<_CMP_NEQ_UQ>(self_casted.data_ptr<float>(), val, result.data_ptr<bool>(), n); return;
+                case NarrowCmp::Lt: compare_scalar_sweep<_CMP_LT_OQ>(self_casted.data_ptr<float>(), val, result.data_ptr<bool>(), n); return;
+                case NarrowCmp::Le: compare_scalar_sweep<_CMP_LE_OQ>(self_casted.data_ptr<float>(), val, result.data_ptr<bool>(), n); return;
+                case NarrowCmp::Gt: compare_scalar_sweep<_CMP_GT_OQ>(self_casted.data_ptr<float>(), val, result.data_ptr<bool>(), n); return;
+                case NarrowCmp::Ge: compare_scalar_sweep<_CMP_GE_OQ>(self_casted.data_ptr<float>(), val, result.data_ptr<bool>(), n); return;
+            }
+        } else {
+            const double val = other_casted.data_ptr<double>()[0];
+            switch (C) {
+                case NarrowCmp::Eq: compare_scalar_sweep<_CMP_EQ_OQ>(self_casted.data_ptr<double>(), val, result.data_ptr<bool>(), n); return;
+                case NarrowCmp::Ne: compare_scalar_sweep<_CMP_NEQ_UQ>(self_casted.data_ptr<double>(), val, result.data_ptr<bool>(), n); return;
+                case NarrowCmp::Lt: compare_scalar_sweep<_CMP_LT_OQ>(self_casted.data_ptr<double>(), val, result.data_ptr<bool>(), n); return;
+                case NarrowCmp::Le: compare_scalar_sweep<_CMP_LE_OQ>(self_casted.data_ptr<double>(), val, result.data_ptr<bool>(), n); return;
+                case NarrowCmp::Gt: compare_scalar_sweep<_CMP_GT_OQ>(self_casted.data_ptr<double>(), val, result.data_ptr<bool>(), n); return;
+                case NarrowCmp::Ge: compare_scalar_sweep<_CMP_GE_OQ>(self_casted.data_ptr<double>(), val, result.data_ptr<bool>(), n); return;
+            }
+        }
+    }
     // Contiguous same-shape float pairs compare in one lane sweep; the
     // predicate instantiates per comparison kind.
     if ((common_dtype == DType::Float32 || common_dtype == DType::Float64) &&
