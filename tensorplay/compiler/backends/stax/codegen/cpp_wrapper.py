@@ -605,6 +605,11 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
         "tensorplay::Tensor::adaptive_avg_pool2d(t0, {s0})",
         ((None, "tensor"), (None, "ints")),
     ),
+    "adaptive_avg_pool3d": (
+        "tp_cpu_adaptive_avg_pool3d",
+        "tensorplay::Tensor::adaptive_avg_pool3d(t0, {s0})",
+        ((None, "tensor"), (None, "ints")),
+    ),
     # A one-dimensional maximum reads a window, a step, a padding, a spacing
     # and whether a window may reach past the border.
     "max_pool1d": (
