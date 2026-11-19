@@ -451,38 +451,42 @@ _DEVICE_CODES = {"cuda": 1, "cpu": 0}
 # ---------------------------------------------------------------------------
 
 
-def _grid_for(result: Any, args: Sequence[Any]) -> tuple[int, int, int]:
-    """The grid a launch was given, worked out from the kernel's configuration.
+def _grid_for(kernel: Any, args: Sequence[Any]) -> tuple[int, int, int]:
+    """The grid a launch was given, read from the launch itself.
 
-    Only the one-dimensional grid a pointwise kernel is launched over is
-    described: the number of whole tiles its extent needs.  Anything else is
-    refused rather than guessed at, because a wrong grid is a wrong answer.
+    A grid follows from the tuning a kernel was given and the sizes it was
+    launched over, and the runtime already knows how to work that out: the
+    same expression a launcher runs is run here, so the grid a package
+    records is the grid the launch actually used.  Reading it this way rather
+    than picking an argument apart is what keeps a reduction kernel -- whose
+    launch hands over both the extent it tiles and the length it reduces --
+    from being given the wrong one.  Only the one-dimensional grid is
+    described; anything else is refused rather than guessed at, because a
+    wrong grid is a wrong answer.
     """
 
-    meta = getattr(result, "tp_meta", {}) or {}
-    if meta.get("grid_type") != "Grid1D":
+    tp_meta = getattr(kernel, "tp_meta", {}) or {}
+    if tp_meta.get("grid_type") != "Grid1D":
         raise GpuPackageError(
-            f"the kernel is launched with a {meta.get('grid_type')!r} grid, "
+            f"the kernel is launched with a {tp_meta.get('grid_type')!r} grid, "
             "which a package cannot describe yet"
         )
-    extent = None
-    for value in args:
-        if isinstance(value, int) and not isinstance(value, bool):
-            extent = int(value)
-    if extent is None:
+    launchers = getattr(kernel, "launchers", None) or ()
+    config = launchers[0].config if launchers else None
+    if config is None:
+        configs = getattr(kernel, "configs", None) or ()
+        config = configs[0] if configs else None
+    if config is None:
         raise GpuPackageError(
-            "the kernel is launched over an extent the build could not read"
+            "the kernel was launched without a configuration a package can read"
         )
-    tile = None
-    config = getattr(result, "config", None)
-    for entry in str(config).split(","):
-        if ":" in entry and entry.split(":")[0].strip().endswith("BLOCK"):
-            tile = int(entry.split(":")[1])
-    if not tile:
+    try:
+        _, grid = kernel._interpret_args_grid(tuple(args), config)
+    except Exception as exc:
         raise GpuPackageError(
-            "the kernel's tile size was not among its configuration"
-        )
-    return ((extent + tile - 1) // tile, 1, 1)
+            f"the kernel's grid could not be read from its launch: {exc}"
+        ) from exc
+    return tuple(int(extent) for extent in grid)
 
 
 def _recording_kernels():
@@ -522,8 +526,13 @@ def _record_launches(
     for name, kernel in seen:
         original_run = kernel.run
 
-        def recording_run(*args, _run=original_run, **kwargs):
-            launches.append((kernel, list(args)))
+        # Both the launcher and the kernel it belongs to are bound here rather
+        # than read from the enclosing scope: the loop rebinds ``kernel`` each
+        # turn, so a closure that read it at call time would name every launch
+        # after the last kernel of the region and a package would carry that
+        # kernel's binary under the other one's arguments.
+        def recording_run(*args, _run=original_run, _kernel=kernel, **kwargs):
+            launches.append((_kernel, list(args)))
             return _run(*args, **kwargs)
 
         kernel.run = recording_run
@@ -715,7 +724,7 @@ def _kernel_specs(
                 num_warps=int(meta.num_warps),
                 shared=int(meta.shared),
                 num_ctas=int(meta.num_ctas),
-                grid=_grid_for(results[0], args),
+                grid=_grid_for(kernel, args),
                 params=tuple(params),
                 ptr_slots=tuple(ptr_slots),
                 scalars=tuple(scalars),
@@ -804,8 +813,10 @@ def build_gpu_package(
     if not launches:
         raise GpuPackageError(
             "the region runs no GPU kernel, so there is nothing for a GPU "
-            "package to load: its schedule was not lowered to device kernels "
-            "and ran through the interpreter instead"
+            "package to load: its schedule either was not lowered to device "
+            "kernels at all and ran through the interpreter, or was lowered to "
+            "kernels that come with a host launcher of their own rather than "
+            "a binary this package could carry"
         )
 
     slots, by_pointer, output_order = _slot_table(inputs, launches, results)

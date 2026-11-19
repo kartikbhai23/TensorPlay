@@ -125,6 +125,22 @@ def test_package_holds_a_reduction(tmp_path):
 
 
 @requires_cuda
+def test_package_holds_a_region_whose_kernels_read_each_other(tmp_path):
+    values = tp.randn(512, 64, device=_DEVICE)
+    path = _build(tmp_path / _PKG, lambda a: tp.relu(a.sum(-1)).sum(-1), [values])
+    module = load_gpu_package(path)
+
+    # the first sum is storage the second kernel reads and the caller never
+    # sees; it is still a slot, but not one of the results
+    with open(os.path.join(path, "metadata.json")) as fp:
+        payload = json.load(fp)
+    assert len(payload["kernels"]) == 2
+    assert {slot["role"] for slot in payload["slots"]} == {"input", "intermediate", "output"}
+    assert len(payload["outputs"]) == 1
+    _close(module(values), tp.relu(values.sum(-1)).sum(-1))
+
+
+@requires_cuda
 def test_a_region_without_device_kernels_is_refused(tmp_path):
     values = tp.randn(256, 512, device=_DEVICE)
     with pytest.raises(GpuPackageError, match="no GPU kernel"):
