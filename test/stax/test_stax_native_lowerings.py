@@ -143,6 +143,14 @@ def test_compiled_conversion_moves_tensors_between_devices(dtype):
 
 
 @pytest.mark.parametrize("device", DEVICES)
+def test_compiled_training_with_identity_view(device):
+    def fn(x):
+        return tp.ops.tp.view.default(x.square(), [-1, 7])
+
+    _check(fn, [tp.randn(4, 7, device=device)], train=True)
+
+
+@pytest.mark.parametrize("device", DEVICES)
 def test_integer_inputs_keep_their_answers(device):
     i = tp.arange(-20, 20, device=device).reshape(5, 8)
     for fn in (tp.floor, tp.bitwise_not, tp.isnan, lambda v: tp.erf(v)):

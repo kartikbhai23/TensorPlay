@@ -17,6 +17,8 @@ from tensorplay.graph.passes.graph_transform_observer import (
 from tensorplay.graph import map_arg
 from tensorplay.utils._dispatch import _disable_current_modes
 from tensorplay.graph.experimental.symbolic_shapes import (
+    guard_or_false,
+    guard_or_true,
     statically_known_true,
     sym_eq,
 )
@@ -40,7 +42,6 @@ from ..constant_folding import ConstantFolder
 from .dedupe_symint_uses import _SymHashingDict
 from ..utils import counters, get_gpu_type
 from ..runtime.storage_ref import StorageWeakRef
-from ..virtualized import V
 from .decompose_mem_bound_mm import check_device
 from .replace_random import replace_random_passes
 
@@ -119,7 +120,7 @@ def remove_no_ops(
                 if field == "shape":
                     # Shapes may contain unbacked SymInts; tuple `!=` would
                     # force a guard. Conservatively treat unknown as "not equal".
-                    if not V.graph.sizevars.guard_or_false(sym_eq(v1, v2)):
+                    if not guard_or_false(sym_eq(v1, v2)):
                         return False
                 elif v1 != v2:
                     return False
@@ -945,10 +946,10 @@ def definitely_equal(
         # It still makes sense to call guard_or_true/false since lhs_item
         # rhs_item are tp.SymInt rather than sympy expressions when
         # dynamic shape is enabled.
-        if V.graph.sizevars.guard_or_false(lhs_item == rhs_item):
+        if guard_or_false(lhs_item == rhs_item):
             continue
 
-        if V.graph.sizevars.guard_or_true(rhs_item != -1):
+        if guard_or_true(rhs_item != -1):
             return False
 
         num_neg1 += 1
