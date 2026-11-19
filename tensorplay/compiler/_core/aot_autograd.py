@@ -383,6 +383,20 @@ def _functionalize(gm: GraphModule, example_inputs: Sequence[Any]) -> GraphModul
     functional = functionalize(gm)
     _release_recorded_values(gm)
     _release_recorded_values(functional)
+    placeholders = {node: index for index, node in enumerate(functional.graph.placeholders)}
+    for node in functional.graph.nodes:
+        if getattr(node.target, "_opname", None) != "copy_" or not node.args:
+            continue
+        position = placeholders.get(node.args[0])
+        if position is None or position >= len(example_inputs):
+            continue
+        value = example_inputs[position]
+        if (
+            _is_tensor(value)
+            and value.layout == tensorplay.strided
+            and any(size > 1 and stride == 0 for size, stride in zip(value.shape, value.stride()))
+        ):
+            raise RuntimeError("cannot update an input with overlapping storage")
     joint_graph = any(node.meta.get("is_backward") for node in functional.graph.nodes)
     mutations = any(
         getattr(node.target, "_opname", None) == "copy_"

@@ -2200,7 +2200,12 @@ def _preserve_input_values(*values: Any) -> Any:
 
         def _save(value: Any) -> None:
             if isinstance(value, tensorplay.Tensor):
-                saved.append((value, value.clone()))
+                target = value
+                if value.layout == tensorplay.strided:
+                    for dim in reversed(range(value.dim())):
+                        if value.size(dim) > 1 and value.stride(dim) == 0:
+                            target = target.select(dim, 0)
+                saved.append((target, target.clone()))
             elif isinstance(value, (tuple, list)):
                 for item in value:
                     _save(item)

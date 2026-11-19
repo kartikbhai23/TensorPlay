@@ -3,6 +3,24 @@ import pytest
 import tensorplay as tp
 
 
+@pytest.mark.parametrize("device", ["cpu"] + (["cuda"] if tp.cuda.is_available() else []))
+def test_expanded_input_capture_preserves_values_and_mutations(device):
+    base = tp.arange(6, dtype=tp.float32, device=device).reshape(2, 3)
+    expanded = base.unsqueeze(0).expand(4, 2, 3)
+    before = base.clone()
+    compiled = tp.compile(lambda x: x * 2, fullgraph=True, strict_native=True)
+    assert tp.equal(compiled(expanded), expanded * 2)
+    assert tp.equal(base, before)
+
+    def update_first(x):
+        x[0].add_(1)
+        return x * 2
+
+    with pytest.raises(RuntimeError, match="overlapping storage"):
+        tp.compile(update_first, fullgraph=True, strict_native=True)(expanded)
+    assert tp.equal(base, before)
+
+
 @pytest.mark.parametrize("dynamic", [False, True])
 @pytest.mark.parametrize("requires_grad", [False, True])
 def test_square_layout_changes_recompile(dynamic, requires_grad):
