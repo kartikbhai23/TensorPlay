@@ -112,6 +112,11 @@ struct GemmPlan {
     // measured winner; later calls reuse it.
     std::vector<cublasLtMatmulHeuristicResult_t> candidates;
     bool autotuned = false;
+    // The one-time comparison also times the classic API on the same
+    // operands.  Both libraries pick from the same kernel family but rank it
+    // differently, and on skinny reduction axes the classic ranking wins by
+    // a wide margin.  A bias epilogue has no classic counterpart.
+    bool use_classic = false;
     size_t workspace_size = 0;
     size_t workspace_limit = 32 * 1024 * 1024;
     // Scratch storage is resolved per matmul call from shared_workspace().
@@ -948,6 +953,29 @@ void gemm_impl(const Tensor& self, const Tensor& other, Tensor& result,
             if (best != 0) {
                 std::swap(plan->candidates[0], plan->candidates[static_cast<size_t>(best)]);
             }
+            // The classic API ranks the same kernel family differently.  When
+            // it is measurably faster on these exact operands, the plan keeps
+            // that answer instead of the Lt winner.  A bias epilogue, complex
+            // dtypes and a live tuning context stay on their own paths.
+            if (!has_bias && (dtype == DType::Float32 || dtype == DType::Float64)) {
+                auto exec_classic = [&](const cublasLtMatmulAlgo_t&) {
+                    return cublasGemmEx(
+                        CUDAContext::getCublasHandle(),
+                        other_transposed ? CUBLAS_OP_T : CUBLAS_OP_N, CUBLAS_OP_N,
+                        static_cast<int>(N), static_cast<int>(M),
+                        static_cast<int>(K), alpha_ptr,
+                        a_ptr, to_cublas_type(dtype),
+                        static_cast<int>(other_transposed ? K : N),
+                        b_ptr, to_cublas_type(dtype), static_cast<int>(K),
+                        beta_ptr,
+                        result.data_ptr(), to_cublas_type(dtype),
+                        static_cast<int>(N),
+                        to_compute_type(dtype), CUBLAS_GEMM_DEFAULT);
+                };
+                const double classic_ms = timeLtCandidate(
+                    exec_classic, plan->candidates[0].algo, kTrials, stream);
+                plan->use_classic = classic_ms >= 0.0 && classic_ms < best_ms;
+            }
             plan->autotuned = true;
         } else if (!plan->autotuned) {
             // First use happened under capture: pin heuristic candidate 0.
@@ -961,6 +989,27 @@ void gemm_impl(const Tensor& self, const Tensor& other, Tensor& result,
 
     // Restore the caller's beta for the real execution.
     beta_ptr = to_scalar_ptr(beta, dtype, 1);
+
+    // The measured classic winner owns the product from here on.  The classic
+    // API accumulates into the destination it writes, so a seed kept in
+    // another buffer lands there first.
+    if (plan->use_classic) {
+        if (accum != nullptr) {
+            result.copy_(*accum);
+        }
+        CUBLAS_CHECK(cublasGemmEx(
+            CUDAContext::getCublasHandle(),
+            other_transposed ? CUBLAS_OP_T : CUBLAS_OP_N, CUBLAS_OP_N,
+            static_cast<int>(N), static_cast<int>(M), static_cast<int>(K),
+            alpha_ptr,
+            a_ptr, to_cublas_type(dtype),
+            static_cast<int>(other_transposed ? K : N),
+            b_ptr, to_cublas_type(dtype), static_cast<int>(K),
+            beta_ptr,
+            result.data_ptr(), to_cublas_type(dtype), static_cast<int>(N),
+            to_compute_type(dtype), CUBLAS_GEMM_DEFAULT));
+        return;
+    }
 
     // The accumulation term may arrive as its own matrix: the descriptor is
     // shared by C and D, so a dense seed of the destination's shape feeds the
