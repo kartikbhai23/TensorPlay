@@ -117,6 +117,37 @@ class CppWrapperModule:
         #: Views the program reads or returns: the name they are called by,
         #: the buffer they sit on, their shape, stride, offset and type.
         self._view_meta = wrapper_code.view_meta
+        #: The entry point's own table, built once and refilled per call.
+        self._tensor_data: Any = None
+        #: The array the entry point reads symbolic sizes through.
+        self._sizevars: Any = None
+        #: The descriptor arrays for each shape and stride seen so far.  A
+        #: region is handed the same shapes again and again, and building the
+        #: arrays costs more than the call itself on a small region, so each
+        #: distinct layout is built once and kept.
+        self._layout_cache: dict[
+            tuple[tuple[int, ...], tuple[int, ...]], tuple[Any, Any]
+        ] = {}
+        #: What each buffer the module allocates looks like, settled once:
+        #: the shape and stride it is described by, and the type it holds.
+        #: The same buffers come back every call, so this is worked out here
+        #: rather than on every call.
+        self._alloc_plan: dict[str, tuple[Any, ...]] = {}
+        for name, meta in self._buffer_meta.items():
+            if name in self._graph_input_names:
+                continue
+            shape, stride, dtype, device = meta
+            if shape is None:
+                continue
+            try:
+                shape_i = tuple(int(s) for s in shape)
+                stride_i = tuple(int(s) for s in stride)
+            except (TypeError, ValueError):
+                raise RuntimeError(
+                    "C++ wrapper does not support dynamic shapes for "
+                    f"buffer {name!r}"
+                ) from None
+            self._alloc_plan[name] = (shape_i, stride_i, dtype, device)
 
     # -- what the module was built from --------------------------------------
     #
@@ -159,38 +190,61 @@ class CppWrapperModule:
 
         return list(self._view_meta)
 
-    @staticmethod
+    def _layout_arrays(self, sizes, strides) -> tuple[Any, Any]:
+        """The descriptor arrays for one shape and stride, built once.
+
+        The entry point reads each buffer's shape and stride through arrays,
+        and a region is called with the same shapes again and again.  Building
+        them per call costs more than a small region takes to run, so each
+        distinct pair is built on first use and kept for the rest of the
+        module's life.
+        """
+
+        key = (tuple(sizes), tuple(strides))
+        found = self._layout_cache.get(key)
+        if found is None:
+            dim = len(key[0])
+            found = (
+                (ctypes.c_int64 * max(dim, 1))(*key[0]),
+                (ctypes.c_int64 * max(dim, 1))(*key[1]),
+            )
+            self._layout_cache[key] = found
+        return found
+
     def _fill_buffer(
+        self,
         buf: _TpTensorBuffer,
         data_ptr: int,
         sizes: tuple[int, ...],
         strides: tuple[int, ...],
         dtype: Any,
         device_type: str,
-        keep_alive: list,
     ) -> None:
-        dim = len(sizes)
-        size_arr = (ctypes.c_int64 * max(dim, 1))(*sizes)
-        stride_arr = (ctypes.c_int64 * max(dim, 1))(*strides)
+        size_arr, stride_arr = self._layout_arrays(sizes, strides)
         buf.data = ctypes.c_void_p(data_ptr)
         buf.sizes = ctypes.cast(size_arr, ctypes.POINTER(ctypes.c_int64))
         buf.strides = ctypes.cast(stride_arr, ctypes.POINTER(ctypes.c_int64))
-        buf.dim = dim
+        buf.dim = len(sizes)
         buf.dtype = int(dtype)
-        buf.device_type = _DEVICE_TYPE_TO_INT.get(device_type, 10)
-        keep_alive.extend([size_arr, stride_arr])
+        # A device arrives either as itself or as the name of its kind; what
+        # the entry point reads is the kind.
+        buf.device_type = _DEVICE_TYPE_TO_INT.get(
+            getattr(device_type, "type", device_type), 10
+        )
 
     def call(self, args: list) -> tuple[Any, ...]:
-        import ctypes
-
         if len(args) != len(self._graph_input_names):
             raise RuntimeError(
                 f"expected {len(self._graph_input_names)} arguments, "
                 f"got {len(args)}"
             )
-        num_tensors = self._num_tensors
-        tensor_data = (_TpTensorBuffer * num_tensors)()
-        keep_alive: list[Any] = []
+        # The table itself and the size array are the same size on every call,
+        # so they are built once and refilled rather than rebuilt.
+        if self._tensor_data is None:
+            self._tensor_data = (_TpTensorBuffer * self._num_tensors)()
+        tensor_data = self._tensor_data
+        if self._sizevars is None:
+            self._sizevars = (ctypes.c_long * self._num_sizevars)()
         # Every slot that holds storage, by name: what the caller supplied,
         # what was allocated here, and the views that share one of those.
         tensors: dict[str, Any] = {}
@@ -207,27 +261,18 @@ class CppWrapperModule:
                 tuple(int(s) for s in tensor.stride()),
                 tensor.dtype,
                 tensor.device.type,
-                keep_alive,
             )
             tensor_data[idx] = buf
 
         allocated: dict[str, Any] = {}
-        for name, meta in self._buffer_meta.items():
+        for name, (shape_i, stride_i, dtype, device) in self._alloc_plan.items():
             idx = self._tensor_index.get(name)
-            if idx is None or name in self._graph_input_names:
+            if idx is None:
                 continue
             if name not in allocated:
-                shape, stride, dtype, device = meta
-                if shape is None:
-                    continue
-                try:
-                    shape_i = tuple(int(s) for s in shape)
-                    stride_i = tuple(int(s) for s in stride)
-                except (TypeError, ValueError):
-                    raise RuntimeError(
-                        "C++ wrapper does not support dynamic shapes for "
-                        f"buffer {name!r}"
-                    ) from None
+                # A buffer the module hands back is a fresh allocation every
+                # time: two calls that overlap would otherwise share one
+                # answer between them.
                 allocated[name] = tp.empty_strided(
                     shape_i, stride_i, dtype=dtype, device=device
                 )
@@ -236,11 +281,10 @@ class CppWrapperModule:
             self._fill_buffer(
                 buf,
                 allocated[name].data_ptr(),
-                tuple(int(s) for s in allocated[name].shape),
-                tuple(int(s) for s in allocated[name].stride()),
-                allocated[name].dtype,
-                allocated[name].device.type,
-                keep_alive,
+                shape_i,
+                stride_i,
+                dtype,
+                device,
             )
             tensor_data[idx] = buf
 
@@ -268,7 +312,6 @@ class CppWrapperModule:
                         stride,
                         dtype,
                         base_tensor.device.type,
-                        keep_alive,
                     )
                     tensor_data[idx] = buf
                 seen = tp.as_strided(base_tensor, size, stride, int(offset))
@@ -282,8 +325,7 @@ class CppWrapperModule:
                     f"view {min(pending)!r} sits on storage nothing provides"
                 )
 
-        sizevars = (ctypes.c_long * self._num_sizevars)()
-        self._call_fn(tensor_data, sizevars)
+        self._call_fn(tensor_data, self._sizevars)
 
         outputs = []
         for name in self._output_names:
