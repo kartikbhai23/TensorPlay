@@ -248,8 +248,8 @@ __global__ void var_two_pass_kernel(int64_t n, double correction,
     }
 }
 
-Tensor var_two_pass(const Tensor& self, int64_t correction) {
-    Tensor mean_t = mean_dim_kernel(self, {}, false, DType::Float32);
+Tensor var_two_pass_from_mean(const Tensor& self, Tensor& mean_t,
+                              int64_t correction) {
     Tensor out = Tensor::empty({}, DType::Float32, self.device());
     out.zero_();
     const int64_t n = self.numel();
@@ -261,6 +261,11 @@ Tensor var_two_pass(const Tensor& self, int64_t correction) {
         n, static_cast<double>(correction), mean_t.data_ptr<float>(),
         self.data_ptr<float>(), out.data_ptr<float>());
     return out;
+}
+
+Tensor var_two_pass(const Tensor& self, int64_t correction) {
+    Tensor mean_t = mean_dim_kernel(self, {}, false, DType::Float32);
+    return var_two_pass_from_mean(self, mean_t, correction);
 }
 
 Tensor var_dim_kernel(const Tensor& self, const std::vector<int64_t>& dim, int64_t correction, bool keepdim) {
@@ -291,6 +296,14 @@ std::tuple<Tensor, Tensor> var_mean_dim_kernel(
                 mean_dim_kernel(self, dim, keepdim, DType::Undefined)};
     }
     const ReductionSpec spec = make_reduction_spec(self, dim);
+    // Full-reduction float fast path: the two-pass pair, with the mean the
+    // first pass already produced returned as the second output.
+    if (dim.empty() && !keepdim && self.dtype() == DType::Float32 &&
+        self.is_contiguous()) {
+        Tensor mean_t = mean_dim_kernel(self, {}, false, DType::Float32);
+        Tensor var = var_two_pass_from_mean(self, mean_t, correction);
+        return {var, mean_t};
+    }
     TP_DISPATCH_FLOAT_REDUCTION(welford_var_mean_dispatch, self.dtype(), self, spec,
                                 keepdim, correction, false);
 }
