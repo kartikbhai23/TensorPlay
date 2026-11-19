@@ -67,6 +67,11 @@ def _get_relative_position_bias(
 tensorplay.graph.wrap("_get_relative_position_bias")
 
 
+# Attention masks are pure functions of the map extent and the window shift,
+# so every block that shares a stage reuses the one built by the first of them.
+_ATTENTION_MASK_CACHE: dict[tuple, tensorplay.Tensor] = {}
+
+
 class PatchMerging(nn.Module):
     """Patch Merging Layer.
     Args:
@@ -247,22 +252,38 @@ def shifted_window_attention(
         logit_scale = tensorplay.clamp(logit_scale, max=math.log(100.0)).exp()
         attn = attn * logit_scale
     if sum(shift_size) > 0:
-        # Tokens split a padded axis into three ranges: the unshifted head, the
-        # wrap-around middle moved in by the shift, and the tail.  Labelling
-        # each range by its ordinal and combining the two axes gives every
-        # token a 3x3 region id; two tokens may attend to each other only when
-        # the ids agree.  Built from comparisons so the whole mask is a handful
-        # of elementwise steps, with no per-range writes.
-        def axis_region(length, window, shift):
-            coords = tensorplay.arange(length, device=x.device)
-            return (coords >= length - window).long() + (coords >= length - shift).long()
+        # The mask is a function of the map extent and the shift alone, so it
+        # is built once per stage and reused: a graph that runs the same block
+        # again would otherwise rebuild the same constant every time.
+        mask_key = (
+            pad_H,
+            pad_W,
+            window_size[0],
+            window_size[1],
+            shift_size[0],
+            shift_size[1],
+            str(x.device),
+        )
+        attn_mask = _ATTENTION_MASK_CACHE.get(mask_key)
+        if attn_mask is None:
+            # Tokens split a padded axis into three ranges: the unshifted head,
+            # the wrap-around middle moved in by the shift, and the tail.
+            # Labelling each range by its ordinal and combining the two axes
+            # gives every token a 3x3 region id; two tokens may attend to each
+            # other only when the ids agree.  Built from comparisons so the
+            # whole mask is a handful of elementwise steps, with no per-range
+            # writes.
+            def axis_region(length, window, shift):
+                coords = tensorplay.arange(length, device=x.device)
+                return (coords >= length - window).long() + (coords >= length - shift).long()
 
-        h_region = axis_region(pad_H, window_size[0], shift_size[0])
-        w_region = axis_region(pad_W, window_size[1], shift_size[1])
-        attn_mask = h_region[:, None] * 3 + w_region[None, :]
-        attn_mask = attn_mask.view(pad_H // window_size[0], window_size[0], pad_W // window_size[1], window_size[1])
-        attn_mask = attn_mask.permute(0, 2, 1, 3).reshape(num_windows, window_size[0] * window_size[1])
-        attn_mask = (attn_mask.unsqueeze(1) != attn_mask.unsqueeze(2)).to(tensorplay.float32) * float(-100.0)
+            h_region = axis_region(pad_H, window_size[0], shift_size[0])
+            w_region = axis_region(pad_W, window_size[1], shift_size[1])
+            attn_mask = h_region[:, None] * 3 + w_region[None, :]
+            attn_mask = attn_mask.view(pad_H // window_size[0], window_size[0], pad_W // window_size[1], window_size[1])
+            attn_mask = attn_mask.permute(0, 2, 1, 3).reshape(num_windows, window_size[0] * window_size[1])
+            attn_mask = (attn_mask.unsqueeze(1) != attn_mask.unsqueeze(2)).to(tensorplay.float32) * float(-100.0)
+            _ATTENTION_MASK_CACHE[mask_key] = attn_mask
         # The position bias is shared by every batch, so it is summed with the
         # window mask once up front.  The result is then a single broadcast add
         # against the scores instead of two full-size adds landing in sequence.
@@ -346,6 +367,21 @@ class ShiftedWindowAttention(nn.Module):
 
         self.define_relative_position_bias_table()
         self.define_relative_position_index()
+        # In evaluation the position bias is a constant of the parameter table,
+        # so the first call at a given device keeps it and later blocks read it
+        # instead of gathering the table again.
+        self._eval_position_bias: dict[str, tensorplay.Tensor] = {}
+
+    def _position_bias(self, x: Tensor) -> Tensor:
+        """The position bias for this block, gathered once while evaluating."""
+        if self.training:
+            return self.get_relative_position_bias()
+        key = str(x.device)
+        cached = self._eval_position_bias.get(key)
+        if cached is None:
+            cached = self.get_relative_position_bias()
+            self._eval_position_bias[key] = cached
+        return cached
 
     def define_relative_position_bias_table(self):
         # define a parameter table of relative position bias
@@ -380,7 +416,7 @@ class ShiftedWindowAttention(nn.Module):
         Returns:
             Tensor with same layout as input, i.e. [B, H, W, C]
         """
-        relative_position_bias = self.get_relative_position_bias()
+        relative_position_bias = self._position_bias(x)
         return shifted_window_attention(
             x,
             self.qkv.weight,
@@ -465,7 +501,7 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
         Returns:
             Tensor with same layout as input, i.e. [B, H, W, C]
         """
-        relative_position_bias = self.get_relative_position_bias()
+        relative_position_bias = self._position_bias(x)
         return shifted_window_attention(
             x,
             self.qkv.weight,
