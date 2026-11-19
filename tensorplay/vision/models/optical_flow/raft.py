@@ -381,9 +381,10 @@ class CorrBlock(nn.Module):
     def index_pyramid(self, centroids_coords):
         """Return correlation features by indexing from the pyramid."""
         neighborhood_side_len = 2 * self.radius + 1  # see note in __init__ about out_channels
-        di = tensorplay.linspace(-self.radius, self.radius, neighborhood_side_len)
-        dj = tensorplay.linspace(-self.radius, self.radius, neighborhood_side_len)
-        delta = tensorplay.stack(list(tensorplay.meshgrid([di, dj], indexing="ij")), dim=-1).to(centroids_coords.device)
+        offsets = tensorplay.arange(
+            -self.radius, self.radius + 1, dtype=tensorplay.float32, device=centroids_coords.device
+        )
+        delta = tensorplay.stack(list(tensorplay.meshgrid([offsets, offsets], indexing="ij")), dim=-1)
         delta = delta.view(1, neighborhood_side_len, neighborhood_side_len, 2)
 
         batch_size, _, h, w = centroids_coords.shape  # _ = 2
@@ -415,7 +416,8 @@ class CorrBlock(nn.Module):
 
         corr = tensorplay.matmul(fmap1.transpose(1, 2), fmap2)
         corr = corr.view(batch_size, h, w, 1, h, w)
-        return corr / tensorplay.sqrt(tensorplay.tensor(num_channels, dtype=fmap1.dtype))
+        channels = tensorplay.tensor(num_channels, dtype=fmap1.dtype, device=fmap1.device)
+        return corr / tensorplay.sqrt(channels)
 
 
 class RAFT(nn.Module):
@@ -499,8 +501,8 @@ class RAFT(nn.Module):
         hidden_state = tensorplay.tanh(hidden_state)
         context = F.relu(context)
 
-        coords0 = make_coords_grid(batch_size, h // 8, w // 8).to(fmap1.device)
-        coords1 = make_coords_grid(batch_size, h // 8, w // 8).to(fmap1.device)
+        coords0 = make_coords_grid(batch_size, h // 8, w // 8, device=fmap1.device)
+        coords1 = make_coords_grid(batch_size, h // 8, w // 8, device=fmap1.device)
 
         flow_predictions = []
         for _ in range(num_flow_updates):
