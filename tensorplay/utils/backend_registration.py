@@ -96,6 +96,34 @@ def rename_privateuse1_backend(backend_name: str) -> None:
     _C._rename_privateuse1_backend(backend_name)
 
 
+def _get_custom_mod_func(func_name: str):
+    """A hook the out-of-tree device's module publishes under ``func_name``.
+
+    A backend installs its device module with
+    :func:`tensorplay._register_device_module`, and that module may carry
+    callables a consumer looks up by name -- a scheduler, a wrapper code
+    generator, or any other extension point.  A missing module or a missing
+    name is an error rather than ``None``: the caller asked for a hook the
+    backend was meant to publish, and its absence means the backend is not
+    set up rather than that it has no opinion.
+    """
+    if not isinstance(func_name, str):
+        raise AssertionError(
+            f"func_name must be a str, got {type(func_name).__name__}"
+        )
+    backend_name = get_privateuse1_backend_name()
+    device_module = getattr(tensorplay, backend_name, None)
+    function = getattr(device_module, func_name, None)
+    if device_module is None or function is None:
+        raise RuntimeError(
+            f"tensorplay.{backend_name}.{func_name} is not available; the "
+            "backend must install a device module with "
+            f"`tensorplay._register_device_module('{backend_name}', module)` "
+            f"and that module must define `{func_name}`"
+        )
+    return function
+
+
 def _require_renamed(what: str) -> str:
     name = get_privateuse1_backend_name()
     if not _C._is_privateuse1_backend_registered():

@@ -752,6 +752,38 @@ def init_backend_registration() -> None:
         device_cpp_wrapper_codegen=CppWrapperCodegen,
     )
 
+    # A device that lives outside this repository names itself and publishes
+    # what its work is written through on the module it installs.  Asking the
+    # module for those hooks is how such a device gets a code generator without
+    # this file knowing its name; a module that publishes none of them leaves
+    # the device unregistered, which is refused when its work is reached rather
+    # than here, where nothing has been asked of it yet.
+    from tensorplay.utils.backend_registration import (
+        _get_custom_mod_func,
+        get_privateuse1_backend_name,
+    )
+
+    out_of_tree = get_privateuse1_backend_name()
+    if out_of_tree != "privateuseone" and get_scheduling_for_device(out_of_tree) is None:
+        try:
+            device_scheduling = _get_custom_mod_func("Scheduling")
+            wrapper_codegen = _get_custom_mod_func("PythonWrapperCodegen")
+            cpp_wrapper_codegen = _get_custom_mod_func("CppWrapperCodegen")
+            fx_wrapper_codegen = _get_custom_mod_func("WrapperFxCodegen")
+            if device_scheduling and wrapper_codegen and cpp_wrapper_codegen:
+                register_backend_for_device(
+                    out_of_tree,
+                    device_scheduling,
+                    wrapper_codegen,
+                    cpp_wrapper_codegen,
+                    fx_wrapper_codegen,
+                )
+        except RuntimeError:
+            # The device publishes no code generator; it is not this compiler's
+            # to write, and saying so here would turn an unused device into a
+            # failed import.
+            pass
+
 
 def get_scheduling_for_device(device: str) -> Any:
     """What a device's work is scheduled by, where one is registered."""
