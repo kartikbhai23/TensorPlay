@@ -6542,6 +6542,80 @@ def lower_upsample_nearest2d_backward(grad, output_size, input_size,
     )
 
 
+_fallback_upsample_nearest3d_backward = fallback_handler(
+    tp.ops.tp.upsample_nearest3d_backward.default, add_to_fallback_set=False
+)
+
+
+@register("upsample_nearest3d_backward.default")
+def lower_upsample_nearest3d_backward(grad, output_size, input_size,
+                                      scales_d=None, scales_h=None, scales_w=None,
+                                      **kwargs):
+    """Nearest upsampling's gradient over a volume, as the sum of the positions that read one.
+
+    Upsampling by a whole factor reads each input position from a block of
+    output positions, so the input's gradient at a position is the sum of the
+    output's gradient over that block: a few reads and additions per element,
+    done in the loop of whatever consumes the result.  A factor that is not a
+    whole number, or one spelled differently from the sizes, is asked of the
+    framework kernel.
+    """
+
+    def fallback():
+        return _fallback_upsample_nearest3d_backward(
+            grad, output_size, input_size, scales_d, scales_h, scales_w
+        )
+
+    grad_size = list(grad.get_size())
+    if len(grad_size) != 5 or is_dynamic(*grad_size):
+        return fallback()
+    try:
+        out_d, out_h, out_w = (int(s) for s in list(output_size)[-3:])
+        in_d, in_h, in_w = (int(s) for s in list(input_size)[-3:])
+    except (TypeError, ValueError):
+        return fallback()
+    if (int(grad_size[-3]), int(grad_size[-2]), int(grad_size[-1])) != (
+            out_d, out_h, out_w):
+        return fallback()
+    if in_d <= 0 or in_h <= 0 or in_w <= 0:
+        return fallback()
+    if out_d % in_d or out_h % in_h or out_w % in_w:
+        return fallback()
+    rd, rh, rw = out_d // in_d, out_h // in_h, out_w // in_w
+    for given, ratio in ((scales_d, rd), (scales_h, rh), (scales_w, rw)):
+        if given is not None and float(given) != float(ratio):
+            return fallback()
+    if rd * rh * rw > 25:
+        return fallback()
+
+    # Read once per position of the block, so it is put in memory when it is
+    # more than a plain read.
+    grad.realize_hint()
+    loader = grad.make_loader()
+
+    def fn(idx):
+        *prefix, i, j, k = idx
+        total = None
+        for a in range(rd):
+            for b in range(rh):
+                for c in range(rw):
+                    value = loader([
+                        *prefix,
+                        as_index(i) * rd + a,
+                        as_index(j) * rh + b,
+                        as_index(k) * rw + c,
+                    ])
+                    total = value if total is None else ops.add(total, value)
+        return total
+
+    return Pointwise.create(
+        device=grad.get_device(),
+        dtype=grad.get_dtype(),
+        inner_fn=fn,
+        ranges=[*grad_size[:-3], in_d, in_h, in_w],
+    )
+
+
 @register("shallow_copy_data_.default")
 def lower_shallow_copy_data_(self_tensor, storage_tensor):
     """Pointing one value at the memory of another, contents and all.

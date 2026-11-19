@@ -92,7 +92,6 @@ LIBRARY_CALLS: dict[str, str] = {
 NOT_COVERED: dict[str, str] = {
     "max_pool2d_backward.default": "scatter to the input, driven by the saved indices",
     "max_pool3d_backward.default": "scatter to the input, driven by the saved indices",
-    "upsample_nearest3d_backward.default": "scatter to the input, driven by the source map",
     "upsample_bilinear2d_backward.default": "scatter to the input, driven by the source map",
 }
 

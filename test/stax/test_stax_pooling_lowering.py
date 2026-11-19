@@ -153,6 +153,64 @@ def test_nearest_upsampling_named_by_a_scale_is_still_built(device):
     _assert_close(got_grad, grad)
 
 
+INPUT_VOLUME = (2, 3, 4)
+OUTPUT_VOLUME = (4, 6, 8)
+
+
+def _volume(shape, formula):
+    """A one-channel volume as a value: two leading axes, then the spatial ones."""
+
+    depth, height, width = shape
+    values = [
+        [[formula(i, j, k) for k in range(width)]
+         for j in range(height)]
+        for i in range(depth)
+    ]
+    return [[values]]
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_nearest_upsampling_3d_value_and_gradient(device):
+    out_d, out_h, out_w = OUTPUT_VOLUME
+    in_d, in_h, in_w = INPUT_VOLUME
+    rd, rh, rw = out_d // in_d, out_h // in_h, out_w // in_w
+
+    source = _volume(
+        INPUT_VOLUME,
+        lambda i, j, k: ((3 * i + 5 * j + 7 * k) % 11) / 4.0 - 1.0,
+    )
+    weights = _volume(
+        OUTPUT_VOLUME,
+        lambda i, j, k: (i * out_h * out_w + j * out_w + k + 1) / 8.0,
+    )
+    upsampled = _volume(OUTPUT_VOLUME, lambda i, j, k: 0.0)
+    grad = _volume(INPUT_VOLUME, lambda i, j, k: 0.0)
+    for i in range(out_d):
+        for j in range(out_h):
+            for k in range(out_w):
+                di, hi, wi = i // rd, j // rh, k // rw
+                upsampled[0][0][i][j][k] = source[0][0][di][hi][wi]
+                grad[0][0][di][hi][wi] += weights[0][0][i][j][k]
+
+    x = tp.tensor(source, device=device, requires_grad=True)
+    compiled = tp.compile(
+        lambda v: F.interpolate(v, size=OUTPUT_VOLUME, mode="nearest") * 1.0,
+        backend="stax",
+    )
+    out = compiled(x)
+    (out * tp.tensor(weights, device=device)).sum().backward()
+    # The answers only say something about a region that was built.
+    lowering = next(iter(compiled._tensorplay_cache.values()))
+    assert lowering._tensorplay_codegen is not None
+    assert lowering._tensorplay_backward_codegen is not None
+    assert tp.allclose(
+        out.detach(), tp.tensor(upsampled, device=device), rtol=1e-5, atol=1e-6
+    )
+    assert tp.allclose(
+        x.grad, tp.tensor(grad, device=device), rtol=1e-5, atol=1e-6
+    )
+
+
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("pooling", POOLINGS)
 def test_average_pooling_run_directly(device, pooling):
