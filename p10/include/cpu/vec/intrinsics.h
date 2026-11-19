@@ -110,14 +110,63 @@
 #endif
 
 // Runtime capability detection: used by the dispatch layer to select the
-// kernel compiled for the CPU's instruction set. Uses compiler builtins to
-// avoid a dependency on cpuinfo. The cpuid builtin exists on x86 targets
-// only; everywhere else (and on MSVC, which has no such builtin) the
-// dispatcher's non-AVX paths are the answer.
+// kernel compiled for the CPU's instruction set.
+// GCC/Clang expose __builtin_cpu_supports. MSVC has no such builtin, so the
+// same bits are read straight from CPUID/XGETBV there -- the route PyTorch's
+// bundled cpuinfo takes on Windows. Without this branch the dispatcher
+// reports DEFAULT on MSVC no matter what the hardware supports, and the
+// AVX2/AVX512 tier copies the build already produced are never selected.
+#if defined(_M_X86_)
+#include <immintrin.h>
+
+namespace tp_cpu_detail {
+// XCR0's XMM/YMM (bits 1-2) and opmask/ZMM (bits 5-7) state bits: the OS has
+// to have enabled them before any VEX/EVEX-encoded instruction is legal.
+#if defined(__AVX__) || defined(__AVX2__) || defined(__AVX512F__)
+inline unsigned long long xcr0() {
+  return _xgetbv(0);
+}
+#else
+inline unsigned long long xcr0() {
+  return 0;
+}
+#endif
+
+inline bool avx_os_enabled() {
+  int regs[4] = {0, 0, 0, 0};
+  __cpuid(regs, 1);
+  const bool osxsave = (regs[2] & (1 << 27)) != 0;
+  const bool avx = (regs[2] & (1 << 28)) != 0;
+  if (!osxsave || !avx) {
+    return false;
+  }
+  return (xcr0() & 0x6) == 0x6;
+}
+
+inline int max_cpuid_leaf() {
+  int regs[4] = {0, 0, 0, 0};
+  __cpuid(regs, 0);
+  return regs[0];
+}
+
+inline bool cpuid_leaf7_ebx(int bit) {
+  int regs[4] = {0, 0, 0, 0};
+  __cpuidex(regs, 7, 0);
+  return (regs[1] & static_cast<int>(1u << bit)) != 0;
+}
+}  // namespace tp_cpu_detail
+#endif  // _M_X86_
+
 inline bool tp_cpu_supports_avx2() {
 #if (defined(__x86_64__) || defined(__i386__)) && \
     (defined(__GNUC__) || defined(__clang__))
   return __builtin_cpu_supports("avx2");
+#elif defined(_M_X86_)
+  if (!tp_cpu_detail::avx_os_enabled() ||
+      tp_cpu_detail::max_cpuid_leaf() < 7) {
+    return false;
+  }
+  return tp_cpu_detail::cpuid_leaf7_ebx(5);  // AVX2
 #else
   return false;
 #endif
@@ -129,6 +178,20 @@ inline bool tp_cpu_supports_avx512() {
   return __builtin_cpu_supports("avx512f") &&
       __builtin_cpu_supports("avx512vl") && __builtin_cpu_supports("avx512bw") &&
       __builtin_cpu_supports("avx512dq");
+#elif defined(_M_X86_)
+  if (!tp_cpu_detail::avx_os_enabled() ||
+      tp_cpu_detail::max_cpuid_leaf() < 7) {
+    return false;
+  }
+  // AVX512F (16), AVX512DQ (17), AVX512BW (30), AVX512VL (31).
+  if (!(tp_cpu_detail::cpuid_leaf7_ebx(16) &&
+        tp_cpu_detail::cpuid_leaf7_ebx(17) &&
+        tp_cpu_detail::cpuid_leaf7_ebx(30) &&
+        tp_cpu_detail::cpuid_leaf7_ebx(31))) {
+    return false;
+  }
+  // opmask + ZMM_Hi256 + Hi16_ZMM must be enabled by the OS (bits 5-7).
+  return (tp_cpu_detail::xcr0() & 0xE6) == 0xE6;
 #else
   return false;
 #endif
