@@ -642,7 +642,7 @@ template <typename scalar_t>
 void launch_standard_gamma_fill(const Tensor& alpha, Tensor& out,
                                 std::optional<Generator> generator) {
     const int64_t numel = alpha.numel();
-    const int threads = 128;
+    const int threads = 64;
     const int blocks = static_cast<int>((numel + threads - 1) / threads);
     auto philox_args = sampling_philox_state(std::move(generator), numel);
     standard_gamma_fill_impl<scalar_t>
