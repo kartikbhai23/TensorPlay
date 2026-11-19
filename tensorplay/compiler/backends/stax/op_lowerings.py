@@ -2399,17 +2399,18 @@ def _shared_copy(x, dtype):
     "char", "byte",
 )
 def lower_to(x, *args, **kwargs):
-    size, dtype, _ = val_info(node_val())
+    _, dtype, device = val_info(node_val())
+    spelling = target_name(V.current_node.target)
+    if x.get_device() != device:
+        non_blocking = kwargs.get("non_blocking", False)
+        if spelling == "to.device" and len(args) > 2:
+            non_blocking = args[2]
+        if device.type == "cpu":
+            return to_device(to_dtype(x, dtype), device, non_blocking=non_blocking)
+        return to_dtype(to_device(x, device, non_blocking=non_blocking), dtype)
     if not kwargs.get("copy", False) and hasattr(x, "get_dtype") and dtype_name(x.get_dtype()) == dtype_name(dtype):
-        # A request that changes no element type moves no bytes, so the value
-        # itself answers it.  A spelling that also carries an arrangement is
-        # only free for a boxed value, whose arrangement is still to be
-        # decided; for a bare node it keeps the old path.
-        spelling = "to.dtype"
-        try:
-            spelling = target_name(V.current_node.target)
-        except Exception:
-            pass
+        # A conversion on the same device can reuse a boxed value when the
+        # element type and any required layout already match.
         if spelling in ("to.dtype", "to.device") or is_tensor_box(x):
             return x
         source = _identity_copy_source(x)

@@ -124,6 +124,24 @@ def test_constants_shaped_like_a_value(device, call_outs):
     assert not call_outs, dict(call_outs)
 
 
+@needs_cuda
+@pytest.mark.parametrize("dtype", [tp.float32, tp.float16])
+def test_compiled_conversion_moves_tensors_between_devices(dtype):
+    def fn(cpu, cuda):
+        to_cuda = (cpu + 1).to(cuda.device, dtype)
+        to_cpu = (cuda - 1).to(cpu.device, dtype)
+        return to_cuda * 2, to_cpu * 2
+
+    cpu = tp.arange(8, dtype=tp.float32)
+    cuda = tp.arange(8, device="cuda", dtype=tp.float32)
+    expected = fn(cpu, cuda)
+    compiled = tp.compile(fn, fullgraph=True, strict_native=True)
+    for got, want in zip(compiled(cpu, cuda), expected, strict=True):
+        assert got.device == want.device
+        assert got.dtype == want.dtype
+        assert tp.equal(got, want)
+
+
 @pytest.mark.parametrize("device", DEVICES)
 def test_integer_inputs_keep_their_answers(device):
     i = tp.arange(-20, 20, device=device).reshape(5, 8)
