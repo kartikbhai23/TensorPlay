@@ -310,11 +310,16 @@ namespace cpu {
 // calc_igamma / calc_igammac implementations as gammainc / gammaincc.
 // One map each, held by both the form that allocates its answer and the form
 // that is handed one.
+// The single-precision form answers in float rather than widening and
+// narrowing around a double call; the continued fraction converges in
+// fewer steps at the float machine epsilon.
 struct IgammaPair {
-    double operator()(double a, double x) const { return calc_igamma(a, x); }
+    template <typename T>
+    T operator()(T a, T x) const { return calc_igamma(a, x); }
 };
 struct IgammacPair {
-    double operator()(double a, double x) const { return calc_igammac(a, x); }
+    template <typename T>
+    T operator()(T a, T x) const { return calc_igammac(a, x); }
 };
 
 Tensor igamma_cpu(const Tensor& a, const Tensor& x) {
