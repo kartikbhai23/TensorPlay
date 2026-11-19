@@ -1260,83 +1260,17 @@ def constrain_conv_bwd_to_fx_strides(fx_node, *args, **kwargs):
     return args, kwargs
 
 
-def conv_bwd_input_layout(
-    grad_out,
-    input,
-    weight,
-    stride: Sequence[int],
-    padding: tuple,
-    dilation: tuple,
-    transposed: bool,
-    output_padding: tuple,
-    groups: int,
-):
-    """Where an input gradient lands, asked of the operation rather than guessed.
-
-    The gradient's shape follows from the call's, and following it by hand is a
-    formula to keep true.  So the operation is asked, under shapes it can be
-    evaluated with, and what it says is what the gradient is -- which is the same
-    answer the caller would have got by running it.
-    """
-
-    guard = V.graph.sizevars.guard_int_seq
-    dx = _gradient_by_asking(
-        grad_out, input, weight, stride, padding, dilation, transposed,
-        output_padding, groups, (True, False, False),
-    )
-    sizes = convert_shape_to_tp(dx.size())
-    stride_ = convert_shape_to_tp(dx.stride())
-    return FixedLayout(
-        input.get_device_or_error(), input.get_dtype(), sizes, stride_
-    )
-
-
-def conv_bwd_weight_layout(
-    grad_out,
-    input,
-    weight,
-    stride: Sequence[int],
-    padding: tuple,
-    dilation: tuple,
-    transposed: bool,
-    output_padding: tuple,
-    groups: int,
-):
-    """Where a weight gradient lands, asked the same way.
-
-    Asked of the same operation rather than of a formula, and taken with the
-    weight's own type and device -- a gradient of a weight is that weight's type,
-    and a gradient computed in another type would be a different number.
-    """
-
-    dw = _gradient_by_asking(
-        grad_out, input, weight, stride, padding, dilation, transposed,
-        output_padding, groups, (False, True, False),
-    )
-    sizes = convert_shape_to_tp(dw.size())
-    stride_ = convert_shape_to_tp(dw.stride())
-    return FixedLayout(
-        weight.get_device_or_error(), weight.get_dtype(), sizes, stride_
-    )
-
-
-def _gradient_by_asking(
+def conv_bwd_layouts(
     grad_out, input, weight, stride, padding, dilation, transposed,
-    output_padding, groups, output_mask,
+    output_padding, groups, output_mask, channels_last,
 ):
-    """One gradient of a call, asked of the operation that computes it.
+    """Read the requested gradient layouts from one call on zero operands."""
 
-    The shape follows from the call's, and a formula for it is a thing that has
-    to be kept true; asking is the same answer the caller would get by running
-    the call, which is why the values handed over are all zero -- the shape does
-    not depend on them, and zero costs nothing to write.  The ask happens on the
-    device the call is for, because there is no way to make a value of an
-    unresolved shape here.
-    """
-
+    want_dx, want_dw, _ = output_mask
+    if not (want_dx or want_dw):
+        return None, None
     guard = V.graph.sizevars.guard_int_seq
     device = input.get_device_or_error()
-    channels_last = channels_last_call(input, len(weight.get_size()) - 2, groups, transposed)
     if channels_last and all(len(node.get_size()) == 4 for node in (grad_out, input, weight)):
         zeros = lambda node: tp.empty(
             [int(dim) for dim in node.get_size()],
@@ -1350,20 +1284,24 @@ def _gradient_by_asking(
             dtype=node.get_dtype(),
             device=device,
         )
-    result = framework.convolution_backward(
+    dx, dw, _ = framework.convolution_backward(
         zeros(grad_out), zeros(input), zeros(weight), None,
         guard(stride), guard(padding), guard(dilation), transposed,
-        guard(output_padding), groups, output_mask,
+        guard(output_padding), groups, (want_dx, want_dw, False),
     )
-    # The backward answers with the full ``(dx, dw, db)`` triple; the caller
-    # asked for one gradient, so the element the mask selected is returned.
-    if output_mask == (True, False, False):
-        return result[0]
-    if output_mask == (False, True, False):
-        return result[1]
-    if output_mask == (False, False, True):
-        return result[2]
-    return result
+
+    def layout(grad, source):
+        return FixedLayout(
+            source.get_device_or_error(),
+            source.get_dtype(),
+            convert_shape_to_tp(grad.size()),
+            convert_shape_to_tp(grad.stride()),
+        )
+
+    return (
+        layout(dx, input) if want_dx else None,
+        layout(dw, weight) if want_dw else None,
+    )
 
 
 def call_framework_dw(
@@ -1930,18 +1868,20 @@ def convolution_backward_lowering(
     conv_configs = CHOICES.get_conv_configs(device_type)
     dtype_size = input.get_dtype().itemsize
 
+    channels_last = channels_last_call(input, ndim, groups, transposed)
+    layout_dx, layout_dw = conv_bwd_layouts(
+        grad_out, input, weight, **kwargs, output_mask=output_mask,
+        channels_last=channels_last,
+    )
     has_triton_dw_choices = False
     dw = None
     choices_dw = []
     args_w = []
-    layout_dw = conv_bwd_weight_layout(grad_out, input, weight, **kwargs)
-    channels_last = channels_last_call(input, ndim, groups, transposed)
     if output_mask[1]:
         if channels_last:
             V.graph.num_channels_last_conv += 1
             input = ir.ExternKernel.require_channels_last(input)
             grad_out = ir.ExternKernel.require_channels_last(grad_out)
-            layout_dw = conv_bwd_weight_layout(grad_out, input, weight, **kwargs)
         else:
             guard = V.graph.sizevars.guard_int_seq
             stride_order = ir.get_stride_order(guard(layout_dw.stride))
@@ -1979,13 +1919,11 @@ def convolution_backward_lowering(
     dx = None
     choices_dx = []
     args_x = []
-    layout_dx = conv_bwd_input_layout(grad_out, input, weight, **kwargs)
     if output_mask[0]:
         if channels_last:
             V.graph.num_channels_last_conv += 1
             grad_out = ir.ExternKernel.require_channels_last(grad_out)
             weight = ir.ExternKernel.require_channels_last(weight)
-            layout_dx = conv_bwd_input_layout(grad_out, input, weight, **kwargs)
         else:
             guard = V.graph.sizevars.guard_int_seq
             stride_order = ir.get_stride_order(guard(layout_dx.stride))
