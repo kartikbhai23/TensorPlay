@@ -1825,66 +1825,26 @@ Tensor linalg_diagonal_kernel_cuda(const Tensor& A, int64_t offset, int64_t dim1
     if (dim1 == dim2) {
         TP_THROW(RuntimeError, api, ": dimension 1 and dimension 2 cannot be equal");
     }
-    // Move (dim1, dim2) to trailing positions via permute for a flat gather.
-    std::vector<int64_t> perm;
-    for (int64_t i = 0; i < ndim; ++i)
-        if (i != dim1 && i != dim2) perm.push_back(i);
-    perm.push_back(dim1);
-    perm.push_back(dim2);
-    Tensor work = A.permute(perm).contiguous();
-    const int64_t d1 = work.size(-2);
-    const int64_t d2 = work.size(-1);
-    const int64_t outer = work.numel() / (d1 * d2 == 0 ? 1 : d1 * d2);
+    // Pure view: diagonal selects one strided line, so as_strided carries
+    // all the information and no gather copy is needed.
+    const int64_t d1 = A.size(dim1);
+    const int64_t d2 = A.size(dim2);
+    std::vector<int64_t> out_shape;
+    std::vector<int64_t> out_strides;
+    const auto a_strides = A.strides();
+    for (int64_t i = 0; i < ndim; ++i) {
+        if (i == dim1 || i == dim2) continue;
+        out_shape.push_back(A.size(i));
+        out_strides.push_back(a_strides[i]);
+    }
     const int64_t diag_len =
         offset >= 0 ? std::max<int64_t>(std::min(d1, d2 - offset), 0)
                     : std::max<int64_t>(std::min(d1 + offset, d2), 0);
-    Tensor out = Tensor::empty(cat_batch(std::vector<int64_t>{outer}, {diag_len}),
-                               A.dtype(), A.device());
-    if (out.numel() == 0) return out.reshape([&] {
-        std::vector<int64_t> shape(perm.size() - 1);
-        for (size_t i = 0; i < shape.size(); ++i)
-            shape[i] = i == shape.size() - 1 ? diag_len
-                                             : A.size(static_cast<int64_t>(perm[i]));
-        return shape;
-    }());
-
-    std::vector<int64_t> strides(ndim);
-    {
-        std::vector<int64_t> st(ndim, 1);
-        for (int64_t i = ndim - 2; i >= 0; --i) st[i] = st[i + 1] * A.size(i + 1);
-        strides = st;
-    }
-    const int64_t s_outer = [&] {
-        int64_t acc = 1;
-        bool first = true;
-        for (int64_t i = 0; i < ndim; ++i) {
-            if (i == dim1 || i == dim2) continue;
-            if (first) { acc = strides[i]; first = false; }
-        }
-        return first ? 0 : acc;
-    }();
-    // Base offsets fold the fixed index of every non-gathered axis.
-    (void)s_outer;
-    // Simpler correct path: iterate with explicit strides over the two dims.
-    const int64_t total = outer * diag_len;
-    run_real(A.dtype(), [&](auto tag) {
-        using T = std::remove_pointer_t<decltype(tag)>;
-        const int64_t inner_block = d1 * d2;
-        diagonal_gather_kernel<T><<<static_cast<unsigned>((total + 255) / 256),
-                                    256, 0,
-                                    getCurrentCUDAStream().stream()>>>(
-            work.data_ptr<T>(), out.data_ptr<T>(), total, diag_len, outer,
-            inner_block,
-            /*s1=*/strides[ndim - 2], /*s2=*/strides[ndim - 1],
-            offset >= 0 ? 0 : -offset * strides[ndim - 2],
-            offset >= 0 ? offset * strides[ndim - 1] : 0);
-    });
-    std::vector<int64_t> out_shape;
-    for (int64_t i = 0; i < ndim; ++i) {
-        if (i != dim1 && i != dim2) out_shape.push_back(A.size(i));
-    }
     out_shape.push_back(diag_len);
-    return out.reshape(out_shape);
+    out_strides.push_back(a_strides[dim1] + a_strides[dim2]);
+    const int64_t storage_offset =
+        offset >= 0 ? offset * a_strides[dim2] : -offset * a_strides[dim1];
+    return A.as_strided(out_shape, out_strides, storage_offset);
 }
 
 }  // namespace
