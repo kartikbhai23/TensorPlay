@@ -155,6 +155,26 @@ __global__ void depthwise_conv2d_forward_kernel(
                         acc[j] += wreg[r * KS + s] * xv[j + s];
                     }
                 }
+            } else if (KS != 0 && unit_step) {
+                // The group's window runs past one or both ends of the row,
+                // which is the common case when the plane is as wide as the
+                // filter.  Reading the whole window once with the outside
+                // positions taken as zero still visits each row element a
+                // fixed number of times; the per-site route below would read
+                // every tap of every site from memory instead.
+                M xv[VEC + KS];
+#pragma unroll
+                for (int t = 0; t < VEC + KS - 1; ++t) {
+                    const int i = base + t;
+                    xv[t] = (i >= 0 && i < W) ? static_cast<M>(xrow[i]) : M(0);
+                }
+#pragma unroll
+                for (int j = 0; j < VEC; ++j) {
+#pragma unroll
+                    for (int s = 0; s < KS; ++s) {
+                        acc[j] += wreg[r * KS + s] * xv[j + s];
+                    }
+                }
             } else {
 #pragma unroll
                 for (int j = 0; j < VEC; ++j) {
