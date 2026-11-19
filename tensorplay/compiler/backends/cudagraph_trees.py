@@ -240,7 +240,9 @@ class CUDAGraphTreeManager:
         self._last = node
         return node
 
-    def replay(self, key: str, *args: Any, verify: bool = True) -> list[Any]:
+    def replay(
+        self, key: str, *args: Any, verify: bool = True, layout_checked: bool = False
+    ) -> list[Any]:
         node = self._nodes.get(key)
         if node is None:
             raise CudaGraphError(f"no recorded graph under key {key!r}")
@@ -249,7 +251,7 @@ class CUDAGraphTreeManager:
                 f"node {key!r} expects {len(node.static_inputs)} inputs, "
                 f"got {len(args)}"
             )
-        if verify:
+        if verify and not layout_checked:
             signature = _shape_signature(args)
             if signature != node.signature:
                 raise CudaGraphInputDrift(
