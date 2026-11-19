@@ -186,27 +186,46 @@ def shifted_window_attention(
         length = qkv_bias.numel() // 3
         qkv_bias[length : 2 * length].zero_()
     head_dim = C // num_heads
+    tokens = x.size(1)
+    rows = x.size(0)
     qkv = F.linear(x, qkv_weight, None)
-    qkv = qkv.reshape(x.size(0), x.size(1), 3, num_heads, head_dim).permute(2, 0, 3, 1, 4)
-    q, k, v = qkv[0], qkv[1], qkv[2]
-    if qkv_bias is not None:
-        # Each head reads its own slice of the fused bias, so the add lands on
-        # the one tensor it belongs to instead of on the three-wide product.
-        bq = qkv_bias[0:C].view(1, num_heads, 1, head_dim)
-        bk = qkv_bias[C : 2 * C].view(1, num_heads, 1, head_dim)
-        bv = qkv_bias[2 * C : 3 * C].view(1, num_heads, 1, head_dim)
-        q = q + bq
-        k = k + bk
-        v = v + bv
+    qkv = qkv.reshape(rows, tokens, 3, num_heads, head_dim)
     if logit_scale is None:
-        q = q * (C // num_heads) ** -0.5
-    if logit_scale is not None:
+        def head_stack(index, offset, scale):
+            value = qkv[:, :, index]
+            if qkv_bias is not None:
+                # Each head reads its own slice of the fused bias, so the add
+                # lands on the one tensor it belongs to instead of on the
+                # three-wide product.
+                value = value + qkv_bias[offset : offset + C].view(num_heads, head_dim)
+            if scale is not None:
+                value = value * scale
+            # Heads become the outer axis of the stack, which leaves every
+            # head of every window in one contiguous run: the two products
+            # below then take the whole batch in a single launch.
+            return value.permute(2, 0, 1, 3).reshape(num_heads * rows, tokens, head_dim)
+
+        q = head_stack(0, 0, head_dim ** -0.5)
+        k = head_stack(1, C, None)
+        v = head_stack(2, 2 * C, None)
+        attn = q.matmul(k.transpose(-2, -1))
+    else:
+        qkv = qkv.permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        if qkv_bias is not None:
+            # Each head reads its own slice of the fused bias, so the add lands
+            # on the one tensor it belongs to instead of on the three-wide
+            # product.
+            bq = qkv_bias[0:C].view(1, num_heads, 1, head_dim)
+            bk = qkv_bias[C : 2 * C].view(1, num_heads, 1, head_dim)
+            bv = qkv_bias[2 * C : 3 * C].view(1, num_heads, 1, head_dim)
+            q = q + bq
+            k = k + bk
+            v = v + bv
         # cosine attention
         attn = F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1)
         logit_scale = tensorplay.clamp(logit_scale, max=math.log(100.0)).exp()
         attn = attn * logit_scale
-    else:
-        attn = q.matmul(k.transpose(-2, -1))
     if sum(shift_size) > 0:
         # Tokens split a padded axis into three ranges: the unshifted head, the
         # wrap-around middle moved in by the shift, and the tail.  Labelling
@@ -228,16 +247,28 @@ def shifted_window_attention(
         # window mask once up front.  The result is then a single broadcast add
         # against the scores instead of two full-size adds landing in sequence.
         bias = relative_position_bias + attn_mask.unsqueeze(1)
-        attn = attn.view(x.size(0) // num_windows, num_windows, num_heads, x.size(1), x.size(1))
-        attn = attn + bias.unsqueeze(0)
-        attn = attn.view(-1, num_heads, x.size(1), x.size(1))
+    if logit_scale is None:
+        if sum(shift_size) > 0:
+            attn = attn.view(num_heads, rows // num_windows, num_windows, tokens, tokens)
+            attn = attn + bias.permute(1, 0, 2, 3).unsqueeze(1)
+        else:
+            attn = attn.view(num_heads, rows, tokens, tokens)
+            attn = attn + relative_position_bias.squeeze(0).unsqueeze(1)
+        attn = attn.view(num_heads * rows, tokens, tokens)
+        attn = F.softmax(attn, dim=-1)
+        attn = F.dropout(attn, p=attention_dropout, training=training)
+        x = attn.matmul(v)
+        x = x.view(num_heads, rows, tokens, head_dim).permute(1, 2, 0, 3).reshape(rows, tokens, C)
     else:
-        attn = attn + relative_position_bias
-
-    attn = F.softmax(attn, dim=-1)
-    attn = F.dropout(attn, p=attention_dropout, training=training)
-
-    x = attn.matmul(v).transpose(1, 2).reshape(x.size(0), x.size(1), C)
+        if sum(shift_size) > 0:
+            attn = attn.view(rows // num_windows, num_windows, num_heads, tokens, tokens)
+            attn = attn + bias.unsqueeze(0)
+            attn = attn.view(-1, num_heads, tokens, tokens)
+        else:
+            attn = attn + relative_position_bias
+        attn = F.softmax(attn, dim=-1)
+        attn = F.dropout(attn, p=attention_dropout, training=training)
+        x = attn.matmul(v).transpose(1, 2).reshape(rows, tokens, C)
     x = F.linear(x, proj_weight, proj_bias)
     x = F.dropout(x, p=dropout, training=training)
 
@@ -476,8 +507,12 @@ class SwinTransformerBlock(nn.Module):
                     nn.init.normal_(m.bias, std=1e-6)
 
     def forward(self, x: Tensor):
-        x = x + self.stochastic_depth(self.attn(self.norm1(x)))
-        x = x + self.stochastic_depth(self.mlp(self.norm2(x)))
+        # The input plus the attention output is read twice, once by the second
+        # norm and once by the addition that closes the block.  Written as two
+        # additions, each reader folds the sum into its own kernel instead of a
+        # separate pass staging the buffer.
+        attn_out = self.stochastic_depth(self.attn(self.norm1(x)))
+        x = x + attn_out + self.stochastic_depth(self.mlp(self.norm2(x + attn_out)))
         return x
 
 
