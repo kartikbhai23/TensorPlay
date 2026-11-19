@@ -272,7 +272,7 @@ __device__ inline acc_t standard_gamma_grad_one(acc_t alpha, acc_t x) {
 }
 
 template <typename scalar_t>
-__global__ void standard_gamma_fill_impl(
+__global__ void __launch_bounds__(64, 2) standard_gamma_fill_impl(
         int64_t numel, PhiloxCudaState philox_args, const scalar_t* alpha,
         scalar_t* out) {
     uint64_t seed;
