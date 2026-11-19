@@ -293,11 +293,86 @@ Tensor comparison_kernel_impl(const Tensor& self, const Tensor& other, Op op);
 // lanes at a time; everything else is left to the iterator, which owns
 // broadcast, reorder, coalesce, parallelism and the overlap judgment over the
 // destination.
-template<bool kEquality, NarrowCmp C, typename Op>
+// The scalar comparison matching the lane predicate, for the sweep tails.
+template <typename T, int PRED>
+inline bool op_pred(T x, T y) {
+    switch (PRED) {
+        case _CMP_EQ_OQ: return x == y;
+        case _CMP_NEQ_UQ: return x != y;
+        case _CMP_LT_OQ: return x < y;
+        case _CMP_LE_OQ: return x <= y;
+        case _CMP_GT_OQ: return x > y;
+        default: return x >= y;
+    }
+}
+
+// One sweep of the f32/f64 comparison for contiguous same-shape pairs: the
+// lane compare answers eight (f32) or four (f64) boolean bytes per step, the
+// mask expanded with a short unrolled store.  The predicate instantiates per
+// comparison kind, ordered everywhere except ne, whose NaN lanes compare
+// unequal like the scalar form does.  The target attribute is what keeps the
+// lane loop; the translation unit compiles without the ISA.
+template <int PRED, typename T>
+__attribute__((target("avx2,fma"), noinline))
+static void compare_sweep(const T* xp, const T* yp, bool* rp, int64_t n) {
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        const __m256 x = _mm256_loadu_ps(xp + i);
+        const __m256 y = _mm256_loadu_ps(yp + i);
+        const int mask = _mm256_movemask_ps(_mm256_cmp_ps(x, y, PRED));
+        alignas(8) unsigned char tmp[8];
+        for (int k = 0; k < 8; ++k) tmp[k] = (unsigned char)((mask >> k) & 1);
+        std::memcpy(rp + i, tmp, 8);
+    }
+    for (; i < n; ++i) rp[i] = op_pred<T, PRED>(xp[i], yp[i]);
+}
+
+template <int PRED, typename T>
+__attribute__((target("avx2,fma"), noinline))
+static void compare_sweep_pd(const T* xp, const T* yp, bool* rp, int64_t n) {
+    int64_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+        const __m256d x = _mm256_loadu_pd(xp + i);
+        const __m256d y = _mm256_loadu_pd(yp + i);
+        const int mask = _mm256_movemask_pd(_mm256_cmp_pd(x, y, PRED));
+        alignas(8) unsigned char tmp[4];
+        for (int k = 0; k < 4; ++k) tmp[k] = (unsigned char)((mask >> k) & 1);
+        std::memcpy(rp + i, tmp, 4);
+    }
+    for (; i < n; ++i) rp[i] = op_pred<T, PRED>(xp[i], yp[i]);
+}
+
+template <bool kEquality, NarrowCmp C, typename Op>
 void comparison_pass(Tensor& result, const Tensor& self, const Tensor& other,
                      DType common_dtype, Op op) {
     Tensor self_casted = (self.dtype() == common_dtype) ? self : self.to(common_dtype);
     Tensor other_casted = (other.dtype() == common_dtype) ? other : other.to(common_dtype);
+    // Contiguous same-shape float pairs compare in one lane sweep; the
+    // predicate instantiates per comparison kind.
+    if ((common_dtype == DType::Float32 || common_dtype == DType::Float64) &&
+        self_casted.is_contiguous() && other_casted.is_contiguous() &&
+        self_casted.numel() == other_casted.numel() &&
+        self_casted.numel() == result.numel()) {
+        if (common_dtype == DType::Float32) {
+            switch (C) {
+                case NarrowCmp::Eq: compare_sweep<_CMP_EQ_OQ>(self_casted.data_ptr<float>(), other_casted.data_ptr<float>(), result.data_ptr<bool>(), self_casted.numel()); return;
+                case NarrowCmp::Ne: compare_sweep<_CMP_NEQ_UQ>(self_casted.data_ptr<float>(), other_casted.data_ptr<float>(), result.data_ptr<bool>(), self_casted.numel()); return;
+                case NarrowCmp::Lt: compare_sweep<_CMP_LT_OQ>(self_casted.data_ptr<float>(), other_casted.data_ptr<float>(), result.data_ptr<bool>(), self_casted.numel()); return;
+                case NarrowCmp::Le: compare_sweep<_CMP_LE_OQ>(self_casted.data_ptr<float>(), other_casted.data_ptr<float>(), result.data_ptr<bool>(), self_casted.numel()); return;
+                case NarrowCmp::Gt: compare_sweep<_CMP_GT_OQ>(self_casted.data_ptr<float>(), other_casted.data_ptr<float>(), result.data_ptr<bool>(), self_casted.numel()); return;
+                case NarrowCmp::Ge: compare_sweep<_CMP_GE_OQ>(self_casted.data_ptr<float>(), other_casted.data_ptr<float>(), result.data_ptr<bool>(), self_casted.numel()); return;
+            }
+        } else {
+            switch (C) {
+                case NarrowCmp::Eq: compare_sweep_pd<_CMP_EQ_OQ>(self_casted.data_ptr<double>(), other_casted.data_ptr<double>(), result.data_ptr<bool>(), self_casted.numel()); return;
+                case NarrowCmp::Ne: compare_sweep_pd<_CMP_NEQ_UQ>(self_casted.data_ptr<double>(), other_casted.data_ptr<double>(), result.data_ptr<bool>(), self_casted.numel()); return;
+                case NarrowCmp::Lt: compare_sweep_pd<_CMP_LT_OQ>(self_casted.data_ptr<double>(), other_casted.data_ptr<double>(), result.data_ptr<bool>(), self_casted.numel()); return;
+                case NarrowCmp::Le: compare_sweep_pd<_CMP_LE_OQ>(self_casted.data_ptr<double>(), other_casted.data_ptr<double>(), result.data_ptr<bool>(), self_casted.numel()); return;
+                case NarrowCmp::Gt: compare_sweep_pd<_CMP_GT_OQ>(self_casted.data_ptr<double>(), other_casted.data_ptr<double>(), result.data_ptr<bool>(), self_casted.numel()); return;
+                case NarrowCmp::Ge: compare_sweep_pd<_CMP_GE_OQ>(self_casted.data_ptr<double>(), other_casted.data_ptr<double>(), result.data_ptr<bool>(), self_casted.numel()); return;
+            }
+        }
+    }
     if (narrow_compare_path<C>(result, self_casted, other_casted, common_dtype)) {
         return;
     }
