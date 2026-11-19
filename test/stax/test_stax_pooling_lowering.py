@@ -224,3 +224,52 @@ def test_average_pooling_run_directly(device, pooling):
     (out * tp.tensor([[weights]], device=device)).sum().backward()
     _assert_close(out.detach().cpu().tolist()[0][0], pooled)
     _assert_close(x.grad.cpu().tolist()[0][0], grad)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_max_pool_backward_is_written_out(device, monkeypatch):
+    import tensorplay.compiler.backends.stax.op_lowerings as op_lowerings
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(
+            "the framework kernel was asked for a window the loop can read"
+        )
+
+    monkeypatch.setitem(op_lowerings._fallback_max_pool_backward, 2, refuse)
+    monkeypatch.setitem(op_lowerings._fallback_max_pool_backward, 3, refuse)
+
+    def pool2(value, gradient):
+        return tp.ops.tp.max_pool2d_backward.default(
+            gradient, value, [2, 2], [2, 2], [0, 0], [1, 1], False
+        )
+
+    def pool3(value, gradient):
+        return tp.ops.tp.max_pool3d_backward.default(
+            gradient, value, [2, 2, 2], [2, 2, 2], [0, 0, 0], [1, 1, 1], False
+        )
+
+    x = tp.arange(16.0, device=device).reshape(1, 1, 4, 4) * 0.5
+    g = tp.arange(4.0, device=device).reshape(1, 1, 2, 2) + 1.0
+    compiled = tp.compile(pool2, backend="stax")
+    assert tp.allclose(compiled(x, g), pool2(x, g))
+    # The answer only says something about a region that was built.
+    assert next(iter(compiled._tensorplay_cache.values()))._tensorplay_codegen is not None
+
+    volume = tp.arange(64.0, device=device).reshape(1, 1, 4, 4, 4) * 0.5
+    volume_grad = tp.arange(8.0, device=device).reshape(1, 1, 2, 2, 2) + 1.0
+    compiled3 = tp.compile(pool3, backend="stax")
+    assert tp.allclose(compiled3(volume, volume_grad), pool3(volume, volume_grad))
+    assert next(iter(compiled3._tensorplay_cache.values()))._tensorplay_codegen is not None
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_max_pool_backward_falls_back_for_an_overlapping_window(device):
+    def pool(value, gradient):
+        return tp.ops.tp.max_pool2d_backward.default(
+            gradient, value, [3, 3], [2, 2], [1, 1], [1, 1], False
+        )
+
+    x = tp.arange(49.0, device=device).reshape(1, 1, 7, 7) * 0.5
+    g = tp.arange(16.0, device=device).reshape(1, 1, 4, 4) + 1.0
+    compiled = tp.compile(pool, backend="stax")
+    assert tp.allclose(compiled(x, g), pool(x, g))

@@ -6478,6 +6478,142 @@ def lower_avg_pool2d_backward(grad, _input, kernel_size, stride=(), padding=0,
     )
 
 
+_fallback_max_pool_backward = {
+    2: fallback_handler(
+        tp.ops.tp.max_pool2d_backward.default, add_to_fallback_set=False
+    ),
+    3: fallback_handler(
+        tp.ops.tp.max_pool3d_backward.default, add_to_fallback_set=False
+    ),
+}
+
+
+@register("max_pool2d_backward.default", "max_pool3d_backward.default")
+def lower_max_pool_backward(grad, x, kernel_size, stride=(), padding=0,
+                            dilation=1, ceil_mode=False, **kwargs):
+    """Max pooling's gradient, as each source position asking whether it won.
+
+    A window hands the whole of its output gradient to the first position whose
+    value is largest, and each position can be that winner of the one window
+    that covers it.  When the stride is the kernel, nothing is padded, the
+    kernel is not dilated, the mode does not round the windows up and the
+    extents divide evenly, the window covering a position starts at that
+    position rounded down to the kernel: the window is read again in the loop
+    that consumes the result, and the position keeps its gradient only if it
+    holds the window's first largest value.  Anything else is asked of the
+    framework kernel.
+    """
+
+    ndim = _spatial_ndim()
+
+    def fallback():
+        return _fallback_max_pool_backward[ndim](
+            grad, x, kernel_size, stride, padding, dilation, ceil_mode
+        )
+
+    kernel, stride, padding, dilation = _max_pool_common(
+        x, kernel_size, stride, padding, dilation, ndim
+    )
+    if ceil_mode:
+        return fallback()
+    if any(p != 0 for p in padding) or any(d != 1 for d in dilation):
+        return fallback()
+    if any(s != k for s, k in zip(stride, kernel)):
+        return fallback()
+    in_size = list(x.get_size())
+    grad_size = list(grad.get_size())
+    if len(in_size) not in (ndim + 1, ndim + 2) or len(grad_size) != len(in_size):
+        return fallback()
+    if is_dynamic(*in_size, *grad_size):
+        return fallback()
+    lead = len(in_size) - ndim
+    spatial_in = [int(s) for s in in_size[lead:]]
+    spatial_out = [int(s) for s in grad_size[lead:]]
+    if any(so * k != si for so, k, si in zip(spatial_out, kernel, spatial_in)):
+        return fallback()
+    if _prod_ints(kernel) > 25:
+        return fallback()
+
+    # Read once per position of the window, so it is put in memory when it is
+    # more than a plain read.
+    x.realize_hint()
+    grad.realize_hint()
+    loader = x.make_loader()
+    grad_loader = grad.make_loader()
+    i32 = tp.int32
+    dtype = x.get_dtype()
+    positions = list(itertools.product(*[range(k) for k in kernel]))
+
+    def flat_offset(offset):
+        flat = offset[0]
+        for axis in range(1, ndim):
+            flat = flat * kernel[axis] + offset[axis]
+        return flat
+
+    def fn(idx):
+        zero = ops.constant(0.0 if dtype.is_floating_point else 0, dtype)
+        prefix = idx[:lead]
+        blocks = []
+        within = []
+        for axis in range(ndim):
+            at = as_index(idx[lead + axis])
+            blocks.append(ops.index_expr(
+                FloorDiv(at, sympy.Integer(kernel[axis])), i32
+            ))
+            within.append(ops.index_expr(
+                ModularIndexing(at, 1, kernel[axis]), i32
+            ))
+
+        def read(offset):
+            index = [*prefix]
+            for axis in range(ndim):
+                at = ops.add(
+                    ops.mul(blocks[axis], ops.constant(kernel[axis], i32)),
+                    ops.constant(offset[axis], i32),
+                )
+                index.append(
+                    ops.indirect_indexing(at, spatial_in[axis], check=False)
+                )
+            return loader(index)
+
+        # The window's largest value, then the first position that holds it.
+        best = None
+        for offset in positions:
+            value = read(offset)
+            best = value if best is None else ops.maximum(best, value)
+        found = ops.constant(False, tp.bool)
+        where = ops.constant(0, i32)
+        for offset in positions:
+            value = read(offset)
+            take = ops.logical_and(
+                ops.logical_not(found), ops.eq(value, best)
+            )
+            where = ops.where(take, ops.constant(flat_offset(offset), i32), where)
+            found = ops.logical_or(found, take)
+
+        here = within[0]
+        for axis in range(1, ndim):
+            here = ops.add(
+                ops.mul(here, ops.constant(kernel[axis], i32)), within[axis]
+            )
+        selected = ops.eq(where, here)
+        gradient = grad_loader([
+            *prefix,
+            *[
+                ops.indirect_indexing(blocks[axis], spatial_out[axis], check=False)
+                for axis in range(ndim)
+            ],
+        ])
+        return ops.where(selected, gradient, zero)
+
+    return Pointwise.create(
+        device=grad.get_device(),
+        dtype=dtype,
+        inner_fn=fn,
+        ranges=in_size,
+    )
+
+
 _fallback_upsample_nearest2d_backward = fallback_handler(
     tp.ops.tp.upsample_nearest2d_backward.default, add_to_fallback_set=False
 )
