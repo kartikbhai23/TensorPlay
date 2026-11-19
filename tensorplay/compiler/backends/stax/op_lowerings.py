@@ -5002,6 +5002,31 @@ def lower_upsample_nearest1d(x, output_size, scales_d=None, **kwargs):
 
 
 # ---------------------------------------------------------------------------
+# Products.
+#
+# A linear layer is a product plus one broadcast value per output column.  The
+# bias has an epilogue of its own in the library's plan, and on a narrow
+# reduction axis that epilogue competes for the same tile geometry: the plans
+# that carry it rank a split-reduction kernel first, which reads and writes the
+# whole output several times and loses to the plain product by a wide margin.
+# Asking for the plain product and adding the bias afterwards costs nothing
+# when the bias read folds into the kernel that already reads the result.
+# ---------------------------------------------------------------------------
+
+
+@register("linear.default")
+def lower_linear(x, weight, bias=None):
+    if bias is None:
+        return fallback_handler(tp_ops.linear.default, add_to_fallback_set=False)(
+            x, weight, None
+        )
+    product = fallback_handler(
+        tp_ops.linear.default, add_to_fallback_set=False
+    )(x, weight, None)
+    return pointwise(lambda p, b: ops.add(p, b), product, bias)
+
+
+# ---------------------------------------------------------------------------
 # Grid sampling and bicubic resampling: every output element reads the source
 # at a position of its own, computed from the coordinates the call carries, so
 # each is a gather the kernels around it absorb.
