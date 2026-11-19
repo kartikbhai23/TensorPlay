@@ -105,8 +105,10 @@ Tensor normalize_index_cpu(const Tensor& index, int64_t upper_bound,
     // in place; without one they are read where they are, and a copy of the
     // whole index is spared.
     std::atomic<bool> has_negative{false};
-    parallel_for(0, index_c.numel(), GRAIN_SIZE,
-                 [&](int64_t begin, int64_t end) {
+    // A small index scans serially: dispatching the walk to the pool costs
+    // more than the scan itself.
+    const int64_t n_idx = index_c.numel();
+    auto scan = [&](int64_t begin, int64_t end) {
         const int64_t* values = index_c.data_ptr<int64_t>();
         for (int64_t i = begin; i < end; ++i) {
             const int64_t value = values[i];
@@ -115,16 +117,25 @@ Tensor normalize_index_cpu(const Tensor& index, int64_t upper_bound,
             }
             if (value < 0) has_negative.store(true, std::memory_order_relaxed);
         }
-    });
+    };
+    if (n_idx > GRAIN_SIZE) {
+        parallel_for(0, n_idx, GRAIN_SIZE, scan);
+    } else {
+        scan(0, n_idx);
+    }
     if (!has_negative.load(std::memory_order_relaxed)) return index_c;
     index_c = index_c.clone();
     int64_t* values = index_c.data_ptr<int64_t>();
-    parallel_for(0, index_c.numel(), GRAIN_SIZE,
-                 [&](int64_t begin, int64_t end) {
+    auto wrap = [&](int64_t begin, int64_t end) {
         for (int64_t i = begin; i < end; ++i) {
             if (values[i] < 0) values[i] += upper_bound;
         }
-    });
+    };
+    if (n_idx > GRAIN_SIZE) {
+        parallel_for(0, n_idx, GRAIN_SIZE, wrap);
+    } else {
+        wrap(0, n_idx);
+    }
     return index_c;
 }
 
