@@ -978,8 +978,7 @@ def relu6(input: Tensor, inplace: bool = False) -> Tensor:
     r"""relu6(input, inplace=False) -> Tensor
 
     """
-    out = tensorplay.relu6(input)
-    return input.copy_(out) if inplace else out
+    return tensorplay.relu6_(input) if inplace else tensorplay.relu6(input)
 
 
 def hardswish(input: Tensor, inplace: bool = False) -> Tensor:
@@ -994,8 +993,9 @@ def hardsigmoid(input: Tensor, inplace: bool = False) -> Tensor:
 
 def leaky_relu(input: Tensor, negative_slope: float = 0.01, inplace: bool = False) -> Tensor:
     r"""leaky_relu(input, negative_slope=0.01, inplace=False) -> Tensor"""
-    out = tensorplay.leaky_relu(input, negative_slope)
-    return input.copy_(out) if inplace else out
+    if inplace:
+        return tensorplay.leaky_relu_(input, negative_slope)
+    return tensorplay.leaky_relu(input, negative_slope)
 
 
 def softplus(input: Tensor, beta: float = 1.0, threshold: float = 20.0) -> Tensor:
@@ -1005,26 +1005,22 @@ def softplus(input: Tensor, beta: float = 1.0, threshold: float = 20.0) -> Tenso
 
 def elu(input: Tensor, alpha: float = 1.0, inplace: bool = False) -> Tensor:
     r"""elu(input, alpha=1, inplace=False) -> Tensor"""
-    out = tensorplay.elu(input, alpha)
-    return input.copy_(out) if inplace else out
+    return tensorplay.elu_(input, alpha) if inplace else tensorplay.elu(input, alpha)
 
 
 def mish(input: Tensor, inplace: bool = False) -> Tensor:
     r"""mish(input, inplace=False) -> Tensor"""
-    out = tensorplay.mish(input)
-    return input.copy_(out) if inplace else out
+    return tensorplay.mish_(input) if inplace else tensorplay.mish(input)
 
 
 def selu(input: Tensor, inplace: bool = False) -> Tensor:
     r"""selu(input, inplace=False) -> Tensor"""
-    out = tensorplay.selu(input)
-    return input.copy_(out) if inplace else out
+    return tensorplay.selu_(input) if inplace else tensorplay.selu(input)
 
 
 def celu(input: Tensor, alpha: float = 1.0, inplace: bool = False) -> Tensor:
     r"""celu(input, alpha=1, inplace=False) -> Tensor"""
-    out = tensorplay.celu(input, alpha)
-    return input.copy_(out) if inplace else out
+    return tensorplay.celu_(input, alpha) if inplace else tensorplay.celu(input, alpha)
 
 
 threshold_ = _add_docstr(

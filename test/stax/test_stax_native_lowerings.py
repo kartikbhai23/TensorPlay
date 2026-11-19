@@ -99,14 +99,27 @@ def test_elementwise_values_and_gradients(device, name, call_outs):
 
 
 @pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("activation", [F.hardswish, F.hardsigmoid])
-def test_inplace_hard_activations_use_original_values_in_backward(device, activation):
+@pytest.mark.parametrize(
+    "activation, kwargs",
+    [
+        (F.relu6, {}),
+        (F.hardswish, {}),
+        (F.hardsigmoid, {}),
+        (F.leaky_relu, {"negative_slope": 0.2}),
+        (F.elu, {"alpha": 0.7}),
+        (F.mish, {}),
+        (F.selu, {}),
+        (F.celu, {"alpha": 0.7}),
+    ],
+    ids=["relu6", "hardswish", "hardsigmoid", "leaky_relu", "elu", "mish", "selu", "celu"],
+)
+def test_inplace_activations_use_original_values_in_backward(device, activation, kwargs):
     def inplace(x):
-        return activation(x * 1.0, inplace=True)
+        return activation(x * 1.0, inplace=True, **kwargs)
 
-    values = tp.tensor([-4.0, -2.5, -1.0, 0.5, 2.0, 4.0], device=device)
+    values = tp.tensor([-4.0, -2.5, -1.0, 0.5, 2.0, 4.0, 7.0], device=device)
     expected_input = values.clone().requires_grad_()
-    expected = activation(expected_input)
+    expected = activation(expected_input, **kwargs)
     expected.sum().backward()
     for fn in (inplace, tp.compile(inplace, fullgraph=True, strict_native=True)):
         x = values.clone().requires_grad_()
