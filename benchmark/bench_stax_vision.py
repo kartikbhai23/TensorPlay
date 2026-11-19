@@ -12,9 +12,7 @@ same device:
 * the wall time from asking for a compile to the first completed call, which
   is what a user pays once before any steady-state number starts to matter.
 
-Correctness is checked before timing: the compiled logits must match the eager
-logits to a tolerance that scales with the element type, so a fast but wrong
-case cannot enter the report as a win.
+Inference correctness is checked on every returned tensor before timing.
 """
 
 from __future__ import annotations
@@ -29,7 +27,7 @@ import traceback
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 import numpy as np
 
@@ -49,16 +47,15 @@ from tensorplay.vision import models as tp_models  # noqa: E402
 
 @dataclass(frozen=True)
 class Case:
-    """One model and the input extent its classifier was trained on."""
+    """One model and its standardized input geometry."""
 
     name: str
     input_size: int = 224
+    family: str = "classification"
+    frames: int = 0
 
 
-#: Every classification model the vision package builds from plain arguments.
-#: The video, optical-flow and segmentation entry points take inputs that are
-#: not images, so they are timed by their own benchmarks instead.
-CASES: tuple[Case, ...] = tuple(
+CLASSIFICATION_CASES: tuple[Case, ...] = tuple(
     Case(name, 299 if name == "inception_v3" else 224)
     for name in (
         "alexnet",
@@ -144,13 +141,49 @@ CASES: tuple[Case, ...] = tuple(
     )
 )
 
+VIDEO_GEOMETRIES = {
+    "mc3_18": (16, 112),
+    "mvit_v1_b": (16, 224),
+    "mvit_v2_s": (16, 224),
+    "r2plus1d_18": (16, 112),
+    "r3d_18": (16, 112),
+    "s3d": (128, 224),
+    "swin3d_b": (32, 224),
+    "swin3d_s": (32, 224),
+    "swin3d_t": (32, 224),
+}
+
+CASES = (
+    CLASSIFICATION_CASES
+    + tuple(
+        Case(name, family="segmentation")
+        for name in tp_models.list_models(tp_models.segmentation)
+    )
+    + tuple(
+        Case(name, size, family="video", frames=frames)
+        for name, (frames, size) in VIDEO_GEOMETRIES.items()
+    )
+    + tuple(
+        Case(name, 128, family="optical_flow")
+        for name in tp_models.list_models(tp_models.optical_flow)
+    )
+)
+
 
 def selected_cases(patterns: list[str]) -> list[Case]:
+    by_name = {case.name: case for case in CASES}
+    registered = set(tp_models.list_models())
+    if len(by_name) != len(CASES) or set(by_name) != registered:
+        missing = sorted(registered - by_name.keys())
+        extra = sorted(by_name.keys() - registered)
+        raise RuntimeError(f"Invalid model coverage (missing={missing}, extra={extra})")
     if not patterns:
         return list(CASES)
     wanted: list[Case] = []
     for pattern in patterns:
-        matched = [case for case in CASES if pattern in case.name]
+        matched = [by_name[pattern]] if pattern in by_name else [
+            case for case in CASES if pattern in case.name
+        ]
         if not matched:
             raise SystemExit(f"no case matches {pattern!r}")
         wanted.extend(case for case in matched if case not in wanted)
@@ -227,26 +260,54 @@ def to_tensorplay_state(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_pair(case: Case, device: str, dtype: torch.dtype) -> tuple[Any, Any]:
-    tp_builder = getattr(tp_models, case.name)
-    reference_builder = getattr(torchvision.models, case.name)
-    tp_model = tp_builder(weights=None)
-    reference_model = reference_builder(weights=None)
+    tp_builder = tp_models.get_model_builder(case.name)
+    reference_builder = torchvision.models.get_model_builder(case.name)
+    options = {"weights": None}
+    if case.family == "segmentation":
+        options["weights_backbone"] = None
+    tp_model = tp_builder(**options)
+    reference_model = reference_builder(**options)
     tp_model.load_state_dict(to_tensorplay_state(reference_model.state_dict()))
     tp_model = tp_model.to(dtype=getattr(tp, str(dtype).split(".")[-1])).to(device)
     reference_model = reference_model.to(dtype=dtype, device=device)
     return tp_model.eval(), reference_model.eval()
 
 
-def model_logits(output: Any) -> Any:
-    if isinstance(output, (tuple, list)):
+def case_data(case: Case, batch: int) -> tuple[tuple[np.ndarray, ...], np.ndarray]:
+    rng = np.random.default_rng(20261117)
+    size = case.input_size
+    shape = (batch, 3, case.frames, size, size) if case.frames else (batch, 3, size, size)
+    args = (rng.standard_normal(shape).astype(np.float32),)
+    if case.family == "optical_flow":
+        args += (rng.standard_normal(shape, dtype=np.float32),)
+        target = rng.standard_normal((batch, 2, size, size), dtype=np.float32)
+    elif case.family == "segmentation":
+        target = rng.integers(0, 21, size=(batch, size, size), dtype=np.int64)
+    else:
+        classes = 400 if case.family == "video" else 1000
+        target = rng.integers(0, classes, size=(batch,), dtype=np.int64)
+    return args, target
+
+
+def training_loss(case: Case, output: Any, target: Any, cross_entropy: Callable) -> Any:
+    if case.family == "optical_flow":
+        return sum(
+            (flow.float() - target).abs().mean() * 0.8 ** (len(output) - 1 - index)
+            for index, flow in enumerate(output)
+        )
+    if case.family == "segmentation":
+        output = output["out"]
+    elif isinstance(output, (tuple, list)):
         output = output[0]
-    return output
+    return cross_entropy(output.float(), target)
 
 
-def as_numpy(value: Any) -> np.ndarray:
-    if isinstance(value, torch.Tensor):
-        return value.detach().cpu().numpy()
-    return value.detach().cpu().numpy()
+def as_numpy(output: Any) -> Any:
+    if isinstance(output, dict):
+        return {key: as_numpy(value) for key, value in output.items()}
+    if isinstance(output, (tuple, list)):
+        return tuple(as_numpy(value) for value in output)
+    return output.detach().float().cpu().numpy()
 
 
 def compile_tensorplay(model: Any, mode: str | None) -> tuple[Any, float]:
@@ -291,22 +352,49 @@ def tolerance(dtype: torch.dtype) -> float:
     return {torch.float32: 5e-3, torch.float16: 2e-2, torch.bfloat16: 3e-2}[dtype]
 
 
-def matches(
-    actual: np.ndarray,
-    reference: np.ndarray,
-    tol: float,
-    scale: float,
-) -> bool:
-    """Whether two results agree within a tolerance that follows their scale.
+def output_arrays(
+    output: Any, path: tuple = ()
+) -> Iterator[tuple[tuple, np.ndarray]]:
+    if isinstance(output, dict):
+        for key, value in output.items():
+            yield from output_arrays(value, (*path, key))
+    elif isinstance(output, tuple):
+        for index, value in enumerate(output):
+            yield from output_arrays(value, (*path, index))
+    else:
+        yield path, output
 
-    ``tol`` is a relative tolerance; the absolute part is one more ``tol`` of
-    the answer's own magnitude, so a result expressed in large units is not
-    failed for the rounding its scale implies.
-    """
 
-    return bool(
-        np.allclose(actual, reference, atol=tol * max(scale, 1.0), rtol=tol)
-    )
+@dataclass(frozen=True)
+class OutputComparison:
+    matches: bool
+    max_abs_error: float | None = None
+    relative_error: float | None = None
+    reference_scale: float | None = None
+
+
+def compare_outputs(actual: Any, reference: Any, tol: float) -> OutputComparison:
+    """Check every tensor with a tolerance scaled by its own magnitude."""
+    actual_arrays = dict(output_arrays(actual))
+    reference_arrays = dict(output_arrays(reference))
+    if not reference_arrays or actual_arrays.keys() != reference_arrays.keys():
+        return OutputComparison(False)
+    max_abs_error = relative_error = reference_scale = 0.0
+    matches = True
+    for path, expected in reference_arrays.items():
+        got = actual_arrays[path]
+        if got.shape != expected.shape or not (
+            np.isfinite(got).all() and np.isfinite(expected).all()
+        ):
+            return OutputComparison(False)
+        scale = float(np.max(np.abs(expected), initial=0))
+        error = float(np.max(np.abs(got - expected), initial=0))
+        absolute_tolerance = tol * max(scale, 1.0)
+        matches &= bool(np.allclose(got, expected, atol=absolute_tolerance, rtol=tol))
+        max_abs_error = max(max_abs_error, error)
+        relative_error = max(relative_error, error / max(scale, 1.0))
+        reference_scale = max(reference_scale, scale)
+    return OutputComparison(matches, max_abs_error, relative_error, reference_scale)
 
 
 def release_case_memory(device: str) -> None:
@@ -347,6 +435,7 @@ def run_case(
         "dtype": str(dtype).split(".")[-1],
         "batch": batch,
         "input_size": case.input_size,
+        "family": case.family,
     }
     # The previous case's artifacts are unreachable by now but may sit in
     # reference cycles holding their CUDA memory: a captured graph's pool is
@@ -361,33 +450,33 @@ def run_case(
             # the parameters, and leaving it off is what a serving path does.
             tp_model.requires_grad_(False)
             reference_model.requires_grad_(False)
-        rng = np.random.default_rng(20261117)
-        shape = (batch, 3, case.input_size, case.input_size)
-        array = rng.standard_normal(shape).astype(np.float32)
-        tp_input = tp.from_numpy(array.copy()).to(dtype=getattr(tp, str(dtype).split(".")[-1])).to(device)
-        reference_input = torch.from_numpy(array.copy()).to(dtype=dtype, device=device)
-        labels_array = rng.integers(0, 1000, size=(batch,)).astype(np.int64)
-        tp_labels = tp.from_numpy(labels_array.copy()).to(device)
-        reference_labels = torch.from_numpy(labels_array.copy()).to(device)
+        arrays, target = case_data(case, batch)
+        record["input_shapes"] = [list(value.shape) for value in arrays]
+        record["target_shape"] = list(target.shape)
+        tp_dtype = getattr(tp, record["dtype"])
+        tp_inputs = tuple(
+            tp.from_numpy(value.copy()).to(device=device, dtype=tp_dtype)
+            for value in arrays
+        )
+        reference_inputs = tuple(
+            torch.from_numpy(value.copy()).to(device=device, dtype=dtype)
+            for value in arrays
+        )
+        tp_labels = tp.from_numpy(target.copy()).to(device)
+        reference_labels = torch.from_numpy(target.copy()).to(device)
+        del arrays, target
 
         with tp.no_grad():
-            tp_eager_logits = model_logits(tp_model(tp_input)).float().cpu().numpy()
+            tp_eager_output = as_numpy(tp_model(*tp_inputs))
         with torch.no_grad():
-            reference_eager_logits = model_logits(reference_model(reference_input)).float().cpu().numpy()
-        # A deep network on random parameters can produce outputs spanning many
-        # orders of magnitude, so the absolute error is only meaningful against
-        # the scale of the answer it describes.
-        reference_scale = float(np.max(np.abs(reference_eager_logits)))
-        record["reference_logits_scale"] = reference_scale
-        record["max_abs_error_eager"] = float(
-            np.max(np.abs(tp_eager_logits - reference_eager_logits))
-        )
-        record["relative_error_eager"] = (
-            record["max_abs_error_eager"] / max(reference_scale, 1.0)
-        )
-        record["eager_matches"] = matches(
-            tp_eager_logits, reference_eager_logits, tolerance(dtype), reference_scale
-        )
+            reference_eager_output = as_numpy(reference_model(*reference_inputs))
+        tol = tolerance(dtype)
+        eager_check = compare_outputs(tp_eager_output, reference_eager_output, tol)
+        record["reference_logits_scale"] = eager_check.reference_scale
+        record["max_abs_error_eager"] = eager_check.max_abs_error
+        record["relative_error_eager"] = eager_check.relative_error
+        record["eager_matches"] = eager_check.matches
+        del tp_eager_output
 
         if "infer" in tasks:
             if cold_compile:
@@ -396,27 +485,19 @@ def run_case(
             stax, stax_compile = compile_tensorplay(tp_model, mode)
             started = time.perf_counter()
             with tp.no_grad():
-                compiled_output = stax(tp_input)
+                compiled_output = stax(*tp_inputs)
             synchronize(device)
             record["stax_compile_seconds"] = stax_compile
             record["stax_first_call_seconds"] = time.perf_counter() - started
             record["stax_infer_ready_seconds"] = (
                 stax_compile + record["stax_first_call_seconds"]
             )
-            compiled_logits = as_numpy(model_logits(compiled_output).float())
+            compiled_arrays = as_numpy(compiled_output)
             del compiled_output
-            record["max_abs_error_compiled"] = float(
-                np.max(np.abs(compiled_logits - reference_eager_logits))
-            )
-            record["relative_error_compiled"] = (
-                record["max_abs_error_compiled"] / max(reference_scale, 1.0)
-            )
-            record["compiled_matches"] = matches(
-                compiled_logits,
-                reference_eager_logits,
-                tolerance(dtype),
-                reference_scale,
-            )
+            compiled_check = compare_outputs(compiled_arrays, reference_eager_output, tol)
+            record["max_abs_error_compiled"] = compiled_check.max_abs_error
+            record["relative_error_compiled"] = compiled_check.relative_error
+            record["compiled_matches"] = compiled_check.matches
             record["stax_codegens"] = codegens(stax)
 
             reference = None
@@ -425,7 +506,7 @@ def run_case(
                 reference, reference_compile = compile_reference(reference_model, mode)
                 started = time.perf_counter()
                 with torch.no_grad():
-                    reference_output = reference(reference_input)
+                    reference_output = reference(*reference_inputs)
                 synchronize(device)
                 record["reference_compile_seconds"] = reference_compile
                 record["reference_compile_first_call_seconds"] = (
@@ -434,30 +515,33 @@ def run_case(
                 record["reference_infer_ready_seconds"] = (
                     reference_compile + record["reference_compile_first_call_seconds"]
                 )
-                reference_logits = as_numpy(model_logits(reference_output).float())
+                reference_arrays = as_numpy(reference_output)
                 del reference_output
-                # How far the reference's own compiled execution stands from
-                # its eager execution: the same comparison the compiled stax
-                # result is held to, recorded so a difference between two
-                # compiled paths is not mistaken for a wrong answer.
-                record["reference_compiled_max_abs_error"] = float(
-                    np.max(np.abs(reference_logits - reference_eager_logits))
-                )
-                record["compiled_vs_reference_compiled_max_abs_error"] = float(
-                    np.max(np.abs(compiled_logits - reference_logits))
-                )
+                reference_check = compare_outputs(reference_arrays, reference_eager_output, tol)
+                record["reference_compiled_max_abs_error"] = reference_check.max_abs_error
+                record["reference_compiled_matches"] = reference_check.matches
+                record["compiled_vs_reference_compiled_max_abs_error"] = compare_outputs(
+                    compiled_arrays, reference_arrays, tol
+                ).max_abs_error
+                del reference_arrays
+            del compiled_arrays
+            record["inference_correct"] = (
+                eager_check.matches
+                and compiled_check.matches
+                and record.get("reference_compiled_matches", True)
+            )
 
             def tp_compiled_infer() -> Any:
                 with tp.no_grad():
-                    return stax(tp_input)
+                    return stax(*tp_inputs)
 
             def tp_eager_infer() -> Any:
                 with tp.no_grad():
-                    return tp_model(tp_input)
+                    return tp_model(*tp_inputs)
 
             def reference_eager_infer() -> Any:
                 with torch.no_grad():
-                    return reference_model(reference_input)
+                    return reference_model(*reference_inputs)
 
             sides = [
                 ("stax", tp_compiled_infer),
@@ -468,7 +552,7 @@ def run_case(
 
                 def reference_compiled_infer() -> Any:
                     with torch.no_grad():
-                        return reference(reference_input)
+                        return reference(*reference_inputs)
 
                 sides.append(("reference_compiled", reference_compiled_infer))
             timings = time_sides(sides, device, warmup, repeats)
@@ -490,6 +574,10 @@ def run_case(
                     record["reference_infer_ready_seconds"]
                     / record["stax_infer_ready_seconds"]
                 )
+            if "train" in tasks:
+                del stax, reference
+                release_case_memory(device)
+        del reference_eager_output
 
         if "train" in tasks:
             tp_model.train()
@@ -499,17 +587,17 @@ def run_case(
 
             def tp_step() -> None:
                 tp_optimizer.zero_grad(set_to_none=True)
-                loss = tp_F.cross_entropy(
-                    model_logits(tp_model(tp_input)).float(), tp_labels
+                loss = training_loss(
+                    case, tp_model(*tp_inputs), tp_labels, tp_F.cross_entropy
                 )
                 loss.backward()
                 tp_optimizer.step()
 
             def reference_step() -> None:
                 reference_optimizer.zero_grad(set_to_none=True)
-                loss = torch.nn.functional.cross_entropy(
-                    model_logits(reference_model(reference_input)).float(),
-                    reference_labels,
+                loss = training_loss(
+                    case, reference_model(*reference_inputs), reference_labels,
+                    torch.nn.functional.cross_entropy,
                 )
                 loss.backward()
                 reference_optimizer.step()
@@ -521,8 +609,8 @@ def run_case(
 
             def stax_step() -> None:
                 tp_optimizer.zero_grad(set_to_none=True)
-                loss = tp_F.cross_entropy(
-                    model_logits(stax_train(tp_input)).float(), tp_labels
+                loss = training_loss(
+                    case, stax_train(*tp_inputs), tp_labels, tp_F.cross_entropy
                 )
                 loss.backward()
                 tp_optimizer.step()
@@ -554,9 +642,9 @@ def run_case(
 
                 def reference_compiled_step() -> None:
                     reference_optimizer.zero_grad(set_to_none=True)
-                    loss = torch.nn.functional.cross_entropy(
-                        model_logits(reference_train(reference_input)).float(),
-                        reference_labels,
+                    loss = training_loss(
+                        case, reference_train(*reference_inputs), reference_labels,
+                        torch.nn.functional.cross_entropy,
                     )
                     loss.backward()
                     reference_optimizer.step()
@@ -616,13 +704,14 @@ def print_record(record: dict[str, Any]) -> None:
     if "stax_infer_ms" in record:
         fields.append(
             "infer stax={stax:8.3f} refEager={ref:8.3f} refCompiled={comp:8.3f} "
-            "vsEager={ve:5.2f}x vsCompiled={vc:5.2f}x "
+            "vsEager={ve:5.2f}x vsCompiled={vc:5.2f}x check={check} "
             "firstRun={cs:6.2f}s/{rs:6.2f}s ({cr:5.2f}x)".format(
                 stax=record["stax_infer_ms"],
                 ref=record["reference_eager_infer_ms"],
                 comp=record.get("reference_compiled_infer_ms", float("nan")),
                 ve=record["stax_vs_reference_eager"],
                 vc=record.get("stax_vs_reference_compiled", float("nan")),
+                check="pass" if record["inference_correct"] else "fail",
                 cs=record["stax_infer_ready_seconds"],
                 rs=record.get("reference_infer_ready_seconds", float("nan")),
                 cr=record.get("compile_time_ratio", float("nan")),
@@ -682,7 +771,7 @@ def main() -> None:
 
     def payload() -> dict[str, Any]:
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "benchmark": "stax-vision",
             "device": args.device,
             "dtype": args.dtype,
