@@ -13,6 +13,8 @@ same device:
   is what a user pays once before any steady-state number starts to matter.
 
 Inference correctness is checked on every returned tensor before timing.
+The optional training check replays one step from the same checkpoint with
+stochastic regularization disabled.
 """
 
 from __future__ import annotations
@@ -43,6 +45,9 @@ import tensorplay as tp  # noqa: E402
 import tensorplay.compiler as tp_compiler  # noqa: E402
 import tensorplay.nn.functional as tp_F  # noqa: E402
 from tensorplay.vision import models as tp_models  # noqa: E402
+
+
+BENCHMARK_SEED = 20261117
 
 
 @dataclass(frozen=True)
@@ -247,10 +252,12 @@ def to_tensorplay_state(state: dict[str, Any]) -> dict[str, Any]:
     validates the version refuse an otherwise current checkpoint.
     """
 
-    converted = OrderedDict(
-        (key, tp.from_numpy(np.ascontiguousarray(value.detach().cpu().numpy()).copy()))
-        for key, value in state.items()
-    )
+    converted = OrderedDict()
+    for key, value in state.items():
+        host = value.detach().cpu()
+        if host.dtype == torch.bfloat16:
+            host = host.float()
+        converted[key] = tp.from_numpy(host.numpy().copy(order="C"))
     metadata = getattr(state, "_metadata", None)
     if metadata is not None:
         converted._metadata = {
@@ -266,7 +273,9 @@ def build_pair(case: Case, device: str, dtype: torch.dtype) -> tuple[Any, Any]:
     if case.family == "segmentation":
         options["weights_backbone"] = None
     tp_model = tp_builder(**options)
-    reference_model = reference_builder(**options)
+    with torch.random.fork_rng(devices=[]):
+        torch.random.default_generator.manual_seed(BENCHMARK_SEED)
+        reference_model = reference_builder(**options)
     tp_model.load_state_dict(to_tensorplay_state(reference_model.state_dict()))
     tp_model = tp_model.to(dtype=getattr(tp, str(dtype).split(".")[-1])).to(device)
     reference_model = reference_model.to(dtype=dtype, device=device)
@@ -274,7 +283,7 @@ def build_pair(case: Case, device: str, dtype: torch.dtype) -> tuple[Any, Any]:
 
 
 def case_data(case: Case, batch: int) -> tuple[tuple[np.ndarray, ...], np.ndarray]:
-    rng = np.random.default_rng(20261117)
+    rng = np.random.default_rng(BENCHMARK_SEED)
     size = case.input_size
     shape = (batch, 3, case.frames, size, size) if case.frames else (batch, 3, size, size)
     args = (rng.standard_normal(shape).astype(np.float32),)
@@ -302,12 +311,18 @@ def training_loss(case: Case, output: Any, target: Any, cross_entropy: Callable)
     return cross_entropy(output.float(), target)
 
 
-def as_numpy(output: Any) -> Any:
+def as_numpy(output: Any, *, copy: bool = False) -> Any:
+    if output is None:
+        return None
     if isinstance(output, dict):
-        return {key: as_numpy(value) for key, value in output.items()}
+        return {key: as_numpy(value, copy=copy) for key, value in output.items()}
     if isinstance(output, (tuple, list)):
-        return tuple(as_numpy(value) for value in output)
-    return output.detach().float().cpu().numpy()
+        return tuple(as_numpy(value, copy=copy) for value in output)
+    value = output.detach()
+    if value.is_floating_point():
+        value = value.float()
+    array = value.cpu().numpy()
+    return array.copy() if copy else array
 
 
 def compile_tensorplay(model: Any, mode: str | None) -> tuple[Any, float]:
@@ -354,7 +369,7 @@ def tolerance(dtype: torch.dtype) -> float:
 
 def output_arrays(
     output: Any, path: tuple = ()
-) -> Iterator[tuple[tuple, np.ndarray]]:
+) -> Iterator[tuple[tuple, np.ndarray | None]]:
     if isinstance(output, dict):
         for key, value in output.items():
             yield from output_arrays(value, (*path, key))
@@ -371,30 +386,139 @@ class OutputComparison:
     max_abs_error: float | None = None
     relative_error: float | None = None
     reference_scale: float | None = None
+    first_mismatch: tuple | None = None
 
 
-def compare_outputs(actual: Any, reference: Any, tol: float) -> OutputComparison:
+def compare_outputs(
+    actual: Any, reference: Any, tol: float, *, scale_floor: float = 1.0
+) -> OutputComparison:
     """Check every tensor with a tolerance scaled by its own magnitude."""
     actual_arrays = dict(output_arrays(actual))
     reference_arrays = dict(output_arrays(reference))
-    if not reference_arrays or actual_arrays.keys() != reference_arrays.keys():
-        return OutputComparison(False)
+    if actual_arrays.keys() != reference_arrays.keys():
+        path = next(iter(actual_arrays.keys() ^ reference_arrays.keys()))
+        return OutputComparison(False, first_mismatch=path)
     max_abs_error = relative_error = reference_scale = 0.0
-    matches = True
+    first_mismatch = None
     for path, expected in reference_arrays.items():
         got = actual_arrays[path]
+        if got is None or expected is None:
+            if got is not expected:
+                return OutputComparison(False, first_mismatch=path)
+            continue
         if got.shape != expected.shape or not (
             np.isfinite(got).all() and np.isfinite(expected).all()
         ):
-            return OutputComparison(False)
+            return OutputComparison(False, first_mismatch=path)
+        if not np.issubdtype(expected.dtype, np.floating):
+            if not np.array_equal(got, expected):
+                return OutputComparison(False, first_mismatch=path)
+            continue
         scale = float(np.max(np.abs(expected), initial=0))
         error = float(np.max(np.abs(got - expected), initial=0))
-        absolute_tolerance = tol * max(scale, 1.0)
-        matches &= bool(np.allclose(got, expected, atol=absolute_tolerance, rtol=tol))
+        absolute_tolerance = tol * max(scale, scale_floor)
+        if first_mismatch is None and not np.allclose(
+            got, expected, atol=absolute_tolerance, rtol=tol
+        ):
+            first_mismatch = path
         max_abs_error = max(max_abs_error, error)
-        relative_error = max(relative_error, error / max(scale, 1.0))
+        relative_error = max(relative_error, error / max(scale, scale_floor))
         reference_scale = max(reference_scale, scale)
-    return OutputComparison(matches, max_abs_error, relative_error, reference_scale)
+    return OutputComparison(
+        first_mismatch is None, max_abs_error, relative_error, reference_scale, first_mismatch
+    )
+
+
+def disable_stochastic_layers(model: Any) -> None:
+    """Keep training data flow and buffer updates with deterministic activations."""
+    probability_modules = (
+        tp.nn.modules.dropout._DropoutNd,
+        torch.nn.modules.dropout._DropoutNd,
+        tp.vision.ops.StochasticDepth,
+        torchvision.ops.StochasticDepth,
+    )
+    for module in model.modules():
+        if isinstance(module, probability_modules):
+            module.p = 0.0
+        for field in ("dropout", "attention_dropout", "drop_rate"):
+            if isinstance(getattr(module, field, None), float):
+                setattr(module, field, 0.0)
+
+
+def training_snapshot(case: Case, model: Any, forward: Callable, inputs, target, api):
+    optimizer = api.optim.SGD(model.parameters(), lr=0.01)
+    optimizer.zero_grad(set_to_none=True)
+    output = forward(*inputs)
+    loss = training_loss(case, output, target, api.nn.functional.cross_entropy)
+    loss.backward()
+    optimizer.step()
+    parameters = dict(model.named_parameters())
+    return as_numpy({
+        "output": output,
+        "loss": loss,
+        "gradients": {name: param.grad for name, param in parameters.items()},
+        "parameters": parameters,
+        "buffers": dict(model.named_buffers()),
+    }, copy=True)
+
+
+def host_checkpoint(model: Any) -> OrderedDict:
+    state = model.state_dict()
+    checkpoint = OrderedDict(
+        (key, value.detach().to(device="cpu", copy=True)) for key, value in state.items()
+    )
+    checkpoint._metadata = state._metadata
+    return checkpoint
+
+
+def validate_training(
+    case, tp_model, reference_model, tp_inputs, reference_inputs, tp_target, reference_target,
+    checkpoint, device, dtype, mode, run_reference_compile,
+) -> dict[str, Any]:
+    for model in (tp_model, reference_model):
+        disable_stochastic_layers(model)
+
+    tp_checkpoint = to_tensorplay_state(checkpoint)
+    reference_model.load_state_dict(checkpoint)
+    expected = training_snapshot(
+        case, reference_model, reference_model, reference_inputs, reference_target, torch
+    )
+    metrics = {}
+
+    def compare(name, actual):
+        checks = {}
+        for group, want in expected.items():
+            check = compare_outputs(
+                actual[group], want, tolerance(dtype),
+                scale_floor=1e-3 if group == "gradients" else 1.0,
+            )
+            checks[group] = {
+                "matches": check.matches,
+                "first_mismatch": check.first_mismatch,
+                "max_abs_error": check.max_abs_error,
+                "relative_error": check.relative_error,
+            }
+        metrics[name] = checks
+
+    tp_model.load_state_dict(tp_checkpoint)
+    compare("eager", training_snapshot(case, tp_model, tp_model, tp_inputs, tp_target, tp))
+    tp_model.load_state_dict(tp_checkpoint)
+    del tp_checkpoint
+    stax, _ = compile_tensorplay(tp_model, mode)
+    compare("stax", training_snapshot(case, tp_model, stax, tp_inputs, tp_target, tp))
+    del stax
+    release_case_memory(device)
+    if run_reference_compile:
+        reference_model.load_state_dict(checkpoint)
+        reference, _ = compile_reference(reference_model, mode)
+        compare("reference_compiled", training_snapshot(
+            case, reference_model, reference, reference_inputs, reference_target, torch
+        ))
+    return {
+        "profile": "training_without_stochastic_regularization",
+        "matches": all(check["matches"] for side in metrics.values() for check in side.values()),
+        "comparisons": metrics,
+    }
 
 
 def release_case_memory(device: str) -> None:
@@ -428,6 +552,7 @@ def run_case(
     tasks: set[str],
     run_reference_compile: bool,
     cold_compile: bool = False,
+    check_training: bool = False,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
         "name": case.name,
@@ -582,6 +707,7 @@ def run_case(
         if "train" in tasks:
             tp_model.train()
             reference_model.train()
+            checkpoint = host_checkpoint(reference_model) if check_training else None
             tp_optimizer = tp.optim.SGD(tp_model.parameters(), lr=0.01)
             reference_optimizer = torch.optim.SGD(reference_model.parameters(), lr=0.01)
 
@@ -685,6 +811,19 @@ def run_case(
                     record["reference_train_ready_seconds"]
                     / record["stax_train_ready_seconds"]
                 )
+            if checkpoint is not None:
+                train_sides.clear()
+                del stax_train
+                if run_reference_compile:
+                    del reference_train
+                tp_optimizer.zero_grad(set_to_none=True)
+                reference_optimizer.zero_grad(set_to_none=True)
+                release_case_memory(device)
+                record["training_check"] = validate_training(
+                    case, tp_model, reference_model, tp_inputs, reference_inputs,
+                    tp_labels, reference_labels, checkpoint, device, dtype, mode,
+                    run_reference_compile,
+                )
     except Exception as exc:  # Keep one compiler failure visible in the report.
         record["error"] = f"{type(exc).__name__}: {exc}"
         record["traceback"] = traceback.format_exc()
@@ -732,6 +871,9 @@ def print_record(record: dict[str, Any]) -> None:
                 cr=record.get("train_compile_time_ratio", float("nan")),
             )
         )
+        if "training_check" in record:
+            check = "pass" if record["training_check"]["matches"] else "fail"
+            fields[-1] += f" check={check}"
     print(" | ".join(fields), flush=True)
 
 
@@ -750,6 +892,16 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=0)
     parser.add_argument("--no-reference-compile", action="store_true")
     parser.add_argument(
+        "--no-tf32",
+        action="store_true",
+        help="disable TF32 for convolution and matrix multiplication in both runtimes",
+    )
+    parser.add_argument(
+        "--check-training",
+        action="store_true",
+        help="compare one deterministic training step after collecting timings",
+    )
+    parser.add_argument(
         "--cold-compile",
         action="store_true",
         help="measure a compile that cannot read a cached artifact on either side",
@@ -759,10 +911,17 @@ def main() -> None:
     tasks = set(args.tasks.split(","))
     if not tasks <= {"infer", "train"}:
         parser.error("tasks may only name infer and train")
+    if args.check_training and "train" not in tasks:
+        parser.error("--check-training requires the train task")
     dtype = getattr(torch, args.dtype)
     if args.threads and hasattr(tp, "set_num_threads"):
         tp.set_num_threads(args.threads)
         torch.set_num_threads(args.threads)
+    if args.no_tf32:
+        tp.set_float32_matmul_precision("highest")
+        torch.set_float32_matmul_precision("highest")
+        tp.backends.cudnn.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
     if args.cold_compile:
         from tensorplay.compiler.backends.stax import config as stax_config
 
@@ -771,14 +930,17 @@ def main() -> None:
 
     def payload() -> dict[str, Any]:
         return {
-            "schema_version": 3,
+            "schema_version": 4,
             "benchmark": "stax-vision",
             "device": args.device,
             "dtype": args.dtype,
             "batch": args.batch,
             "tasks": sorted(tasks),
             "mode": args.mode,
+            "seed": BENCHMARK_SEED,
             "cold_compile": args.cold_compile,
+            "check_training": args.check_training,
+            "tf32_disabled": args.no_tf32,
             "threads": args.threads
             or getattr(tp, "get_num_threads", lambda: 0)(),
             "measurements": records,
@@ -805,6 +967,7 @@ def main() -> None:
             tasks,
             not args.no_reference_compile,
             cold_compile=args.cold_compile,
+            check_training=args.check_training,
         )
         print_record(record)
         records.append(record)
