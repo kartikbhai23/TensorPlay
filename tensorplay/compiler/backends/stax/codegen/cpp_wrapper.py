@@ -375,6 +375,9 @@ _EXTERN_KERNEL_SHIMS: dict[str, tuple[str, str]] = {
     # The median over every element is the same shape of answer, and the
     # order it came from is only handed back when an axis is named.
     "median": ("tp_cpu_median", "t0.median()"),
+    # The inner product of two operands: the same product the matrix forms
+    # take, with the contraction over the whole of each operand.
+    "inner": ("tp_cpu_inner", "t0.inner(t1)"),
 }
 
 #: The arguments a convolution is given beyond its operands, in the order the
@@ -635,6 +638,15 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
         "tp_cpu_logcumsumexp",
         "t0.logcumsumexp({s0}, {s1})",
         (("dim", "int"), ("dtype", "optional_dtype")),
+    ),
+    # A histogram: how many bins, and the range they span.  A range of zero
+    # at both ends is the operation's way of saying the values decide it.
+    # The call writes the three one after another, so the places are read in
+    # the order they stand in.
+    "histc": (
+        "tp_cpu_histc",
+        "t0.histc({s0}, {s1}, {s2})",
+        ((None, "int"), (None, "real"), (None, "real")),
     ),
     # The product along one axis accumulates the same way the sum does, and it
     # takes the same pair of places: the axis, and the type to accumulate in.

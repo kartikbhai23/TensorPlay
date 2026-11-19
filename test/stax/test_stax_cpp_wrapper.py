@@ -553,6 +553,30 @@ def test_the_median_of_every_element():
     )
 
 
+def test_an_inner_product_of_two_operands():
+    """The product of two operands, contracted over the whole of each."""
+
+    vector = tp.randn(4)
+    matrix = tp.randn(2, 3)
+    _check(lambda a: tp.inner(a, a), [vector])
+    _check(lambda a: tp.inner(a, -a) + 1, [vector])
+    _check(lambda a: tp.inner(a, matrix), [matrix])
+
+
+def test_a_histogram_over_the_values():
+    """How many bins, and the range they span.
+
+    A range of zero at both ends leaves the span to the values themselves, so
+    the call is written with the three numbers it was given rather than with
+    the span it worked out.
+    """
+
+    vector = tp.randn(64)
+    _check(lambda a: tp.histc(a, 4), [vector])
+    _check(lambda a: tp.histc(a, 4, -1.0, 1.0), [vector])
+    _check(lambda a: tp.histc(a).to(tp.float32) + 1, [vector])
+
+
 def test_a_running_maximum():
     """A running maximum keeps the place each maximum came from."""
 
