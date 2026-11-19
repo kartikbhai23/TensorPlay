@@ -725,32 +725,32 @@ def init_backend_registration() -> None:
     differently keeps what it chose.
     """
 
-    if get_scheduling_for_device("cpu") is not None:
-        return
     from .cpp import CppScheduling
     from .cpp_wrapper import CppWrapperCodegen
     from .cuda_combined_scheduling import CUDACombinedScheduling
     from .wrapper import PythonWrapperCodegen
 
-    #: An accelerator's work may be written by more than one printer, and which
-    #: one is named rather than fixed, so that the choice is a setting and not a
-    #: branch in every method that writes a kernel.
-    cuda_backends = {
-        "triton": CUDACombinedScheduling,
-    }
+    if get_scheduling_for_device("cpu") is None:
+        register_backend_for_device(
+            "cpu",
+            lambda scheduling: CppScheduling(scheduling),
+            PythonWrapperCodegen,
+            device_cpp_wrapper_codegen=CppWrapperCodegen,
+        )
 
-    register_backend_for_device(
-        "cpu",
-        lambda scheduling: CppScheduling(scheduling),
-        PythonWrapperCodegen,
-        device_cpp_wrapper_codegen=CppWrapperCodegen,
-    )
-    register_backend_for_device(
-        "cuda",
-        lambda scheduling: cuda_backends[config.cuda_backend](scheduling),
-        PythonWrapperCodegen,
-        device_cpp_wrapper_codegen=CppWrapperCodegen,
-    )
+    if get_scheduling_for_device("cuda") is None:
+        #: An accelerator's work may be written by more than one printer, and
+        #: which one is named rather than fixed, so that the choice is a setting
+        #: and not a branch in every method that writes a kernel.
+        cuda_backends = {
+            "triton": CUDACombinedScheduling,
+        }
+        register_backend_for_device(
+            "cuda",
+            lambda scheduling: cuda_backends[config.cuda_backend](scheduling),
+            PythonWrapperCodegen,
+            device_cpp_wrapper_codegen=CppWrapperCodegen,
+        )
 
     # A device that lives outside this repository names itself and publishes
     # what its work is written through on the module it installs.  Asking the
