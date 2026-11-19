@@ -254,9 +254,11 @@ def shifted_window_attention(
         else:
             attn = attn.view(num_heads, rows, tokens, tokens)
             attn = attn + relative_position_bias.squeeze(0).unsqueeze(1)
-        attn = attn.view(num_heads * rows, tokens, tokens)
+        # The sum keeps the shape it was read in: reshaping it before the
+        # softmax would cost a pass of its own instead of folding into it.
         attn = F.softmax(attn, dim=-1)
         attn = F.dropout(attn, p=attention_dropout, training=training)
+        attn = attn.view(num_heads * rows, tokens, tokens)
         x = attn.matmul(v)
         x = x.view(num_heads, rows, tokens, head_dim).permute(1, 2, 0, 3).reshape(rows, tokens, C)
     else:
