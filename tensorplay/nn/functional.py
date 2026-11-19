@@ -984,14 +984,12 @@ def relu6(input: Tensor, inplace: bool = False) -> Tensor:
 
 def hardswish(input: Tensor, inplace: bool = False) -> Tensor:
     r"""hardswish(input, inplace=False) -> Tensor"""
-    out = tensorplay.hardswish(input)
-    return input.copy_(out) if inplace else out
+    return tensorplay.hardswish_(input) if inplace else tensorplay.hardswish(input)
 
 
 def hardsigmoid(input: Tensor, inplace: bool = False) -> Tensor:
     r"""hardsigmoid(input, inplace=False) -> Tensor"""
-    out = tensorplay.hardsigmoid(input)
-    return input.copy_(out) if inplace else out
+    return tensorplay.hardsigmoid_(input) if inplace else tensorplay.hardsigmoid(input)
 
 
 def leaky_relu(input: Tensor, negative_slope: float = 0.01, inplace: bool = False) -> Tensor:

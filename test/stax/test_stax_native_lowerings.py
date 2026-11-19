@@ -99,6 +99,24 @@ def test_elementwise_values_and_gradients(device, name, call_outs):
 
 
 @pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("activation", [F.hardswish, F.hardsigmoid])
+def test_inplace_hard_activations_use_original_values_in_backward(device, activation):
+    def inplace(x):
+        return activation(x * 1.0, inplace=True)
+
+    values = tp.tensor([-4.0, -2.5, -1.0, 0.5, 2.0, 4.0], device=device)
+    expected_input = values.clone().requires_grad_()
+    expected = activation(expected_input)
+    expected.sum().backward()
+    for fn in (inplace, tp.compile(inplace, fullgraph=True, strict_native=True)):
+        x = values.clone().requires_grad_()
+        actual = fn(x)
+        actual.sum().backward()
+        assert tp.allclose(actual, expected)
+        assert tp.allclose(x.grad, expected_input.grad)
+
+
+@pytest.mark.parametrize("device", DEVICES)
 def test_comparisons_broadcast_their_operands(device, call_outs):
     # The comparison is the region's result: each operand is read at its own
     # positions of the broadcast shape, the classes along the last axis.
