@@ -371,6 +371,29 @@ static void widen_int_simd(dst_t* dst, const src_t* src, int64_t n) {
 
 // Contiguous dtype-conversion cast; SIMD for the autocast-critical fp32
 // <-> fp16/bf16 pairs, scalar static_cast otherwise.
+// One sweep of the float <-> double widening and narrowing.  The target
+// attribute is what keeps the lane loop; the translation unit compiles
+// without the ISA.
+__attribute__((target("avx2,fma"), noinline))
+static void widen_f32_to_f64_simd(const float* src, double* dst, int64_t len) {
+    int64_t i = 0;
+    for (; i + 8 <= len; i += 8) {
+        _mm256_storeu_pd(dst + i, _mm256_cvtps_pd(_mm_loadu_ps(src + i)));
+        _mm256_storeu_pd(dst + i + 4, _mm256_cvtps_pd(_mm_loadu_ps(src + i + 4)));
+    }
+    for (; i < len; ++i) dst[i] = static_cast<double>(src[i]);
+}
+
+__attribute__((target("avx2,fma"), noinline))
+static void narrow_f64_to_f32_simd(const double* src, float* dst, int64_t len) {
+    int64_t i = 0;
+    for (; i + 8 <= len; i += 8) {
+        _mm_storeu_ps(dst + i, _mm256_cvtpd_ps(_mm256_loadu_pd(src + i)));
+        _mm_storeu_ps(dst + i + 4, _mm256_cvtpd_ps(_mm256_loadu_pd(src + i + 4)));
+    }
+    for (; i < len; ++i) dst[i] = static_cast<float>(src[i]);
+}
+
 template <typename dst_t, typename src_t>
 void cast_contiguous(dst_t* dst, const src_t* src, int64_t len) {
 #if defined(__x86_64__)
@@ -385,6 +408,10 @@ void cast_contiguous(dst_t* dst, const src_t* src, int64_t len) {
         }
     } else if constexpr (std::is_same_v<dst_t, float> && std::is_same_v<src_t, BFloat16>) {
         if (__builtin_cpu_supports("avx2")) { bf16_to_f32_simd(&src->x, dst, len); return; }
+    } else if constexpr (std::is_same_v<dst_t, double> && std::is_same_v<src_t, float>) {
+        if (__builtin_cpu_supports("avx2")) { widen_f32_to_f64_simd(src, dst, len); return; }
+    } else if constexpr (std::is_same_v<dst_t, float> && std::is_same_v<src_t, double>) {
+        if (__builtin_cpu_supports("avx2")) { narrow_f64_to_f32_simd(src, dst, len); return; }
     } else if constexpr (std::is_integral_v<dst_t> && sizeof(dst_t) == 8 &&
                          std::is_integral_v<src_t> && sizeof(src_t) <= 4) {
         if (__builtin_cpu_supports("avx2")) { widen_int_simd(dst, src, len); return; }
