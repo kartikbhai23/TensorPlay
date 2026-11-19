@@ -580,4 +580,8 @@ def test_operator_coverage_table_is_honest():
     )
     assert coverage.summary(["conv2d.default", "add.default"]).get("not_covered", 0) >= 1
     names = [name for name, _ in coverage.work_list()]
-    assert names, "the work list should not be empty"
+    # The work list is the uncovered set, so it may be empty once every gap has
+    # been closed -- but nothing may be on it that a lowering already answers.
+    assert set(names) == set(coverage.NOT_COVERED)
+    for name in names:
+        assert not coverage.is_covered(name)

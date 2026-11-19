@@ -24,6 +24,7 @@ import math
 import operator
 import sys
 import warnings
+from fractions import Fraction
 from numbers import Number
 from collections.abc import Iterable, Sequence
 from typing import Any, Callable
@@ -6749,6 +6750,228 @@ def lower_upsample_nearest3d_backward(grad, output_size, input_size,
         dtype=grad.get_dtype(),
         inner_fn=fn,
         ranges=[*grad_size[:-3], in_d, in_h, in_w],
+    )
+
+
+_fallback_upsample_bilinear2d_backward = fallback_handler(
+    tp.ops.tp.upsample_bilinear2d_backward.default, add_to_fallback_set=False
+)
+
+
+def _bilinear_spacing(n_in: int, n_out: int, align_corners: bool):
+    """One axis's sample spacing, as an exact reduced fraction.
+
+    Bilinear upsampling places a sample at ``spacing * (o + 1/2) - 1/2`` (or at
+    ``spacing * o`` when the corners are aligned) and hands its gradient to the
+    two source positions either side of it.  The spacing is written here in
+    exact arithmetic, which is the same thing as the framework's floating-point
+    scale only when the fraction's denominator is a power of two: any other
+    denominator lets the two disagree in the last bit, and one bit is enough to
+    move a sample across a position boundary.  ``None`` says the spacing is not
+    one that can be written exactly.
+    """
+
+    if n_in <= 0 or n_out <= 0:
+        return None
+    if n_out == n_in:
+        # Either flavour copies the axis through untouched.
+        return 1, 1
+    if align_corners:
+        if n_out == 1:
+            return None
+        ratio = Fraction(n_in - 1, n_out - 1)
+    else:
+        ratio = Fraction(n_in, n_out)
+    numerator, denominator = ratio.numerator, ratio.denominator
+    if numerator <= 0 or denominator & (denominator - 1):
+        return None
+    return numerator, denominator
+
+
+def _bilinear_band(n_in: int, n_out: int, spacing, align_corners: bool):
+    """The band of output positions that read one source position.
+
+    Read the scatter backwards: a source position is read by the outputs whose
+    sample point lies within one position of it, which is a band two spacings
+    wide.  The band's first position is a function of the source position, and
+    how many positions are worth asking is measured over the axis here rather
+    than bounded, so an axis whose boundary cuts the band short asks for fewer
+    terms than the bound would.
+    """
+
+    numerator, denominator = spacing
+    if align_corners:
+        def low(index):
+            return (Fraction(index) - 1) * denominator / numerator
+
+        def start(index):
+            return Max(FloorDiv((index - 1) * denominator, numerator), 0)
+
+        weight_denominator = denominator
+        sample = lambda o: numerator * o
+    else:
+        def low(index):
+            return ((2 * Fraction(index) - 1) * denominator - numerator) / (
+                2 * numerator
+            )
+
+        def start(index):
+            return Max(
+                FloorDiv((2 * index - 1) * denominator - numerator, 2 * numerator),
+                0,
+            )
+
+        weight_denominator = 2 * denominator
+        sample = lambda o: numerator * (2 * o + 1) - denominator
+    width = Fraction(2 * denominator, numerator)
+    count = 1
+    for index in range(n_in):
+        begin = low(index)
+        first = max(math.ceil(begin), 0)
+        last = min(math.ceil(begin + width) - 1, n_out - 1)
+        if last >= first:
+            count = max(count, last - max(math.floor(begin), 0) + 1)
+    return start, count, weight_denominator, sample
+
+
+@register("upsample_bilinear2d_backward.default")
+def lower_upsample_bilinear2d_backward(grad, output_size, input_size,
+                                       align_corners, scales_h=None,
+                                       scales_w=None, **kwargs):
+    """Bilinear upsampling's gradient, read from the positions that sampled one.
+
+    A sample point is shared between the two source positions either side of it
+    along each axis, so a source position's gradient is the sum of the four-way
+    weights of the output positions whose sample landed within one position of
+    it.  That band is a few positions wide however large the output is, and its
+    start and the weight of each position in it are worked out from the exact
+    spacing: the loop only reads, weights and adds, in the order the scatter
+    would have accumulated.  A spacing the floating-point scale cannot write
+    exactly, an explicit scale, a value narrower than the arithmetic the
+    framework accumulates in, or a band too wide to be worth unrolling is asked
+    of the framework kernel.
+    """
+
+    def fallback():
+        return _fallback_upsample_bilinear2d_backward(
+            grad, output_size, input_size, align_corners, scales_h, scales_w
+        )
+
+    grad_size = list(grad.get_size())
+    dtype = grad.get_dtype()
+    if len(grad_size) != 4 or is_dynamic(*grad_size):
+        return fallback()
+    if dtype not in (tp.float32, tp.float64):
+        return fallback()
+    try:
+        out_h, out_w = (int(s) for s in list(output_size)[-2:])
+        in_h, in_w = (int(s) for s in list(input_size)[-2:])
+    except (TypeError, ValueError):
+        return fallback()
+    if (int(grad_size[-2]), int(grad_size[-1])) != (out_h, out_w):
+        return fallback()
+    if in_h <= 0 or in_w <= 0:
+        return fallback()
+    if scales_h is not None or scales_w is not None:
+        return fallback()
+    height = _bilinear_spacing(in_h, out_h, align_corners)
+    width = _bilinear_spacing(in_w, out_w, align_corners)
+    if height is None or width is None:
+        return fallback()
+    row_start, row_count, row_weight, row_sample = _bilinear_band(
+        in_h, out_h, height, align_corners
+    )
+    col_start, col_count, col_weight, col_sample = _bilinear_band(
+        in_w, out_w, width, align_corners
+    )
+    if row_count * col_count > 81:
+        return fallback()
+
+    # Read once per position of the band, so it is put in memory when it is
+    # more than a plain read.
+    grad.realize_hint()
+    loader = grad.make_loader()
+    i64 = tp.int64
+
+    def fn(idx):
+        *prefix, i, j = idx
+        zero = ops.constant(0, i64)
+        one = ops.constant(1, i64)
+
+        def band(index, n_in, n_out, start, count, weight_denominator, sample):
+            """Each position of the band, with the weight it gives this one.
+
+            The weight is kept as a numerator over the common denominator, so
+            what is added is exact until the closed form is divided out.
+            """
+
+            index_value = ops.index_expr(index, i64)
+            last = ops.constant(n_in - 1, i64)
+            steps = []
+            for offset in range(count):
+                o = start(index) + offset
+                reached = sample(o)
+                if align_corners:
+                    place = reached
+                else:
+                    # A sample before the axis starts belongs to its first
+                    # position.
+                    place = Max(reached, 0)
+                at = Min(FloorDiv(place, weight_denominator), n_in - 1)
+                remainder = Min(
+                    Max(place - at * weight_denominator, 0), weight_denominator
+                )
+                at_value = ops.index_expr(at, i64)
+                remainder_value = ops.index_expr(remainder, i64)
+                denominator = ops.constant(weight_denominator, i64)
+                # A position holds the near half of the samples that landed on
+                # it, and the last position also holds the far half of a sample
+                # that ran off the end of the axis.
+                own = ops.where(
+                    ops.eq(at_value, index_value),
+                    ops.where(ops.eq(at_value, last), denominator,
+                              ops.sub(denominator, remainder_value)),
+                    zero,
+                )
+                # The far half of a sample that landed one position before this
+                # one reaches here, unless the axis has no position after it.
+                near = ops.where(
+                    ops.logical_and(
+                        ops.lt(at_value, last),
+                        ops.eq(at_value, ops.sub(index_value, one)),
+                    ),
+                    remainder_value,
+                    zero,
+                )
+                weight_numerator = ops.add(own, near)
+                # A position past the end asks for nothing; the read itself is
+                # pulled back onto the last position so it stays in memory.
+                in_range = ops.lt(ops.index_expr(o, i64), ops.constant(n_out, i64))
+                steps.append((Min(o, n_out - 1),
+                              ops.where(in_range, weight_numerator, zero)))
+            return steps
+
+        rows = band(i, in_h, out_h, row_start, row_count, row_weight, row_sample)
+        cols = band(j, in_w, out_w, col_start, col_count, col_weight, col_sample)
+        row_scale = ops.constant(1.0 / row_weight, dtype)
+        col_scale = ops.constant(1.0 / col_weight, dtype)
+        total = None
+        for oh, h_numerator in rows:
+            h = ops.mul(ops.to_dtype(h_numerator, dtype, src_dtype=i64), row_scale)
+            for ow, w_numerator in cols:
+                w = ops.mul(
+                    ops.to_dtype(w_numerator, dtype, src_dtype=i64), col_scale
+                )
+                value = loader([*prefix, oh, ow])
+                term = ops.mul(ops.mul(h, w), value)
+                total = term if total is None else ops.add(total, term)
+        return total
+
+    return Pointwise.create(
+        device=grad.get_device(),
+        dtype=dtype,
+        inner_fn=fn,
+        ranges=[*grad_size[:2], in_h, in_w],
     )
 
 

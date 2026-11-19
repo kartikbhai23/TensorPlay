@@ -1,9 +1,9 @@
-"""Average pooling and nearest upsampling, compiled, with their gradients.
+"""Average and max pooling, and nearest and bilinear upsampling, with gradients.
 
-Both are written into the loop of whatever consumes them: an output element
-reads its window, and an input element's gradient reads the few windows that
-covered it.  Each case is checked against the sums worked out by hand below,
-on the value and on the gradient, and on a region that was actually built.
+Each is written into the loop of whatever consumes it: an output element reads
+its window, and an input element's gradient reads the few windows that covered
+it.  Each case is checked against the sums worked out by hand below, on the
+value and on the gradient, and on a region that was actually built.
 """
 import pytest
 
@@ -273,3 +273,80 @@ def test_max_pool_backward_falls_back_for_an_overlapping_window(device):
     g = tp.arange(16.0, device=device).reshape(1, 1, 4, 4) + 1.0
     compiled = tp.compile(pool, backend="stax")
     assert tp.allclose(compiled(x, g), pool(x, g))
+
+
+def _plane(shape):
+    height, width = shape
+    return [[((3 * row + 5 * col) % 11) / 4.0 - 1.0 for col in range(width)]
+            for row in range(height)]
+
+
+#: source shape, output shape, align_corners.  The spacings of the first two
+#: are 1/2 and 1/4 and the third aligns its corners at a spacing of 1/2.
+BILINEAR_CASES = [
+    ((2, 3), (4, 6), False),
+    ((2, 2), (8, 8), False),
+    ((3, 5), (5, 9), True),
+]
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("shape, out_shape, align_corners", BILINEAR_CASES)
+def test_bilinear_upsampling_gradient_is_written_out(
+        device, shape, out_shape, align_corners, monkeypatch):
+    import tensorplay.compiler.backends.stax.op_lowerings as op_lowerings
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(
+            "the framework kernel was asked for a sample the loop can read"
+        )
+
+    monkeypatch.setattr(
+        op_lowerings, "_fallback_upsample_bilinear2d_backward", refuse
+    )
+    input_shape = (1, 1) + shape
+
+    def backward(gradient):
+        return tp.ops.tp.upsample_bilinear2d_backward.default(
+            gradient, list(out_shape), list(input_shape), align_corners, None, None
+        )
+
+    gradient = tp.tensor([[_plane(out_shape)]], device=device)
+    compiled = tp.compile(backward, backend="stax")
+    got = compiled(gradient)
+    expected = backward(gradient)
+    # The answer only says something about a region that was built.
+    assert next(iter(compiled._tensorplay_cache.values()))._tensorplay_codegen is not None
+    assert tp.allclose(got, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_bilinear_upsampling_gradient_falls_back_for_a_fractional_scale(
+        device, monkeypatch):
+    import tensorplay.compiler.backends.stax.op_lowerings as op_lowerings
+
+    asked = []
+    original = op_lowerings._fallback_upsample_bilinear2d_backward
+
+    def record(*args, **kwargs):
+        asked.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        op_lowerings, "_fallback_upsample_bilinear2d_backward", record
+    )
+    # Aligning 5 corners over 10 is a spacing of 4/9, which the floating-point
+    # scale cannot write exactly, so the positions either side of a sample are
+    # not settled here.
+    input_shape = (1, 1, 5, 5)
+    out_shape = [10, 10]
+
+    def backward(gradient):
+        return tp.ops.tp.upsample_bilinear2d_backward.default(
+            gradient, out_shape, list(input_shape), True, None, None
+        )
+
+    gradient = tp.tensor([[_plane(tuple(out_shape))]], device=device)
+    compiled = tp.compile(backward, backend="stax")
+    assert tp.allclose(compiled(gradient), backward(gradient), rtol=1e-5, atol=1e-6)
+    assert asked

@@ -88,10 +88,10 @@ LIBRARY_CALLS: dict[str, str] = {
 #:
 #: A name listed here must still have nothing that writes it out: a lowering
 #: that exists answers coverage from itself, so listing the name as uncovered
-#: would only be a claim the code has already outgrown.
-NOT_COVERED: dict[str, str] = {
-    "upsample_bilinear2d_backward.default": "scatter to the input, driven by the source map",
-}
+#: would only be a claim the code has already outgrown.  The list is empty when
+#: every gap has been closed, and an empty list is a finished queue rather than
+#: a missing table.
+NOT_COVERED: dict[str, str] = {}
 
 #: Operators the decompositions produce that this route also has to write, or
 #: a decomposition is not usable here however correct it is.
