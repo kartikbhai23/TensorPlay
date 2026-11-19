@@ -2604,6 +2604,13 @@ Tensor float_power_scalar_native(const Scalar& self, const Tensor& exponent) {
 }
 
 Tensor float_power_tensor_scalar_native(const Tensor& self, const Scalar& exponent) {
+    // A float32 base with a real scalar exponent exponentiates at its own
+    // width and widens the answer: routing the promotion first would pay a
+    // full double-precision pass for a result the f32 lane pow already
+    // carries.  Complex bases keep the double-precision route.
+    if (self.dtype() == DType::Float32 && !isComplexType(self.dtype())) {
+        return ops::pow(self, exponent).to(DType::Float64);
+    }
     return ops::float_power(self, scalar_like(exponent, self));
 }
 
