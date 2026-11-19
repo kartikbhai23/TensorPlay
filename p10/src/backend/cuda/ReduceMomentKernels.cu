@@ -209,6 +209,60 @@ Tensor welford_dispatch(
     return welford_same_dtype<T, int64_t>(input, spec, keepdim, correction, take_sqrt);
 }
 
+// Two-pass variance for full reductions: each pass runs at sum speed, so
+// the pair beats the serial Welford chain, and no host sync is needed
+// because the second pass reads the mean straight from device memory.
+// The correction division is linear in the sum, so each block applies it
+// before the atomic accumulation.
+__global__ void var_two_pass_kernel(int64_t n, double correction,
+                                    const float* __restrict__ mean_ptr,
+                                    const float* __restrict__ input,
+                                    float* __restrict__ accumulator) {
+    const double mean = mean_ptr[0];
+    double value = 0.0;
+    for (int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                     threadIdx.x;
+         i < n; i += static_cast<int64_t>(gridDim.x) * blockDim.x) {
+        const double d = static_cast<double>(input[i]) - mean;
+        value += d * d;
+    }
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        value += __shfl_down_sync(0xffffffffffffffffull, value, offset);
+    }
+    __shared__ double warp_values[32];
+    if (lane == 0) warp_values[warp] = value;
+    __syncthreads();
+    if (warp == 0) {
+        const int warp_count = (blockDim.x + 31) / 32;
+        value = lane < warp_count ? warp_values[lane] : 0.0;
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            value += __shfl_down_sync(0xffffffffffffffffull, value, offset);
+        }
+        if (lane == 0) {
+            const double divisor = n > correction ? n - correction : 0.0;
+            atomicAdd(accumulator,
+                      divisor > 0 ? static_cast<float>(value / divisor) : 0.0f);
+        }
+    }
+}
+
+Tensor var_two_pass(const Tensor& self, int64_t correction) {
+    Tensor mean_t = mean_dim_kernel(self, {}, false, DType::Float32);
+    Tensor out = Tensor::empty({}, DType::Float32, self.device());
+    out.zero_();
+    const int64_t n = self.numel();
+    const int threads = 256;
+    const int64_t blocks =
+        std::min<int64_t>((n + threads * 4 - 1) / (threads * 4), 256);
+    var_two_pass_kernel<<<static_cast<unsigned>(blocks), threads, 0,
+                           getCurrentCUDAStream().stream()>>>(
+        n, static_cast<double>(correction), mean_t.data_ptr<float>(),
+        self.data_ptr<float>(), out.data_ptr<float>());
+    return out;
+}
+
 Tensor var_dim_kernel(const Tensor& self, const std::vector<int64_t>& dim, int64_t correction, bool keepdim) {
     if (isComplexType(self.dtype())) {
         Tensor real = tensorplay::tpx::ops::real(self);
@@ -217,6 +271,12 @@ Tensor var_dim_kernel(const Tensor& self, const std::vector<int64_t>& dim, int64
                var_dim_kernel(imag, dim, correction, keepdim);
     }
     const ReductionSpec spec = make_reduction_spec(self, dim);
+    // Full-reduction float fast path: the two-pass pair runs at sum speed,
+    // well ahead of the serial Welford chain on ordinary sizes.
+    if (dim.empty() && !keepdim && self.dtype() == DType::Float32 &&
+        self.is_contiguous()) {
+        return var_two_pass(self, correction);
+    }
     TP_DISPATCH_FLOAT_REDUCTION(welford_dispatch, self.dtype(), self, spec,
                                 keepdim, correction, false);
 }
@@ -256,6 +316,11 @@ Tensor std_dim_kernel(const Tensor& self, const std::vector<int64_t>& dim, int64
 
     if (isComplexType(self.dtype())) {
         return var_dim_kernel(self, dim, correction, keepdim).sqrt();
+    }
+    // Same two-pass fast path as var, with the sqrt folded into the caller.
+    if (dim.empty() && !keepdim && self.dtype() == DType::Float32 &&
+        self.is_contiguous()) {
+        return var_two_pass(self, correction).sqrt();
     }
     const ReductionSpec spec = make_reduction_spec(self, dim);
     TP_DISPATCH_FLOAT_REDUCTION(welford_dispatch, self.dtype(), self, spec,
