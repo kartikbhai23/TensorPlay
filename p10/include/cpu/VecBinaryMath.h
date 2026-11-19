@@ -1,5 +1,53 @@
 #pragma once
 
+// The lane pow with whole-lane special cases for the exponents that come up
+// constantly in practice: squaring, cubing, square roots and reciprocals
+// answer with multiplies, a square root or a reciprocal instead of the full
+// polynomial.  A lane mixture falls to the library pow.  The target
+// attribute is what keeps the lane loop; the translation unit compiles
+// without the ISA.
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256 pow_lane_f32(__m256 x, __m256 y) {
+    const __m256 two = _mm256_set1_ps(2.0f);
+    if (_mm256_movemask_ps(_mm256_cmp_ps(y, two, _CMP_EQ_OQ)) == -1) {
+        return _mm256_mul_ps(x, x);
+    }
+    const __m256 three = _mm256_set1_ps(3.0f);
+    if (_mm256_movemask_ps(_mm256_cmp_ps(y, three, _CMP_EQ_OQ)) == -1) {
+        return _mm256_mul_ps(_mm256_mul_ps(x, x), x);
+    }
+    const __m256 half = _mm256_set1_ps(0.5f);
+    if (_mm256_movemask_ps(_mm256_cmp_ps(y, half, _CMP_EQ_OQ)) == -1) {
+        return _mm256_sqrt_ps(x);
+    }
+    const __m256 minus_one = _mm256_set1_ps(-1.0f);
+    if (_mm256_movemask_ps(_mm256_cmp_ps(y, minus_one, _CMP_EQ_OQ)) == -1) {
+        return _mm256_div_ps(_mm256_set1_ps(1.0f), x);
+    }
+    return tensorplay::tpsleef::pow(x, y);
+}
+
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256d pow_lane_f64(__m256d x, __m256d y) {
+    const __m256d two = _mm256_set1_pd(2.0);
+    if (_mm256_movemask_pd(_mm256_cmp_pd(y, two, _CMP_EQ_OQ)) == -1) {
+        return _mm256_mul_pd(x, x);
+    }
+    const __m256d three = _mm256_set1_pd(3.0);
+    if (_mm256_movemask_pd(_mm256_cmp_pd(y, three, _CMP_EQ_OQ)) == -1) {
+        return _mm256_mul_pd(_mm256_mul_pd(x, x), x);
+    }
+    const __m256d half = _mm256_set1_pd(0.5);
+    if (_mm256_movemask_pd(_mm256_cmp_pd(y, half, _CMP_EQ_OQ)) == -1) {
+        return _mm256_sqrt_pd(x);
+    }
+    const __m256d minus_one = _mm256_set1_pd(-1.0);
+    if (_mm256_movemask_pd(_mm256_cmp_pd(y, minus_one, _CMP_EQ_OQ)) == -1) {
+        return _mm256_div_pd(_mm256_set1_pd(1.0), x);
+    }
+    return tensorplay::tpsleef::pow(x, y);
+}
+
 // Vectorized fast paths for the pairwise float maps whose answer costs a
 // library call per element: hypot, atan2 and the logarithmic sum.
 //
@@ -707,8 +755,8 @@ static void f32_chunk_avx2(const float* a, const float* b, float* d,
             r0 = minimum_f32(x0, y0);
             r1 = minimum_f32(x1, y1);
         } else if constexpr (op == BOp::Pow) {
-            r0 = tensorplay::tpsleef::pow(x0, y0);
-            r1 = tensorplay::tpsleef::pow(x1, y1);
+            r0 = pow_lane_f32(x0, y0);
+            r1 = pow_lane_f32(x1, y1);
         } else if constexpr (op == BOp::FloorDiv) {
             r0 = floor_div_f32(x0, y0);
             r1 = floor_div_f32(x1, y1);
@@ -743,7 +791,7 @@ static void f32_chunk_avx2(const float* a, const float* b, float* d,
         } else if constexpr (op == BOp::Minimum) {
             r = minimum_f32(x, y);
         } else if constexpr (op == BOp::Pow) {
-            r = tensorplay::tpsleef::pow(x, y);
+            r = pow_lane_f32(x, y);
         } else if constexpr (op == BOp::FloorDiv) {
             r = floor_div_f32(x, y);
         } else if constexpr (op == BOp::TruncDiv) {
@@ -818,8 +866,8 @@ static void f16_chunk_avx2(const uint16_t* a, const uint16_t* b,
             r0 = minimum_f32(x0, y0);
             r1 = minimum_f32(x1, y1);
         } else if constexpr (op == BOp::Pow) {
-            r0 = tensorplay::tpsleef::pow(x0, y0);
-            r1 = tensorplay::tpsleef::pow(x1, y1);
+            r0 = pow_lane_f32(x0, y0);
+            r1 = pow_lane_f32(x1, y1);
         } else if constexpr (op == BOp::FloorDiv) {
             r0 = floor_div_f32(x0, y0);
             r1 = floor_div_f32(x1, y1);
@@ -851,7 +899,7 @@ static void f16_chunk_avx2(const uint16_t* a, const uint16_t* b,
         } else if constexpr (op == BOp::Minimum) {
             r = minimum_f32(x, y);
         } else if constexpr (op == BOp::Pow) {
-            r = tensorplay::tpsleef::pow(x, y);
+            r = pow_lane_f32(x, y);
         } else if constexpr (op == BOp::FloorDiv) {
             r = floor_div_f32(x, y);
         } else if constexpr (op == BOp::TruncDiv) {
@@ -928,8 +976,8 @@ static void bf16_chunk_avx2(const uint16_t* a, const uint16_t* b,
             r0 = minimum_f32(x0, y0);
             r1 = minimum_f32(x1, y1);
         } else if constexpr (op == BOp::Pow) {
-            r0 = tensorplay::tpsleef::pow(x0, y0);
-            r1 = tensorplay::tpsleef::pow(x1, y1);
+            r0 = pow_lane_f32(x0, y0);
+            r1 = pow_lane_f32(x1, y1);
         } else if constexpr (op == BOp::FloorDiv) {
             r0 = floor_div_f32(x0, y0);
             r1 = floor_div_f32(x1, y1);
@@ -962,7 +1010,7 @@ static void bf16_chunk_avx2(const uint16_t* a, const uint16_t* b,
         } else if constexpr (op == BOp::Minimum) {
             r = minimum_f32(x, y);
         } else if constexpr (op == BOp::Pow) {
-            r = tensorplay::tpsleef::pow(x, y);
+            r = pow_lane_f32(x, y);
         } else if constexpr (op == BOp::FloorDiv) {
             r = floor_div_f32(x, y);
         } else if constexpr (op == BOp::TruncDiv) {
@@ -1013,8 +1061,8 @@ static void f64_chunk_avx2(const double* a, const double* b, double* d,
             r0 = minimum_f64(x0, y0);
             r1 = minimum_f64(x1, y1);
         } else if constexpr (op == BOp::Pow) {
-            r0 = tensorplay::tpsleef::pow(x0, y0);
-            r1 = tensorplay::tpsleef::pow(x1, y1);
+            r0 = pow_lane_f64(x0, y0);
+            r1 = pow_lane_f64(x1, y1);
         } else if constexpr (op == BOp::FloorDiv) {
             r0 = floor_div_f64(x0, y0);
             r1 = floor_div_f64(x1, y1);
@@ -1049,7 +1097,7 @@ static void f64_chunk_avx2(const double* a, const double* b, double* d,
         } else if constexpr (op == BOp::Minimum) {
             r = minimum_f64(x, y);
         } else if constexpr (op == BOp::Pow) {
-            r = tensorplay::tpsleef::pow(x, y);
+            r = pow_lane_f64(x, y);
         } else if constexpr (op == BOp::FloorDiv) {
             r = floor_div_f64(x, y);
         } else if constexpr (op == BOp::TruncDiv) {

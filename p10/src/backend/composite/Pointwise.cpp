@@ -137,6 +137,20 @@ Tensor float_power_native(const Tensor& self, const Tensor& exponent) {
                          : DType::Float64;
     // The conversions record themselves, so the result is differentiated
     // through them back to the operands' own types.
+    //
+    // A float32 pair promotes to Float64 for the answer's dtype but keeps
+    // the exponentiation at the operands' own width: the f32 lane pow
+    // answers there several times faster, and the widening conversion
+    // carries the f32-accurate result into the f64 result without loss.
+    if (self.dtype() == DType::Float32 && !isComplexType(exponent.dtype())) {
+        // The pair walk needs the exponent shaped like the base: a scalar
+        // exponent broadcasts over it as a view, no copy.
+        Tensor e = tpx::to(exponent, DType::Float32);
+        if (e.dim() == 0 && self.dim() != 0) {
+            e = e.expand(static_cast<std::vector<int64_t>>(self.shape()));
+        }
+        return ops::pow(self, e).to(DType::Float64);
+    }
     return ops::pow(tpx::to(self, dt), tpx::to(exponent, dt));
 }
 
