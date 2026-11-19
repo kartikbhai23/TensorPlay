@@ -7,6 +7,7 @@
 
 #include "Tensor.h"
 #include "Dispatcher.h"
+#include "DropoutBuffers.h"
 #include "Utils.h"
 #include "Generator.h"
 #include "DistributionsHelper.h"
@@ -595,8 +596,7 @@ Tensor& resize__cpu(Tensor& self, const std::vector<int64_t>& size) {
 
 // Fused dropout forward: one RNG pass produces both the scaled output and
 // the bool mask consumed by native_dropout's generated backward node
-// (grad * mask / (1 - p)). p == 1 is rejected here because its scale is
-// undefined; F.dropout gates that case in Python.
+// (grad * mask / (1 - p)).
 std::tuple<Tensor, Tensor> native_dropout_cpu(const Tensor& input, double p,
                                              std::optional<bool> train) {
     if (input.numel() == 0) {
@@ -619,10 +619,7 @@ std::tuple<Tensor, Tensor> native_dropout_cpu(const Tensor& input, double p,
         return std::make_tuple(Tensor::zeros_like(input),
                                Tensor::zeros_like(input, DType::Bool));
     }
-    Tensor mask(static_cast<std::vector<int64_t>>(input.shape()), DType::Bool,
-                input.device());
-    Tensor out(static_cast<std::vector<int64_t>>(input.shape()), input.dtype(),
-               input.device());
+    auto [source, out, mask] = allocate_dropout_buffers(input);
     const int64_t n = input.numel();
     auto& gen = default_generator();
     uniform_real_distribution<double> uniform(0.0, 1.0);
@@ -630,7 +627,7 @@ std::tuple<Tensor, Tensor> native_dropout_cpu(const Tensor& input, double p,
 
     switch (input.dtype()) {
         case DType::Float32: {
-            const float* in = input.data_ptr<float>();
+            const float* in = source.data_ptr<float>();
             float* o = out.data_ptr<float>();
             bool* m = mask.data_ptr<bool>();
             for (int64_t i = 0; i < n; ++i) {
@@ -641,7 +638,7 @@ std::tuple<Tensor, Tensor> native_dropout_cpu(const Tensor& input, double p,
             break;
         }
         case DType::Float64: {
-            const double* in = input.data_ptr<double>();
+            const double* in = source.data_ptr<double>();
             double* o = out.data_ptr<double>();
             bool* m = mask.data_ptr<bool>();
             for (int64_t i = 0; i < n; ++i) {
@@ -654,7 +651,7 @@ std::tuple<Tensor, Tensor> native_dropout_cpu(const Tensor& input, double p,
         case DType::Float16:
         case DType::BFloat16: {
             if (input.dtype() == DType::Float16) {
-                const Half* in = input.data_ptr<Half>();
+                const Half* in = source.data_ptr<Half>();
                 Half* o = out.data_ptr<Half>();
                 bool* m = mask.data_ptr<bool>();
                 for (int64_t i = 0; i < n; ++i) {
@@ -665,7 +662,7 @@ std::tuple<Tensor, Tensor> native_dropout_cpu(const Tensor& input, double p,
                                                  : 0.0);
                 }
             } else {
-                const BFloat16* in = input.data_ptr<BFloat16>();
+                const BFloat16* in = source.data_ptr<BFloat16>();
                 BFloat16* o = out.data_ptr<BFloat16>();
                 bool* m = mask.data_ptr<bool>();
                 for (int64_t i = 0; i < n; ++i) {

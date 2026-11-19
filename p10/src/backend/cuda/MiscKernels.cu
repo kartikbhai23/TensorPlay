@@ -7,6 +7,7 @@
 #include "CUDARuntime.h"
 #include "CUDAReduce.cuh"
 #include "Dispatcher.h"
+#include "DropoutBuffers.h"
 #include "Utils.h"
 #include "CUDAGenerator.h"
 #include "CUDALoops.cuh"
@@ -763,10 +764,7 @@ std::tuple<Tensor, Tensor> native_dropout_cuda(const Tensor& input, double p,
         return std::make_tuple(Tensor::zeros_like(input),
                                Tensor::zeros_like(input, DType::Bool));
     }
-    Tensor mask(static_cast<std::vector<int64_t>>(input.shape()), DType::Bool,
-                input.device());
-    Tensor out(static_cast<std::vector<int64_t>>(input.shape()), input.dtype(),
-               input.device());
+    auto [source, out, mask] = allocate_dropout_buffers(input);
     const int64_t n = input.numel();
     if (n == 0) return {std::move(out), std::move(mask)};
     if (input.dtype() != DType::Float32 && input.dtype() != DType::Float64 &&
@@ -798,7 +796,7 @@ std::tuple<Tensor, Tensor> native_dropout_cuda(const Tensor& input, double p,
         using scalar_t = decltype(type_tag);
         native_dropout_kernel<scalar_t><<<grid, block, 0, getCurrentCUDAStream().stream()>>>(
             n, philox_args, pf, scale,
-            input.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), mask_data);
+            source.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), mask_data);
         cudaError_t error = cudaGetLastError();
         if (error != cudaSuccess) {
             TP_THROW(RuntimeError,

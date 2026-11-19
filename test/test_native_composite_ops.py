@@ -281,6 +281,33 @@ def test_dropout_train_statistics():
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"] if tp.cuda.is_available() else ["cpu"])
+@pytest.mark.parametrize("layout", ["channels_last", "transposed", "sliced"])
+@pytest.mark.parametrize("p", [0.0, 0.5])
+def test_native_dropout_respects_input_layout(device, layout, p):
+    values = tp.arange(1, 121, dtype=tp.float32, device=device).reshape(2, 3, 4, 5)
+    if layout == "channels_last":
+        values = values.contiguous(memory_format=tp.channels_last)
+    elif layout == "transposed":
+        values = values.transpose(2, 3)
+    else:
+        values = values[:, :, ::2, ::2]
+    values.requires_grad_()
+
+    output, mask = tp.ops.tp.native_dropout.default(values, p, True)
+    output.sum().backward()
+
+    if layout == "sliced":
+        assert output.is_contiguous() and mask.is_contiguous()
+    else:
+        assert output.stride() == mask.stride() == values.stride()
+    if p == 0:
+        assert bool(mask.all())
+    expected_grad = mask.to(values.dtype) / (1 - p)
+    assert tp.equal(output, values * expected_grad)
+    assert tp.equal(values.grad, expected_grad)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"] if tp.cuda.is_available() else ["cpu"])
 @pytest.mark.parametrize(
     "name, shape, alpha, functional",
     [
