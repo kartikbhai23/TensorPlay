@@ -99,7 +99,7 @@ conv_channels_last_reduced_precision = (
 #                 pair means the channel-major engines dominate;
 #   "grouped"   - every call but the ungrouped ones;
 #   "all"       - every call, ungrouped ones included.
-conv_channels_last_mode = os.environ.get("TP_STAX_CONV_CHANNELS_LAST_MODE", "precision")
+conv_channels_last_mode = os.environ.get("TP_STAX_CONV_CHANNELS_LAST_MODE", "grouped")
 
 # Whether strides are padded when the extents they belong to are symbolic.
 pad_dynamic_shapes = False
