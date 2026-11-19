@@ -622,6 +622,29 @@ __global__ void dirichlet_normalize_impl(int64_t rows, int64_t cols,
     }
 }
 
+// Two-stage normalization for the float32 path: every element gets its own
+// thread instead of one thread walking its whole row twice.
+__global__ void dirichlet_row_sum_kernel(int64_t total, int64_t cols,
+                                         const float* __restrict__ data,
+                                         float* __restrict__ sums) {
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    for (; idx < total;
+         idx += static_cast<int64_t>(gridDim.x) * blockDim.x) {
+        atomicAdd(sums + idx / cols, data[idx]);
+    }
+}
+
+__global__ void dirichlet_divide_kernel(int64_t total, int64_t cols,
+                                        float* __restrict__ data,
+                                        const float* __restrict__ sums) {
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    for (; idx < total;
+         idx += static_cast<int64_t>(gridDim.x) * blockDim.x) {
+        const float s = sums[idx / cols];
+        if (s > 0) data[idx] = data[idx] / s;
+    }
+}
+
 // Reserves a philox counter slice for a rejection-loop kernel; draws per
 // element are unbounded in the worst case, so the reservation is a generous
 // fixed multiple of the element count.
@@ -824,9 +847,22 @@ Tensor sample_dirichlet_kernel_cuda(const Tensor& self,
     const int threads = 256;
     const int blocks = static_cast<int>((rows + threads - 1) / threads);
     if (gamma.dtype() == DType::Float32) {
-        dirichlet_normalize_impl<float, float>
-            <<<blocks, threads, 0, getCurrentCUDAStream().stream()>>>(
-                rows, cols, flat.data_ptr<float>());
+        // Two-stage normalization: every element gets its own thread, so a
+        // 64-row sample uses thousands of resident threads instead of one
+        // per row serially walking its data twice.
+        Tensor sums = Tensor::empty({rows}, DType::Float32, self.device());
+        cudaMemsetAsync(sums.data_ptr(), 0, sizeof(float) * rows,
+                        getCurrentCUDAStream().stream());
+        const int64_t total = rows * cols;
+        const int elem_threads = 64;
+        const int elem_blocks = static_cast<int>(
+            (total + elem_threads - 1) / elem_threads);
+        dirichlet_row_sum_kernel<<<elem_blocks, elem_threads, 0,
+                                   getCurrentCUDAStream().stream()>>>(
+            total, cols, flat.data_ptr<float>(), sums.data_ptr<float>());
+        dirichlet_divide_kernel<<<elem_blocks, elem_threads, 0,
+                                  getCurrentCUDAStream().stream()>>>(
+            total, cols, flat.data_ptr<float>(), sums.data_ptr<float>());
     } else if (gamma.dtype() == DType::Float64) {
         dirichlet_normalize_impl<double, double>
             <<<blocks, threads, 0, getCurrentCUDAStream().stream()>>>(
