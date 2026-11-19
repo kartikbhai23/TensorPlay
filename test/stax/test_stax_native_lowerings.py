@@ -134,6 +134,20 @@ def test_inplace_activations_use_original_values_in_backward(device, activation,
 
 
 @pytest.mark.parametrize("device", DEVICES)
+def test_dropout_preserves_channels_last_values_and_gradients(device):
+    def dropout(x):
+        return F.dropout(x, p=0.0, training=True)
+
+    values = tp.arange(1, 241, dtype=tp.float32, device=device).reshape(2, 3, 5, 8)
+    values = values.contiguous(memory_format=tp.channels_last).requires_grad_()
+    weights = tp.arange(240, dtype=tp.float32, device=device).reshape(2, 3, 5, 8)
+    actual = tp.compile(dropout, fullgraph=True, strict_native=True)(values)
+    (actual * weights).sum().backward()
+    assert tp.equal(actual, values)
+    assert tp.equal(values.grad, weights)
+
+
+@pytest.mark.parametrize("device", DEVICES)
 def test_comparisons_broadcast_their_operands(device, call_outs):
     # The comparison is the region's result: each operand is read at its own
     # positions of the broadcast shape, the classes along the last axis.
