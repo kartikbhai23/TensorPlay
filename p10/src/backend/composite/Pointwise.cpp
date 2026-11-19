@@ -169,10 +169,57 @@ Tensor mvlgamma_native(const Tensor& self, int64_t p) {
     return ops::add(acc, Scalar(pi_norm));
 }
 
+#if defined(__x86_64__)
+#include <immintrin.h>
+// One pass of the complex conjugation: the sign byte of each element's
+// imaginary half flips, the real half copies verbatim.  The helper carries
+// the ISA target because this translation unit compiles without it.
+__attribute__((target("avx2,fma"), noinline))
+static void conj_copy_simd(const char* src, char* dst, int64_t n, int64_t elem) {
+    if (elem == 8) {
+        const __m256 sign = _mm256_setr_ps(0, -0.0f, 0, -0.0f, 0, -0.0f, 0, -0.0f);
+        const float* s = reinterpret_cast<const float*>(src);
+        float* d = reinterpret_cast<float*>(dst);
+        const int64_t nfloats = n * 2;
+        int64_t i = 0;
+        for (; i + 16 <= nfloats; i += 16) {
+            _mm256_storeu_ps(d + i, _mm256_xor_ps(_mm256_loadu_ps(s + i), sign));
+            _mm256_storeu_ps(d + i + 8, _mm256_xor_ps(_mm256_loadu_ps(s + i + 8), sign));
+        }
+        for (; i < nfloats; ++i) d[i] = (i % 2) ? -s[i] : s[i];
+    } else {
+        const __m256d sign = _mm256_setr_pd(0, -0.0, 0, -0.0);
+        const double* s = reinterpret_cast<const double*>(src);
+        double* d = reinterpret_cast<double*>(dst);
+        const int64_t ndoubles = n * 2;
+        int64_t i = 0;
+        for (; i + 8 <= ndoubles; i += 8) {
+            _mm256_storeu_pd(d + i, _mm256_xor_pd(_mm256_loadu_pd(s + i), sign));
+            _mm256_storeu_pd(d + i + 4, _mm256_xor_pd(_mm256_loadu_pd(s + i + 4), sign));
+        }
+        for (; i < ndoubles; ++i) d[i] = (i % 2) ? -s[i] : s[i];
+    }
+}
+#endif
+
 Tensor conj_physical_native(const Tensor& self) {
     // Real dtypes are self-conjugate: conj already answers a view over the
     // operand's geometry, so no clone round trip is needed.
     if (!isComplexType(self.dtype())) return ops::conj(self);
+    // A complex operand conjugates in one pass: the copy-after-conjugate
+    // detour allocates a temporary and walks the data twice for what a
+    // sign flip of the imaginary lanes answers.
+#if defined(__x86_64__)
+    if (self.is_contiguous() && (self.dtype() == DType::ComplexFloat ||
+                                 self.dtype() == DType::ComplexDouble)) {
+        Tensor out = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
+                                   self.dtype(), self.device());
+        conj_copy_simd(static_cast<const char*>(self.data_ptr()),
+                       static_cast<char*>(out.data_ptr()), self.numel(),
+                       self.dtype() == DType::ComplexFloat ? 8 : 16);
+        return out;
+    }
+#endif
     return ops::clone(ops::conj(self), kContiguous);
 }
 
