@@ -254,12 +254,12 @@ Tensor zeta_cpu(const Tensor& s, const Tensor& q) {
     }, "zeta");
 }
 Tensor gammainc_cpu(const Tensor& a, const Tensor& x) {
-    return binary_float_kernel(a, x, [](double p, double v) {
+    return binary_float_kernel(a, x, [](auto p, auto v) {
         return calc_igamma(p, v);
     }, "gammainc");
 }
 Tensor gammaincc_cpu(const Tensor& a, const Tensor& x) {
-    return binary_float_kernel(a, x, [](double p, double v) {
+    return binary_float_kernel(a, x, [](auto p, auto v) {
         return calc_igammac(p, v);
     }, "gammaincc");
 }

@@ -812,7 +812,8 @@ scalar_t calc_igamma(scalar_t a, scalar_t x) {
 }
 inline float calc_digamma(float x) { return static_cast<float>(calc_digamma(static_cast<double>(x))); }
 inline float calc_erfinv(float y) { return static_cast<float>(calc_erfinv(static_cast<double>(y))); }
-inline float calc_igamma(float a, float x) { return static_cast<float>(calc_igamma(static_cast<double>(a), static_cast<double>(x))); }
-inline float calc_igammac(float a, float x) { return static_cast<float>(calc_igammac(static_cast<double>(a), static_cast<double>(x))); }
+// igamma / igammac keep their float instantiations: the continued fraction
+// and the series converge in fewer steps at the float machine epsilon, and
+// a widen-then-narrow detour through double would answer at double cost.
 
 } // namespace tensorplay
