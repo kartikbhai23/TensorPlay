@@ -2190,12 +2190,44 @@ struct EluBackwardAt {
     }
 };
 
+// One sweep of the default elu gradient for contiguous float32 pairs: the
+// positive branch passes the gradient, the negative branch scales by the
+// exponential.  The target attribute is what keeps the lane loop; the
+// translation unit compiles without the ISA.
+__attribute__((target("avx2,fma"), noinline))
+static void elu_backward_f32_sweep(const float* gp, const float* xp,
+                                   float* dp, int64_t n) {
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        const __m256 x = _mm256_loadu_ps(xp + i);
+        const __m256 g = _mm256_loadu_ps(gp + i);
+        const __m256 neg = _mm256_mul_ps(g, vecunary::v_exp_f32(x));
+        _mm256_storeu_ps(dp + i, _mm256_blendv_ps(neg, g,
+            _mm256_cmp_ps(x, _mm256_setzero_ps(), _CMP_GT_OQ)));
+    }
+    for (; i < n; ++i) {
+        dp[i] = xp[i] > 0.0f ? gp[i] : gp[i] * std::exp(xp[i]);
+    }
+}
+
 Tensor elu_backward_kernel_impl(const Tensor& grad_output, const Scalar& alpha, const Scalar& scale, const Scalar& input_scale, bool is_result, const Tensor& self_or_result) {
     //   is_result: b <= 0 ? a*negiptcoef*(b + negcoef) : a*poscoef
     //   else:      b <= 0 ? a*negiptcoef*negcoef*exp(b*negiptcoef) : a*poscoef
     double negcoef = alpha.toDouble() * scale.toDouble();
     double poscoef = scale.toDouble();
     double negiptcoef = input_scale.toDouble();
+    // The default spelling with a contiguous float32 pair answers in one
+    // lane sweep; the lane exp matches libm to its last ulp.
+    if (!is_result && negcoef == 1.0 && poscoef == 1.0 && negiptcoef == 1.0 &&
+        grad_output.dtype() == DType::Float32 &&
+        grad_output.is_contiguous() && self_or_result.is_contiguous() &&
+        grad_output.numel() == self_or_result.numel()) {
+        Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(grad_output.shape()),
+                                      grad_output.dtype(), grad_output.device());
+        elu_backward_f32_sweep(grad_output.data_ptr<float>(), self_or_result.data_ptr<float>(),
+                               result.data_ptr<float>(), grad_output.numel());
+        return result;
+    }
     return activation_backward_kernel(grad_output, self_or_result,
                                       EluBackwardAt{negcoef, poscoef, negiptcoef,
                                                     is_result});
