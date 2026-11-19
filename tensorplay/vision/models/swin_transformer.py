@@ -34,7 +34,11 @@ __all__ = [
 
 def _patch_merging_pad(x: tensorplay.Tensor) -> tensorplay.Tensor:
     H, W, _ = x.shape[-3:]
-    x = F.pad(x, (0, 0, 0, W % 2, 0, H % 2))
+    pad_h, pad_w = H % 2, W % 2
+    if pad_h or pad_w:
+        # A pad of nothing still copies the whole map, so it is only asked for
+        # when a side is odd and the map has to grow.
+        x = F.pad(x, (0, 0, 0, pad_w, 0, pad_h))
     x0 = x[..., 0::2, 0::2, :]  # ... H/2 W/2 C
     x1 = x[..., 1::2, 0::2, :]  # ... H/2 W/2 C
     x2 = x[..., 0::2, 1::2, :]  # ... H/2 W/2 C
@@ -152,7 +156,12 @@ def shifted_window_attention(
     # pad feature maps to multiples of window size
     pad_r = (window_size[1] - W % window_size[1]) % window_size[1]
     pad_b = (window_size[0] - H % window_size[0]) % window_size[0]
-    x = F.pad(input, (0, 0, 0, pad_r, 0, pad_b))
+    if pad_r or pad_b:
+        # Padding by nothing is a full copy of the map on both backends, so it
+        # is only asked for when the extent is not already a window multiple.
+        x = F.pad(input, (0, 0, 0, pad_r, 0, pad_b))
+    else:
+        x = input
     _, pad_H, pad_W, _ = x.shape
 
     shift_size = shift_size.copy()
@@ -176,9 +185,19 @@ def shifted_window_attention(
         qkv_bias = qkv_bias.clone()
         length = qkv_bias.numel() // 3
         qkv_bias[length : 2 * length].zero_()
-    qkv = F.linear(x, qkv_weight, qkv_bias)
-    qkv = qkv.reshape(x.size(0), x.size(1), 3, num_heads, C // num_heads).permute(2, 0, 3, 1, 4)
+    head_dim = C // num_heads
+    qkv = F.linear(x, qkv_weight, None)
+    qkv = qkv.reshape(x.size(0), x.size(1), 3, num_heads, head_dim).permute(2, 0, 3, 1, 4)
     q, k, v = qkv[0], qkv[1], qkv[2]
+    if qkv_bias is not None:
+        # Each head reads its own slice of the fused bias, so the add lands on
+        # the one tensor it belongs to instead of on the three-wide product.
+        bq = qkv_bias[0:C].view(1, num_heads, 1, head_dim)
+        bk = qkv_bias[C : 2 * C].view(1, num_heads, 1, head_dim)
+        bv = qkv_bias[2 * C : 3 * C].view(1, num_heads, 1, head_dim)
+        q = q + bq
+        k = k + bk
+        v = v + bv
     if logit_scale is not None:
         # cosine attention
         attn = F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1)
