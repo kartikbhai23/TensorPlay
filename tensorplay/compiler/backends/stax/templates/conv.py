@@ -1516,10 +1516,16 @@ def channels_last_call(x, ndim: int, groups: int, transposed: bool) -> bool:
     if mode in ("depthwise", "grouped"):
         # A grouped call holds one filter channel per group, so the engines
         # that suit it read the channels of both operands adjacently.
+        # A depthwise call (groups equals the input channels) has its own
+        # native kernel that reads row-major storage, so it is left on that
+        # path even in "grouped" mode.
         in_channels = x.get_size()[1]
         grouped = V.graph.sizevars.statically_known_equals(groups, in_channels)
         if grouped:
-            return True
+            if mode == "depthwise":
+                return True
+            # In "grouped" mode, depthwise convs keep the native kernel.
+            return False
         if mode == "grouped" and groups > 1:
             return True
     return config.conv_channels_last_reduced_precision and groups == 1
