@@ -39,11 +39,15 @@ def _patch_merging_pad(x: tensorplay.Tensor) -> tensorplay.Tensor:
         # A pad of nothing still copies the whole map, so it is only asked for
         # when a side is odd and the map has to grow.
         x = F.pad(x, (0, 0, 0, pad_w, 0, pad_h))
-    x0 = x[..., 0::2, 0::2, :]  # ... H/2 W/2 C
-    x1 = x[..., 1::2, 0::2, :]  # ... H/2 W/2 C
-    x2 = x[..., 0::2, 1::2, :]  # ... H/2 W/2 C
-    x3 = x[..., 1::2, 1::2, :]  # ... H/2 W/2 C
-    x = tensorplay.cat([x0, x1, x2, x3], -1)  # ... H/2 W/2 4*C
+    H, W, C = x.shape[-3:]
+    leading = x.shape[:-3]
+    # The double stride splits each axis in two.  Naming both halves as axes
+    # and moving them next to the channel axis reads the four phases out in
+    # one pass, where four slices gathered afterwards would take two.
+    x = x.view(*leading, H // 2, 2, W // 2, 2, C)
+    rank = len(leading)
+    x = x.permute(*range(rank), rank, rank + 2, rank + 3, rank + 1, rank + 4)
+    x = x.reshape(*leading, H // 2, W // 2, 4 * C)  # ... H/2 W/2 4*C
     return x
 
 
@@ -117,6 +121,19 @@ class PatchMergingV2(nn.Module):
         return x
 
 
+def _shift_tokens(x: Tensor, shift_h: int, shift_w: int) -> Tensor:
+    """Move the token grid by the given offsets, wrapping the edges around.
+
+    Each axis is recombined from two slices, so the move is expressed as
+    indexing over the source and can fold into the pass that follows it.
+    """
+    if shift_h:
+        x = tensorplay.cat([x[:, shift_h:], x[:, :shift_h]], dim=1)
+    if shift_w:
+        x = tensorplay.cat([x[:, :, shift_w:], x[:, :, :shift_w]], dim=2)
+    return x
+
+
 def shifted_window_attention(
     input: Tensor,
     qkv_weight: Tensor,
@@ -173,12 +190,15 @@ def shifted_window_attention(
 
     # cyclic shift
     if sum(shift_size) > 0:
-        x = tensorplay.roll(x, shifts=(-shift_size[0], -shift_size[1]), dims=(1, 2))
+        x = _shift_tokens(x, shift_size[0], shift_size[1])
 
-    # partition windows
+    # The projection reads the map in the order it is stored, and the window
+    # split is asked for once the three products exist.  Splitting first costs
+    # a pass over the whole map that the per-head reads would have made anyway.
     num_windows = (pad_H // window_size[0]) * (pad_W // window_size[1])
-    x = x.view(B, pad_H // window_size[0], window_size[0], pad_W // window_size[1], window_size[1], C)
-    x = x.permute(0, 1, 3, 2, 4, 5).reshape(B * num_windows, window_size[0] * window_size[1], C)  # B*nW, Ws*Ws, C
+    grid = (pad_H // window_size[0], window_size[0], pad_W // window_size[1], window_size[1])
+    tokens = window_size[0] * window_size[1]
+    rows = B * num_windows
 
     # multi-head attention
     if logit_scale is not None and qkv_bias is not None:
@@ -186,31 +206,31 @@ def shifted_window_attention(
         length = qkv_bias.numel() // 3
         qkv_bias[length : 2 * length].zero_()
     head_dim = C // num_heads
-    tokens = x.size(1)
-    rows = x.size(0)
-    qkv = F.linear(x, qkv_weight, None)
-    qkv = qkv.reshape(rows, tokens, 3, num_heads, head_dim)
+    qkv = F.linear(x.reshape(B * pad_H * pad_W, C), qkv_weight, None)
+    qkv = qkv.reshape(B, *grid, 3, num_heads, head_dim)
     if logit_scale is None:
         def head_stack(index, offset, scale):
-            value = qkv[:, :, index]
+            # Heads become the outer axis of the stack while the windows are
+            # read out, which leaves every head of every window in one
+            # contiguous run: the two products below then take the whole batch
+            # in a single launch.
+            value = qkv[..., index, :, :]  # B, nH, Ws, nW, Ws, NH, hd
             if qkv_bias is not None:
                 # Each head reads its own slice of the fused bias, so the add
                 # lands on the one tensor it belongs to instead of on the
                 # three-wide product.
-                value = value + qkv_bias[offset : offset + C].view(num_heads, head_dim)
+                value = value + qkv_bias[offset : offset + C].view(1, 1, 1, 1, 1, num_heads, head_dim)
             if scale is not None:
                 value = value * scale
-            # Heads become the outer axis of the stack, which leaves every
-            # head of every window in one contiguous run: the two products
-            # below then take the whole batch in a single launch.
-            return value.permute(2, 0, 1, 3).reshape(num_heads * rows, tokens, head_dim)
+            return value.permute(5, 0, 1, 3, 2, 4, 6).reshape(num_heads * rows, tokens, head_dim)
 
         q = head_stack(0, 0, head_dim ** -0.5)
         k = head_stack(1, C, None)
         v = head_stack(2, 2 * C, None)
         attn = q.matmul(k.transpose(-2, -1))
     else:
-        qkv = qkv.permute(2, 0, 3, 1, 4)
+        qkv = qkv.permute(5, 0, 1, 3, 2, 4, 6, 7).reshape(3, rows, tokens, num_heads, head_dim)
+        qkv = qkv.permute(0, 1, 3, 2, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
         if qkv_bias is not None:
             # Each head reads its own slice of the fused bias, so the add lands
@@ -280,7 +300,7 @@ def shifted_window_attention(
 
     # reverse cyclic shift
     if sum(shift_size) > 0:
-        x = tensorplay.roll(x, shifts=(shift_size[0], shift_size[1]), dims=(1, 2))
+        x = _shift_tokens(x, -shift_size[0], -shift_size[1])
 
     # unpad features
     x = x[:, :H, :W, :].contiguous()
