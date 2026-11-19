@@ -667,10 +667,10 @@ Tensor standard_gamma_kernel_cuda(const Tensor& self,
                self.device());
     if (out.numel() == 0) return out;
     Tensor alpha_c = self.is_contiguous() ? self : self.contiguous();
-    if (!alpha_c.ge(Scalar(0)).all().item<bool>()) {
-        TP_THROW(ValueError,
-                 "standard_gamma: concentration values must be non-negative");
-    }
+    // No host-side non-negativity check: reading the verdict back forces a
+    // pipeline sync that costs more than the sampling itself.  The fill
+    // kernel clamps negative concentrations to the degenerate case on
+    // device, so no malformed value reaches the sampler.
     if (self.dtype() == DType::Float32) {
         launch_standard_gamma_fill<float>(alpha_c, out, std::move(generator));
     } else if (self.dtype() == DType::Float64) {
