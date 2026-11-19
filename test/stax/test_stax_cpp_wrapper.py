@@ -577,6 +577,34 @@ def test_a_histogram_over_the_values():
     _check(lambda a: tp.histc(a).to(tp.float32) + 1, [vector])
 
 
+def test_the_nan_median_along_an_axis():
+    """The middle value with the NaNs left out, and where it came from.
+
+    The axis and whether the answer keeps it are the call's two places.
+    """
+
+    values = tp.tensor(
+        [[1.0, float("nan"), 3.0, 2.0], [4.0, 0.0, float("nan"), -1.0]]
+    )
+    _check(lambda a: tp.nanmedian(a, 1), [values])
+    _check(lambda a: tp.nanmedian(a, 1, keepdim=True), [values])
+    _check(lambda a: tp.nanmedian(a, 1)[1], [values])
+
+
+def test_the_norm_of_a_matrix():
+    """A matrix norm names what it measures, either by word or by number.
+
+    Both spellings read the same four places: the norm, the two axes it spans,
+    whether the answer keeps them, and the type to accumulate in.
+    """
+
+    matrix = tp.randn(3, 4)
+    _check(lambda a: tp.linalg.matrix_norm(a, "fro"), [matrix])
+    _check(lambda a: tp.linalg.matrix_norm(a, "nuc"), [matrix])
+    _check(lambda a: tp.linalg.matrix_norm(a, 1.0), [matrix])
+    _check(lambda a: tp.linalg.matrix_norm(a, 2.0, keepdim=True), [matrix])
+
+
 def test_a_running_maximum():
     """A running maximum keeps the place each maximum came from."""
 

@@ -648,6 +648,31 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
         "t0.histc({s0}, {s1}, {s2})",
         ((None, "int"), (None, "real"), (None, "real")),
     ),
+    # The norm of a matrix, named by the kind of norm rather than by a
+    # number: the word, the two axes it spans, whether the answer keeps them,
+    # and the type to accumulate in.
+    "linalg_matrix_norm_str_ord": (
+        "tp_cpu_linalg_matrix_norm_str_ord",
+        "tensorplay::Tensor::linalg_matrix_norm(t0, {s0}, {s1}, {s2}, {s3})",
+        (
+            (None, "string"),
+            (None, "ints"),
+            (None, "flag"),
+            ("dtype", "optional_dtype"),
+        ),
+    ),
+    # The same norm named by a number instead of a word: the number, the two
+    # axes, the keep flag and the accumulation type stand in the same places.
+    "linalg_matrix_norm": (
+        "tp_cpu_linalg_matrix_norm",
+        "tensorplay::Tensor::linalg_matrix_norm(t0, {s0}, {s1}, {s2}, {s3})",
+        (
+            (None, "real"),
+            (None, "ints"),
+            (None, "flag"),
+            ("dtype", "optional_dtype"),
+        ),
+    ),
     # The product along one axis accumulates the same way the sum does, and it
     # takes the same pair of places: the axis, and the type to accumulate in.
     "cumprod": (
@@ -781,6 +806,14 @@ _EXTERN_KERNEL_MULTI_SHIMS: dict[
         "tp_cpu_adaptive_max_pool3d",
         "tensorplay::Tensor::adaptive_max_pool3d(t0, {s0})",
         ((None, "tensor"), (None, "ints")),
+    ),
+    # The nan-median along an axis answers like the median: the middle value
+    # with the NaNs left out, and the place it came from.  The call writes the
+    # axis and the keep flag one after the other.
+    "tp_nanmedian_dim": (
+        "tp_cpu_nanmedian_dim",
+        "t0.nanmedian({s0}, {s1})",
+        ((None, "int"), (None, "flag")),
     ),
     # The one-dimensional maximum reads a window, a step, a padding, a spacing
     # and whether a window may reach past the border, and leaves the places it
