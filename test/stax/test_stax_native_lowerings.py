@@ -105,13 +105,17 @@ def test_elementwise_values_and_gradients(device, name, call_outs):
         (F.relu6, {}),
         (F.hardswish, {}),
         (F.hardsigmoid, {}),
+        (F.hardtanh, {"min_val": -0.75, "max_val": 1.5}),
         (F.leaky_relu, {"negative_slope": 0.2}),
         (F.elu, {"alpha": 0.7}),
         (F.mish, {}),
         (F.selu, {}),
         (F.celu, {"alpha": 0.7}),
     ],
-    ids=["relu6", "hardswish", "hardsigmoid", "leaky_relu", "elu", "mish", "selu", "celu"],
+    ids=[
+        "relu6", "hardswish", "hardsigmoid", "hardtanh", "leaky_relu",
+        "elu", "mish", "selu", "celu",
+    ],
 )
 def test_inplace_activations_use_original_values_in_backward(device, activation, kwargs):
     def inplace(x):

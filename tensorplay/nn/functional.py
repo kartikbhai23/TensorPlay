@@ -1700,10 +1700,9 @@ def hardtanh(
     inplace: bool = False,
 ) -> Tensor:
     r"""hardtanh(input, min_val=-1.0, max_val=1.0, inplace=False) -> Tensor"""
-    result = tensorplay.hardtanh(input, min_val=min_val, max_val=max_val)
     if inplace:
-        return input.copy_(result)
-    return result
+        return tensorplay.hardtanh_(input, min_val=min_val, max_val=max_val)
+    return tensorplay.hardtanh(input, min_val=min_val, max_val=max_val)
 
 
 def hardshrink(input: Tensor, lambd: float = 0.5) -> Tensor:
