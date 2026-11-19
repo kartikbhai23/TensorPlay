@@ -1915,7 +1915,47 @@ Tensor& hardswish_out_cpu(const Tensor& self, Tensor& out) {
                                          vecunary::VOp::Hardswish);
 }
 
+// One sweep of the hardswish gradient for contiguous float32 pairs: a
+// piecewise-linear map with the bounds compared per lane.  The target
+// attribute is what keeps the lane loop; the translation unit compiles
+// without the ISA.
+__attribute__((target("avx2,fma"), noinline))
+static void hardswish_backward_f32_sweep(const float* gp, const float* xp,
+                                         float* dp, int64_t n) {
+    const __m256 neg3 = _mm256_set1_ps(-3.0f);
+    const __m256 pos3 = _mm256_set1_ps(3.0f);
+    const __m256 third = _mm256_set1_ps(1.0f / 3.0f);
+    const __m256 half = _mm256_set1_ps(0.5f);
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        const __m256 x = _mm256_loadu_ps(xp + i);
+        const __m256 g = _mm256_loadu_ps(gp + i);
+        // dy * (x/3 + 0.5) on the open band, dy above 3, zero below -3.
+        // The divide-then-add order matches the scalar form bit for bit; a
+        // fused multiply-add keeps an extra bit and drifts a last ulp.
+        const __m256 slope = _mm256_add_ps(_mm256_div_ps(x, pos3), half);
+        const __m256 mid = _mm256_mul_ps(g, slope);
+        __m256 r = _mm256_blendv_ps(mid, g, _mm256_cmp_ps(x, pos3, _CMP_GE_OQ));
+        r = _mm256_blendv_ps(r, _mm256_setzero_ps(), _mm256_cmp_ps(x, neg3, _CMP_LE_OQ));
+        _mm256_storeu_ps(dp + i, r);
+    }
+    for (; i < n; ++i) {
+        const float x = xp[i];
+        dp[i] = x <= -3.0f ? 0.0f : (x < 3.0f ? gp[i] * (x / 3.0f + 0.5f) : gp[i]);
+    }
+}
+
 Tensor hardswish_backward_kernel_impl(const Tensor& grad_output, const Tensor& self) {
+    // Contiguous float32 pairs answer in one lane sweep.
+    if (grad_output.dtype() == DType::Float32 &&
+        grad_output.is_contiguous() && self.is_contiguous() &&
+        grad_output.numel() == self.numel()) {
+        Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(grad_output.shape()),
+                                      grad_output.dtype(), grad_output.device());
+        hardswish_backward_f32_sweep(grad_output.data_ptr<float>(), self.data_ptr<float>(),
+                                     result.data_ptr<float>(), grad_output.numel());
+        return result;
+    }
     //   d/dx [x * relu6(x + 3) / 6]:
     //   x <= -3 -> 0 ; -3 < x < 3 -> dy * (x/3 + 0.5) ; x >= 3 -> dy
     return activation_backward_kernel(grad_output, self,
