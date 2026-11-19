@@ -2203,8 +2203,60 @@ Tensor& tanh_backward_out_cpu(const Tensor& grad_output, const Tensor& output,
     return binary_same_out_kernel(grad_output, output, grad_input, tanh_backward_cpu,
                                   TanhGradPair{});
 }
+// One sweep of the logit gradient for contiguous float32 pairs.  The lane
+// formula mirrors the pair kernel: domain NaN outside [0, 1], the signed
+// infinity at the closed ends, the reciprocal form in between.  The target
+// attribute is what keeps the lane loop; the translation unit compiles
+// without the ISA.
+__attribute__((target("avx2,fma"), noinline))
+static void logit_backward_f32_sweep(const float* gp, const float* sp,
+                                     float* dp, int64_t n) {
+    const __m256 zero = _mm256_setzero_ps();
+    const __m256 one = _mm256_set1_ps(1.0f);
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        const __m256 x = _mm256_loadu_ps(sp + i);
+        const __m256 g = _mm256_loadu_ps(gp + i);
+        // Domain: only s < 0 or s > 1 turn NaN; the closed ends answer
+        // g * infinity with the gradient's sign.
+        const __m256 outside = _mm256_or_ps(
+            _mm256_cmp_ps(x, zero, _CMP_LT_OQ),
+            _mm256_cmp_ps(x, one, _CMP_GT_OQ));
+        const __m256 at_end = _mm256_or_ps(
+            _mm256_cmp_ps(x, zero, _CMP_EQ_OQ),
+            _mm256_cmp_ps(x, one, _CMP_EQ_OQ));
+        const __m256 recip = _mm256_div_ps(g, _mm256_mul_ps(x, _mm256_sub_ps(one, x)));
+        const __m256 inf = _mm256_mul_ps(g, _mm256_set1_ps(
+            std::numeric_limits<float>::infinity()));
+        __m256 r = _mm256_blendv_ps(recip, inf, at_end);
+        // Where the domain fails the answer is NaN: blendv keeps the second
+        // operand on set lanes, so the NaN is the one to pick.
+        r = _mm256_blendv_ps(
+            r, _mm256_set1_ps(std::numeric_limits<float>::quiet_NaN()), outside);
+        _mm256_storeu_ps(dp + i, r);
+    }
+    for (; i < n; ++i) {
+        const float s = sp[i];
+        if (s < 0.0f || s > 1.0f) { dp[i] = std::numeric_limits<float>::quiet_NaN(); continue; }
+        if (s == 0.0f || s == 1.0f) { dp[i] = gp[i] * std::numeric_limits<float>::infinity(); continue; }
+        dp[i] = gp[i] / (s * (1.0f - s));
+    }
+}
+
 Tensor logit_backward_cpu(const Tensor& grad_output, const Tensor& self, const std::optional<Scalar>& eps) {
     double e = eps.has_value() ? eps->toDouble() : -1.0;
+    // Contiguous float32 pairs answer in one lane sweep; the lane formula
+    // mirrors the pair kernel exactly -- domain NaN outside [0,1], the
+    // infinity at the closed ends, the reciprocal form in between.
+    if (e < 0 && grad_output.dtype() == DType::Float32 &&
+        grad_output.is_contiguous() && self.is_contiguous() &&
+        grad_output.numel() == self.numel()) {
+        Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(grad_output.shape()),
+                                      grad_output.dtype(), grad_output.device());
+        logit_backward_f32_sweep(grad_output.data_ptr<float>(), self.data_ptr<float>(),
+                                 result.data_ptr<float>(), grad_output.numel());
+        return result;
+    }
     return binary_same_kernel(grad_output, self, LogitGradPair{e}, "logit_backward");
 }
 Tensor& logit_backward_out_cpu(const Tensor& grad_output, const Tensor& self,
