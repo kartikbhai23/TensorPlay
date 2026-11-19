@@ -253,7 +253,7 @@ Tensor var_two_pass(const Tensor& self, int64_t correction) {
     Tensor out = Tensor::empty({}, DType::Float32, self.device());
     out.zero_();
     const int64_t n = self.numel();
-    const int threads = 256;
+    const int threads = 64;
     const int64_t blocks =
         std::min<int64_t>((n + threads * 4 - 1) / (threads * 4), 256);
     var_two_pass_kernel<<<static_cast<unsigned>(blocks), threads, 0,
