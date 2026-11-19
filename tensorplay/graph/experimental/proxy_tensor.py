@@ -6,6 +6,7 @@ from tensorplay.graph.node import Node
 
 from ._dispatch_trace import (
     _ConstantHolder,
+    _absent_optionals_as_none,
     _is_tensor,
     _tensor_meta,
     ProxyTensorDispatchMode,
@@ -646,7 +647,7 @@ class DecompositionInterpreter(Transformer):
     def call_function(self, target: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
         decomposition = self.decomposition_table.get(target)
         if decomposition is not None:
-            value = decomposition(*args, **kwargs)
+            value = decomposition(*args, **_absent_optionals_as_none(kwargs))
             if isinstance(value, (Proxy, tuple, list, dict)):
                 return value
             raise TypeError(f"decomposition for {target!r} returned a non-symbolic value")

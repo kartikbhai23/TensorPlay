@@ -234,6 +234,26 @@ def _tensor_meta(tensor: Any) -> dict[str, Any]:
     }
 
 
+def _absent_optionals_as_none(kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    """Spell "not given" the way a decomposition reads it.
+
+    The dispatcher fills an optional dtype that the call left out with the
+    absent-dtype sentinel, while a decomposition is written against ``None``
+    and tests for it.  The two spellings mean the same thing, so the sentinel
+    becomes ``None`` before the decomposition sees it.
+    """
+
+    return {
+        name: (
+            None
+            if isinstance(value, tensorplay.dtype)
+            and value == tensorplay.DType.undefined
+            else value
+        )
+        for name, value in kwargs.items()
+    }
+
+
 class ProxyTensorDispatchMode(TensorPlayDispatchMode):
     """Records every dispatched operator into a :class:`DispatchTracer`."""
 
@@ -285,7 +305,7 @@ class ProxyTensorDispatchMode(TensorPlayDispatchMode):
             # The decomposition's own operators are recorded instead of func,
             # unless it declines this call, which is then recorded as it is.
             with self:
-                out = decomposition(*args, **kwargs)
+                out = decomposition(*args, **_absent_optionals_as_none(kwargs))
             if out is not NotImplemented:
                 return out
         out = func(*args, **kwargs)
