@@ -1802,10 +1802,10 @@ class GraphLowering(Interpreter):
                 f"the call's result is not known, so there is nowhere to put it"
             )
         probed = self._probe_fallback_result(node, tensor_args, other_args, unflatten)
-        if len(tensor_outputs) > 1:
-            # Several results cannot all be the call itself, so the call is
-            # given no result of its own and each result is a buffer naming the
-            # path through the returned structure at which it sits.
+        if not _is_tensor(val):
+            # A structured result has no tensor storage of its own, even
+            # when only one slot holds a tensor. Each tensor is extracted
+            # from the structure before it can be used as a buffer.
             layout = MultiOutputLayout(
                 device=_value_device(tensor_outputs[0]),
             )

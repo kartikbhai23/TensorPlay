@@ -151,6 +151,26 @@ def test_compiled_training_with_identity_view(device):
 
 
 @pytest.mark.parametrize("device", DEVICES)
+def test_instance_norm_backward_keeps_structured_output(device, monkeypatch):
+    from tensorplay.compiler.backends.stax import config
+    from tensorplay.compiler.backends.stax.ir import MultiOutputLayout
+
+    seen = []
+    original = GraphLowering._make_fallback
+
+    def record(self, node, *args, **kwargs):
+        result = original(self, node, *args, **kwargs)
+        if node.target is tp.ops.tp.instance_norm_backward.default:
+            seen.append(result.layout)
+        return result
+
+    monkeypatch.setattr(GraphLowering, "_make_fallback", record)
+    with config.patch(force_disable_caches=True):
+        _check(F.instance_norm, [tp.randn(2, 4, 7, 7, device=device)], train=True)
+    assert seen and all(isinstance(layout, MultiOutputLayout) for layout in seen)
+
+
+@pytest.mark.parametrize("device", DEVICES)
 def test_integer_inputs_keep_their_answers(device):
     i = tp.arange(-20, 20, device=device).reshape(5, 8)
     for fn in (tp.floor, tp.bitwise_not, tp.isnan, lambda v: tp.erf(v)):
