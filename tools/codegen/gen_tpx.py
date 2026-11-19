@@ -816,6 +816,21 @@ def generate_tpx_ops_cpp(funcs: list[NativeFunction], *,
         if f.func_name in autocast_ops:
             _emit_autocast_block(lines, f, arg_types)
 
+        # ---- fast path -------------------------------------------------------
+        # Under no autograd and no forward-AD the bookkeeping below is a
+        # no-op, so a fresh-tensor return answers through the core call
+        # directly.  In-place, view, list-returning, autocast and
+        # mutable-argument forms keep the full walk.
+        if (has_ag and not _is_list_view and f.cpp_return_kind == 'value'
+                and cpp_return_type(f) == 'Tensor'
+                and f.func_name not in autocast_ops
+                and not f.mutable_args and not f.returns_view_of_input):
+            fast_call = _core_call_expr(f)
+            lines.append('    if (!GradMode::is_enabled() && '
+                         '!tensorplay::tpx::ForwardADLevel::has_any_level()) {')
+            lines.append(f'        return {fast_call};')
+            lines.append('    }')
+
         # ---- gradient bookkeeping -----------------------------------------
         if has_ag or _is_list_view:
             _dv_nd = derivatives.get(f.func_name)
