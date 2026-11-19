@@ -80,7 +80,6 @@ Tensor replay_pivots(const Tensor& pivots, int64_t m, int64_t k,
     Tensor perm = Tensor::empty(sizes, DType::Int64, source.device());
     if (perm.numel() == 0) return perm;
     if (check_range) check_pivot_range(source, m);
-    check_pivot_range(source, m);
 
     const int64_t batch = source.numel() / std::max<int64_t>(k, 1);
     const int threads = 128;
