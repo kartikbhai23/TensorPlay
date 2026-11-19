@@ -108,6 +108,15 @@ def test_output_groups_with_multiple_reduced_dimensions(dtype, reduced_extent):
     np.testing.assert_allclose(tensor.mean(dim=[0, 2]).cpu().numpy(), values.mean(axis=(0, 2)), atol=1e-5)
 
 
+@pytest.mark.parametrize("channel_slice", [slice(None), slice(64, None)], ids=["contiguous", "sliced"])
+def test_spatial_reduction_keeps_outputs_from_different_warps_separate(channel_slice):
+    shape = (2, 128, 55, 55)
+    values = (np.arange(np.prod(shape)) % 17 - 8).reshape(shape).astype(np.float32)
+    tensor = tp.tensor(values, device="cuda")[:, channel_slice]
+    expected = values[:, channel_slice].sum(axis=(0, 2, 3))
+    np.testing.assert_array_equal(tensor.sum(dim=(0, 2, 3)).cpu().numpy(), expected)
+
+
 def test_output_groups_nan_and_moments():
     values = (np.arange(32769 * 8) % 7 - 3).astype(np.float32).reshape(32769, 8)
     values[0, 0] = np.nan

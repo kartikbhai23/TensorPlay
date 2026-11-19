@@ -759,14 +759,10 @@ inline ReduceConfig make_reduce_config(const TensorIterator& iter) {
     // CTA count is std::clamp'd between the SM-balanced target grid and
     // values_per_thread / {min,max}_values_per_thread so the whole machine
     // stays busy while each thread still reduces a useful number of elements.
-    // This branch is restricted to one output per block so the partial buffer
-    // has a simple layout.
-    // A block owns one contiguous output range when only one of its two
-    // extents carries the output split; when both do, the owned outputs are a
-    // two-dimensional set and the single-range fold below cannot address them.
-    const bool outputs_form_one_range =
-        config.output_mult[0] == 0 || config.output_mult[1] == 0;
-    if (outputs_form_one_range && config.num_outputs > 0) {
+    // The final fold reduces across block.y, so independent outputs may only
+    // be assigned along block.x. Separate outputs on block.y would share a
+    // staging slot and be folded together.
+    if (config.output_mult[1] == 0 && config.num_outputs > 0) {
         // Elements still to be consumed per thread after the lane and warp
         // splits: num_inputs spread over step_input units of InputVecSize
         // elements each.
