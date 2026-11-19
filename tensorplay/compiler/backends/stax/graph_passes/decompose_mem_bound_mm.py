@@ -12,6 +12,7 @@ from tensorplay.graph.experimental.symbolic_shapes import (
 
 from .. import config
 from ..pattern_matcher import Arg, CallFunction, Match, register_graph_pattern
+from .post_grad import _match_device_type
 from .split_cat import construct_pattern_matcher_pass
 
 
@@ -50,7 +51,13 @@ if "decompose_mm_pass" in config.post_grad_fusion_options:
 
 
 def check_device(a: Tensor, b: Tensor, device="cuda") -> bool:
-    return (a.device.type == b.device.type) and (b.device.type == device)
+    """Whether both operands would run on ``device``.
+
+    Values seen here are stand-ins that report the meta device, so where they
+    would actually run is asked of the region's recorded device instead.
+    """
+
+    return _match_device_type(a) == _match_device_type(b) == device
 
 
 def realize_inputs(inputs: list[Node]):
