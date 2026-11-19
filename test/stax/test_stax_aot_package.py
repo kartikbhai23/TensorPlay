@@ -280,6 +280,22 @@ def test_package_holds_a_cumulative_product_and_a_running_maximum(tmp_path):
     assert tp.allclose(places, expected_places)
 
 
+def test_package_holds_a_running_exponential_sum_and_distances(tmp_path):
+    """A scan and a pairwise distance, each written as a host call."""
+
+    x = tp.tensor([[1.0, 2.0, 3.0, 4.0], [0.0, -1.0, 0.5, 2.0]])
+
+    scan = lambda a: tp.logcumsumexp(a, 1)
+    path = _build(tmp_path / "scan", scan, [x])
+    module = load_package(path)
+    assert tp.allclose(module(x), scan(x))
+
+    distances = lambda a: tp.cdist(a, a * 2)
+    path = _build(tmp_path / "distances", distances, [x])
+    module = load_package(path)
+    assert tp.allclose(module(x), distances(x))
+
+
 def test_package_holds_a_one_dimensional_convolution(tmp_path):
     weight = tp.arange(36, dtype=tp.float32).reshape(4, 3, 3) / 7
     x = tp.randn(1, 3, 8)
