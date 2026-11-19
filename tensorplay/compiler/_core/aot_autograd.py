@@ -869,7 +869,7 @@ def aot_module_simplified(
         with substitute(dict(zip(names, flat[:count]))):
             return call_module(*flat[count:])
 
-    example = read_state() + list(example_inputs)
+    example = list(read_state()) + list(example_inputs)
     compiled = aot_function(
         flat_fn,
         example,
@@ -895,7 +895,7 @@ def aot_module_simplified(
             self,
             compiled: Callable[..., Any],
             module: Any,
-            read_state: Callable[[], list[Any]],
+            read_state: Callable[[], Sequence[Any]],
             bind_graph_inputs: Callable[..., list[Any]],
         ) -> None:
             self._compiled = compiled
@@ -944,9 +944,10 @@ def aot_module_simplified(
             cached = self._fast_entries.get(nargs)
             if cached is not None:
                 entry, recorded = cached
-                if len(recorded) == len(state) and all(
-                    kept is current for kept, current in zip(recorded, state)
-                ):
+                if recorded is state:
+                    # The reader hands back the very tuple it read under a
+                    # write count that has not moved, so the entry was built
+                    # over these readings.
                     return entry
             entry = make(head=state, nargs=nargs)
             if entry is None:
@@ -1057,6 +1058,11 @@ def _swap_state_tables(module: Any, state: Mapping[str, Any]) -> list[tuple[Any,
 
 _NO_ENTRY = object()
 
+#: How many state substitutions are in flight.  A substituted table answers a
+#: reader with a value the module itself does not hold, so a reading taken
+#: while one is active is never remembered.
+_substitution_depth = 0
+
 
 def _state_reader(module: Any, target: str) -> Callable[[], Any]:
     """A reader of one tensor a graph module reads, fetched on every call.
@@ -1136,14 +1142,38 @@ def _state_access(module: Any):
 
         readers = [_state_reader(module, target) for target in targets]
 
-        def read_graph_state() -> list[Any]:
-            return [read() for read in readers]
+        from tensorplay.nn.modules.module import _module_write_epoch_now
+
+        #: What the readers saw, and the module write count they saw it under.
+        #: Registering, rebinding, replacing a child or moving a module's
+        #: tensors all raise the count; while it holds still, the same objects
+        #: are still where the readers look, so the tuple itself is the answer
+        #: and its identity says whether anything moved.
+        taken: list[Any] = [(), -1]
+
+        def read_graph_state() -> Sequence[Any]:
+            epoch = _module_write_epoch_now()
+            if taken[1] == epoch and not _substitution_depth:
+                return taken[0]
+            values = tuple(read() for read in readers)
+            if not _substitution_depth:
+                taken[0] = values
+                taken[1] = epoch
+            return values
 
         root = module.root
         owned = module.__dict__
 
         @contextlib.contextmanager
         def substitute(state: dict[str, Any]):
+            global _substitution_depth
+            _substitution_depth += 1
+            try:
+                yield from _substituted(state)
+            finally:
+                _substitution_depth -= 1
+
+        def _substituted(state: dict[str, Any]):
             # Lifted literals live on the graph module itself; module state
             # is read through the graph attribute table and through direct
             # parameter/buffer lookup in the generated forward, so the state
