@@ -591,6 +591,32 @@ def test_the_nan_median_along_an_axis():
     _check(lambda a: tp.nanmedian(a, 1)[1], [values])
 
 
+def test_an_exponential_draw_fills_the_buffer_it_is_handed():
+    """A draw writes into the buffer it was given, at the rate it names.
+
+    The rate is the call's one number; the generator is the handle it may or
+    may not name.  Each side is seeded the same way before it draws, so the
+    values can be compared one for one.
+    """
+
+    values = tp.ones(4, 8)
+    for draw in (lambda a: a.exponential_(), lambda a: a.exponential_(2.0)):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            compiled = tp.compile(draw, options={"stax.cuda_codegen": True})
+        fell_back = [
+            str(item.message)
+            for item in caught
+            if "Stax lowering failed" in str(item.message)
+        ]
+        assert not fell_back, f"the region was not written: {fell_back[:1]}"
+        tp.manual_seed(7)
+        got = compiled(values.clone())
+        tp.manual_seed(7)
+        expected = draw(values.clone())
+        assert tp.allclose(got, expected)
+
+
 def test_a_value_split_into_its_mantissa_and_exponent():
     """A float read as a mantissa and the power of two it carries.
 

@@ -759,6 +759,14 @@ _EXTERN_KERNEL_LITERAL_SHIMS: dict[
             ("device", "optional_device"),
         ),
     ),
+    # An exponential draw fills the buffer it is handed, in place: the rate
+    # is the call's one number, and the generator it draws from is the handle
+    # it may or may not name.
+    "exponential_": (
+        "tp_cpu_exponential_",
+        "t0.exponential_({s0}, {s1})",
+        ((None, "real"), ("generator", "optional_generator")),
+    ),
     # A product of a matrix and a vector, added to a value: the two numbers
     # that scale the value and the product are places of their own.
     "addmv": (
@@ -1072,6 +1080,22 @@ def _write_optional_device(text: str) -> str:
     if len(body) >= 2 and body[0] == body[-1] and body[0] in "'\"":
         body = body[1:-1]
     return f'tensorplay::Device("{body}")'
+
+
+@_literal_writer("optional_generator")
+def _write_optional_generator(text: str) -> str:
+    """The generator a draw is to take its values from, when one was named.
+
+    A draw that names none takes the default one, which is what the absent
+    value says; a generator is a handle the region was not handed, so there is
+    nothing here to write but that absence.
+    """
+
+    if text.strip() == "None":
+        return "std::nullopt"
+    raise NotImplementedError(
+        f"C++ wrapper cannot write the generator {text!r}"
+    )
 
 
 def _literal_value(kind: str, text: str) -> str:
