@@ -136,6 +136,23 @@ class CUDAGraphTreeManager:
     def _new_graph(self) -> Any:
         return self.native.CUDAGraph()
 
+    def _new_capture_stream(self) -> Any:
+        """A dedicated stream to warm up and capture a node on, or ``None``.
+
+        The warmup and the capture share it so that a library workspace first
+        allocated during warmup (a cuBLASLt GEMM scratch) is already present
+        when the capture runs, rather than being cudaMalloc'd inside the
+        capture window.  A stand-in native (tests) with no stream facility
+        yields ``None``.
+        """
+
+        try:
+            import tensorplay
+
+            return tensorplay.cuda.Stream()
+        except Exception:  # noqa: BLE001 - no CUDA runtime: default side stream
+            return None
+
     def _pool(self) -> int:
         """The one pool every recording of this manager captures into."""
 
@@ -197,27 +214,55 @@ class CUDAGraphTreeManager:
         structure: tuple = ("unsupported",)
         try:
             # Warmup runs lazy initialisations outside the capture (cuBLAS
-            # workspaces and the like).
-            warmup_output = fn(*static_inputs)
-            structure = _output_structure(warmup_output)
-            self.capturing = key
-            graph.capture_begin(self._pool())
-            restore_stream = _pin_launch_stream_to_capture()
-            try:
+            # workspaces and the like), on the very stream the capture uses:
+            # a workspace first allocated inside a live capture is an illegal
+            # cudaMalloc that aborts it.
+            capture_stream = self._new_capture_stream()
+            if capture_stream is None:
+                warmup_output = fn(*static_inputs)
+                structure = _output_structure(warmup_output)
+                self.capturing = key
+                graph.capture_begin(self._pool())
+                restore_stream = _pin_launch_stream_to_capture()
                 try:
-                    outputs = fn(*static_inputs)
-                except BaseException:
-                    # A raising body must still close the capture window;
-                    # capture_end also clears the sticky driver error.
                     try:
-                        graph.capture_end()
-                    except Exception:
-                        pass
-                    raise
-            finally:
-                if restore_stream is not None:
-                    restore_stream()
-            graph.capture_end()
+                        outputs = fn(*static_inputs)
+                    except BaseException:
+                        # A raising body must still close the capture window;
+                        # capture_end also clears the sticky driver error.
+                        try:
+                            graph.capture_end()
+                        except Exception:
+                            pass
+                        raise
+                finally:
+                    if restore_stream is not None:
+                        restore_stream()
+                graph.capture_end()
+            else:
+                import tensorplay
+
+                with tensorplay.cuda.stream(capture_stream):
+                    warmup_output = fn(*static_inputs)
+                    structure = _output_structure(warmup_output)
+                    self.capturing = key
+                    graph.capture_begin(self._pool(), "global", capture_stream._stream)
+                    restore_stream = _pin_launch_stream_to_capture()
+                    try:
+                        try:
+                            outputs = fn(*static_inputs)
+                        except BaseException:
+                            # A raising body must still close the capture window;
+                            # capture_end also clears the sticky driver error.
+                            try:
+                                graph.capture_end()
+                            except Exception:
+                                pass
+                            raise
+                    finally:
+                        if restore_stream is not None:
+                            restore_stream()
+                    graph.capture_end()
         finally:
             self.capturing = None
 
