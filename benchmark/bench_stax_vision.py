@@ -29,7 +29,7 @@ import traceback
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -392,12 +392,19 @@ def run_case(
         if "infer" in tasks:
             if cold_compile:
                 torch.compiler.reset()
+            synchronize(device)
             stax, stax_compile = compile_tensorplay(tp_model, mode)
             started = time.perf_counter()
             with tp.no_grad():
-                compiled_logits = model_logits(stax(tp_input)).float().cpu().numpy()
+                compiled_output = stax(tp_input)
+            synchronize(device)
             record["stax_compile_seconds"] = stax_compile
             record["stax_first_call_seconds"] = time.perf_counter() - started
+            record["stax_infer_ready_seconds"] = (
+                stax_compile + record["stax_first_call_seconds"]
+            )
+            compiled_logits = as_numpy(model_logits(compiled_output).float())
+            del compiled_output
             record["max_abs_error_compiled"] = float(
                 np.max(np.abs(compiled_logits - reference_eager_logits))
             )
@@ -414,14 +421,21 @@ def run_case(
 
             reference = None
             if run_reference_compile:
+                synchronize(device)
                 reference, reference_compile = compile_reference(reference_model, mode)
                 started = time.perf_counter()
                 with torch.no_grad():
-                    reference_logits = model_logits(reference(reference_input)).float().cpu().numpy()
+                    reference_output = reference(reference_input)
+                synchronize(device)
                 record["reference_compile_seconds"] = reference_compile
                 record["reference_compile_first_call_seconds"] = (
                     time.perf_counter() - started
                 )
+                record["reference_infer_ready_seconds"] = (
+                    reference_compile + record["reference_compile_first_call_seconds"]
+                )
+                reference_logits = as_numpy(model_logits(reference_output).float())
+                del reference_output
                 # How far the reference's own compiled execution stands from
                 # its eager execution: the same comparison the compiled stax
                 # result is held to, recorded so a difference between two
@@ -473,7 +487,8 @@ def run_case(
                     record["reference_compiled_infer_ms"] / record["stax_infer_ms"]
                 )
                 record["compile_time_ratio"] = (
-                    record["reference_compile_seconds"] / record["stax_compile_seconds"]
+                    record["reference_infer_ready_seconds"]
+                    / record["stax_infer_ready_seconds"]
                 )
 
         if "train" in tasks:
@@ -501,6 +516,7 @@ def run_case(
 
             if cold_compile:
                 torch.compiler.reset()
+            synchronize(device)
             stax_train, stax_train_compile = compile_tensorplay(tp_model, mode)
 
             def stax_step() -> None:
@@ -517,8 +533,12 @@ def run_case(
             # for, and that is a different call, not a warmup.
             started = time.perf_counter()
             stax_step()
+            synchronize(device)
             record["stax_train_compile_seconds"] = stax_train_compile
             record["stax_train_first_step_seconds"] = time.perf_counter() - started
+            record["stax_train_ready_seconds"] = (
+                stax_train_compile + record["stax_train_first_step_seconds"]
+            )
             record["stax_backward_codegens"] = backward_codegens(stax_train)
 
             train_sides = [
@@ -527,6 +547,7 @@ def run_case(
                 ("reference_eager", reference_step),
             ]
             if run_reference_compile:
+                synchronize(device)
                 reference_train, reference_train_compile = compile_reference(
                     reference_model, mode
                 )
@@ -542,9 +563,14 @@ def run_case(
 
                 started = time.perf_counter()
                 reference_compiled_step()
+                synchronize(device)
                 record["reference_train_compile_seconds"] = reference_train_compile
                 record["reference_train_first_step_seconds"] = (
                     time.perf_counter() - started
+                )
+                record["reference_train_ready_seconds"] = (
+                    reference_train_compile
+                    + record["reference_train_first_step_seconds"]
                 )
                 train_sides.append(("reference_compiled", reference_compiled_step))
 
@@ -568,8 +594,8 @@ def run_case(
                     record["reference_compiled_train_ms"] / record["stax_train_ms"]
                 )
                 record["train_compile_time_ratio"] = (
-                    record["reference_train_compile_seconds"]
-                    / record["stax_train_compile_seconds"]
+                    record["reference_train_ready_seconds"]
+                    / record["stax_train_ready_seconds"]
                 )
     except Exception as exc:  # Keep one compiler failure visible in the report.
         record["error"] = f"{type(exc).__name__}: {exc}"
@@ -591,26 +617,30 @@ def print_record(record: dict[str, Any]) -> None:
         fields.append(
             "infer stax={stax:8.3f} refEager={ref:8.3f} refCompiled={comp:8.3f} "
             "vsEager={ve:5.2f}x vsCompiled={vc:5.2f}x "
-            "compile={cs:6.2f}s/{rs:6.2f}s ({cr:5.2f}x)".format(
+            "firstRun={cs:6.2f}s/{rs:6.2f}s ({cr:5.2f}x)".format(
                 stax=record["stax_infer_ms"],
                 ref=record["reference_eager_infer_ms"],
                 comp=record.get("reference_compiled_infer_ms", float("nan")),
                 ve=record["stax_vs_reference_eager"],
                 vc=record.get("stax_vs_reference_compiled", float("nan")),
-                cs=record["stax_compile_seconds"],
-                rs=record.get("reference_compile_seconds", float("nan")),
+                cs=record["stax_infer_ready_seconds"],
+                rs=record.get("reference_infer_ready_seconds", float("nan")),
                 cr=record.get("compile_time_ratio", float("nan")),
             )
         )
     if "stax_train_ms" in record:
         fields.append(
             "train stax={stax:8.3f} refEager={ref:8.3f} refCompiled={comp:8.3f} "
-            "vsEager={ve:5.2f}x vsCompiled={vc:5.2f}x".format(
+            "vsEager={ve:5.2f}x vsCompiled={vc:5.2f}x "
+            "firstRun={cs:6.2f}s/{rs:6.2f}s ({cr:5.2f}x)".format(
                 stax=record["stax_train_ms"],
                 ref=record["reference_eager_train_ms"],
                 comp=record.get("reference_compiled_train_ms", float("nan")),
                 ve=record["stax_train_vs_reference_eager"],
                 vc=record.get("stax_train_vs_reference_compiled", float("nan")),
+                cs=record["stax_train_ready_seconds"],
+                rs=record.get("reference_train_ready_seconds", float("nan")),
+                cr=record.get("train_compile_time_ratio", float("nan")),
             )
         )
     print(" | ".join(fields), flush=True)
@@ -652,7 +682,7 @@ def main() -> None:
 
     def payload() -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "benchmark": "stax-vision",
             "device": args.device,
             "dtype": args.dtype,
