@@ -2027,7 +2027,43 @@ struct HardsigmoidBackward {
     }
 };
 
+// One sweep of the hardsigmoid gradient for contiguous float32 pairs: the
+// open band (-3, 3) scales the gradient by 1/6 and the bounds steer to zero.
+// The target attribute is what keeps the lane loop; the translation unit
+// compiles without the ISA.
+__attribute__((target("avx2,fma"), noinline))
+static void hardsigmoid_backward_f32_sweep(const float* gp, const float* xp,
+                                           float* dp, int64_t n) {
+    const __m256 neg3 = _mm256_set1_ps(-3.0f);
+    const __m256 pos3 = _mm256_set1_ps(3.0f);
+    const __m256 sixth = _mm256_set1_ps(1.0f / 6.0f);
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        const __m256 x = _mm256_loadu_ps(xp + i);
+        const __m256 g = _mm256_loadu_ps(gp + i);
+        const __m256 inside = _mm256_and_ps(
+            _mm256_cmp_ps(x, neg3, _CMP_GT_OQ),
+            _mm256_cmp_ps(x, pos3, _CMP_LT_OQ));
+        _mm256_storeu_ps(dp + i, _mm256_mul_ps(g, _mm256_and_ps(inside, sixth)));
+    }
+    for (; i < n; ++i) {
+        const float x = xp[i];
+        dp[i] = (x <= -3.0f || x >= 3.0f) ? 0.0f : gp[i] / 6.0f;
+    }
+}
+
 Tensor hardsigmoid_backward_kernel_impl(const Tensor& grad_output, const Tensor& self) {
+    // Contiguous float32 pairs answer in one lane sweep; the open band
+    // scales the gradient by 1/6 and the bounds steer to zero.
+    if (grad_output.dtype() == DType::Float32 &&
+        grad_output.is_contiguous() && self.is_contiguous() &&
+        grad_output.numel() == self.numel()) {
+        Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(grad_output.shape()),
+                                      grad_output.dtype(), grad_output.device());
+        hardsigmoid_backward_f32_sweep(grad_output.data_ptr<float>(), self.data_ptr<float>(),
+                                       result.data_ptr<float>(), grad_output.numel());
+        return result;
+    }
     return activation_backward_kernel(grad_output, self, HardsigmoidBackward{});
 }
 
