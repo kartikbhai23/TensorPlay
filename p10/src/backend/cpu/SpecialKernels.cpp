@@ -369,8 +369,35 @@ std::tuple<Tensor, Tensor> frexp_cpu(const Tensor& self) {
         int32_t* ep = exponent.data_ptr<int32_t>();
         parallel_for(0, n, GRAIN_SIZE, [&](int64_t b, int64_t e) {
             for (int64_t i = b; i < e; ++i) {
-                int ex = 0;
-                mp[i] = std::frexp(static_cast<double>(sp[i]), &ex);
+                // The bit walk: split exponent and fraction fields directly
+                // instead of paying a libm call per element.  Subnormals ride
+                // through a 2^128 rescale that makes them normal.
+                float x = sp[i];
+                uint32_t bits;
+                std::memcpy(&bits, &x, 4);
+                int32_t e_field = static_cast<int32_t>((bits >> 23) & 0xff);
+                int32_t ex = 0;
+                if (e_field == 0xff) {
+                    // inf and nan keep their payload with exponent zero.
+                } else if (e_field == 0) {
+                    if (x != 0.0f) {
+                        // Two 2^64 steps: 2^128 itself overflows the float
+                        // type, so a single scaling would ride an inf.
+                        x *= 0x1p64f;
+                        x *= 0x1p64f;
+                        std::memcpy(&bits, &x, 4);
+                        e_field = static_cast<int32_t>((bits >> 23) & 0xff);
+                        ex = e_field - 126 - 128;
+                    }
+                } else {
+                    ex = e_field - 126;
+                }
+                if (x != 0.0f && e_field != 0xff) {
+                    uint32_t m_bits = (bits & ~0x7f800000u) | 0x3f000000u;
+                    std::memcpy(mp + i, &m_bits, 4);
+                } else {
+                    mp[i] = x;
+                }
                 ep[i] = ex;
             }
         });
