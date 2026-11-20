@@ -1,5 +1,6 @@
 #include "ReduceKernels.cuh"
 #include "CudaDispatchHelpers.cuh"
+#include "CUDAScalar.h"
 #include "DTypeNames.h"
 
 namespace tensorplay {
@@ -1669,9 +1670,13 @@ Tensor interop_histc_cuda(const Tensor& self, int64_t bins, const Scalar& min, c
     double lo = min.toDouble();
     double hi = max.toDouble();
     if (lo == hi && self.numel() > 0) {
+        // Both ends come off the same pass, so they are staged and awaited
+        // together: one hand-off instead of one per end.
         auto extrema = ops::aminmax(self);
-        lo = std::get<0>(extrema).item().toDouble();
-        hi = std::get<1>(extrema).item().toDouble();
+        const auto ends =
+            read_cuda_scalar_pair(std::get<0>(extrema), std::get<1>(extrema));
+        lo = ends.first.toDouble();
+        hi = ends.second.toDouble();
     }
     if (lo == hi) {
         histc_expand_constant_range(self.dtype(), lo, hi);

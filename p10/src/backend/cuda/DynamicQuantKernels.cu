@@ -1,5 +1,6 @@
 #include "QuantKernels.h"
 #include "CUDARuntime.h"
+#include "CUDAScalar.h"
 #include "Exception.h"
 #include "Quantizer.h"
 #include "Utils.h"
@@ -129,8 +130,10 @@ __global__ void dynamic_quantize_kernel(int64_t numel,
 std::pair<double, double> tensor_min_max(const Tensor& self) {
     const Tensor input = self.contiguous();
     auto mm = Tensor::aminmax(input.reshape({input.numel()}), {}, false);
-    return {std::get<0>(mm).item().toDouble(),
-            std::get<1>(mm).item().toDouble()};
+    // Both extrema come off the same pass, so they are staged and awaited
+    // together: one hand-off instead of one per value.
+    const auto values = read_cuda_scalar_pair(std::get<0>(mm), std::get<1>(mm));
+    return {values.first.toDouble(), values.second.toDouble()};
 }
 
 // Device-side moving average of the running min/max state.
