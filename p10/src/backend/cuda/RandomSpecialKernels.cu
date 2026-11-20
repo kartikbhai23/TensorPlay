@@ -603,16 +603,44 @@ __global__ void dirichlet_grad_impl(int64_t numel, const scalar_t* x,
 }
 
 template <typename scalar_t>
-__global__ void dirichlet_normalize_kernel(
-        int64_t total, int64_t cols, scalar_t* data, const scalar_t* sums) {
-    using acc_t = std::conditional_t<std::is_same_v<scalar_t, double>, double, float>;
+using dirichlet_acc_t = std::conditional_t<std::is_same_v<scalar_t, double>, double, float>;
+
+template <typename scalar_t>
+__device__ scalar_t normalize_dirichlet_value(scalar_t gamma, scalar_t sum) {
+    using acc_t = dirichlet_acc_t<scalar_t>;
     const acc_t lower = static_cast<acc_t>(std::numeric_limits<scalar_t>::min());
     const acc_t upper = acc_t(1) - static_cast<acc_t>(std::numeric_limits<scalar_t>::epsilon());
+    const acc_t value = static_cast<acc_t>(gamma) / static_cast<acc_t>(sum);
+    return static_cast<scalar_t>(value < lower ? lower : (value > upper ? upper : value));
+}
+
+template <typename scalar_t>
+__global__ void dirichlet_normalize_kernel(
+        int64_t total, int64_t cols, scalar_t* data, const scalar_t* sums) {
     int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     for (; idx < total;
          idx += static_cast<int64_t>(gridDim.x) * blockDim.x) {
-        const acc_t value = static_cast<acc_t>(data[idx]) / static_cast<acc_t>(sums[idx / cols]);
-        data[idx] = static_cast<scalar_t>(value < lower ? lower : (value > upper ? upper : value));
+        data[idx] = normalize_dirichlet_value(data[idx], sums[idx / cols]);
+    }
+}
+
+template <typename scalar_t>
+__global__ void dirichlet_normalize_rows_kernel(int64_t rows, int cols, scalar_t* data) {
+    using acc_t = dirichlet_acc_t<scalar_t>;
+    const int lane = threadIdx.x;
+    for (int64_t row = blockIdx.x; row < rows; row += gridDim.x) {
+        scalar_t* values = data + row * cols;
+        acc_t sum = 0;
+        for (int i = lane; i < cols; i += warpSize) {
+            sum += static_cast<acc_t>(values[i]);
+        }
+        for (int offset = warpSize / 2; offset > 0; offset /= 2) {
+            sum += __shfl_down_sync(0xffffffffu, sum, offset);
+        }
+        const auto denom = static_cast<scalar_t>(__shfl_sync(0xffffffffu, sum, 0));
+        for (int i = lane; i < cols; i += warpSize) {
+            values[i] = normalize_dirichlet_value(values[i], denom);
+        }
     }
 }
 
@@ -809,14 +837,21 @@ Tensor sample_dirichlet_kernel_cuda(const Tensor& self,
     const int64_t total = gamma.numel();
     if (total == 0) return gamma;
     const int64_t cols = gamma.dim() == 0 ? 1 : gamma.size(-1);
-    const Tensor sums = cols == 1 ? gamma : gamma.sum(std::vector<int64_t>{-1}, true, gamma.dtype());
-    const int threads = 256;
-    const int blocks = static_cast<int>((total + threads - 1) / threads);
     const auto stream = getCurrentCUDAStream().stream();
     auto normalize = [&](auto example) {
         using T = decltype(example);
-        dirichlet_normalize_kernel<T><<<blocks, threads, 0, stream>>>(
-            total, cols, gamma.data_ptr<T>(), sums.data_ptr<T>());
+        if (cols <= 256) {
+            const int64_t rows = total / cols;
+            const int blocks = static_cast<int>(std::min<int64_t>(rows, 65535));
+            dirichlet_normalize_rows_kernel<T><<<blocks, 32, 0, stream>>>(
+                rows, static_cast<int>(cols), gamma.data_ptr<T>());
+        } else {
+            const Tensor sums = gamma.sum(std::vector<int64_t>{-1}, true, gamma.dtype());
+            constexpr int threads = 256;
+            const int blocks = static_cast<int>((total + threads - 1) / threads);
+            dirichlet_normalize_kernel<T><<<blocks, threads, 0, stream>>>(
+                total, cols, gamma.data_ptr<T>(), sums.data_ptr<T>());
+        }
     };
     switch (gamma.dtype()) {
         case DType::Float32: normalize(float{}); break;
