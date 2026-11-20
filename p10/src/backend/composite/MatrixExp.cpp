@@ -1,7 +1,8 @@
 // Backend-neutral matrix exponential.
 //
-// exp(A) is evaluated by scaling and squaring around a diagonal Pade
-// approximant.  The [m/m] Pade rational R_m(x) = p_m(x) / p_m(-x) has a
+// exp(A) is evaluated by scaling and squaring. A single CUDA float matrix
+// can use a factored Taylor polynomial to avoid a linear solve. The
+// [m/m] Pade rational R_m(x) = p_m(x) / p_m(-x) has a
 // backward error bounded by the machine epsilon whenever ||A||_1 stays under
 // the degree's threshold theta_m, so the routine picks the smallest degree
 // whose threshold covers the batch and, when even the largest degree is not
@@ -24,6 +25,8 @@
 #include "Exception.h"
 #include "tensorplay/ops/TPXOpsGenerated.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -58,6 +61,25 @@ constexpr double kTheta5 = 2.539398330063230e-1;
 constexpr double kTheta7 = 9.504178996162932e-1;
 constexpr double kTheta9 = 2.097847961257068e0;
 constexpr double kTheta13 = 5.371920351148152e0;
+
+constexpr double kTaylorTheta8 = 5.800524627688768e-1;
+constexpr double kTaylorTheta12 = 1.461661507209034;
+constexpr double kTaylorTheta18 = 3.010066362817634;
+
+const std::vector<float> kTaylor12 = {
+     9.0198e-16f,      0.4693211759541824f, -0.2009942492704728f,  -0.04623946134063072f,
+     5.315978957598713f, 1.199267904171322f,  0.01179296240992997f,  0.01108844528519168f,
+     0.1818886998217043f, 0.05502798439925399f, 0.09351590770535415f, 0.006107005288980582f,
+    -2.0861320e-13f,   -0.1318106101383018f, -0.02027855540589259f, -0.006759518468630863f,
+};
+
+const std::vector<float> kTaylor18 = {
+     0.f,                 -0.10036558103014462f, -0.008029246482411569f, -0.00089213849804573f,  0.f,
+     0.f,                  0.39784974949964508f,  1.3678377846041172f,    0.49828962252538267f, -0.0006378981945947233f,
+   -10.967639605296206f,   1.6801581387890621f,   0.05717798464788655f, -0.006982101224880521f, 0.00003349750170860705f,
+    -0.09043168323908106f, -0.06764045190713819f, 0.06759613017704597f,  0.02955525704293155f, -0.00001391802575160607f,
+     0.f,                  0.f,                 -0.09233646193671186f, -0.01693649390020817f, -0.00001400867981820361f,
+};
 
 // Operator 1-norm of every matrix in the batch: the largest absolute column
 // sum, reported as one real value per batch member.
@@ -114,12 +136,47 @@ Tensor pade_ratio(const Tensor& U, const Tensor& V) {
     return ops::linalg_solve(ops::sub(V, U), ops::add(V, U), true);
 }
 
+Tensor taylor_combinations(const std::vector<Tensor>& powers, const std::vector<float>& weights) {
+    const int64_t count = static_cast<int64_t>(powers.size());
+    const Tensor coefficients = Tensor::tensor(weights).reshape({count, count}).to(powers[0].device());
+    return ops::_compute_linear_combination(ops::stack(powers, 0), coefficients);
+}
+
+Tensor taylor_single_cuda_float(const Tensor& batch, const Tensor& identity, double norm) {
+    const bool degree12 = norm <= kTaylorTheta12;
+    const int rounds = degree12 ? 0 : std::max(
+        0, static_cast<int>(std::ceil(std::log2(norm / kTaylorTheta18))));
+    const Tensor A = rounds == 0 ? batch : ops::mul(batch, Scalar(std::ldexp(1.0, -rounds)));
+    const Tensor A2 = ops::matmul(A, A);
+    const Tensor A3 = ops::matmul(A, A2);
+    const Tensor I = identity.unsqueeze(0);
+    if (degree12) {
+        const Tensor B = taylor_combinations({I, A, A2, A3}, kTaylor12);
+        const Tensor high = B.select(0, 3);
+        const Tensor middle = ops::add(B.select(0, 2), ops::matmul(high, high));
+        return ops::add(B.select(0, 0), ops::matmul(ops::add(B.select(0, 1), middle), middle));
+    }
+    const Tensor A6 = ops::matmul(A3, A3);
+    const Tensor B = taylor_combinations({I, A, A2, A3, A6}, kTaylor18);
+    const Tensor high = ops::add(B.select(0, 3), ops::matmul(B.select(0, 0), B.select(0, 4)));
+    Tensor result = ops::add(B.select(0, 1), ops::matmul(ops::add(B.select(0, 2), high), high));
+    for (int round = 0; round < rounds; ++round) {
+        result = ops::matmul(result, result);
+    }
+    return result;
+}
+
 Tensor matrix_exp_batched(const Tensor& batch) {
     const int64_t n = batch.size(-1);
     const Tensor identity =
         ops::eye(n, n, batch.dtype(), batch.device(), false);
     const Tensor norm = operator_one_norm(batch);
     const double largest = ops::max(norm).item().toDouble();
+
+    if (batch.size(0) == 1 && batch.device().type() == DeviceType::CUDA &&
+        batch.dtype() == DType::Float32 && largest > kTaylorTheta8 && std::isfinite(largest)) {
+        return taylor_single_cuda_float(batch, identity, largest);
+    }
 
     // A degree wide enough for the largest member is at least as accurate for
     // the smaller ones, so one degree serves the whole batch.
@@ -138,6 +195,19 @@ Tensor matrix_exp_batched(const Tensor& batch) {
     if (largest <= kTheta9) {
         auto [U, V] = pade_low_degree(batch, identity, kPade9, 9);
         return pade_ratio(U, V);
+    }
+
+    if (batch.size(0) == 1 && std::isfinite(largest)) {
+        // One matrix needs a single squaring count, already determined by
+        // the norm read above. Every squaring applies to the whole result.
+        const int rounds = std::max(0, static_cast<int>(std::ceil(std::log2(largest / kTheta13))));
+        const Tensor scaled = rounds == 0 ? batch : ops::mul(batch, Scalar(std::ldexp(1.0, -rounds)));
+        auto [U, V] = pade_degree13(scaled, identity);
+        Tensor result = pade_ratio(U, V);
+        for (int round = 0; round < rounds; ++round) {
+            result = ops::matmul(result, result);
+        }
+        return result;
     }
 
     // Scale each matrix by its own power of two, evaluate at degree 13 and

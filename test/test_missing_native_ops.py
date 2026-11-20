@@ -152,6 +152,15 @@ def test_matrix_exp_needs_scaling_and_squaring():
     _allclose(tp.matrix_exp(a), [math.exp(10.0), 0.0, 0.0, math.exp(10.0)], tol=1e-4)
 
 
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+@pytest.mark.parametrize("upper", [0.8, 2.0, 12.0])
+def test_cuda_matrix_exp_of_shifted_nilpotent(upper):
+    diagonal = 0.125
+    a = tp.tensor([[diagonal, upper], [0.0, diagonal]], dtype=tp.float32, device="cuda")
+    multiplier = math.exp(diagonal)
+    _allclose(tp.linalg.matrix_exp(a), [multiplier, upper * multiplier, 0.0, multiplier])
+
+
 def test_matrix_exp_inverse_property():
     a = tp.tensor([[0.3, 1.2], [-0.7, 0.4]])
     product = tp.matmul(tp.matrix_exp(a), tp.matrix_exp(tp.neg(a)))
