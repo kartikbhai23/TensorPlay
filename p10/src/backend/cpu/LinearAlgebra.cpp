@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <immintrin.h>
 #include <limits>
 #include <optional>
 #include <tuple>
@@ -803,6 +804,34 @@ Tensor ger_native_cpu(const Tensor& self, const Tensor& vec2) {
     return ops::outer(self, vec2);
 }
 
+// The 1D kron lays each scaled copy of the other back to back: eight-lane
+// multiplies per step against a broadcast scalar, per the AVX2 tier.
+__attribute__((target("avx2,fma"), noinline))
+void kron_block_f32_avx2(const float* a, int64_t an, const float* b,
+                         int64_t bn, float* dp) {
+    for (int64_t i = 0; i < an; ++i) {
+        float* dst = dp + i * bn;
+        const __m256 av = _mm256_set1_ps(a[i]);
+        int64_t j = 0;
+        for (; j + 8 <= bn; j += 8)
+            _mm256_storeu_ps(dst + j, _mm256_mul_ps(av, _mm256_loadu_ps(b + j)));
+        for (; j < bn; ++j) dst[j] = a[i] * b[j];
+    }
+}
+
+__attribute__((target("avx2,fma"), noinline))
+void kron_block_f64_avx2(const double* a, int64_t an, const double* b,
+                         int64_t bn, double* dp) {
+    for (int64_t i = 0; i < an; ++i) {
+        double* dst = dp + i * bn;
+        const __m256d av = _mm256_set1_pd(a[i]);
+        int64_t j = 0;
+        for (; j + 4 <= bn; j += 4)
+            _mm256_storeu_pd(dst + j, _mm256_mul_pd(av, _mm256_loadu_pd(b + j)));
+        for (; j < bn; ++j) dst[j] = a[i] * b[j];
+    }
+}
+
 Tensor kron_native_cpu(const Tensor& self, const Tensor& other) {
     // multiply, then view the product back to the result shape.
     const int64_t maxdim = std::max(self.dim(), other.dim());
@@ -817,6 +846,26 @@ Tensor kron_native_cpu(const Tensor& self, const Tensor& other) {
         b_shape[2 * i] = 1;
         b_shape[2 * i + 1] = i >= pad_other ? other.size(i - pad_other) : 1;
         result_shape[i] = a_shape[2 * i] * b_shape[2 * i + 1];
+    }
+    // CPU 1D fast path: the flattened kron of one-dimensional operands lays
+    // each scaled copy of the other back to back — a block multiply that
+    // skips the broadcast iterator.  Multi-dim operands interleave the
+    // copies across dims, so they keep the broadcast walk.
+    if (self.device().is_cpu() && other.device().is_cpu()
+            && self.dim() == 1 && other.dim() == 1
+            && (self.dtype() == DType::Float32 || self.dtype() == DType::Float64)) {
+        Tensor a = self.reshape({-1}).contiguous();
+        Tensor b = other.reshape({-1}).contiguous();
+        Tensor flat = Tensor::empty({a.numel() * b.numel()}, self.dtype(),
+                                    self.device());
+        if (self.dtype() == DType::Float32) {
+            kron_block_f32_avx2(a.data_ptr<float>(), a.numel(), b.data_ptr<float>(),
+                                b.numel(), flat.data_ptr<float>());
+        } else {
+            kron_block_f64_avx2(a.data_ptr<double>(), a.numel(), b.data_ptr<double>(),
+                                b.numel(), flat.data_ptr<double>());
+        }
+        return ops::view(flat, result_shape);
     }
     return ops::view(
         ops::mul(ops::view(self, a_shape), ops::view(other, b_shape)),
