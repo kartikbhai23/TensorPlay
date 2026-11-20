@@ -755,6 +755,48 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             ]
             continue
 
+        if name in ('linspace', 'logspace') and 'function' in f.variants:
+            seen.add(name)
+            params = ['start', 'end', 'steps']
+            base = ''
+            if name == 'logspace':
+                params.append('base')
+                base = ', base=10.0'
+            call = ', '.join(params)
+            options = ('dtype', 'device', 'requires_grad')
+            if name == 'linspace':
+                lines += [
+                    'def _check_range_out_options(out, dtype, device):',
+                    '    if dtype is not None and dtype != out.dtype:',
+                    '        raise RuntimeError(f"dtype {dtype} does not match dtype of out parameter ({out.dtype})")',
+                    '    device = _ensure_device(device)',
+                    '    if device is not None and device.type != out.device.type:',
+                    '        raise RuntimeError(',
+                    '            f"device type {device.type} does not match device type of out parameter ({out.device.type})"',
+                    '        )',
+                    '',
+                ]
+            lines += [
+                f'def {name}(start, end, steps{base}, *, dtype=None, device=None, requires_grad=False, out=None):',
+                '    if out is not None:',
+                *_out_capture_lines(name, params, options, indent='        '),
+                '        _check_range_out_options(out, dtype, device)',
+                f'        result = _C.{name}({call}, out=out)',
+                '        return result.requires_grad_(True) if requires_grad else result',
+            ]
+            _capture_line(lines, name, params, options)
+            lines += [
+                '    if isinstance(start, tensorplay.Tensor) or isinstance(end, tensorplay.Tensor):',
+                '        # The layout keyword selects the tensor-bound schema.',
+                f'        result = _C.{name}({call}, dtype=dtype, layout=None, device=device)',
+                '        return result.requires_grad_(True) if requires_grad else result',
+                '    if dtype is None:',
+                f'        return _C.{name}({call}, device=device, requires_grad=requires_grad)',
+                f'    return _C.{name}({call}, dtype=dtype, device=device, requires_grad=requires_grad)',
+                '',
+            ]
+            continue
+
         if name in ('var', 'std') and 'function' in f.variants:
             seen.add(name)
             # The reduced axes come second and the correction is keyword-only,
@@ -764,6 +806,8 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             # axis with correction 1 and returns a scalar.
             lines += [
                 f'def {name}(input, dim=None, unbiased=None, keepdim=False, *, correction=None):',
+                '    if isinstance(dim, bool) and unbiased is None and correction is None:',
+                '        dim, unbiased = None, dim',
                 '    if _capturing():',
                 f'        _captured = _capture_call({name}, (input, dim, unbiased, keepdim), {{\"correction\": correction}})',
                 '        if _captured is not None:',
@@ -789,6 +833,8 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             # reduction over every axis.
             lines += [
                 f'def {name}(input, dim=None, unbiased=None, keepdim=False, *, correction=None):',
+                '    if isinstance(dim, bool) and unbiased is None and correction is None:',
+                '        dim, unbiased = None, dim',
                 '    if _capturing():',
                 f'        _captured = _capture_call({name}, (input, dim, unbiased, keepdim), {{\"correction\": correction}})',
                 '        if _captured is not None:',
@@ -802,6 +848,26 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                 f'    return _C.{name}(input, dim, correction=correction, keepdim=keepdim)',
                 '',
             ]
+            continue
+
+        if name == 'cdist' and 'function' in f.variants:
+            seen.add(name)
+            lines += [
+                '_CDIST_COMPUTE_MODES = {',
+                '    "use_mm_for_euclid_dist_if_necessary": None,',
+                '    "use_mm_for_euclid_dist": 1,',
+                '    "donot_use_mm_for_euclid_dist": 2,',
+                '}',
+                '',
+                '',
+                'def cdist(x1, x2, p=2, compute_mode=None):',
+                '    if isinstance(compute_mode, str):',
+                '        if compute_mode not in _CDIST_COMPUTE_MODES:',
+                '            raise ValueError(f"{compute_mode!r} is not a valid value for compute_mode")',
+                '        compute_mode = _CDIST_COMPUTE_MODES[compute_mode]',
+            ]
+            _capture_line(lines, name, ['x1', 'x2', 'p', 'compute_mode'])
+            lines += ['    return _C.cdist(x1, x2, p, compute_mode=compute_mode)', '']
             continue
 
         if name == 'squeeze_copy' and 'function' in f.variants:

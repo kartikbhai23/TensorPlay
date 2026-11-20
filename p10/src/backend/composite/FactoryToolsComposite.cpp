@@ -183,6 +183,17 @@ Tensor hamming_window_impl(int64_t window_length, bool periodic, double alpha,
 // linspace / logspace with tensor bounds
 // ---------------------------------------------------------------------------
 
+Scalar range_bound(const Tensor& bound, int64_t steps) {
+    // Empty ranges need the bounds' types for dtype inference, but never
+    // use their values.
+    if (steps == 0 && bound.defined() && bound.device().is_cuda() &&
+        !bound.is_sparse() && !bound.is_batched() && bound.numel() == 1 &&
+        !impl::python_dispatch_active()) {
+        return isComplexType(bound.dtype()) ? Scalar(complex<double>{}) : Scalar(0);
+    }
+    return bound.item();
+}
+
 DType infer_linspace_logspace_dtype(const Scalar& start, const Scalar& end,
                                     const std::optional<DType>& dtype,
                                     const char* fn_name) {
@@ -399,8 +410,8 @@ Tensor linspace_tensor_tensor_native(const Tensor& start, const Tensor& end,
                  "but got start with ", start.dim(), " dimension(s) and end with ",
                  end.dim(), " dimension(s).");
     }
-    return linspace_scalar_impl(start.item(), end.item(), steps, dtype, layout,
-                                device, pin_memory);
+    return linspace_scalar_impl(range_bound(start, steps), range_bound(end, steps),
+                                steps, dtype, layout, device, pin_memory);
 }
 
 Tensor linspace_tensor_scalar_native(const Tensor& start, const Scalar& end, int64_t steps,
@@ -413,7 +424,7 @@ Tensor linspace_tensor_scalar_native(const Tensor& start, const Scalar& end, int
                  "linspace only supports 0-dimensional start and end tensors, "
                  "but got start with ", start.dim(), " dimension(s).");
     }
-    return linspace_scalar_impl(start.item(), end, steps, dtype, layout, device,
+    return linspace_scalar_impl(range_bound(start, steps), end, steps, dtype, layout, device,
                                 pin_memory);
 }
 
@@ -427,7 +438,7 @@ Tensor linspace_scalar_tensor_native(const Scalar& start, const Tensor& end, int
                  "linspace only supports 0-dimensional start and end tensors, "
                  "but got end with ", end.dim(), " dimension(s).");
     }
-    return linspace_scalar_impl(start, end.item(), steps, dtype, layout, device,
+    return linspace_scalar_impl(start, range_bound(end, steps), steps, dtype, layout, device,
                                 pin_memory);
 }
 
@@ -439,7 +450,7 @@ Tensor& linspace_tensor_tensor_out_native(const Tensor& start, const Tensor& end
                  "but got start with ", start.dim(), " dimension(s) and end with ",
                  end.dim(), " dimension(s).");
     }
-    return ops::linspace(start.item(), end.item(), steps, out);
+    return ops::linspace(range_bound(start, steps), range_bound(end, steps), steps, out);
 }
 
 Tensor& linspace_tensor_scalar_out_native(const Tensor& start, const Scalar& end,
@@ -449,7 +460,7 @@ Tensor& linspace_tensor_scalar_out_native(const Tensor& start, const Scalar& end
                  "linspace only supports 0-dimensional start and end tensors, "
                  "but got start with ", start.dim(), " dimension(s).");
     }
-    return ops::linspace(start.item(), end, steps, out);
+    return ops::linspace(range_bound(start, steps), end, steps, out);
 }
 
 Tensor& linspace_scalar_tensor_out_native(const Scalar& start, const Tensor& end,
@@ -459,7 +470,7 @@ Tensor& linspace_scalar_tensor_out_native(const Scalar& start, const Tensor& end
                  "linspace only supports 0-dimensional start and end tensors, "
                  "but got end with ", end.dim(), " dimension(s).");
     }
-    return ops::linspace(start, end.item(), steps, out);
+    return ops::linspace(start, range_bound(end, steps), steps, out);
 }
 
 Tensor logspace_tensor_tensor_native(const Tensor& start, const Tensor& end,
@@ -474,8 +485,8 @@ Tensor logspace_tensor_tensor_native(const Tensor& start, const Tensor& end,
                  "but got start with ", start.dim(), " dimension(s) and end with ",
                  end.dim(), " dimension(s).");
     }
-    return logspace_scalar_impl(start.item(), end.item(), steps, base, dtype, layout,
-                                device, pin_memory);
+    return logspace_scalar_impl(range_bound(start, steps), range_bound(end, steps),
+                                steps, base, dtype, layout, device, pin_memory);
 }
 
 Tensor logspace_tensor_scalar_native(const Tensor& start, const Scalar& end, int64_t steps,
@@ -488,7 +499,7 @@ Tensor logspace_tensor_scalar_native(const Tensor& start, const Scalar& end, int
                  "logspace only supports 0-dimensional start and end tensors, "
                  "but got start with ", start.dim(), " dimension(s).");
     }
-    return logspace_scalar_impl(start.item(), end, steps, base, dtype, layout, device,
+    return logspace_scalar_impl(range_bound(start, steps), end, steps, base, dtype, layout, device,
                                 pin_memory);
 }
 
@@ -502,7 +513,7 @@ Tensor logspace_scalar_tensor_native(const Scalar& start, const Tensor& end, int
                  "logspace only supports 0-dimensional start and end tensors, "
                  "but got end with ", end.dim(), " dimension(s).");
     }
-    return logspace_scalar_impl(start, end.item(), steps, base, dtype, layout, device,
+    return logspace_scalar_impl(start, range_bound(end, steps), steps, base, dtype, layout, device,
                                 pin_memory);
 }
 
@@ -514,7 +525,7 @@ Tensor& logspace_tensor_tensor_out_native(const Tensor& start, const Tensor& end
                  "but got start with ", start.dim(), " dimension(s) and end with ",
                  end.dim(), " dimension(s).");
     }
-    return ops::logspace(start.item(), end.item(), steps, base, out);
+    return ops::logspace(range_bound(start, steps), range_bound(end, steps), steps, base, out);
 }
 
 Tensor& logspace_tensor_scalar_out_native(const Tensor& start, const Scalar& end,
@@ -524,7 +535,7 @@ Tensor& logspace_tensor_scalar_out_native(const Tensor& start, const Scalar& end
                  "logspace only supports 0-dimensional start and end tensors, "
                  "but got start with ", start.dim(), " dimension(s).");
     }
-    return ops::logspace(start.item(), end, steps, base, out);
+    return ops::logspace(range_bound(start, steps), end, steps, base, out);
 }
 
 Tensor& logspace_scalar_tensor_out_native(const Scalar& start, const Tensor& end,
@@ -534,7 +545,7 @@ Tensor& logspace_scalar_tensor_out_native(const Scalar& start, const Tensor& end
                  "logspace only supports 0-dimensional start and end tensors, "
                  "but got end with ", end.dim(), " dimension(s).");
     }
-    return ops::logspace(start, end.item(), steps, base, out);
+    return ops::logspace(start, range_bound(end, steps), steps, base, out);
 }
 
 // ---------------------------------------------------------------------------

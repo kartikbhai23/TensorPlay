@@ -1068,3 +1068,17 @@ class TestLeftoverNativeBatch:
         assert close(tp.cdist(tp.tensor(x1_2.tolist()),
                               tp.tensor(x2_2.tolist()), 3.5).tolist(),
                      torch.cdist(x1_2, x2_2, 3.5).tolist(), tol=1e-4)
+
+    def test_cdist_accepts_named_compute_modes(self):
+        x = tp.tensor([[0.0, 0.0], [1.0, 2.0]])
+        y = tp.tensor([[3.0, 4.0]])
+        for name, code in [
+            ("use_mm_for_euclid_dist_if_necessary", None),
+            ("use_mm_for_euclid_dist", 1),
+            ("donot_use_mm_for_euclid_dist", 2),
+        ]:
+            named = tp.cdist(x, y, compute_mode=name)
+            numeric = tp.cdist(x, y, compute_mode=code)
+            assert close(named.tolist(), numeric.tolist())
+        with pytest.raises(ValueError, match="compute_mode"):
+            tp.cdist(x, y, compute_mode="invalid")

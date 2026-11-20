@@ -102,6 +102,34 @@ def test_logspace_edge_step_counts():
         tp.logspace(0.0, 1.0, -1)
 
 
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+@pytest.mark.parametrize("factory", [tp.linspace, tp.logspace])
+def test_cuda_range_accepts_scalar_views_and_can_write_an_empty_result(factory):
+    bounds = tp.tensor([99.0, 0.0, 2.0], device="cuda")
+    start, end = bounds[1], bounds[2]
+    assert start.item() == 0.0 and end.item() == 2.0
+    _close(factory(start, end, 3, device="cuda").tolist(), factory(0, 2, 3).tolist())
+    out = tp.empty((3,), dtype=tp.float64, device="cuda")
+    assert factory(start, end, 0, out=out).shape == out.shape == (0,)
+    with pytest.raises(RuntimeError, match="does not match dtype"):
+        factory(start, end, 0, dtype=tp.float32, out=out)
+    graph = tp.cuda.CUDAGraph()
+    with tp.cuda.graph(graph):
+        result = factory(start, end, 0, dtype=tp.float64, device="cuda")
+        marker = end + 1
+    graph.replay()
+    assert result.shape == (0,) and result.dtype == tp.float64
+    assert marker.item() == 3.0
+
+
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+def test_cuda_scalar_reads_complex_and_unsigned_values():
+    values = tp.tensor([0j, 2 - 3j], dtype=tp.complex128, device="cuda")
+    assert values[1].item() == 2 - 3j
+    values = tp.tensor([0, 2**58], dtype=tp.uint64, device="cuda")
+    assert values[1].item() == 2**58
+
+
 def test_unsupported_dtype_reports_the_name():
     with pytest.raises(Exception):
         tp.linspace(0.0, 1.0, 4, dtype=tp.bool)

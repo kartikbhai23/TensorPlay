@@ -2827,6 +2827,10 @@ def linspace(start, end, steps, *, dtype=None, device=None, requires_grad=False,
         _captured = _capture_call(linspace, (start, end, steps), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
+    if isinstance(start, tensorplay.Tensor) or isinstance(end, tensorplay.Tensor):
+        # The layout keyword selects the tensor-bound schema.
+        result = _C.linspace(start, end, steps, dtype=dtype, layout=None, device=device)
+        return result.requires_grad_(True) if requires_grad else result
     if dtype is None:
         return _C.linspace(start, end, steps, device=device, requires_grad=requires_grad)
     return _C.linspace(start, end, steps, dtype=dtype, device=device, requires_grad=requires_grad)
@@ -2844,6 +2848,10 @@ def logspace(start, end, steps, base=10.0, *, dtype=None, device=None, requires_
         _captured = _capture_call(logspace, (start, end, steps, base), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
+    if isinstance(start, tensorplay.Tensor) or isinstance(end, tensorplay.Tensor):
+        # The layout keyword selects the tensor-bound schema.
+        result = _C.logspace(start, end, steps, base, dtype=dtype, layout=None, device=device)
+        return result.requires_grad_(True) if requires_grad else result
     if dtype is None:
         return _C.logspace(start, end, steps, base, device=device, requires_grad=requires_grad)
     return _C.logspace(start, end, steps, base, dtype=dtype, device=device, requires_grad=requires_grad)
