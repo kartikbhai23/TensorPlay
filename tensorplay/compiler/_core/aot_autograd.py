@@ -25,6 +25,7 @@ import contextlib
 import functools
 
 import itertools
+import weakref
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -89,6 +90,99 @@ def _holds_tensor(value: Any) -> bool:
 
 def _is_tensor(value: Any) -> bool:
     return isinstance(value, tensorplay.Tensor)
+
+
+def _same_bound_arguments(previous: Any, current: Any) -> bool:
+    """Whether two bound argument lists name the same call arguments.
+
+    The cached-call shortcut stands for "this is the same call", so a tensor
+    is compared by identity: two distinct tensors holding equal values still
+    occupy different addresses, and the layout check the shortcut skips is
+    about addresses.  Nested containers are compared element-wise and every
+    other value by equality.
+    """
+
+    if previous is current:
+        return True
+    if type(previous) is not type(current):
+        return False
+    if isinstance(previous, tensorplay.Tensor):
+        return False
+    if isinstance(previous, (list, tuple)):
+        return len(previous) == len(current) and all(
+            _same_bound_arguments(a, b) for a, b in zip(previous, current)
+        )
+    if isinstance(previous, dict):
+        if list(previous.keys()) != list(current.keys()):
+            return False
+        return all(
+            _same_bound_arguments(previous[key], current[key])
+            for key in previous
+        )
+    try:
+        return bool(previous == current)
+    except Exception:
+        return False
+
+
+#: Marks a snapshot slot that holds a tensor by weak reference.
+_WEAK_SLOT = object()
+
+
+def _hold_arguments(values: Sequence[Any]) -> tuple[Any, ...]:
+    """Snapshot a call's arguments without keeping its tensors alive.
+
+    The steady-call shortcut only needs to answer whether a new call brings
+    the very objects the last call used; it never needs to keep them alive.
+    Tensors are therefore held weakly, and containers are walked so a tensor
+    nested inside one is weak too.
+    """
+
+    return tuple(_hold_value(value) for value in values)
+
+
+def _hold_value(value: Any) -> tuple[Any, Any]:
+    if isinstance(value, tensorplay.Tensor):
+        return (_WEAK_SLOT, weakref.ref(value))
+    if isinstance(value, list):
+        return ("list", tuple(_hold_value(item) for item in value))
+    if isinstance(value, tuple):
+        return ("tuple", tuple(_hold_value(item) for item in value))
+    if isinstance(value, dict):
+        return ("dict", tuple((key, _hold_value(item)) for key, item in value.items()))
+    return ("value", value)
+
+
+def _hold_matches(held: tuple[Any, Any], value: Any) -> bool:
+    kind = held[0]
+    if kind is _WEAK_SLOT:
+        return held[1]() is value
+    if kind == "list":
+        return (
+            type(value) is list
+            and len(held[1]) == len(value)
+            and all(_hold_matches(item, current) for item, current in zip(held[1], value))
+        )
+    if kind == "tuple":
+        return (
+            type(value) is tuple
+            and len(held[1]) == len(value)
+            and all(_hold_matches(item, current) for item, current in zip(held[1], value))
+        )
+    if kind == "dict":
+        held_items = held[1]
+        return (
+            type(value) is dict
+            and list(value.keys()) == [key for key, _ in held_items]
+            and all(_hold_matches(item, value[key]) for key, item in held_items)
+        )
+    return _same_bound_arguments(held[1], value)
+
+
+def _arguments_match(held: tuple[Any, ...], values: Sequence[Any]) -> bool:
+    return len(held) == len(values) and all(
+        _hold_matches(item, current) for item, current in zip(held, values)
+    )
 
 
 def default_partition(joint_module: GraphModule, _joint_inputs: Sequence[Any], *, num_fwd_outputs: int):
@@ -939,16 +1033,14 @@ def aot_module_simplified(
             #: list the module reports.
             self._region = getattr(compiled, "_tensorplay_region_callable", None)
             self._fast_entries: dict[int, tuple[Any, list[Any]]] = {}
-            #: The state tuple and bound caller arguments from the last call,
-            #: and the full argument tuple they produced.  The region replays
-            #: against the same state and the same caller arguments on every
-            #: steady-state call, so the combined tuple is rebuilt only when
-            #: either half moves -- which also gives the region's layout check
-            #: a tuple it can recognize by identity instead of scanning every
-            #: argument's address.
+            #: The state tuple and a weak snapshot of the caller arguments from the
+            #: last call.  The region replays against the same state and the
+            #: same caller arguments on every steady-state call, so the tuple is
+            #: rebuilt only when either half moves.  The snapshot holds tensors
+            #: weakly, so a caller that drops an input is not kept alive by this
+            #: cache.
             self._cached_state: Any = None
-            self._cached_bound: Any = None
-            self._cached_full: Any = None
+            self._cached_arguments: tuple[Any, ...] | None = None
             #: The steady-state replay entry and the guard, resolved once.
             #: Both are asked on every call, so the attribute walks that
             #: would find them are taken here instead.
@@ -977,7 +1069,8 @@ def aot_module_simplified(
                         values.append(bound.arguments[key] if key in bound.arguments else bound.arguments[node.name])
                     return values
             else:
-                _bind = _bind_graph_inputs
+                def _bind(args, kwargs):
+                    return _bind_graph_inputs(module, args, kwargs)
             self._bind = _bind
 
         def _steady_state_entry(self, nargs: int) -> Any:
@@ -1028,21 +1121,21 @@ def aot_module_simplified(
             state = self._read_state()
             if (
                 self._cached_state is state
-                and self._cached_bound == bound
-                and self._cached_full is not None
+                and self._cached_arguments is not None
+                and _arguments_match(self._cached_arguments, bound)
             ):
                 # The state and the caller's arguments are the ones the last
                 # call used, so the arguments are unchanged.  Ask the region
                 # for its steady-state replay, which skips the layout check
                 # that would scan every argument's address.
+                full = tuple(state) + tuple(bound)
                 replay_steady = self._replay_steady_fn
                 if replay_steady is not None:
-                    return replay_steady(self._cached_full)
-                return self._compiled(*self._cached_full)
+                    return replay_steady(full)
+                return self._compiled(*full)
             full = tuple(state) + tuple(bound)
             self._cached_state = state
-            self._cached_bound = bound
-            self._cached_full = full
+            self._cached_arguments = _hold_arguments(bound)
             return self._compiled(*full)
 
         def __getattr__(self, name: str) -> Any:
@@ -1053,8 +1146,8 @@ def aot_module_simplified(
             state = self._read_state()
             if (
                 self._cached_state is state
-                and self._cached_bound == bound
-                and self._cached_full is not None
+                and self._cached_arguments is not None
+                and _arguments_match(self._cached_arguments, bound)
             ):
                 # The arguments are the same objects the last call used, and
                 # the guard passed for them, so the shapes it checks are the
@@ -1065,8 +1158,7 @@ def aot_module_simplified(
                 return True
             full = tuple(state) + tuple(bound)
             self._cached_state = state
-            self._cached_bound = bound
-            self._cached_full = full
+            self._cached_arguments = _hold_arguments(bound)
             return guard(*full)
 
     return _AotForward(compiled, module, read_state, _bind_graph_inputs)
