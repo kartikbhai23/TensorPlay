@@ -19,6 +19,7 @@ import tensorplay
 import tensorplay._C as _C
 from tensorplay._C import DType
 import tensorplay.graph as _graph
+import tensorplay.graph._utils as _graph_state
 from tensorplay.graph import capture_call as _capture_call
 _capturing = _graph.capturing
 
@@ -96,7 +97,7 @@ def _drawn_factory(name, sig, positional, kwargs, out_call, plain_guard,
     if out_call is not None:
         body += [
             '    if out is not None:',
-            '        if _capturing():',
+            '        if _graph_state._TRACE_DEPTH:',
             f"            _captured = _capture_call({name}, ({tup}), "
             f"{{'generator': generator, 'out': out}})",
             '            if _captured is not None:',
@@ -104,7 +105,7 @@ def _drawn_factory(name, sig, positional, kwargs, out_call, plain_guard,
             f'        return {out_call}',
         ]
     body += [
-        '    if _capturing():',
+        '    if _graph_state._TRACE_DEPTH:',
         f'        _captured = _capture_call({name}, ({tup}), {{{kw}}})',
         '        if _captured is not None:',
         '            return _captured',
@@ -157,7 +158,7 @@ _DRAWN_FACTORIES = {
             '        if low != 0:',
             "            raise TypeError('randint_like() takes a tensor bound "
             "only as (input, high)')",
-            '        if _capturing():',
+            '        if _graph_state._TRACE_DEPTH:',
             "            _captured = _capture_call(randint_like, (input, high), "
             "{'generator': generator, 'dtype': dtype, 'layout': layout, "
             "'device': device, 'pin_memory': pin_memory, "
@@ -208,13 +209,13 @@ _DRAWN_FACTORIES = {
         '        if std is _MISSING:',
         "            raise TypeError('normal() with a size takes both mean and std')",
         '        if out is not None:',
-        '            if _capturing():',
+        '            if _graph_state._TRACE_DEPTH:',
         "                _captured = _capture_call(normal, (mean, std, size), "
         "{'generator': generator, 'out': out})",
         '                if _captured is not None:',
         '                    return _captured',
         '            return _C.normal(mean, std, size, generator=generator, out=out)',
-        '        if _capturing():',
+        '        if _graph_state._TRACE_DEPTH:',
         "            _captured = _capture_call(normal, (mean, std, size), "
         "{'generator': generator, 'dtype': dtype, 'layout': layout, "
         "'device': device, 'pin_memory': pin_memory, "
@@ -225,13 +226,13 @@ _DRAWN_FACTORIES = {
         '    if std is _MISSING:',
         '        std = 1.0',
         '    if out is not None:',
-        '        if _capturing():',
+        '        if _graph_state._TRACE_DEPTH:',
         "            _captured = _capture_call(normal, (mean, std), "
         "{'generator': generator, 'out': out})",
         '            if _captured is not None:',
         '                return _captured',
         '        return _C.normal(mean, std, generator=generator, out=out)',
-        '    if _capturing():',
+        '    if _graph_state._TRACE_DEPTH:',
         "        _captured = _capture_call(normal, (mean, std), "
         "{'generator': generator})",
         '        if _captured is not None:',
@@ -256,7 +257,7 @@ def _capture_line(lines, fn_name, params, kwparams=()):
     # the public spelling accepts them only as keywords, so recording them
     # positionally would produce a node the interpreter cannot replay, and
     # omitting them would silently drop user values (add's alpha).
-    lines.append('    if _capturing():')
+    lines.append('    if _graph_state._TRACE_DEPTH:')
     tup = ', '.join(params)
     if len(params) == 1:
         tup += ','
@@ -277,7 +278,7 @@ def _out_capture_lines(fn_name, params, kwparams=(), indent='    '):
         tup += ','
     kw = '{' + ', '.join([f"'{k}': {k}" for k in kwparams] + ["'out': out"]) + '}'
     return [
-        f'{indent}if _capturing():',
+        f'{indent}if _graph_state._TRACE_DEPTH:',
         f'{indent}    _captured = _capture_call({fn_name}, ({tup}), {kw})',
         f'{indent}    if _captured is not None:',
         f'{indent}        return _captured',
@@ -362,7 +363,7 @@ def _reduction_union_lines(name, base, sib) -> list[str] | None:
     sib_call = ccall(sib, ps[1:])
     return [
         f'def {name}({", ".join(sig)}):',
-        '    if _capturing():',
+        '    if _graph_state._TRACE_DEPTH:',
         '        _captured = _capture_call('
         + f'{name}, ({", ".join(cap)}' + (',' if len(cap) == 1 else '')
         + f'), {cap_kwargs})',
@@ -460,7 +461,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             if name == 'allclose':
                 lines += [
                     'def allclose(input, other, rtol=1e-05, atol=1e-08, equal_nan=False):',
-                    '    if _capturing():',
+                    '    if _graph_state._TRACE_DEPTH:',
                     "        _captured = _capture_call(allclose, "
                     "(input, other, rtol, atol, equal_nan), {})",
                     '        if _captured is not None:',
@@ -473,7 +474,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             else:
                 lines += [
                     'def equal(input, other):',
-                    '    if _capturing():',
+                    '    if _graph_state._TRACE_DEPTH:',
                     "        _captured = _capture_call(equal, (input, other), {})",
                     '        if _captured is not None:',
                     '            return _captured',
@@ -495,7 +496,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                 '    if as_tuple:',
                 '        if out is not None:',
                 '            raise RuntimeError("nonzero does not support out when as_tuple is True")',
-                '        if _capturing():',
+                '        if _graph_state._TRACE_DEPTH:',
                 "            _captured = _capture_call(nonzero, (input,), {'as_tuple': True})",
                 '            if _captured is not None:',
                 '                return _captured',
@@ -512,7 +513,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             seen.add(name)
             lines += [
                 'def where(condition, input=None, other=None):',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 '        _captured = _capture_call(where, (condition, input, other), {})',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -540,12 +541,12 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             lines += [
                 'def float_power(input, exponent, *, out=None):',
                 '    if out is not None:',
-                '        if _capturing():',
+                '        if _graph_state._TRACE_DEPTH:',
                 "            _captured = _capture_call(float_power, (input, exponent), {'out': out})",
                 '            if _captured is not None:',
                 '                return _captured',
                 '        return _C.float_power(input, exponent, out=out)',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 '        _captured = _capture_call(float_power, (input, exponent), {})',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -619,7 +620,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                 f'            return _C.{name}(input, other, '
                 'rounding_mode=rounding_mode, out=out)',
                 *scalar_out,
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 f'        _captured = _capture_call({name}, (input, other), '
                 "{'rounding_mode': rounding_mode})",
                 '        if _captured is not None:',
@@ -637,7 +638,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             seen.add(name)
             lines += [
                 f'def {name}(input, *args, **kwargs):',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 f'        _captured = _capture_call({name}, (input, *args), kwargs)',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -650,7 +651,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             seen.add(name)
             lines += [
                 'def mm(input, mat2):',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 '        _captured = _capture_call(mm, (input, mat2), {})',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -663,7 +664,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             seen.add(name)
             lines += [
                 'def addmm(input, mat1, mat2, beta=1, alpha=1):',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 '        _captured = _capture_call(addmm, (input, mat1, mat2, beta, alpha), {})',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -679,7 +680,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                 '    if out is not None:',
                 *_out_capture_lines('matmul', ['input', 'other'], indent='        '),
                 '        return _C.matmul(input, other, out=out)',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 '        _captured = _capture_call(matmul, (input, other), {})',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -692,7 +693,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             seen.add(name)
             lines += [
                 'def linear(input, weight, bias=None):',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 '        _captured = _capture_call(linear, (input, weight, bias), {})',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -730,7 +731,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                 f'_c_{name} = _C.{name}',
                 '',
                 f'def {name}(*size, {gen_param}dtype=None, device=None{pin_param}, requires_grad=False):',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 f'        _captured = _capture_call({name}, tuple(size), {cap_kwargs})',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -859,7 +860,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                 f'def {name}(input, dim=None, unbiased=None, keepdim=False, *, correction=None):',
                 '    if isinstance(dim, bool) and unbiased is None and correction is None:',
                 '        dim, unbiased = None, dim',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 f'        _captured = _capture_call({name}, (input, dim, unbiased, keepdim), {{\"correction\": correction}})',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -886,7 +887,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                 f'def {name}(input, dim=None, unbiased=None, keepdim=False, *, correction=None):',
                 '    if isinstance(dim, bool) and unbiased is None and correction is None:',
                 '        dim, unbiased = None, dim',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 f'        _captured = _capture_call({name}, (input, dim, unbiased, keepdim), {{\"correction\": correction}})',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -927,7 +928,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             # .dims (positional forwarding lets the group dispatcher pick).
             lines += [
                 'def squeeze_copy(input, dim=None):',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 '        _captured = _capture_call(squeeze_copy, (input, dim), {})',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -956,7 +957,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                 '        if return_counts:',
                 '            outs.append(counts)',
                 '        return outs[0] if len(outs) == 1 else tuple(outs)',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 '        _captured = _capture_call(unique, (input, sorted, return_inverse, return_counts), {})',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -976,7 +977,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             # flags false only the output tensor is returned.
             lines += [
                 'def unique_consecutive(input, return_inverse=False, return_counts=False, dim=None):',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 '        _captured = _capture_call(unique_consecutive, (input, return_inverse, return_counts, dim), {})',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -998,7 +999,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             # (positional forwarding lets the FASTCALL group dispatcher pick).
             lines += [
                 'def trapz(y, x=None, dx=None, dim=-1):',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 '        _captured = _capture_call(trapz, (y, x, dx, dim), {})',
                 '        if _captured is not None:',
                 '            return _captured',
@@ -1033,7 +1034,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             sig, fwd = window_factories[name]
             lines += [
                 f'def {name}({sig}, *, device=None, layout=None, pin_memory=None):',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 f'        _captured = _capture_call({name}, ({fwd}, dtype), '
                 "{'device': device, 'layout': layout, 'pin_memory': pin_memory})",
                 '        if _captured is not None:',
@@ -1054,7 +1055,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             # beta=12.0, *, dtype, device, pin_memory).  Always forward to
             lines += [
                 'def kaiser_window(window_length, periodic=True, beta=12.0, *, dtype=None, device=None, pin_memory=False):',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 '        _captured = _capture_call(kaiser_window, '
                 "(window_length, periodic, beta), "
                 "{'dtype': dtype, 'device': device, 'pin_memory': pin_memory})",
@@ -1085,7 +1086,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             first, second = compressed_ctor_names[name]
             lines += [
                 f'def {name}({first}, {second}, values, size=None, *, dtype=None, layout=None, device=None, pin_memory=False):',
-                '    if _capturing():',
+                '    if _graph_state._TRACE_DEPTH:',
                 f"        _captured = _capture_call({name}, ({first}, {second}, values, size), {{'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory}})",
                 '        if _captured is not None:',
                 '            return _captured',
@@ -1139,7 +1140,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                     *_out_capture_lines('bernoulli', ['input'], ['generator'],
                                         indent='            '),
                     '            return _C.bernoulli(self=input, generator=generator, out=out)',
-                    '        if _capturing():',
+                    '        if _graph_state._TRACE_DEPTH:',
                     "            _captured = _capture_call(bernoulli, (input,), {'generator': generator})",
                     '            if _captured is not None:',
                     '                return _captured',
@@ -1148,7 +1149,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                     *_out_capture_lines('bernoulli', ['input', 'p'], ['generator'],
                                         indent='        '),
                     '        return _C.bernoulli(self=input, p=p, generator=generator, out=out)',
-                    '    if _capturing():',
+                    '    if _graph_state._TRACE_DEPTH:',
                     "        _captured = _capture_call(bernoulli, (input, p), {'generator': generator})",
                     '        if _captured is not None:',
                     '            return _captured',
@@ -1288,7 +1289,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                     if len(pos_names) == 1:
                         cap_pos += ','
                     lines += [
-                        '        if _capturing():',
+                        '        if _graph_state._TRACE_DEPTH:',
                         f'            _captured = _capture_call({name}, '
                         f'({cap_pos}), {cap_kw})',
                         '            if _captured is not None:',

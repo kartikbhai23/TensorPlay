@@ -5,6 +5,7 @@ import tensorplay
 import tensorplay._C as _C
 from tensorplay._C import DType
 import tensorplay.graph as _graph
+import tensorplay.graph._utils as _graph_state
 from tensorplay.graph import capture_call as _capture_call
 _capturing = _graph.capturing
 
@@ -56,12 +57,12 @@ def _draw_bounds(fn, args, low, high, rest):
 
 def embedding(weight, indices, padding_idx=-1, scale_grad_by_freq=False, sparse=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(embedding, (weight, indices, padding_idx, scale_grad_by_freq, sparse), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.embedding(weight=weight, indices=indices, padding_idx=padding_idx, scale_grad_by_freq=scale_grad_by_freq, sparse=sparse, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(embedding, (weight, indices, padding_idx, scale_grad_by_freq, sparse), {})
         if _captured is not None:
             return _captured
@@ -69,12 +70,12 @@ def embedding(weight, indices, padding_idx=-1, scale_grad_by_freq=False, sparse=
 
 def embedding_dense_backward(grad_output, indices, num_weights, padding_idx, scale_grad_by_freq, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(embedding_dense_backward, (grad_output, indices, num_weights, padding_idx, scale_grad_by_freq), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.embedding_dense_backward(grad_output=grad_output, indices=indices, num_weights=num_weights, padding_idx=padding_idx, scale_grad_by_freq=scale_grad_by_freq, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(embedding_dense_backward, (grad_output, indices, num_weights, padding_idx, scale_grad_by_freq), {})
         if _captured is not None:
             return _captured
@@ -82,12 +83,12 @@ def embedding_dense_backward(grad_output, indices, num_weights, padding_idx, sca
 
 def _embedding_bag(weight, indices, offsets, scale_grad_by_freq=False, mode=0, sparse=False, per_sample_weights=None, include_last_offset=False, padding_idx=-1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_embedding_bag, (weight, indices, offsets, scale_grad_by_freq, mode, sparse, per_sample_weights, include_last_offset, padding_idx), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._embedding_bag(weight=weight, indices=indices, offsets=offsets, scale_grad_by_freq=scale_grad_by_freq, mode=mode, sparse=sparse, per_sample_weights=per_sample_weights, include_last_offset=include_last_offset, padding_idx=padding_idx, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_embedding_bag, (weight, indices, offsets, scale_grad_by_freq, mode, sparse, per_sample_weights, include_last_offset, padding_idx), {})
         if _captured is not None:
             return _captured
@@ -95,12 +96,12 @@ def _embedding_bag(weight, indices, offsets, scale_grad_by_freq=False, mode=0, s
 
 def _embedding_bag_forward_only(weight, indices, offsets, scale_grad_by_freq=False, mode=0, sparse=False, per_sample_weights=None, include_last_offset=False, padding_idx=-1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_embedding_bag_forward_only, (weight, indices, offsets, scale_grad_by_freq, mode, sparse, per_sample_weights, include_last_offset, padding_idx), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._embedding_bag_forward_only(weight=weight, indices=indices, offsets=offsets, scale_grad_by_freq=scale_grad_by_freq, mode=mode, sparse=sparse, per_sample_weights=per_sample_weights, include_last_offset=include_last_offset, padding_idx=padding_idx, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_embedding_bag_forward_only, (weight, indices, offsets, scale_grad_by_freq, mode, sparse, per_sample_weights, include_last_offset, padding_idx), {})
         if _captured is not None:
             return _captured
@@ -108,12 +109,12 @@ def _embedding_bag_forward_only(weight, indices, offsets, scale_grad_by_freq=Fal
 
 def _embedding_bag_dense_backward(grad_output, indices, offset2bag, bag_size, maximum_indices, num_weights, scale_grad_by_freq, mode, per_sample_weights=None, padding_idx=-1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_embedding_bag_dense_backward, (grad_output, indices, offset2bag, bag_size, maximum_indices, num_weights, scale_grad_by_freq, mode, per_sample_weights, padding_idx), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._embedding_bag_dense_backward(grad_output=grad_output, indices=indices, offset2bag=offset2bag, bag_size=bag_size, maximum_indices=maximum_indices, num_weights=num_weights, scale_grad_by_freq=scale_grad_by_freq, mode=mode, per_sample_weights=per_sample_weights, padding_idx=padding_idx, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_embedding_bag_dense_backward, (grad_output, indices, offset2bag, bag_size, maximum_indices, num_weights, scale_grad_by_freq, mode, per_sample_weights, padding_idx), {})
         if _captured is not None:
             return _captured
@@ -121,12 +122,12 @@ def _embedding_bag_dense_backward(grad_output, indices, offset2bag, bag_size, ma
 
 def _embedding_bag_per_sample_weights_backward(grad_output, weight, indices, offsets, offset2bag, mode, padding_idx=-1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_embedding_bag_per_sample_weights_backward, (grad_output, weight, indices, offsets, offset2bag, mode, padding_idx), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._embedding_bag_per_sample_weights_backward(grad_output=grad_output, weight=weight, indices=indices, offsets=offsets, offset2bag=offset2bag, mode=mode, padding_idx=padding_idx, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_embedding_bag_per_sample_weights_backward, (grad_output, weight, indices, offsets, offset2bag, mode, padding_idx), {})
         if _captured is not None:
             return _captured
@@ -134,12 +135,12 @@ def _embedding_bag_per_sample_weights_backward(grad_output, weight, indices, off
 
 def convolution(input, weight, bias, stride, padding, dilation, transposed, output_padding, groups, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(convolution, (input, weight, bias, stride, padding, dilation, transposed, output_padding, groups), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.convolution(input=input, weight=weight, bias=bias, stride=stride, padding=padding, dilation=dilation, transposed=transposed, output_padding=output_padding, groups=groups, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(convolution, (input, weight, bias, stride, padding, dilation, transposed, output_padding, groups), {})
         if _captured is not None:
             return _captured
@@ -147,12 +148,12 @@ def convolution(input, weight, bias, stride, padding, dilation, transposed, outp
 
 def convolution_backward(grad_output, input, weight, bias_sizes, stride, padding, dilation, transposed, output_padding, groups, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(convolution_backward, (grad_output, input, weight, bias_sizes, stride, padding, dilation, transposed, output_padding, groups, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.convolution_backward(grad_output=grad_output, input=input, weight=weight, bias_sizes=bias_sizes, stride=stride, padding=padding, dilation=dilation, transposed=transposed, output_padding=output_padding, groups=groups, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(convolution_backward, (grad_output, input, weight, bias_sizes, stride, padding, dilation, transposed, output_padding, groups, output_mask), {})
         if _captured is not None:
             return _captured
@@ -160,12 +161,12 @@ def convolution_backward(grad_output, input, weight, bias_sizes, stride, padding
 
 def convolution_overrideable(input, weight, bias, stride, padding, dilation, transposed, output_padding, groups, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(convolution_overrideable, (input, weight, bias, stride, padding, dilation, transposed, output_padding, groups), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.convolution_overrideable(input=input, weight=weight, bias=bias, stride=stride, padding=padding, dilation=dilation, transposed=transposed, output_padding=output_padding, groups=groups, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(convolution_overrideable, (input, weight, bias, stride, padding, dilation, transposed, output_padding, groups), {})
         if _captured is not None:
             return _captured
@@ -173,19 +174,19 @@ def convolution_overrideable(input, weight, bias, stride, padding, dilation, tra
 
 def convolution_backward_overrideable(grad_output, input, weight, stride, padding, dilation, transposed, output_padding, groups, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(convolution_backward_overrideable, (grad_output, input, weight, stride, padding, dilation, transposed, output_padding, groups, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.convolution_backward_overrideable(grad_output=grad_output, input=input, weight=weight, stride=stride, padding=padding, dilation=dilation, transposed=transposed, output_padding=output_padding, groups=groups, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(convolution_backward_overrideable, (grad_output, input, weight, stride, padding, dilation, transposed, output_padding, groups, output_mask), {})
         if _captured is not None:
             return _captured
     return _C.convolution_backward_overrideable(grad_output=grad_output, input=input, weight=weight, stride=stride, padding=padding, dilation=dilation, transposed=transposed, output_padding=output_padding, groups=groups, output_mask=output_mask)
 
 def conv1d(input, weight, bias=None, stride=([1]), padding=([0]), dilation=([1]), groups=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv1d, (input, weight, bias, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -198,7 +199,7 @@ def conv1d(input, weight, bias=None, stride=([1]), padding=([0]), dilation=([1])
     return _C.conv1d(input, weight, bias, stride, padding, dilation, groups)
 
 def conv1d_grad_input(grad_output, input, weight, stride, padding, dilation, groups):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv1d_grad_input, (grad_output, input, weight, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -211,7 +212,7 @@ def conv1d_grad_input(grad_output, input, weight, stride, padding, dilation, gro
     return _C.conv1d_grad_input(grad_output, input, weight, stride, padding, dilation, groups)
 
 def conv1d_grad_weight(grad_output, input, weight, stride, padding, dilation, groups):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv1d_grad_weight, (grad_output, input, weight, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -224,7 +225,7 @@ def conv1d_grad_weight(grad_output, input, weight, stride, padding, dilation, gr
     return _C.conv1d_grad_weight(grad_output, input, weight, stride, padding, dilation, groups)
 
 def conv1d_grad_bias(grad_output, input, weight, stride, padding, dilation, groups):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv1d_grad_bias, (grad_output, input, weight, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -237,7 +238,7 @@ def conv1d_grad_bias(grad_output, input, weight, stride, padding, dilation, grou
     return _C.conv1d_grad_bias(grad_output, input, weight, stride, padding, dilation, groups)
 
 def conv2d(input, weight, bias=None, stride=([1, 1]), padding=([0, 0]), dilation=([1, 1]), groups=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv2d, (input, weight, bias, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -250,7 +251,7 @@ def conv2d(input, weight, bias=None, stride=([1, 1]), padding=([0, 0]), dilation
     return _C.conv2d(input, weight, bias, stride, padding, dilation, groups)
 
 def conv2d_relu(input, weight, bias=None, stride=([1, 1]), padding=([0, 0]), dilation=([1, 1]), groups=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv2d_relu, (input, weight, bias, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -263,14 +264,14 @@ def conv2d_relu(input, weight, bias=None, stride=([1, 1]), padding=([0, 0]), dil
     return _C.conv2d_relu(input, weight, bias, stride, padding, dilation, groups)
 
 def add_relu(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(add_relu, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.add_relu(input, other)
 
 def conv2d_grad_input(grad_output, input, weight, stride, padding, dilation, groups):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv2d_grad_input, (grad_output, input, weight, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -283,7 +284,7 @@ def conv2d_grad_input(grad_output, input, weight, stride, padding, dilation, gro
     return _C.conv2d_grad_input(grad_output, input, weight, stride, padding, dilation, groups)
 
 def conv2d_grad_weight(grad_output, input, weight, stride, padding, dilation, groups):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv2d_grad_weight, (grad_output, input, weight, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -296,7 +297,7 @@ def conv2d_grad_weight(grad_output, input, weight, stride, padding, dilation, gr
     return _C.conv2d_grad_weight(grad_output, input, weight, stride, padding, dilation, groups)
 
 def conv2d_grad_bias(grad_output, input, weight, stride, padding, dilation, groups):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv2d_grad_bias, (grad_output, input, weight, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -309,7 +310,7 @@ def conv2d_grad_bias(grad_output, input, weight, stride, padding, dilation, grou
     return _C.conv2d_grad_bias(grad_output, input, weight, stride, padding, dilation, groups)
 
 def conv3d(input, weight, bias=None, stride=([1, 1, 1]), padding=([0, 0, 0]), dilation=([1, 1, 1]), groups=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv3d, (input, weight, bias, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -322,7 +323,7 @@ def conv3d(input, weight, bias=None, stride=([1, 1, 1]), padding=([0, 0, 0]), di
     return _C.conv3d(input, weight, bias, stride, padding, dilation, groups)
 
 def conv3d_grad_input(grad_output, input, weight, stride, padding, dilation, groups):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv3d_grad_input, (grad_output, input, weight, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -335,7 +336,7 @@ def conv3d_grad_input(grad_output, input, weight, stride, padding, dilation, gro
     return _C.conv3d_grad_input(grad_output, input, weight, stride, padding, dilation, groups)
 
 def conv3d_grad_weight(grad_output, input, weight, stride, padding, dilation, groups):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv3d_grad_weight, (grad_output, input, weight, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -348,7 +349,7 @@ def conv3d_grad_weight(grad_output, input, weight, stride, padding, dilation, gr
     return _C.conv3d_grad_weight(grad_output, input, weight, stride, padding, dilation, groups)
 
 def conv3d_grad_bias(grad_output, input, weight, stride, padding, dilation, groups):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv3d_grad_bias, (grad_output, input, weight, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -361,7 +362,7 @@ def conv3d_grad_bias(grad_output, input, weight, stride, padding, dilation, grou
     return _C.conv3d_grad_bias(grad_output, input, weight, stride, padding, dilation, groups)
 
 def conv_transpose2d(input, weight, bias=None, stride=([1, 1]), padding=([0, 0]), output_padding=([0, 0]), groups=1, dilation=([1, 1])):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_transpose2d, (input, weight, bias, stride, padding, output_padding, groups, dilation), {})
         if _captured is not None:
             return _captured
@@ -376,7 +377,7 @@ def conv_transpose2d(input, weight, bias=None, stride=([1, 1]), padding=([0, 0])
     return _C.conv_transpose2d(input, weight, bias, stride, padding, output_padding, groups, dilation)
 
 def conv_transpose2d_grad_input(grad_output, input, weight, stride, padding, output_padding, groups, dilation):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_transpose2d_grad_input, (grad_output, input, weight, stride, padding, output_padding, groups, dilation), {})
         if _captured is not None:
             return _captured
@@ -391,7 +392,7 @@ def conv_transpose2d_grad_input(grad_output, input, weight, stride, padding, out
     return _C.conv_transpose2d_grad_input(grad_output, input, weight, stride, padding, output_padding, groups, dilation)
 
 def conv_transpose2d_grad_weight(grad_output, input, weight, stride, padding, output_padding, groups, dilation):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_transpose2d_grad_weight, (grad_output, input, weight, stride, padding, output_padding, groups, dilation), {})
         if _captured is not None:
             return _captured
@@ -406,7 +407,7 @@ def conv_transpose2d_grad_weight(grad_output, input, weight, stride, padding, ou
     return _C.conv_transpose2d_grad_weight(grad_output, input, weight, stride, padding, output_padding, groups, dilation)
 
 def conv_transpose2d_grad_bias(grad_output, input, weight, stride, padding, output_padding, groups, dilation):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_transpose2d_grad_bias, (grad_output, input, weight, stride, padding, output_padding, groups, dilation), {})
         if _captured is not None:
             return _captured
@@ -421,7 +422,7 @@ def conv_transpose2d_grad_bias(grad_output, input, weight, stride, padding, outp
     return _C.conv_transpose2d_grad_bias(grad_output, input, weight, stride, padding, output_padding, groups, dilation)
 
 def conv_transpose3d(input, weight, bias=None, stride=([1, 1, 1]), padding=([0, 0, 0]), output_padding=([0, 0, 0]), groups=1, dilation=([1, 1, 1])):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_transpose3d, (input, weight, bias, stride, padding, output_padding, groups, dilation), {})
         if _captured is not None:
             return _captured
@@ -436,7 +437,7 @@ def conv_transpose3d(input, weight, bias=None, stride=([1, 1, 1]), padding=([0, 
     return _C.conv_transpose3d(input, weight, bias, stride, padding, output_padding, groups, dilation)
 
 def conv_transpose3d_grad_input(grad_output, input, weight, stride, padding, output_padding, groups, dilation):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_transpose3d_grad_input, (grad_output, input, weight, stride, padding, output_padding, groups, dilation), {})
         if _captured is not None:
             return _captured
@@ -452,19 +453,19 @@ def conv_transpose3d_grad_input(grad_output, input, weight, stride, padding, out
 
 def constant_pad_nd(input, pad, value, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(constant_pad_nd, (input, pad, value), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.constant_pad_nd(self=input, pad=pad, value=value, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(constant_pad_nd, (input, pad, value), {})
         if _captured is not None:
             return _captured
     return _C.constant_pad_nd(self=input, pad=pad, value=value)
 
 def constant_pad_nd_backward(grad_output, pad):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(constant_pad_nd_backward, (grad_output, pad), {})
         if _captured is not None:
             return _captured
@@ -473,7 +474,7 @@ def constant_pad_nd_backward(grad_output, pad):
     return _C.constant_pad_nd_backward(grad_output, pad)
 
 def conv_transpose3d_grad_weight(grad_output, input, weight, stride, padding, output_padding, groups, dilation):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_transpose3d_grad_weight, (grad_output, input, weight, stride, padding, output_padding, groups, dilation), {})
         if _captured is not None:
             return _captured
@@ -488,7 +489,7 @@ def conv_transpose3d_grad_weight(grad_output, input, weight, stride, padding, ou
     return _C.conv_transpose3d_grad_weight(grad_output, input, weight, stride, padding, output_padding, groups, dilation)
 
 def conv_transpose3d_grad_bias(grad_output, input, weight, stride, padding, output_padding, groups, dilation):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_transpose3d_grad_bias, (grad_output, input, weight, stride, padding, output_padding, groups, dilation), {})
         if _captured is not None:
             return _captured
@@ -504,12 +505,12 @@ def conv_transpose3d_grad_bias(grad_output, input, weight, stride, padding, outp
 
 def add(input, other, *, alpha=1, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(add, (input, other), {'alpha': alpha, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.add(input, other, alpha=alpha, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(add, (input, other), {'alpha': alpha})
         if _captured is not None:
             return _captured
@@ -520,7 +521,7 @@ def add_(input, other, alpha=1):
 
 def sub(input, other, alpha=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sub, (input, other, alpha), {'out': out})
             if _captured is not None:
                 return _captured
@@ -529,7 +530,7 @@ def sub(input, other, alpha=1, *, out=None):
         if isinstance(other, tensorplay.Tensor):
             return _C.sub(input, other, alpha=alpha, out=out)
         return input.sub(other=other, alpha=alpha, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sub, (input, other, alpha), {})
         if _captured is not None:
             return _captured
@@ -542,7 +543,7 @@ def sub_(input, other, alpha=1):
 
 def mul(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mul, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
@@ -551,7 +552,7 @@ def mul(input, other, *, out=None):
         if isinstance(other, tensorplay.Tensor):
             return _C.mul(input, other, out=out)
         return input.mul(other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mul, (input, other), {})
         if _captured is not None:
             return _captured
@@ -564,7 +565,7 @@ def mul_(input, other):
 
 def div(input, other, rounding_mode=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(div, (input, other, rounding_mode), {'out': out})
             if _captured is not None:
                 return _captured
@@ -577,7 +578,7 @@ def div(input, other, rounding_mode=None, *, out=None):
         if rounding_mode is None:
             return input.div(other=other, out=out)
         return input.div(other=other, rounding_mode=rounding_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(div, (input, other), {'rounding_mode': rounding_mode})
         if _captured is not None:
             return _captured
@@ -589,7 +590,7 @@ def div(input, other, rounding_mode=None, *, out=None):
 
 def divide(input, other, rounding_mode=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(divide, (input, other, rounding_mode), {'out': out})
             if _captured is not None:
                 return _captured
@@ -603,7 +604,7 @@ def divide(input, other, rounding_mode=None, *, out=None):
         if rounding_mode is None:
             return _C.divide(input, other, out=out)
         return _C.divide(input, other, rounding_mode=rounding_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(divide, (input, other), {'rounding_mode': rounding_mode})
         if _captured is not None:
             return _captured
@@ -615,7 +616,7 @@ def divide(input, other, rounding_mode=None, *, out=None):
 
 def true_divide(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(true_divide, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
@@ -624,7 +625,7 @@ def true_divide(input, other, *, out=None):
         if isinstance(other, tensorplay.Tensor):
             return _C.true_divide(input, other, out=out)
         return _C.true_divide(input, tensorplay.as_tensor(other, device=input.device), out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(true_divide, (input, other), {})
         if _captured is not None:
             return _captured
@@ -634,7 +635,7 @@ def true_divide(input, other, *, out=None):
 
 def floor_divide(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(floor_divide, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
@@ -643,7 +644,7 @@ def floor_divide(input, other, *, out=None):
         if isinstance(other, tensorplay.Tensor):
             return _C.floor_divide(input, other, out=out)
         return input.floor_divide(other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(floor_divide, (input, other), {})
         if _captured is not None:
             return _captured
@@ -653,7 +654,7 @@ def floor_divide(input, other, *, out=None):
 
 def multiply(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(multiply, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
@@ -662,7 +663,7 @@ def multiply(input, other, *, out=None):
         if isinstance(other, tensorplay.Tensor):
             return _C.multiply(input, other, out=out)
         return _C.multiply(input, tensorplay.as_tensor(other, device=input.device), out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(multiply, (input, other), {})
         if _captured is not None:
             return _captured
@@ -672,7 +673,7 @@ def multiply(input, other, *, out=None):
 
 def subtract(input, other, alpha=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(subtract, (input, other, alpha), {'out': out})
             if _captured is not None:
                 return _captured
@@ -681,7 +682,7 @@ def subtract(input, other, alpha=1, *, out=None):
         if isinstance(other, tensorplay.Tensor):
             return _C.subtract(input, other, alpha=alpha, out=out)
         return _C.subtract(input, tensorplay.as_tensor(other, device=input.device), out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(subtract, (input, other, alpha), {})
         if _captured is not None:
             return _captured
@@ -691,12 +692,12 @@ def subtract(input, other, alpha=1, *, out=None):
 
 def remainder(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(remainder, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.remainder(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(remainder, (input, other), {})
         if _captured is not None:
             return _captured
@@ -704,14 +705,14 @@ def remainder(input, other, *, out=None):
 
 def fmod(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fmod, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         if not isinstance(input, tensorplay.Tensor):
             input = _as_left_operand(input, other)
         return _C.fmod(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fmod, (input, other), {})
         if _captured is not None:
             return _captured
@@ -721,14 +722,14 @@ def fmod(input, other, *, out=None):
 
 def copysign(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(copysign, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         if not isinstance(input, tensorplay.Tensor):
             input = _as_left_operand(input, other)
         return _C.copysign(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(copysign, (input, other), {})
         if _captured is not None:
             return _captured
@@ -738,14 +739,14 @@ def copysign(input, other, *, out=None):
 
 def clamp_min(input, min, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(clamp_min, (input, min), {'out': out})
             if _captured is not None:
                 return _captured
         if not isinstance(input, tensorplay.Tensor):
             input = _as_left_operand(input, min)
         return _C.clamp_min(input, min, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(clamp_min, (input, min), {})
         if _captured is not None:
             return _captured
@@ -755,14 +756,14 @@ def clamp_min(input, min, *, out=None):
 
 def clamp_max(input, max, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(clamp_max, (input, max), {'out': out})
             if _captured is not None:
                 return _captured
         if not isinstance(input, tensorplay.Tensor):
             input = _as_left_operand(input, max)
         return _C.clamp_max(input, max, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(clamp_max, (input, max), {})
         if _captured is not None:
             return _captured
@@ -772,404 +773,404 @@ def clamp_max(input, max, *, out=None):
 
 def rsub(input, other, *, alpha=1, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(rsub, (input, other), {'alpha': alpha, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.rsub(input, other, alpha=alpha, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rsub, (input, other), {'alpha': alpha})
         if _captured is not None:
             return _captured
     return _C.rsub(input, other, alpha=alpha)
 
 def fused_mul_add(input, other, addend):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fused_mul_add, (input, other, addend), {})
         if _captured is not None:
             return _captured
     return _C.fused_mul_add(input, other, addend)
 
 def _foreach_sgd(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_sgd, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_sgd(input, *args, **kwargs)
 
 def _foreach_adam(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_adam, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_adam(input, *args, **kwargs)
 
 def _amp_foreach_non_finite_check_and_unscale_(input, found_inf, inv_scale):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_amp_foreach_non_finite_check_and_unscale_, (input, found_inf, inv_scale), {})
         if _captured is not None:
             return _captured
     return _C._amp_foreach_non_finite_check_and_unscale_(input, found_inf, inv_scale)
 
 def _amp_update_scale_(input, growth_tracker, found_inf, growth_factor, backoff_factor, growth_interval):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_amp_update_scale_, (input, growth_tracker, found_inf, growth_factor, backoff_factor, growth_interval), {})
         if _captured is not None:
             return _captured
     return _C._amp_update_scale_(input, growth_tracker, found_inf, growth_factor, backoff_factor, growth_interval)
 
 def _fused_adam_(input, grads, exp_avgs, exp_avg_sqs, max_exp_avg_sqs, state_steps, lr, beta1, beta2, weight_decay, eps, amsgrad, maximize, grad_scale=None, found_inf=None, exact=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_adam_, (input, grads, exp_avgs, exp_avg_sqs, max_exp_avg_sqs, state_steps, lr, beta1, beta2, weight_decay, eps, amsgrad, maximize, grad_scale, found_inf, exact), {})
         if _captured is not None:
             return _captured
     return _C._fused_adam_(input, grads, exp_avgs, exp_avg_sqs, max_exp_avg_sqs, state_steps, lr=lr, beta1=beta1, beta2=beta2, weight_decay=weight_decay, eps=eps, amsgrad=amsgrad, maximize=maximize, grad_scale=grad_scale, found_inf=found_inf, exact=exact)
 
 def _fused_adamw_(input, grads, exp_avgs, exp_avg_sqs, max_exp_avg_sqs, state_steps, lr, beta1, beta2, weight_decay, eps, amsgrad, maximize, grad_scale=None, found_inf=None, exact=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_adamw_, (input, grads, exp_avgs, exp_avg_sqs, max_exp_avg_sqs, state_steps, lr, beta1, beta2, weight_decay, eps, amsgrad, maximize, grad_scale, found_inf, exact), {})
         if _captured is not None:
             return _captured
     return _C._fused_adamw_(input, grads, exp_avgs, exp_avg_sqs, max_exp_avg_sqs, state_steps, lr=lr, beta1=beta1, beta2=beta2, weight_decay=weight_decay, eps=eps, amsgrad=amsgrad, maximize=maximize, grad_scale=grad_scale, found_inf=found_inf, exact=exact)
 
 def _fused_sgd_(input, grads, momentum_buffer_list, weight_decay, momentum, lr, dampening, nesterov, maximize, is_first_step, grad_scale=None, found_inf=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_sgd_, (input, grads, momentum_buffer_list, weight_decay, momentum, lr, dampening, nesterov, maximize, is_first_step, grad_scale, found_inf), {})
         if _captured is not None:
             return _captured
     return _C._fused_sgd_(input, grads, momentum_buffer_list, weight_decay=weight_decay, momentum=momentum, lr=lr, dampening=dampening, nesterov=nesterov, maximize=maximize, is_first_step=is_first_step, grad_scale=grad_scale, found_inf=found_inf)
 
 def _fused_adagrad_(input, grads, state_sums, state_steps, lr, lr_decay, weight_decay, eps, maximize, grad_scale=None, found_inf=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_adagrad_, (input, grads, state_sums, state_steps, lr, lr_decay, weight_decay, eps, maximize, grad_scale, found_inf), {})
         if _captured is not None:
             return _captured
     return _C._fused_adagrad_(input, grads, state_sums, state_steps, lr=lr, lr_decay=lr_decay, weight_decay=weight_decay, eps=eps, maximize=maximize, grad_scale=grad_scale, found_inf=found_inf)
 
 def _fused_rmsprop_(input, grads, square_avgs, grad_avgs, momentum_buffer_list, state_steps, lr, alpha, eps, weight_decay, momentum, centered, maximize):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_rmsprop_, (input, grads, square_avgs, grad_avgs, momentum_buffer_list, state_steps, lr, alpha, eps, weight_decay, momentum, centered, maximize), {})
         if _captured is not None:
             return _captured
     return _C._fused_rmsprop_(input, grads, square_avgs, grad_avgs, momentum_buffer_list, state_steps, lr=lr, alpha=alpha, eps=eps, weight_decay=weight_decay, momentum=momentum, centered=centered, maximize=maximize)
 
 def _fused_adadelta_(input, grads, square_avgs, acc_deltas, state_steps, lr, rho, eps, weight_decay, maximize):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_adadelta_, (input, grads, square_avgs, acc_deltas, state_steps, lr, rho, eps, weight_decay, maximize), {})
         if _captured is not None:
             return _captured
     return _C._fused_adadelta_(input, grads, square_avgs, acc_deltas, state_steps, lr=lr, rho=rho, eps=eps, weight_decay=weight_decay, maximize=maximize)
 
 def _fused_adamax_(input, grads, exp_avgs, exp_infs, state_steps, lr, beta1, beta2, eps, weight_decay, maximize):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_adamax_, (input, grads, exp_avgs, exp_infs, state_steps, lr, beta1, beta2, eps, weight_decay, maximize), {})
         if _captured is not None:
             return _captured
     return _C._fused_adamax_(input, grads, exp_avgs, exp_infs, state_steps, lr=lr, beta1=beta1, beta2=beta2, eps=eps, weight_decay=weight_decay, maximize=maximize)
 
 def _fused_asgd_(input, grads, axs, mus, etas, state_steps, lr, lambd, t0, alpha, weight_decay, maximize):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_asgd_, (input, grads, axs, mus, etas, state_steps, lr, lambd, t0, alpha, weight_decay, maximize), {})
         if _captured is not None:
             return _captured
     return _C._fused_asgd_(input, grads, axs, mus, etas, state_steps, lr=lr, lambd=lambd, t0=t0, alpha=alpha, weight_decay=weight_decay, maximize=maximize)
 
 def _fused_rprop_(input, grads, prevs, step_sizes, state_steps, step_size_min, step_size_max, etaminus, etaplus, maximize):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_rprop_, (input, grads, prevs, step_sizes, state_steps, step_size_min, step_size_max, etaminus, etaplus, maximize), {})
         if _captured is not None:
             return _captured
     return _C._fused_rprop_(input, grads, prevs, step_sizes, state_steps, step_size_min=step_size_min, step_size_max=step_size_max, etaminus=etaminus, etaplus=etaplus, maximize=maximize)
 
 def _fused_nadam_(input, grads, exp_avgs, exp_avg_sqs, mu_products, state_steps, lr, beta1, beta2, eps, weight_decay, momentum_decay, decoupled_weight_decay, maximize):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_nadam_, (input, grads, exp_avgs, exp_avg_sqs, mu_products, state_steps, lr, beta1, beta2, eps, weight_decay, momentum_decay, decoupled_weight_decay, maximize), {})
         if _captured is not None:
             return _captured
     return _C._fused_nadam_(input, grads, exp_avgs, exp_avg_sqs, mu_products, state_steps, lr=lr, beta1=beta1, beta2=beta2, eps=eps, weight_decay=weight_decay, momentum_decay=momentum_decay, decoupled_weight_decay=decoupled_weight_decay, maximize=maximize)
 
 def _fused_radam_(input, grads, exp_avgs, exp_avg_sqs, state_steps, lr, beta1, beta2, eps, weight_decay, decoupled_weight_decay, maximize):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_radam_, (input, grads, exp_avgs, exp_avg_sqs, state_steps, lr, beta1, beta2, eps, weight_decay, decoupled_weight_decay, maximize), {})
         if _captured is not None:
             return _captured
     return _C._fused_radam_(input, grads, exp_avgs, exp_avg_sqs, state_steps, lr=lr, beta1=beta1, beta2=beta2, eps=eps, weight_decay=weight_decay, decoupled_weight_decay=decoupled_weight_decay, maximize=maximize)
 
 def _fused_adafactor_(input, grads, variances, state_steps, lr, beta2_decay, eps1, eps2, d, weight_decay, maximize):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_adafactor_, (input, grads, variances, state_steps, lr, beta2_decay, eps1, eps2, d, weight_decay, maximize), {})
         if _captured is not None:
             return _captured
     return _C._fused_adafactor_(input, grads, variances, state_steps, lr=lr, beta2_decay=beta2_decay, eps1=eps1, eps2=eps2, d=d, weight_decay=weight_decay, maximize=maximize)
 
 def _fused_adafactor_factored_(input, grads, row_vars, col_vars, state_steps, lr, beta2_decay, eps1, eps2, d, weight_decay, maximize):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_adafactor_factored_, (input, grads, row_vars, col_vars, state_steps, lr, beta2_decay, eps1, eps2, d, weight_decay, maximize), {})
         if _captured is not None:
             return _captured
     return _C._fused_adafactor_factored_(input, grads, row_vars, col_vars, state_steps, lr=lr, beta2_decay=beta2_decay, eps1=eps1, eps2=eps2, d=d, weight_decay=weight_decay, maximize=maximize)
 
 def _foreach_add(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_add, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_add(input, *args, **kwargs)
 
 def _foreach_add_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_add_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_add_(input, *args, **kwargs)
 
 def _foreach_sub(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_sub, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_sub(input, *args, **kwargs)
 
 def _foreach_sub_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_sub_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_sub_(input, *args, **kwargs)
 
 def _foreach_mul(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_mul, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_mul(input, *args, **kwargs)
 
 def _foreach_mul_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_mul_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_mul_(input, *args, **kwargs)
 
 def _foreach_div(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_div, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_div(input, *args, **kwargs)
 
 def _foreach_div_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_div_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_div_(input, *args, **kwargs)
 
 def _foreach_addcmul(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_addcmul, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_addcmul(input, *args, **kwargs)
 
 def _foreach_addcmul_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_addcmul_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_addcmul_(input, *args, **kwargs)
 
 def _foreach_addcdiv(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_addcdiv, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_addcdiv(input, *args, **kwargs)
 
 def _foreach_addcdiv_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_addcdiv_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_addcdiv_(input, *args, **kwargs)
 
 def _foreach_lerp(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_lerp, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_lerp(input, *args, **kwargs)
 
 def _foreach_lerp_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_lerp_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_lerp_(input, *args, **kwargs)
 
 def _foreach_sqrt(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_sqrt, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_sqrt(input, *args, **kwargs)
 
 def _foreach_sqrt_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_sqrt_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_sqrt_(input, *args, **kwargs)
 
 def _foreach_rsqrt(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_rsqrt, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_rsqrt(input, *args, **kwargs)
 
 def _foreach_rsqrt_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_rsqrt_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_rsqrt_(input, *args, **kwargs)
 
 def _foreach_neg(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_neg, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_neg(input, *args, **kwargs)
 
 def _foreach_neg_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_neg_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_neg_(input, *args, **kwargs)
 
 def _foreach_abs(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_abs, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_abs(input, *args, **kwargs)
 
 def _foreach_abs_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_abs_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_abs_(input, *args, **kwargs)
 
 def _foreach_reciprocal(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_reciprocal, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_reciprocal(input, *args, **kwargs)
 
 def _foreach_reciprocal_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_reciprocal_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_reciprocal_(input, *args, **kwargs)
 
 def _foreach_sign(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_sign, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_sign(input, *args, **kwargs)
 
 def _foreach_sign_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_sign_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_sign_(input, *args, **kwargs)
 
 def _foreach_pow(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_pow, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_pow(input, *args, **kwargs)
 
 def _foreach_pow_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_pow_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_pow_(input, *args, **kwargs)
 
 def _foreach_clamp_min(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_clamp_min, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_clamp_min(input, *args, **kwargs)
 
 def _foreach_clamp_max(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_clamp_max, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_clamp_max(input, *args, **kwargs)
 
 def _foreach_clamp_min_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_clamp_min_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_clamp_min_(input, *args, **kwargs)
 
 def _foreach_clamp_max_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_clamp_max_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_clamp_max_(input, *args, **kwargs)
 
 def _foreach_maximum(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_maximum, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_maximum(input, *args, **kwargs)
 
 def _foreach_minimum(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_minimum, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_minimum(input, *args, **kwargs)
 
 def _foreach_maximum_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_maximum_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_maximum_(input, *args, **kwargs)
 
 def _foreach_minimum_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_minimum_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_minimum_(input, *args, **kwargs)
 
 def _foreach_copy_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_copy_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_copy_(input, *args, **kwargs)
 
 def _foreach_zero_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_zero_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
@@ -1177,7 +1178,7 @@ def _foreach_zero_(input, *args, **kwargs):
 
 def div_(input, other, rounding_mode=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(div_, (input, other, rounding_mode), {'out': out})
             if _captured is not None:
                 return _captured
@@ -1191,7 +1192,7 @@ def div_(input, other, rounding_mode=None, *, out=None):
         if rounding_mode is None:
             return _C.div_(input, other, out=out)
         return _C.div_(input, other, rounding_mode=rounding_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(div_, (input, other), {'rounding_mode': rounding_mode})
         if _captured is not None:
             return _captured
@@ -1203,12 +1204,12 @@ def div_(input, other, rounding_mode=None, *, out=None):
 
 def addcmul(input, tensor1, tensor2, *, value=1, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(addcmul, (input, tensor1, tensor2), {'value': value, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.addcmul(self=input, tensor1=tensor1, tensor2=tensor2, value=value, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(addcmul, (input, tensor1, tensor2), {'value': value})
         if _captured is not None:
             return _captured
@@ -1221,12 +1222,12 @@ def addcmul_(input, tensor1, tensor2, value=1):
 
 def addcdiv(input, tensor1, tensor2, *, value=1, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(addcdiv, (input, tensor1, tensor2), {'value': value, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.addcdiv(self=input, tensor1=tensor1, tensor2=tensor2, value=value, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(addcdiv, (input, tensor1, tensor2), {'value': value})
         if _captured is not None:
             return _captured
@@ -1238,7 +1239,7 @@ def addcdiv_(input, tensor1, tensor2, value=1):
     return input.addcdiv_(tensor1=tensor1, tensor2=tensor2, value=value)
 
 def where(condition, input=None, other=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(where, (condition, input, other), {})
         if _captured is not None:
             return _captured
@@ -1256,12 +1257,12 @@ def where(condition, input=None, other=None):
 
 def maximum(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(maximum, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.maximum(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(maximum, (input, other), {})
         if _captured is not None:
             return _captured
@@ -1269,47 +1270,47 @@ def maximum(input, other, *, out=None):
 
 def minimum(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(minimum, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.minimum(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(minimum, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.minimum(self=input, other=other)
 
 def view_as_real(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(view_as_real, (input,), {})
         if _captured is not None:
             return _captured
     return _C.view_as_real(input)
 
 def view_as_complex(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(view_as_complex, (input,), {})
         if _captured is not None:
             return _captured
     return _C.view_as_complex(input)
 
 def is_complex(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_complex, (input,), {})
         if _captured is not None:
             return _captured
     return _C.is_complex(input)
 
 def mm(input, mat2):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mm, (input, mat2), {})
         if _captured is not None:
             return _captured
     return _C.mm(input, mat2)
 
 def addmm(input, mat1, mat2, beta=1, alpha=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(addmm, (input, mat1, mat2, beta, alpha), {})
         if _captured is not None:
             return _captured
@@ -1317,26 +1318,26 @@ def addmm(input, mat1, mat2, beta=1, alpha=1):
 
 def matmul(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(matmul, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.matmul(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(matmul, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.matmul(input, other)
 
 def matmul_backward_self(grad_output, input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(matmul_backward_self, (grad_output, input, other), {})
         if _captured is not None:
             return _captured
     return _C.matmul_backward_self(grad_output, input, other)
 
 def matmul_backward_other(grad_output, input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(matmul_backward_other, (grad_output, input, other), {})
         if _captured is not None:
             return _captured
@@ -1344,12 +1345,12 @@ def matmul_backward_other(grad_output, input, other):
 
 def bmm(input, mat2, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(bmm, (input, mat2), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.bmm(input, mat2, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bmm, (input, mat2), {})
         if _captured is not None:
             return _captured
@@ -1357,12 +1358,12 @@ def bmm(input, mat2, *, out=None):
 
 def baddbmm(input, batch1, batch2, *, beta=1, alpha=1, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(baddbmm, (input, batch1, batch2), {'beta': beta, 'alpha': alpha, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.baddbmm(input, batch1, batch2, beta=beta, alpha=alpha, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(baddbmm, (input, batch1, batch2), {'beta': beta, 'alpha': alpha})
         if _captured is not None:
             return _captured
@@ -1370,12 +1371,12 @@ def baddbmm(input, batch1, batch2, *, beta=1, alpha=1, out=None):
 
 def mv(input, vec, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mv, (input, vec), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mv(self=input, vec=vec, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mv, (input, vec), {})
         if _captured is not None:
             return _captured
@@ -1383,12 +1384,12 @@ def mv(input, vec, *, out=None):
 
 def dot(input, tensor, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(dot, (input, tensor), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.dot(self=input, tensor=tensor, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(dot, (input, tensor), {})
         if _captured is not None:
             return _captured
@@ -1396,26 +1397,26 @@ def dot(input, tensor, *, out=None):
 
 def inner(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(inner, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.inner(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(inner, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.inner(self=input, other=other)
 
 def inner_backward_self(grad_output, input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(inner_backward_self, (grad_output, input, other), {})
         if _captured is not None:
             return _captured
     return _C.inner_backward_self(grad_output, input, other)
 
 def inner_backward_other(grad_output, input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(inner_backward_other, (grad_output, input, other), {})
         if _captured is not None:
             return _captured
@@ -1423,19 +1424,19 @@ def inner_backward_other(grad_output, input, other):
 
 def outer(input, vec2, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(outer, (input, vec2), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.outer(self=input, vec2=vec2, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(outer, (input, vec2), {})
         if _captured is not None:
             return _captured
     return _C.outer(self=input, vec2=vec2)
 
 def einsum(equation, *operands, path=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(einsum, (equation, *operands), {})
         if _captured is not None:
             return _captured
@@ -1443,12 +1444,12 @@ def einsum(equation, *operands, path=None):
 
 def eq(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(eq, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.eq(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(eq, (input, other), {})
         if _captured is not None:
             return _captured
@@ -1456,12 +1457,12 @@ def eq(input, other, *, out=None):
 
 def ne(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(ne, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.ne(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ne, (input, other), {})
         if _captured is not None:
             return _captured
@@ -1469,12 +1470,12 @@ def ne(input, other, *, out=None):
 
 def lt(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(lt, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.lt(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lt, (input, other), {})
         if _captured is not None:
             return _captured
@@ -1482,12 +1483,12 @@ def lt(input, other, *, out=None):
 
 def le(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(le, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.le(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(le, (input, other), {})
         if _captured is not None:
             return _captured
@@ -1495,12 +1496,12 @@ def le(input, other, *, out=None):
 
 def gt(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(gt, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.gt(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(gt, (input, other), {})
         if _captured is not None:
             return _captured
@@ -1508,12 +1509,12 @@ def gt(input, other, *, out=None):
 
 def ge(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(ge, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.ge(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ge, (input, other), {})
         if _captured is not None:
             return _captured
@@ -1523,7 +1524,7 @@ def copy_(input, src, non_blocking=False):
     return input.copy_(src=src, non_blocking=non_blocking)
 
 def view(input, size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(view, (input, size), {})
         if _captured is not None:
             return _captured
@@ -1533,21 +1534,21 @@ def fill_(input, value):
     return input.fill_(value=value)
 
 def transpose(input, dim0, dim1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(transpose, (input, dim0, dim1), {})
         if _captured is not None:
             return _captured
     return _C.transpose(input, dim0, dim1)
 
 def t(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(t, (input,), {})
         if _captured is not None:
             return _captured
     return _C.t(input)
 
 def permute(input, dims):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(permute, (input, dims), {})
         if _captured is not None:
             return _captured
@@ -1556,7 +1557,7 @@ def permute(input, dims):
     return _C.permute(input, dims)
 
 def permute_backward(grad_output, input, dims):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(permute_backward, (grad_output, input, dims), {})
         if _captured is not None:
             return _captured
@@ -1565,7 +1566,7 @@ def permute_backward(grad_output, input, dims):
     return _C.permute_backward(grad_output, input, dims)
 
 def squeeze(input, dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(squeeze, (input, dim), {})
         if _captured is not None:
             return _captured
@@ -1574,21 +1575,21 @@ def squeeze(input, dim=None):
     return _C.squeeze(input, dim)
 
 def squeeze_backward(grad_output, input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(squeeze_backward, (grad_output, input), {})
         if _captured is not None:
             return _captured
     return _C.squeeze_backward(grad_output, input)
 
 def unsqueeze(input, dim):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unsqueeze, (input, dim), {})
         if _captured is not None:
             return _captured
     return _C.unsqueeze(input, dim)
 
 def diagonal(input, offset=0, dim1=0, dim2=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(diagonal, (input, offset, dim1, dim2), {})
         if _captured is not None:
             return _captured
@@ -1596,19 +1597,19 @@ def diagonal(input, offset=0, dim1=0, dim2=1):
 
 def diagonal_backward(grad_output, input_sizes, offset, dim1, dim2, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(diagonal_backward, (grad_output, input_sizes, offset, dim1, dim2), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.diagonal_backward(grad_output=grad_output, input_sizes=input_sizes, offset=offset, dim1=dim1, dim2=dim2, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(diagonal_backward, (grad_output, input_sizes, offset, dim1, dim2), {})
         if _captured is not None:
             return _captured
     return _C.diagonal_backward(grad_output=grad_output, input_sizes=input_sizes, offset=offset, dim1=dim1, dim2=dim2)
 
 def movedim(input, source, destination):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(movedim, (input, source, destination), {})
         if _captured is not None:
             return _captured
@@ -1620,12 +1621,12 @@ def movedim(input, source, destination):
 
 def cat(tensors, dim=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cat, (tensors, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cat(tensors=tensors, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cat, (tensors, dim), {})
         if _captured is not None:
             return _captured
@@ -1633,33 +1634,33 @@ def cat(tensors, dim=0, *, out=None):
 
 def stack(tensors, dim=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(stack, (tensors, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.stack(tensors=tensors, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(stack, (tensors, dim), {})
         if _captured is not None:
             return _captured
     return _C.stack(tensors=tensors, dim=dim)
 
 def split(input, split_size, dim=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(split, (input, split_size, dim), {})
         if _captured is not None:
             return _captured
     return _C.split(input, split_size, dim)
 
 def chunk(input, chunks, dim=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(chunk, (input, chunks, dim), {})
         if _captured is not None:
             return _captured
     return _C.chunk(input, chunks, dim)
 
 def reshape(input, shape):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(reshape, (input, shape), {})
         if _captured is not None:
             return _captured
@@ -1668,28 +1669,28 @@ def reshape(input, shape):
     return _C.reshape(input, shape)
 
 def unbind(input, dim=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unbind, (input, dim), {})
         if _captured is not None:
             return _captured
     return _C.unbind(input, dim)
 
 def clone(input, memory_format=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(clone, (input, memory_format), {})
         if _captured is not None:
             return _captured
     return input.clone(memory_format=memory_format)
 
 def contiguous(input, memory_format=tensorplay.contiguous_format):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(contiguous, (input, memory_format), {})
         if _captured is not None:
             return _captured
     return input.contiguous(memory_format=memory_format)
 
 def item(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(item, (input,), {})
         if _captured is not None:
             return _captured
@@ -1697,12 +1698,12 @@ def item(input):
 
 def select_backward(grad_output, input, dim, index, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(select_backward, (grad_output, input, dim, index), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.select_backward(grad_output=grad_output, self=input, dim=dim, index=index, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(select_backward, (grad_output, input, dim, index), {})
         if _captured is not None:
             return _captured
@@ -1710,12 +1711,12 @@ def select_backward(grad_output, input, dim, index, *, out=None):
 
 def slice_backward(grad_output, input, dim=0, start=None, end=None, step=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(slice_backward, (grad_output, input, dim, start, end, step), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.slice_backward(grad_output=grad_output, self=input, dim=dim, start=start, end=end, step=step, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(slice_backward, (grad_output, input, dim, start, end, step), {})
         if _captured is not None:
             return _captured
@@ -1724,7 +1725,7 @@ def slice_backward(grad_output, input, dim=0, start=None, end=None, step=1, *, o
 _c_rand = _C.rand
 
 def rand(*size, generator=None, dtype=None, device=None, requires_grad=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rand, tuple(size), {'generator': generator, 'dtype': DType.undefined if dtype is None else dtype, 'device': device, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -1748,7 +1749,7 @@ def rand(*size, generator=None, dtype=None, device=None, requires_grad=False):
     return _C.rand(size=size, dtype=dtype, device=device, requires_grad=requires_grad)
 
 def rand_like(input, *, generator=None, dtype=None, layout=None, device=None, pin_memory=False, requires_grad=False, memory_format=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rand_like, (input,), {'generator': generator, 'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'requires_grad': requires_grad, 'memory_format': memory_format})
         if _captured is not None:
             return _captured
@@ -1759,12 +1760,12 @@ def rand_like(input, *, generator=None, dtype=None, layout=None, device=None, pi
 def randint(*args, low=_MISSING, high=_MISSING, size=_MISSING, generator=None, out=None, dtype=None, layout=None, device=None, pin_memory=False, requires_grad=False):
     low, high, size = _draw_bounds('randint', args, low, high, {'size': size})
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(randint, (low, high, size), {'generator': generator, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.randint(low, high, size, generator=generator, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(randint, (low, high, size), {'generator': generator, 'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -1777,12 +1778,12 @@ def randint_like(input, *args, low=_MISSING, high=_MISSING, generator=None, dtyp
     if isinstance(high, tensorplay.Tensor):
         if low != 0:
             raise TypeError('randint_like() takes a tensor bound only as (input, high)')
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(randint_like, (input, high), {'generator': generator, 'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'requires_grad': requires_grad, 'memory_format': memory_format})
             if _captured is not None:
                 return _captured
         return _C.randint_like(input, high, generator=generator, dtype=dtype, layout=layout, device=_ensure_device(device), pin_memory=pin_memory, requires_grad=requires_grad, memory_format=memory_format)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(randint_like, (input, low, high), {'generator': generator, 'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'requires_grad': requires_grad, 'memory_format': memory_format})
         if _captured is not None:
             return _captured
@@ -1793,7 +1794,7 @@ def randint_like(input, *args, low=_MISSING, high=_MISSING, generator=None, dtyp
 _c_randn = _C.randn
 
 def randn(*size, generator=None, dtype=None, device=None, requires_grad=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(randn, tuple(size), {'generator': generator, 'dtype': DType.undefined if dtype is None else dtype, 'device': device, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -1817,7 +1818,7 @@ def randn(*size, generator=None, dtype=None, device=None, requires_grad=False):
     return _C.randn(size=size, dtype=dtype, device=device, requires_grad=requires_grad)
 
 def randn_like(input, *, generator=None, dtype=None, layout=None, device=None, pin_memory=False, requires_grad=False, memory_format=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(randn_like, (input,), {'generator': generator, 'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'requires_grad': requires_grad, 'memory_format': memory_format})
         if _captured is not None:
             return _captured
@@ -1827,12 +1828,12 @@ def randn_like(input, *, generator=None, dtype=None, layout=None, device=None, p
 
 def randperm(n, *, generator=None, out=None, dtype=None, layout=None, device=None, pin_memory=False, requires_grad=False):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(randperm, (n,), {'generator': generator, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.randperm(n, generator=generator, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(randperm, (n,), {'generator': generator, 'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -1843,23 +1844,23 @@ def randperm(n, *, generator=None, out=None, dtype=None, layout=None, device=Non
 def bernoulli(input, p=_MISSING, *, generator=None, out=None):
     if p is _MISSING:
         if out is not None:
-            if _capturing():
+            if _graph_state._TRACE_DEPTH:
                 _captured = _capture_call(bernoulli, (input,), {'generator': generator, 'out': out})
                 if _captured is not None:
                     return _captured
             return _C.bernoulli(self=input, generator=generator, out=out)
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(bernoulli, (input,), {'generator': generator})
             if _captured is not None:
                 return _captured
         return _C.bernoulli(self=input, generator=generator)
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(bernoulli, (input, p), {'generator': generator, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.bernoulli(self=input, p=p, generator=generator, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bernoulli, (input, p), {'generator': generator})
         if _captured is not None:
             return _captured
@@ -1867,12 +1868,12 @@ def bernoulli(input, p=_MISSING, *, generator=None, out=None):
 
 def native_dropout(input, p, train, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(native_dropout, (input, p, train), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.native_dropout(input=input, p=p, train=train, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(native_dropout, (input, p, train), {})
         if _captured is not None:
             return _captured
@@ -1880,47 +1881,47 @@ def native_dropout(input, p, train, *, out=None):
 
 def native_dropout_backward(grad_output, mask, scale, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(native_dropout_backward, (grad_output, mask, scale), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.native_dropout_backward(grad_output=grad_output, mask=mask, scale=scale, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(native_dropout_backward, (grad_output, mask, scale), {})
         if _captured is not None:
             return _captured
     return _C.native_dropout_backward(grad_output=grad_output, mask=mask, scale=scale)
 
 def native_dropout_double_backward(ggI, grad, mask, scale):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(native_dropout_double_backward, (ggI, grad, mask, scale), {})
         if _captured is not None:
             return _captured
     return _C.native_dropout_double_backward(ggI, grad, mask, scale)
 
 def native_alpha_dropout(input, p):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(native_alpha_dropout, (input, p), {})
         if _captured is not None:
             return _captured
     return _C.native_alpha_dropout(input, p)
 
 def _alpha_dropout_backward(grad_output, mask, p):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_alpha_dropout_backward, (grad_output, mask, p), {})
         if _captured is not None:
             return _captured
     return _C._alpha_dropout_backward(grad_output, mask, p)
 
 def native_feature_dropout(input, p):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(native_feature_dropout, (input, p), {})
         if _captured is not None:
             return _captured
     return _C.native_feature_dropout(input, p)
 
 def _feature_dropout_backward(grad_output, mask, p):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_feature_dropout_backward, (grad_output, mask, p), {})
         if _captured is not None:
             return _captured
@@ -1928,12 +1929,12 @@ def _feature_dropout_backward(grad_output, mask, p):
 
 def quantile(input, q, dim=None, keepdim=False, *, interpolation='linear', out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(quantile, (input, q, dim, keepdim), {'interpolation': interpolation, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.quantile(input, q, dim, keepdim, interpolation=interpolation, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantile, (input, q, dim, keepdim), {'interpolation': interpolation})
         if _captured is not None:
             return _captured
@@ -1943,12 +1944,12 @@ def quantile(input, q, dim=None, keepdim=False, *, interpolation='linear', out=N
 
 def nanquantile(input, q, dim=None, keepdim=False, *, interpolation='linear', out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nanquantile, (input, q, dim, keepdim), {'interpolation': interpolation, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.nanquantile(input, q, dim, keepdim, interpolation=interpolation, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nanquantile, (input, q, dim, keepdim), {'interpolation': interpolation})
         if _captured is not None:
             return _captured
@@ -1958,12 +1959,12 @@ def nanquantile(input, q, dim=None, keepdim=False, *, interpolation='linear', ou
 
 def histogram(input, bins, *, weight=None, density=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(histogram, (input, bins), {'weight': weight, 'density': density, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.histogram(input, bins, weight=weight, density=density, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(histogram, (input, bins), {'weight': weight, 'density': density})
         if _captured is not None:
             return _captured
@@ -1972,21 +1973,21 @@ def histogram(input, bins, *, weight=None, density=False, out=None):
     return _C.histogram(input, bins, weight=weight, density=density)
 
 def trapezoid(y, x=None, dx=1, dim=-1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(trapezoid, (y, x, dx, dim), {})
         if _captured is not None:
             return _captured
     return _C.trapezoid(y, x, dx=dx, dim=dim)
 
 def cumulative_trapezoid(y, x=None, dx=1, dim=-1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cumulative_trapezoid, (y, x, dx, dim), {})
         if _captured is not None:
             return _captured
     return _C.cumulative_trapezoid(y, x, dx=dx, dim=dim)
 
 def _trapezoid_backward(grad_output, x, ysizes, dx, dim):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_trapezoid_backward, (grad_output, x, ysizes, dx, dim), {})
         if _captured is not None:
             return _captured
@@ -1995,14 +1996,14 @@ def _trapezoid_backward(grad_output, x, ysizes, dx, dim):
     return _C._trapezoid_backward(grad_output, x, ysizes, dx, dim)
 
 def _cumulative_trapezoid_backward(grad_output, x, dx, dim):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cumulative_trapezoid_backward, (grad_output, x, dx, dim), {})
         if _captured is not None:
             return _captured
     return _C._cumulative_trapezoid_backward(grad_output, x, dx, dim)
 
 def gradient(input, spacing=[], dim=[], edge_order=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(gradient, (input, spacing, dim, edge_order), {})
         if _captured is not None:
             return _captured
@@ -2011,28 +2012,28 @@ def gradient(input, spacing=[], dim=[], edge_order=1):
     return _C.gradient(input, spacing, dim, edge_order)
 
 def cov(input, correction=1, fweights=None, aweights=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cov, (input, correction, fweights, aweights), {})
         if _captured is not None:
             return _captured
     return _C.cov(input, correction=correction, fweights=fweights, aweights=aweights)
 
 def corrcoef(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(corrcoef, (input,), {})
         if _captured is not None:
             return _captured
     return _C.corrcoef(input)
 
 def _cov_backward(grad, input, correction, fweights, aweights):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cov_backward, (grad, input, correction, fweights, aweights), {})
         if _captured is not None:
             return _captured
     return _C._cov_backward(grad, input, correction, fweights, aweights)
 
 def _corrcoef_backward(grad, input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_corrcoef_backward, (grad, input), {})
         if _captured is not None:
             return _captured
@@ -2043,12 +2044,12 @@ def resize_(input, size):
 
 def abs(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(abs, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.abs(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(abs, (input,), {})
         if _captured is not None:
             return _captured
@@ -2056,12 +2057,12 @@ def abs(input, *, out=None):
 
 def acos(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(acos, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.acos(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(acos, (input,), {})
         if _captured is not None:
             return _captured
@@ -2069,12 +2070,12 @@ def acos(input, *, out=None):
 
 def acosh(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(acosh, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.acosh(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(acosh, (input,), {})
         if _captured is not None:
             return _captured
@@ -2082,12 +2083,12 @@ def acosh(input, *, out=None):
 
 def angle(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(angle, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.angle(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(angle, (input,), {})
         if _captured is not None:
             return _captured
@@ -2095,12 +2096,12 @@ def angle(input, *, out=None):
 
 def asin(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(asin, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.asin(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(asin, (input,), {})
         if _captured is not None:
             return _captured
@@ -2108,12 +2109,12 @@ def asin(input, *, out=None):
 
 def asinh(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(asinh, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.asinh(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(asinh, (input,), {})
         if _captured is not None:
             return _captured
@@ -2121,12 +2122,12 @@ def asinh(input, *, out=None):
 
 def atan(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(atan, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.atan(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(atan, (input,), {})
         if _captured is not None:
             return _captured
@@ -2134,12 +2135,12 @@ def atan(input, *, out=None):
 
 def atan2(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(atan2, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.atan2(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(atan2, (input, other), {})
         if _captured is not None:
             return _captured
@@ -2147,12 +2148,12 @@ def atan2(input, other, *, out=None):
 
 def poisson(input, generator=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(poisson, (input, generator), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.poisson(self=input, generator=generator, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(poisson, (input, generator), {})
         if _captured is not None:
             return _captured
@@ -2160,12 +2161,12 @@ def poisson(input, generator=None, *, out=None):
 
 def atanh(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(atanh, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.atanh(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(atanh, (input,), {})
         if _captured is not None:
             return _captured
@@ -2173,12 +2174,12 @@ def atanh(input, *, out=None):
 
 def ceil(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(ceil, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.ceil(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ceil, (input,), {})
         if _captured is not None:
             return _captured
@@ -2186,19 +2187,19 @@ def ceil(input, *, out=None):
 
 def clamp(input, min=None, max=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(clamp, (input, min, max), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.clamp(input, min, max, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(clamp, (input, min, max), {})
         if _captured is not None:
             return _captured
     return _C.clamp(input, min, max)
 
 def clamp_backward(grad_output, input, min=None, max=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(clamp_backward, (grad_output, input, min, max), {})
         if _captured is not None:
             return _captured
@@ -2206,12 +2207,12 @@ def clamp_backward(grad_output, input, min=None, max=None):
 
 def cos(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cos, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cos(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cos, (input,), {})
         if _captured is not None:
             return _captured
@@ -2219,12 +2220,12 @@ def cos(input, *, out=None):
 
 def cosh(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cosh, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cosh(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cosh, (input,), {})
         if _captured is not None:
             return _captured
@@ -2232,12 +2233,12 @@ def cosh(input, *, out=None):
 
 def erf(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(erf, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.erf(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(erf, (input,), {})
         if _captured is not None:
             return _captured
@@ -2245,12 +2246,12 @@ def erf(input, *, out=None):
 
 def erfc(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(erfc, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.erfc(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(erfc, (input,), {})
         if _captured is not None:
             return _captured
@@ -2258,12 +2259,12 @@ def erfc(input, *, out=None):
 
 def expm1(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(expm1, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.expm1(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(expm1, (input,), {})
         if _captured is not None:
             return _captured
@@ -2271,12 +2272,12 @@ def expm1(input, *, out=None):
 
 def lgamma(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(lgamma, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.lgamma(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lgamma, (input,), {})
         if _captured is not None:
             return _captured
@@ -2284,12 +2285,12 @@ def lgamma(input, *, out=None):
 
 def log2(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(log2, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.log2(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(log2, (input,), {})
         if _captured is not None:
             return _captured
@@ -2297,12 +2298,12 @@ def log2(input, *, out=None):
 
 def reciprocal(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(reciprocal, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.reciprocal(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(reciprocal, (input,), {})
         if _captured is not None:
             return _captured
@@ -2310,12 +2311,12 @@ def reciprocal(input, *, out=None):
 
 def trunc(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(trunc, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.trunc(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(trunc, (input,), {})
         if _captured is not None:
             return _captured
@@ -2323,12 +2324,12 @@ def trunc(input, *, out=None):
 
 def exp(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(exp, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.exp(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(exp, (input,), {})
         if _captured is not None:
             return _captured
@@ -2336,12 +2337,12 @@ def exp(input, *, out=None):
 
 def floor(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(floor, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.floor(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(floor, (input,), {})
         if _captured is not None:
             return _captured
@@ -2349,12 +2350,12 @@ def floor(input, *, out=None):
 
 def lerp(input, end, weight, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(lerp, (input, end, weight), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.lerp(input, end, weight, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lerp, (input, end, weight), {})
         if _captured is not None:
             return _captured
@@ -2377,12 +2378,12 @@ def rsqrt_(input):
 
 def log(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(log, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.log(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(log, (input,), {})
         if _captured is not None:
             return _captured
@@ -2390,12 +2391,12 @@ def log(input, *, out=None):
 
 def neg(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(neg, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.neg(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(neg, (input,), {})
         if _captured is not None:
             return _captured
@@ -2403,12 +2404,12 @@ def neg(input, *, out=None):
 
 def pow(input, exponent, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(pow, (input, exponent), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.pow(input, exponent, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(pow, (input, exponent), {})
         if _captured is not None:
             return _captured
@@ -2417,23 +2418,23 @@ def pow(input, exponent, *, out=None):
 def round(input, *, decimals=_MISSING, out=None):
     if decimals is not _MISSING:
         if out is not None:
-            if _capturing():
+            if _graph_state._TRACE_DEPTH:
                 _captured = _capture_call(round, (input,), {'decimals': decimals, 'out': out})
                 if _captured is not None:
                     return _captured
             return _C.round(input, decimals=decimals, out=out)
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(round, (input,), {'decimals': decimals})
             if _captured is not None:
                 return _captured
         return _C.round(input, decimals=decimals)
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(round, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.round(input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(round, (input,), {})
         if _captured is not None:
             return _captured
@@ -2441,12 +2442,12 @@ def round(input, *, decimals=_MISSING, out=None):
 
 def rsqrt(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(rsqrt, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.rsqrt(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rsqrt, (input,), {})
         if _captured is not None:
             return _captured
@@ -2454,12 +2455,12 @@ def rsqrt(input, *, out=None):
 
 def sigmoid(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sigmoid, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.sigmoid(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sigmoid, (input,), {})
         if _captured is not None:
             return _captured
@@ -2467,12 +2468,12 @@ def sigmoid(input, *, out=None):
 
 def sign(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sign, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.sign(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sign, (input,), {})
         if _captured is not None:
             return _captured
@@ -2480,12 +2481,12 @@ def sign(input, *, out=None):
 
 def sin(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sin, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.sin(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sin, (input,), {})
         if _captured is not None:
             return _captured
@@ -2493,12 +2494,12 @@ def sin(input, *, out=None):
 
 def sinh(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sinh, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.sinh(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sinh, (input,), {})
         if _captured is not None:
             return _captured
@@ -2506,12 +2507,12 @@ def sinh(input, *, out=None):
 
 def softmax(input, dim, dtype=DType.undefined, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(softmax, (input, dim, dtype), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.softmax(input, dim, dtype, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(softmax, (input, dim, dtype), {})
         if _captured is not None:
             return _captured
@@ -2519,12 +2520,12 @@ def softmax(input, dim, dtype=DType.undefined, *, out=None):
 
 def log_softmax(input, dim, dtype=DType.undefined, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(log_softmax, (input, dim, dtype), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.log_softmax(input, dim, dtype, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(log_softmax, (input, dim, dtype), {})
         if _captured is not None:
             return _captured
@@ -2532,12 +2533,12 @@ def log_softmax(input, dim, dtype=DType.undefined, *, out=None):
 
 def sqrt(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sqrt, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.sqrt(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sqrt, (input,), {})
         if _captured is not None:
             return _captured
@@ -2545,12 +2546,12 @@ def sqrt(input, *, out=None):
 
 def square(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(square, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.square(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(square, (input,), {})
         if _captured is not None:
             return _captured
@@ -2558,12 +2559,12 @@ def square(input, *, out=None):
 
 def tan(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(tan, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.tan(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tan, (input,), {})
         if _captured is not None:
             return _captured
@@ -2571,12 +2572,12 @@ def tan(input, *, out=None):
 
 def tanh(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(tanh, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.tanh(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tanh, (input,), {})
         if _captured is not None:
             return _captured
@@ -2584,19 +2585,19 @@ def tanh(input, *, out=None):
 
 def relu(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(relu, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.relu(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(relu, (input,), {})
         if _captured is not None:
             return _captured
     return _C.relu(self=input)
 
 def relu_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(relu_, (input,), {})
         if _captured is not None:
             return _captured
@@ -2604,12 +2605,12 @@ def relu_(input):
 
 def threshold_backward(grad_output, input, threshold, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(threshold_backward, (grad_output, input, threshold), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.threshold_backward(grad_output=grad_output, self=input, threshold=threshold, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(threshold_backward, (grad_output, input, threshold), {})
         if _captured is not None:
             return _captured
@@ -2617,12 +2618,12 @@ def threshold_backward(grad_output, input, threshold, *, out=None):
 
 def gelu(input, approximate='none', *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(gelu, (input, approximate), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.gelu(self=input, approximate=approximate, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(gelu, (input, approximate), {})
         if _captured is not None:
             return _captured
@@ -2630,12 +2631,12 @@ def gelu(input, approximate='none', *, out=None):
 
 def gelu_backward(grad_output, input, approximate='none', *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(gelu_backward, (grad_output, input, approximate), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.gelu_backward(grad_output=grad_output, self=input, approximate=approximate, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(gelu_backward, (grad_output, input, approximate), {})
         if _captured is not None:
             return _captured
@@ -2643,12 +2644,12 @@ def gelu_backward(grad_output, input, approximate='none', *, out=None):
 
 def silu(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(silu, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.silu(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(silu, (input,), {})
         if _captured is not None:
             return _captured
@@ -2656,12 +2657,12 @@ def silu(input, *, out=None):
 
 def silu_backward(grad_output, input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(silu_backward, (grad_output, input), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.silu_backward(grad_output=grad_output, self=input, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(silu_backward, (grad_output, input), {})
         if _captured is not None:
             return _captured
@@ -2670,7 +2671,7 @@ def silu_backward(grad_output, input, *, out=None):
 _c_empty = _C.empty
 
 def empty(*size, dtype=None, device=None, pin_memory=False, requires_grad=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(empty, tuple(size), {'dtype': DType.undefined if dtype is None else dtype, 'device': device, 'pin_memory': pin_memory, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -2693,12 +2694,12 @@ def empty(*size, dtype=None, device=None, pin_memory=False, requires_grad=False)
 
 def full(size, fill_value, *, dtype=DType.undefined, device=None, pin_memory=False, requires_grad=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(full, (size, fill_value), {'dtype': dtype, 'device': device, 'pin_memory': pin_memory, 'requires_grad': requires_grad, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.full(size=size, fill_value=fill_value, dtype=dtype, device=device, pin_memory=pin_memory, requires_grad=requires_grad, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(full, (size, fill_value), {'dtype': dtype, 'device': device, 'pin_memory': pin_memory, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -2707,7 +2708,7 @@ def full(size, fill_value, *, dtype=DType.undefined, device=None, pin_memory=Fal
 _c_zeros = _C.zeros
 
 def zeros(*size, dtype=None, device=None, pin_memory=False, requires_grad=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(zeros, tuple(size), {'dtype': DType.undefined if dtype is None else dtype, 'device': device, 'pin_memory': pin_memory, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -2731,7 +2732,7 @@ def zeros(*size, dtype=None, device=None, pin_memory=False, requires_grad=False)
 _c_ones = _C.ones
 
 def ones(*size, dtype=None, device=None, pin_memory=False, requires_grad=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ones, tuple(size), {'dtype': DType.undefined if dtype is None else dtype, 'device': device, 'pin_memory': pin_memory, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -2754,12 +2755,12 @@ def ones(*size, dtype=None, device=None, pin_memory=False, requires_grad=False):
 
 def eye(n, m=-1, *, dtype=DType.float32, device=None, requires_grad=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(eye, (n, m), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.eye(n, m, dtype=dtype, device=device, requires_grad=requires_grad, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(eye, (n, m), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -2768,7 +2769,7 @@ def eye(n, m=-1, *, dtype=DType.float32, device=None, requires_grad=False, out=N
 def arange(*args, dtype=DType.undefined, device=None, requires_grad=False, out=None):
     if out is not None:
         # The out= contract takes the destination's dtype and device.
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(arange, (*args,), {'out': out})
             if _captured is not None:
                 return _captured
@@ -2812,14 +2813,14 @@ def _check_range_out_options(out, dtype, device):
 
 def linspace(start, end, steps, *, dtype=None, device=None, requires_grad=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(linspace, (start, end, steps), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad, 'out': out})
             if _captured is not None:
                 return _captured
         _check_range_out_options(out, dtype, device)
         result = _C.linspace(start, end, steps, out=out)
         return result.requires_grad_(True) if requires_grad else result
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(linspace, (start, end, steps), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -2833,14 +2834,14 @@ def linspace(start, end, steps, *, dtype=None, device=None, requires_grad=False,
 
 def logspace(start, end, steps, base=10.0, *, dtype=None, device=None, requires_grad=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(logspace, (start, end, steps, base), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad, 'out': out})
             if _captured is not None:
                 return _captured
         _check_range_out_options(out, dtype, device)
         result = _C.logspace(start, end, steps, base, out=out)
         return result.requires_grad_(True) if requires_grad else result
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logspace, (start, end, steps, base), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -2853,7 +2854,7 @@ def logspace(start, end, steps, base=10.0, *, dtype=None, device=None, requires_
     return _C.logspace(start, end, steps, base, dtype=dtype, device=device, requires_grad=requires_grad)
 
 def sum(input, dim=None, keepdim=False, *, dtype=DType.undefined):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sum, (input, dim, keepdim), {'dtype': dtype})
         if _captured is not None:
             return _captured
@@ -2862,7 +2863,7 @@ def sum(input, dim=None, keepdim=False, *, dtype=DType.undefined):
     return _C.sum(input, dim, keepdim, dtype=dtype)
 
 def mean(input, dim=None, keepdim=False, *, dtype=DType.undefined):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mean, (input, dim, keepdim), {'dtype': dtype})
         if _captured is not None:
             return _captured
@@ -2871,7 +2872,7 @@ def mean(input, dim=None, keepdim=False, *, dtype=DType.undefined):
     return _C.mean(input, dim, keepdim, dtype=dtype)
 
 def sum_squared_error(input, other, dim=[], keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sum_squared_error, (input, other, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -2880,7 +2881,7 @@ def sum_squared_error(input, other, dim=[], keepdim=False):
     return _C.sum_squared_error(input, other, dim, keepdim)
 
 def sum_abs_error(input, other, dim=[], keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sum_abs_error, (input, other, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -2889,7 +2890,7 @@ def sum_abs_error(input, other, dim=[], keepdim=False):
     return _C.sum_abs_error(input, other, dim, keepdim)
 
 def _sum_dim_backward(grad_output, input, dim, keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sum_dim_backward, (grad_output, input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -2898,7 +2899,7 @@ def _sum_dim_backward(grad_output, input, dim, keepdim=False):
     return _C._sum_dim_backward(grad_output, input, dim, keepdim)
 
 def mean_dim_backward(grad_output, input, dim, keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mean_dim_backward, (grad_output, input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -2907,7 +2908,7 @@ def mean_dim_backward(grad_output, input, dim, keepdim=False):
     return _C.mean_dim_backward(grad_output, input, dim, keepdim)
 
 def max(input, dim=None, keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -2916,7 +2917,7 @@ def max(input, dim=None, keepdim=False):
     return _C.max(input, dim, keepdim)
 
 def min(input, dim=None, keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(min, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -2925,7 +2926,7 @@ def min(input, dim=None, keepdim=False):
     return _C.min(input, dim, keepdim)
 
 def prod(input, dim=None, keepdim=False, *, dtype=DType.undefined):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(prod, (input, dim, keepdim), {'dtype': dtype})
         if _captured is not None:
             return _captured
@@ -2935,12 +2936,12 @@ def prod(input, dim=None, keepdim=False, *, dtype=DType.undefined):
 
 def argmax(input, dim=None, keepdim=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(argmax, (input, dim, keepdim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.argmax(self=input, dim=dim, keepdim=keepdim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(argmax, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -2948,19 +2949,19 @@ def argmax(input, dim=None, keepdim=False, *, out=None):
 
 def argmin(input, dim=None, keepdim=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(argmin, (input, dim, keepdim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.argmin(self=input, dim=dim, keepdim=keepdim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(argmin, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
     return _C.argmin(self=input, dim=dim, keepdim=keepdim)
 
 def all(input, dim=None, keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(all, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -2969,7 +2970,7 @@ def all(input, dim=None, keepdim=False):
     return _C.all(input, dim, keepdim)
 
 def any(input, dim=None, keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(any, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -2980,7 +2981,7 @@ def any(input, dim=None, keepdim=False):
 def var(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if isinstance(dim, bool) and unbiased is None and correction is None:
         dim, unbiased = None, dim
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(var, (input, dim, unbiased, keepdim), {"correction": correction})
         if _captured is not None:
             return _captured
@@ -2995,7 +2996,7 @@ def var(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
 def std(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if isinstance(dim, bool) and unbiased is None and correction is None:
         dim, unbiased = None, dim
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(std, (input, dim, unbiased, keepdim), {"correction": correction})
         if _captured is not None:
             return _captured
@@ -3008,7 +3009,7 @@ def std(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     return _C.std(input, list(dim), correction, keepdim)
 
 def median(input, dim=None, keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(median, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -3017,7 +3018,7 @@ def median(input, dim=None, keepdim=False):
     return _C.median(input, dim, keepdim)
 
 def norm(input, p=2.0, dim=None, keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(norm, (input, p, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -3051,12 +3052,12 @@ def cauchy_(input, median=0.0, sigma=1.0, generator=None):
 
 def empty_like(input, *, dtype=DType.undefined, device=None, requires_grad=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(empty_like, (input,), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.empty_like(self=input, dtype=dtype, device=device, requires_grad=requires_grad, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(empty_like, (input,), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -3064,12 +3065,12 @@ def empty_like(input, *, dtype=DType.undefined, device=None, requires_grad=False
 
 def zeros_like(input, *, dtype=DType.undefined, device=None, requires_grad=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(zeros_like, (input,), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.zeros_like(self=input, dtype=dtype, device=device, requires_grad=requires_grad, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(zeros_like, (input,), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -3077,12 +3078,12 @@ def zeros_like(input, *, dtype=DType.undefined, device=None, requires_grad=False
 
 def ones_like(input, *, dtype=DType.undefined, device=None, requires_grad=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(ones_like, (input,), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.ones_like(self=input, dtype=dtype, device=device, requires_grad=requires_grad, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ones_like, (input,), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -3090,12 +3091,12 @@ def ones_like(input, *, dtype=DType.undefined, device=None, requires_grad=False,
 
 def full_like(input, fill_value, *, dtype=DType.undefined, device=None, requires_grad=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(full_like, (input, fill_value), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.full_like(self=input, fill_value=fill_value, dtype=dtype, device=device, requires_grad=requires_grad, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(full_like, (input, fill_value), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
@@ -3103,12 +3104,12 @@ def full_like(input, fill_value, *, dtype=DType.undefined, device=None, requires
 
 def masked_select(input, mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(masked_select, (input, mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.masked_select(self=input, mask=mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(masked_select, (input, mask), {})
         if _captured is not None:
             return _captured
@@ -3118,7 +3119,7 @@ def zero_(input):
     return input.zero_()
 
 def max_pool2d(input, kernel_size, stride=([]), padding=([0, 0]), dilation=([1, 1]), ceil_mode=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_pool2d, (input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
@@ -3133,7 +3134,7 @@ def max_pool2d(input, kernel_size, stride=([]), padding=([0, 0]), dilation=([1, 
     return _C.max_pool2d(input, kernel_size, stride, padding, dilation, ceil_mode)
 
 def max_pool3d(input, kernel_size, stride=([]), padding=([0, 0, 0]), dilation=([1, 1, 1]), ceil_mode=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_pool3d, (input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
@@ -3149,12 +3150,12 @@ def max_pool3d(input, kernel_size, stride=([]), padding=([0, 0, 0]), dilation=([
 
 def max_pool2d_with_indices(input, kernel_size, stride=[], padding=[], dilation=[], ceil_mode=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(max_pool2d_with_indices, (input, kernel_size, stride, padding, dilation, ceil_mode), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.max_pool2d_with_indices(input=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_pool2d_with_indices, (input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
@@ -3162,12 +3163,12 @@ def max_pool2d_with_indices(input, kernel_size, stride=[], padding=[], dilation=
 
 def max_pool3d_with_indices(input, kernel_size, stride=[], padding=[], dilation=[], ceil_mode=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(max_pool3d_with_indices, (input, kernel_size, stride, padding, dilation, ceil_mode), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.max_pool3d_with_indices(input=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_pool3d_with_indices, (input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
@@ -3175,12 +3176,12 @@ def max_pool3d_with_indices(input, kernel_size, stride=[], padding=[], dilation=
 
 def avg_pool2d(input, kernel_size, stride=[], padding=[], ceil_mode=False, count_include_pad=True, divisor_override=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(avg_pool2d, (input, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.avg_pool2d(input=input, kernel_size=kernel_size, stride=stride, padding=padding, ceil_mode=ceil_mode, count_include_pad=count_include_pad, divisor_override=divisor_override, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(avg_pool2d, (input, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override), {})
         if _captured is not None:
             return _captured
@@ -3188,12 +3189,12 @@ def avg_pool2d(input, kernel_size, stride=[], padding=[], ceil_mode=False, count
 
 def avg_pool3d(input, kernel_size, stride=[], padding=[], ceil_mode=False, count_include_pad=True, divisor_override=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(avg_pool3d, (input, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.avg_pool3d(input=input, kernel_size=kernel_size, stride=stride, padding=padding, ceil_mode=ceil_mode, count_include_pad=count_include_pad, divisor_override=divisor_override, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(avg_pool3d, (input, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override), {})
         if _captured is not None:
             return _captured
@@ -3201,12 +3202,12 @@ def avg_pool3d(input, kernel_size, stride=[], padding=[], ceil_mode=False, count
 
 def avg_pool3d_backward(grad_output, input, kernel_size, stride=[], padding=[], ceil_mode=False, count_include_pad=True, divisor_override=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(avg_pool3d_backward, (grad_output, input, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.avg_pool3d_backward(grad_output=grad_output, input=input, kernel_size=kernel_size, stride=stride, padding=padding, ceil_mode=ceil_mode, count_include_pad=count_include_pad, divisor_override=divisor_override, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(avg_pool3d_backward, (grad_output, input, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override), {})
         if _captured is not None:
             return _captured
@@ -3214,12 +3215,12 @@ def avg_pool3d_backward(grad_output, input, kernel_size, stride=[], padding=[], 
 
 def adaptive_avg_pool3d(input, output_size, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(adaptive_avg_pool3d, (input, output_size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.adaptive_avg_pool3d(input=input, output_size=output_size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(adaptive_avg_pool3d, (input, output_size), {})
         if _captured is not None:
             return _captured
@@ -3227,12 +3228,12 @@ def adaptive_avg_pool3d(input, output_size, *, out=None):
 
 def adaptive_avg_pool3d_backward(grad_output, input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(adaptive_avg_pool3d_backward, (grad_output, input), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.adaptive_avg_pool3d_backward(grad_output=grad_output, input=input, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(adaptive_avg_pool3d_backward, (grad_output, input), {})
         if _captured is not None:
             return _captured
@@ -3240,12 +3241,12 @@ def adaptive_avg_pool3d_backward(grad_output, input, *, out=None):
 
 def adaptive_avg_pool2d(input, output_size, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(adaptive_avg_pool2d, (input, output_size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.adaptive_avg_pool2d(input=input, output_size=output_size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(adaptive_avg_pool2d, (input, output_size), {})
         if _captured is not None:
             return _captured
@@ -3253,19 +3254,19 @@ def adaptive_avg_pool2d(input, output_size, *, out=None):
 
 def adaptive_max_pool2d(input, output_size, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(adaptive_max_pool2d, (input, output_size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.adaptive_max_pool2d(input=input, output_size=output_size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(adaptive_max_pool2d, (input, output_size), {})
         if _captured is not None:
             return _captured
     return _C.adaptive_max_pool2d(input=input, output_size=output_size)
 
 def adaptive_max_pool2d_with_indices(input, output_size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(adaptive_max_pool2d_with_indices, (input, output_size), {})
         if _captured is not None:
             return _captured
@@ -3275,12 +3276,12 @@ def adaptive_max_pool2d_with_indices(input, output_size):
 
 def adaptive_max_pool3d(input, output_size, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(adaptive_max_pool3d, (input, output_size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.adaptive_max_pool3d(input=input, output_size=output_size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(adaptive_max_pool3d, (input, output_size), {})
         if _captured is not None:
             return _captured
@@ -3288,12 +3289,12 @@ def adaptive_max_pool3d(input, output_size, *, out=None):
 
 def fractional_max_pool2d(input, kernel_size, output_size, random_samples, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fractional_max_pool2d, (input, kernel_size, output_size, random_samples), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fractional_max_pool2d(self=input, kernel_size=kernel_size, output_size=output_size, random_samples=random_samples, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fractional_max_pool2d, (input, kernel_size, output_size, random_samples), {})
         if _captured is not None:
             return _captured
@@ -3301,12 +3302,12 @@ def fractional_max_pool2d(input, kernel_size, output_size, random_samples, *, ou
 
 def fractional_max_pool2d_backward(grad_output, input, kernel_size, output_size, indices, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fractional_max_pool2d_backward, (grad_output, input, kernel_size, output_size, indices), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fractional_max_pool2d_backward(grad_output=grad_output, self=input, kernel_size=kernel_size, output_size=output_size, indices=indices, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fractional_max_pool2d_backward, (grad_output, input, kernel_size, output_size, indices), {})
         if _captured is not None:
             return _captured
@@ -3314,12 +3315,12 @@ def fractional_max_pool2d_backward(grad_output, input, kernel_size, output_size,
 
 def fractional_max_pool3d(input, kernel_size, output_size, random_samples, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fractional_max_pool3d, (input, kernel_size, output_size, random_samples), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fractional_max_pool3d(self=input, kernel_size=kernel_size, output_size=output_size, random_samples=random_samples, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fractional_max_pool3d, (input, kernel_size, output_size, random_samples), {})
         if _captured is not None:
             return _captured
@@ -3327,12 +3328,12 @@ def fractional_max_pool3d(input, kernel_size, output_size, random_samples, *, ou
 
 def fractional_max_pool3d_backward(grad_output, input, kernel_size, output_size, indices, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fractional_max_pool3d_backward, (grad_output, input, kernel_size, output_size, indices), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fractional_max_pool3d_backward(grad_output=grad_output, self=input, kernel_size=kernel_size, output_size=output_size, indices=indices, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fractional_max_pool3d_backward, (grad_output, input, kernel_size, output_size, indices), {})
         if _captured is not None:
             return _captured
@@ -3340,19 +3341,19 @@ def fractional_max_pool3d_backward(grad_output, input, kernel_size, output_size,
 
 def max_unpool2d(input, indices, output_size, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(max_unpool2d, (input, indices, output_size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.max_unpool2d(self=input, indices=indices, output_size=output_size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_unpool2d, (input, indices, output_size), {})
         if _captured is not None:
             return _captured
     return _C.max_unpool2d(self=input, indices=indices, output_size=output_size)
 
 def max_unpool2d_backward(grad_output, indices, output_size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_unpool2d_backward, (grad_output, indices, output_size), {})
         if _captured is not None:
             return _captured
@@ -3362,19 +3363,19 @@ def max_unpool2d_backward(grad_output, indices, output_size):
 
 def max_unpool3d(input, indices, output_size, stride, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(max_unpool3d, (input, indices, output_size, stride, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.max_unpool3d(self=input, indices=indices, output_size=output_size, stride=stride, padding=padding, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_unpool3d, (input, indices, output_size, stride, padding), {})
         if _captured is not None:
             return _captured
     return _C.max_unpool3d(self=input, indices=indices, output_size=output_size, stride=stride, padding=padding)
 
 def max_unpool3d_backward(grad_output, indices, output_size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_unpool3d_backward, (grad_output, indices, output_size), {})
         if _captured is not None:
             return _captured
@@ -3384,12 +3385,12 @@ def max_unpool3d_backward(grad_output, indices, output_size):
 
 def grid_sampler_2d(input, grid, interpolation_mode, padding_mode, align_corners, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(grid_sampler_2d, (input, grid, interpolation_mode, padding_mode, align_corners), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.grid_sampler_2d(input=input, grid=grid, interpolation_mode=interpolation_mode, padding_mode=padding_mode, align_corners=align_corners, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(grid_sampler_2d, (input, grid, interpolation_mode, padding_mode, align_corners), {})
         if _captured is not None:
             return _captured
@@ -3397,12 +3398,12 @@ def grid_sampler_2d(input, grid, interpolation_mode, padding_mode, align_corners
 
 def grid_sampler_2d_backward(grad_output, input, grid, interpolation_mode, padding_mode, align_corners, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(grid_sampler_2d_backward, (grad_output, input, grid, interpolation_mode, padding_mode, align_corners, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.grid_sampler_2d_backward(grad_output=grad_output, input=input, grid=grid, interpolation_mode=interpolation_mode, padding_mode=padding_mode, align_corners=align_corners, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(grid_sampler_2d_backward, (grad_output, input, grid, interpolation_mode, padding_mode, align_corners, output_mask), {})
         if _captured is not None:
             return _captured
@@ -3410,12 +3411,12 @@ def grid_sampler_2d_backward(grad_output, input, grid, interpolation_mode, paddi
 
 def grid_sampler_3d(input, grid, interpolation_mode, padding_mode, align_corners, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(grid_sampler_3d, (input, grid, interpolation_mode, padding_mode, align_corners), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.grid_sampler_3d(input=input, grid=grid, interpolation_mode=interpolation_mode, padding_mode=padding_mode, align_corners=align_corners, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(grid_sampler_3d, (input, grid, interpolation_mode, padding_mode, align_corners), {})
         if _captured is not None:
             return _captured
@@ -3423,12 +3424,12 @@ def grid_sampler_3d(input, grid, interpolation_mode, padding_mode, align_corners
 
 def grid_sampler_3d_backward(grad_output, input, grid, interpolation_mode, padding_mode, align_corners, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(grid_sampler_3d_backward, (grad_output, input, grid, interpolation_mode, padding_mode, align_corners, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.grid_sampler_3d_backward(grad_output=grad_output, input=input, grid=grid, interpolation_mode=interpolation_mode, padding_mode=padding_mode, align_corners=align_corners, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(grid_sampler_3d_backward, (grad_output, input, grid, interpolation_mode, padding_mode, align_corners, output_mask), {})
         if _captured is not None:
             return _captured
@@ -3436,12 +3437,12 @@ def grid_sampler_3d_backward(grad_output, input, grid, interpolation_mode, paddi
 
 def nll_loss(input, target, weight=None, reduction=1, ignore_index=-100, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nll_loss, (input, target, weight, reduction, ignore_index), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.nll_loss(self=input, target=target, weight=weight, reduction=reduction, ignore_index=ignore_index, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nll_loss, (input, target, weight, reduction, ignore_index), {})
         if _captured is not None:
             return _captured
@@ -3449,12 +3450,12 @@ def nll_loss(input, target, weight=None, reduction=1, ignore_index=-100, *, out=
 
 def nll_loss_backward(grad_output, input, target, weight=None, reduction=1, ignore_index=-100, total_weight=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nll_loss_backward, (grad_output, input, target, weight, reduction, ignore_index, total_weight), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.nll_loss_backward(grad_output=grad_output, self=input, target=target, weight=weight, reduction=reduction, ignore_index=ignore_index, total_weight=total_weight, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nll_loss_backward, (grad_output, input, target, weight, reduction, ignore_index, total_weight), {})
         if _captured is not None:
             return _captured
@@ -3462,12 +3463,12 @@ def nll_loss_backward(grad_output, input, target, weight=None, reduction=1, igno
 
 def nll_loss2d(input, target, weight=None, reduction=1, ignore_index=-100, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nll_loss2d, (input, target, weight, reduction, ignore_index), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.nll_loss2d(self=input, target=target, weight=weight, reduction=reduction, ignore_index=ignore_index, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nll_loss2d, (input, target, weight, reduction, ignore_index), {})
         if _captured is not None:
             return _captured
@@ -3475,12 +3476,12 @@ def nll_loss2d(input, target, weight=None, reduction=1, ignore_index=-100, *, ou
 
 def nll_loss2d_backward(grad_output, input, target, weight=None, reduction=1, ignore_index=-100, total_weight=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nll_loss2d_backward, (grad_output, input, target, weight, reduction, ignore_index, total_weight), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.nll_loss2d_backward(grad_output=grad_output, self=input, target=target, weight=weight, reduction=reduction, ignore_index=ignore_index, total_weight=total_weight, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nll_loss2d_backward, (grad_output, input, target, weight, reduction, ignore_index, total_weight), {})
         if _captured is not None:
             return _captured
@@ -3488,12 +3489,12 @@ def nll_loss2d_backward(grad_output, input, target, weight=None, reduction=1, ig
 
 def _ctc_loss(log_probs, targets, input_lengths, target_lengths, blank=0, zero_infinity=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_ctc_loss, (log_probs, targets, input_lengths, target_lengths, blank, zero_infinity), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._ctc_loss(log_probs, targets, input_lengths, target_lengths, blank, zero_infinity, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_ctc_loss, (log_probs, targets, input_lengths, target_lengths, blank, zero_infinity), {})
         if _captured is not None:
             return _captured
@@ -3501,12 +3502,12 @@ def _ctc_loss(log_probs, targets, input_lengths, target_lengths, blank=0, zero_i
 
 def _ctc_loss_backward(grad_output, log_probs, targets, input_lengths, target_lengths, neg_log_likelihood, log_alpha, blank, zero_infinity, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_ctc_loss_backward, (grad_output, log_probs, targets, input_lengths, target_lengths, neg_log_likelihood, log_alpha, blank, zero_infinity), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._ctc_loss_backward(grad_output, log_probs, targets, input_lengths, target_lengths, neg_log_likelihood, log_alpha, blank, zero_infinity, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_ctc_loss_backward, (grad_output, log_probs, targets, input_lengths, target_lengths, neg_log_likelihood, log_alpha, blank, zero_infinity), {})
         if _captured is not None:
             return _captured
@@ -3514,12 +3515,12 @@ def _ctc_loss_backward(grad_output, log_probs, targets, input_lengths, target_le
 
 def mse_loss(input, target, reduction=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mse_loss, (input, target, reduction), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mse_loss(self=input, target=target, reduction=reduction, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mse_loss, (input, target, reduction), {})
         if _captured is not None:
             return _captured
@@ -3527,12 +3528,12 @@ def mse_loss(input, target, reduction=1, *, out=None):
 
 def mse_loss_backward(grad_output, input, target, reduction=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mse_loss_backward, (grad_output, input, target, reduction), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mse_loss_backward(grad_output=grad_output, self=input, target=target, reduction=reduction, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mse_loss_backward, (grad_output, input, target, reduction), {})
         if _captured is not None:
             return _captured
@@ -3540,19 +3541,19 @@ def mse_loss_backward(grad_output, input, target, reduction=1, *, out=None):
 
 def max_pool2d_backward(grad_output, input, kernel_size, stride=[], padding=[], dilation=[], ceil_mode=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(max_pool2d_backward, (grad_output, input, kernel_size, stride, padding, dilation, ceil_mode), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.max_pool2d_backward(grad_output=grad_output, input=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_pool2d_backward, (grad_output, input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
     return _C.max_pool2d_backward(grad_output=grad_output, input=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode)
 
 def max_pool3d_backward(grad_output, input, kernel_size, stride=([]), padding=([0, 0, 0]), dilation=([1, 1, 1]), ceil_mode=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_pool3d_backward, (grad_output, input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
@@ -3568,12 +3569,12 @@ def max_pool3d_backward(grad_output, input, kernel_size, stride=([]), padding=([
 
 def max_pool2d_with_indices_backward(grad_output, input, kernel_size, stride=[], padding=[], dilation=[], ceil_mode=False, indices=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(max_pool2d_with_indices_backward, (grad_output, input, kernel_size, stride, padding, dilation, ceil_mode, indices), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.max_pool2d_with_indices_backward(grad_output=grad_output, input=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode, indices=indices, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_pool2d_with_indices_backward, (grad_output, input, kernel_size, stride, padding, dilation, ceil_mode, indices), {})
         if _captured is not None:
             return _captured
@@ -3581,12 +3582,12 @@ def max_pool2d_with_indices_backward(grad_output, input, kernel_size, stride=[],
 
 def max_pool3d_with_indices_backward(grad_output, input, kernel_size, stride=[], padding=[], dilation=[], ceil_mode=False, indices=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(max_pool3d_with_indices_backward, (grad_output, input, kernel_size, stride, padding, dilation, ceil_mode, indices), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.max_pool3d_with_indices_backward(grad_output=grad_output, input=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode, indices=indices, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_pool3d_with_indices_backward, (grad_output, input, kernel_size, stride, padding, dilation, ceil_mode, indices), {})
         if _captured is not None:
             return _captured
@@ -3594,19 +3595,19 @@ def max_pool3d_with_indices_backward(grad_output, input, kernel_size, stride=[],
 
 def avg_pool2d_backward(grad_output, input, kernel_size, stride=[], padding=[], ceil_mode=False, count_include_pad=True, divisor_override=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(avg_pool2d_backward, (grad_output, input, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.avg_pool2d_backward(grad_output=grad_output, input=input, kernel_size=kernel_size, stride=stride, padding=padding, ceil_mode=ceil_mode, count_include_pad=count_include_pad, divisor_override=divisor_override, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(avg_pool2d_backward, (grad_output, input, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override), {})
         if _captured is not None:
             return _captured
     return _C.avg_pool2d_backward(grad_output=grad_output, input=input, kernel_size=kernel_size, stride=stride, padding=padding, ceil_mode=ceil_mode, count_include_pad=count_include_pad, divisor_override=divisor_override)
 
 def adaptive_avg_pool2d_backward(grad_output, input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(adaptive_avg_pool2d_backward, (grad_output, input), {})
         if _captured is not None:
             return _captured
@@ -3614,19 +3615,19 @@ def adaptive_avg_pool2d_backward(grad_output, input):
 
 def adaptive_max_pool2d_backward(grad_output, input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(adaptive_max_pool2d_backward, (grad_output, input), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.adaptive_max_pool2d_backward(grad_output=grad_output, input=input, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(adaptive_max_pool2d_backward, (grad_output, input), {})
         if _captured is not None:
             return _captured
     return _C.adaptive_max_pool2d_backward(grad_output=grad_output, input=input)
 
 def adaptive_max_pool2d_with_indices_backward(grad_output, input, output_size, indices):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(adaptive_max_pool2d_with_indices_backward, (grad_output, input, output_size, indices), {})
         if _captured is not None:
             return _captured
@@ -3636,26 +3637,26 @@ def adaptive_max_pool2d_with_indices_backward(grad_output, input, output_size, i
 
 def adaptive_max_pool3d_backward(grad_output, input, indices, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(adaptive_max_pool3d_backward, (grad_output, input, indices), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.adaptive_max_pool3d_backward(grad_output=grad_output, input=input, indices=indices, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(adaptive_max_pool3d_backward, (grad_output, input, indices), {})
         if _captured is not None:
             return _captured
     return _C.adaptive_max_pool3d_backward(grad_output=grad_output, input=input, indices=indices)
 
 def batch_norm(input, weight, bias, running_mean, running_var, training, momentum, eps):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(batch_norm, (input, weight, bias, running_mean, running_var, training, momentum, eps), {})
         if _captured is not None:
             return _captured
     return _C.batch_norm(input, weight, bias, running_mean, running_var, training, momentum, eps)
 
 def layer_norm(input, normalized_shape, weight=None, bias=None, eps=1e-5):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(layer_norm, (input, normalized_shape, weight, bias, eps), {})
         if _captured is not None:
             return _captured
@@ -3664,28 +3665,28 @@ def layer_norm(input, normalized_shape, weight=None, bias=None, eps=1e-5):
     return _C.layer_norm(input, normalized_shape, weight, bias, eps)
 
 def group_norm(input, num_groups, weight=None, bias=None, eps=1e-5):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(group_norm, (input, num_groups, weight, bias, eps), {})
         if _captured is not None:
             return _captured
     return _C.group_norm(input, num_groups, weight, bias, eps)
 
 def instance_norm(input, weight=None, bias=None, running_mean=None, running_var=None, use_input_stats=True, momentum=0.1, eps=1e-5):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(instance_norm, (input, weight, bias, running_mean, running_var, use_input_stats, momentum, eps), {})
         if _captured is not None:
             return _captured
     return _C.instance_norm(input, weight, bias, running_mean, running_var, use_input_stats, momentum, eps)
 
 def batch_norm_backward(grad_output, input, weight=None, running_mean=None, running_var=None, training=True, eps=1e-5):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(batch_norm_backward, (grad_output, input, weight, running_mean, running_var, training, eps), {})
         if _captured is not None:
             return _captured
     return _C.batch_norm_backward(grad_output, input, weight, running_mean, running_var, training, eps)
 
 def layer_norm_backward(grad_output, input, normalized_shape, weight=None, bias=None, eps=1e-5):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(layer_norm_backward, (grad_output, input, normalized_shape, weight, bias, eps), {})
         if _captured is not None:
             return _captured
@@ -3694,14 +3695,14 @@ def layer_norm_backward(grad_output, input, normalized_shape, weight=None, bias=
     return _C.layer_norm_backward(grad_output, input, normalized_shape, weight, bias, eps)
 
 def group_norm_backward(grad_output, input, num_groups, weight=None, bias=None, eps=1e-5):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(group_norm_backward, (grad_output, input, num_groups, weight, bias, eps), {})
         if _captured is not None:
             return _captured
     return _C.group_norm_backward(grad_output, input, num_groups, weight, bias, eps)
 
 def instance_norm_backward(grad_output, input, weight=None, bias=None, running_mean=None, running_var=None, use_input_stats=True, eps=1e-5):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(instance_norm_backward, (grad_output, input, weight, bias, running_mean, running_var, use_input_stats, eps), {})
         if _captured is not None:
             return _captured
@@ -3709,12 +3710,12 @@ def instance_norm_backward(grad_output, input, weight=None, bias=None, running_m
 
 def multinomial(input, num_samples, replacement=False, *, generator=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(multinomial, (input, num_samples, replacement), {'generator': generator, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.multinomial(self=input, num_samples=num_samples, replacement=replacement, generator=generator, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(multinomial, (input, num_samples, replacement), {'generator': generator})
         if _captured is not None:
             return _captured
@@ -3724,19 +3725,19 @@ def multinomial(input, num_samples, replacement=False, *, generator=None, out=No
 
 def topk(input, k, dim=-1, largest=True, sorted=True, impl=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(topk, (input, k, dim, largest, sorted, impl), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.topk(self=input, k=k, dim=dim, largest=largest, sorted=sorted, impl=impl, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(topk, (input, k, dim, largest, sorted, impl), {})
         if _captured is not None:
             return _captured
     return _C.topk(self=input, k=k, dim=dim, largest=largest, sorted=sorted, impl=impl)
 
 def sample(logits, temperature=1.0, top_k=0, top_p=1.0, impl=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sample, (logits, temperature, top_k, top_p, impl), {})
         if _captured is not None:
             return _captured
@@ -3744,12 +3745,12 @@ def sample(logits, temperature=1.0, top_k=0, top_p=1.0, impl=0):
 
 def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, *, scale=None, enable_gqa=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(scaled_dot_product_attention, (query, key, value, attn_mask, dropout_p, is_causal), {'scale': scale, 'enable_gqa': enable_gqa, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.scaled_dot_product_attention(query=query, key=key, value=value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale, enable_gqa=enable_gqa, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(scaled_dot_product_attention, (query, key, value, attn_mask, dropout_p, is_causal), {'scale': scale, 'enable_gqa': enable_gqa})
         if _captured is not None:
             return _captured
@@ -3758,119 +3759,119 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.
     return _C.scaled_dot_product_attention(query=query, key=key, value=value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale, enable_gqa=enable_gqa)
 
 def _scaled_dot_product_attention_with_lse(query, key, value, is_causal=False, impl=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_attention_with_lse, (query, key, value, is_causal, impl), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_attention_with_lse(query, key, value, is_causal, impl)
 
 def scaled_dot_product_attention_backward(grad_output, query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None, enable_gqa=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(scaled_dot_product_attention_backward, (grad_output, query, key, value, attn_mask, dropout_p, is_causal, scale, enable_gqa), {})
         if _captured is not None:
             return _captured
     return _C.scaled_dot_product_attention_backward(grad_output, query, key, value, attn_mask, dropout_p, is_causal, scale=scale, enable_gqa=enable_gqa)
 
 def _scaled_dot_product_attention_backward_with_lse(grad_output, query, key, value, output, logsumexp, is_causal=False, impl=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_attention_backward_with_lse, (grad_output, query, key, value, output, logsumexp, is_causal, impl), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_attention_backward_with_lse(grad_output, query, key, value, output, logsumexp, is_causal, impl)
 
 def tp_l1_loss(input, target, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_l1_loss, (input, target, reduction), {})
         if _captured is not None:
             return _captured
     return _C.tp_l1_loss(input, target, reduction)
 
 def tp_l1_loss_backward(grad_output, input, target, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_l1_loss_backward, (grad_output, input, target, reduction), {})
         if _captured is not None:
             return _captured
     return _C.tp_l1_loss_backward(grad_output, input, target, reduction)
 
 def tp_kl_div(input, target, reduction=1, log_target=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_kl_div, (input, target, reduction, log_target), {})
         if _captured is not None:
             return _captured
     return _C.tp_kl_div(input, target, reduction, log_target)
 
 def tp_kl_div_backward(grad_output, input, target, reduction=1, log_target=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_kl_div_backward, (grad_output, input, target, reduction, log_target), {})
         if _captured is not None:
             return _captured
     return _C.tp_kl_div_backward(grad_output, input, target, reduction, log_target)
 
 def tp_margin_ranking_loss(input1, input2, target, margin=0.0, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_margin_ranking_loss, (input1, input2, target, margin, reduction), {})
         if _captured is not None:
             return _captured
     return _C.tp_margin_ranking_loss(input1, input2, target, margin, reduction)
 
 def tp_margin_ranking_loss_backward(grad_output, input1, input2, target, margin=0.0, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_margin_ranking_loss_backward, (grad_output, input1, input2, target, margin, reduction), {})
         if _captured is not None:
             return _captured
     return _C.tp_margin_ranking_loss_backward(grad_output, input1, input2, target, margin, reduction)
 
 def tp_hinge_embedding_loss(input, target, margin=1.0, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_hinge_embedding_loss, (input, target, margin, reduction), {})
         if _captured is not None:
             return _captured
     return _C.tp_hinge_embedding_loss(input, target, margin, reduction)
 
 def tp_hinge_embedding_loss_backward(grad_output, input, target, margin=1.0, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_hinge_embedding_loss_backward, (grad_output, input, target, margin, reduction), {})
         if _captured is not None:
             return _captured
     return _C.tp_hinge_embedding_loss_backward(grad_output, input, target, margin, reduction)
 
 def tp_soft_margin_loss(input, target, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_soft_margin_loss, (input, target, reduction), {})
         if _captured is not None:
             return _captured
     return _C.tp_soft_margin_loss(input, target, reduction)
 
 def tp_soft_margin_loss_backward(grad_output, input, target, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_soft_margin_loss_backward, (grad_output, input, target, reduction), {})
         if _captured is not None:
             return _captured
     return _C.tp_soft_margin_loss_backward(grad_output, input, target, reduction)
 
 def tp_cosine_embedding_loss(input1, input2, target, margin=0.0, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_cosine_embedding_loss, (input1, input2, target, margin, reduction), {})
         if _captured is not None:
             return _captured
     return _C.tp_cosine_embedding_loss(input1, input2, target, margin, reduction)
 
 def tp_cosine_embedding_loss_backward(grad_output, input1, input2, target, margin=0.0, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_cosine_embedding_loss_backward, (grad_output, input1, input2, target, margin, reduction), {})
         if _captured is not None:
             return _captured
     return _C.tp_cosine_embedding_loss_backward(grad_output, input1, input2, target, margin, reduction)
 
 def tp_poisson_nll_loss(input, target, log_input=True, full=False, eps=1e-08, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_poisson_nll_loss, (input, target, log_input, full, eps, reduction), {})
         if _captured is not None:
             return _captured
     return _C.tp_poisson_nll_loss(input, target, log_input, full, eps, reduction)
 
 def tp_poisson_nll_loss_backward(grad_output, input, target, log_input=True, full=False, eps=1e-08, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tp_poisson_nll_loss_backward, (grad_output, input, target, log_input, full, eps, reduction), {})
         if _captured is not None:
             return _captured
@@ -3878,12 +3879,12 @@ def tp_poisson_nll_loss_backward(grad_output, input, target, log_input=True, ful
 
 def fft_fft(input, n=-1, dim=-1, norm='backward', *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_fft, (input, n, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_fft(self=input, n=n, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_fft, (input, n, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -3891,12 +3892,12 @@ def fft_fft(input, n=-1, dim=-1, norm='backward', *, out=None):
 
 def fft_ifft(input, n=-1, dim=-1, norm='backward', *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_ifft, (input, n, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_ifft(self=input, n=n, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_ifft, (input, n, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -3904,12 +3905,12 @@ def fft_ifft(input, n=-1, dim=-1, norm='backward', *, out=None):
 
 def fft_rfft(input, n=-1, dim=-1, norm='backward', *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_rfft, (input, n, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_rfft(self=input, n=n, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_rfft, (input, n, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -3917,12 +3918,12 @@ def fft_rfft(input, n=-1, dim=-1, norm='backward', *, out=None):
 
 def fft_irfft(input, n=-1, dim=-1, norm='backward', *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_irfft, (input, n, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_irfft(self=input, n=n, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_irfft, (input, n, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -3930,12 +3931,12 @@ def fft_irfft(input, n=-1, dim=-1, norm='backward', *, out=None):
 
 def fft_fft2(input, s=None, dim=[-2,-1], norm='backward', *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_fft2, (input, s, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_fft2(self=input, s=s, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_fft2, (input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -3943,12 +3944,12 @@ def fft_fft2(input, s=None, dim=[-2,-1], norm='backward', *, out=None):
 
 def fft_ifft2(input, s=None, dim=[-2,-1], norm='backward', *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_ifft2, (input, s, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_ifft2(self=input, s=s, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_ifft2, (input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -3956,12 +3957,12 @@ def fft_ifft2(input, s=None, dim=[-2,-1], norm='backward', *, out=None):
 
 def fft_rfft2(input, s=None, dim=[-2,-1], norm='backward', *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_rfft2, (input, s, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_rfft2(self=input, s=s, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_rfft2, (input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -3969,19 +3970,19 @@ def fft_rfft2(input, s=None, dim=[-2,-1], norm='backward', *, out=None):
 
 def fft_irfft2(input, s=None, dim=[-2,-1], norm='backward', *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_irfft2, (input, s, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_irfft2(self=input, s=s, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_irfft2, (input, s, dim, norm), {})
         if _captured is not None:
             return _captured
     return _C.fft_irfft2(self=input, s=s, dim=dim, norm=norm)
 
 def fft_fft2_backward(grad_output, input, s=None, dim=[-2,-1], norm='backward'):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_fft2_backward, (grad_output, input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -3992,7 +3993,7 @@ def fft_fft2_backward(grad_output, input, s=None, dim=[-2,-1], norm='backward'):
     return _C.fft_fft2_backward(grad_output, input, s, dim, norm)
 
 def fft_ifft2_backward(grad_output, input, s=None, dim=[-2,-1], norm='backward'):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_ifft2_backward, (grad_output, input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -4003,7 +4004,7 @@ def fft_ifft2_backward(grad_output, input, s=None, dim=[-2,-1], norm='backward')
     return _C.fft_ifft2_backward(grad_output, input, s, dim, norm)
 
 def fft_rfft2_backward(grad_output, input, s=None, dim=[-2,-1], norm='backward'):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_rfft2_backward, (grad_output, input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -4014,7 +4015,7 @@ def fft_rfft2_backward(grad_output, input, s=None, dim=[-2,-1], norm='backward')
     return _C.fft_rfft2_backward(grad_output, input, s, dim, norm)
 
 def fft_irfft2_backward(grad_output, input, s=None, dim=[-2,-1], norm='backward'):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_irfft2_backward, (grad_output, input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -4025,35 +4026,35 @@ def fft_irfft2_backward(grad_output, input, s=None, dim=[-2,-1], norm='backward'
     return _C.fft_irfft2_backward(grad_output, input, s, dim, norm)
 
 def fft_fft_backward(grad_output, input, dim, norm):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_fft_backward, (grad_output, input, dim, norm), {})
         if _captured is not None:
             return _captured
     return _C.fft_fft_backward(grad_output, input, dim, norm)
 
 def fft_ifft_backward(grad_output, input, dim, norm):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_ifft_backward, (grad_output, input, dim, norm), {})
         if _captured is not None:
             return _captured
     return _C.fft_ifft_backward(grad_output, input, dim, norm)
 
 def fft_rfft_backward(grad_output, input, dim, norm, n=-1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_rfft_backward, (grad_output, input, dim, norm, n), {})
         if _captured is not None:
             return _captured
     return _C.fft_rfft_backward(grad_output, input, dim, norm, n)
 
 def fft_irfft_backward(grad_output, input, dim, norm):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_irfft_backward, (grad_output, input, dim, norm), {})
         if _captured is not None:
             return _captured
     return _C.fft_irfft_backward(grad_output, input, dim, norm)
 
 def hann_window(window_length, periodic=True, dtype=None, *, device=None, layout=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hann_window, (window_length, periodic, dtype), {'device': device, 'layout': layout, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -4064,7 +4065,7 @@ def hann_window(window_length, periodic=True, dtype=None, *, device=None, layout
     return _C.hann_window(window_length, periodic, dtype=dtype, layout=layout, device=_ensure_device(device), pin_memory=pin_memory)
 
 def hamming_window(window_length, periodic=True, alpha=0.54, beta=0.46, dtype=None, *, device=None, layout=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hamming_window, (window_length, periodic, alpha, beta, dtype), {'device': device, 'layout': layout, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -4075,7 +4076,7 @@ def hamming_window(window_length, periodic=True, alpha=0.54, beta=0.46, dtype=No
     return _C.hamming_window(window_length, periodic, alpha, beta, dtype=dtype, layout=layout, device=_ensure_device(device), pin_memory=pin_memory)
 
 def bartlett_window(window_length, periodic=True, dtype=None, *, device=None, layout=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bartlett_window, (window_length, periodic, dtype), {'device': device, 'layout': layout, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -4086,7 +4087,7 @@ def bartlett_window(window_length, periodic=True, dtype=None, *, device=None, la
     return _C.bartlett_window(window_length, periodic, dtype=dtype, layout=layout, device=_ensure_device(device), pin_memory=pin_memory)
 
 def blackman_window(window_length, periodic=True, dtype=None, *, device=None, layout=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(blackman_window, (window_length, periodic, dtype), {'device': device, 'layout': layout, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -4097,21 +4098,21 @@ def blackman_window(window_length, periodic=True, dtype=None, *, device=None, la
     return _C.blackman_window(window_length, periodic, dtype=dtype, layout=layout, device=_ensure_device(device), pin_memory=pin_memory)
 
 def stft(input, n_fft, hop_length=None, win_length=None, window=None, center=True, pad_mode='reflect', normalized=False, onesided=True, return_complex=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(stft, (input, n_fft, hop_length, win_length, window, center, pad_mode, normalized, onesided, return_complex), {})
         if _captured is not None:
             return _captured
     return _C.stft(input, n_fft, hop_length, win_length, window, center, pad_mode, normalized, onesided, return_complex)
 
 def istft(input, n_fft, hop_length=None, win_length=None, window=None, center=True, normalized=False, onesided=True, length=None, return_complex=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(istft, (input, n_fft, hop_length, win_length, window, center, normalized, onesided, length, return_complex), {})
         if _captured is not None:
             return _captured
     return _C.istft(input, n_fft, hop_length, win_length, window, center, normalized, onesided, length, return_complex)
 
 def stft_backward(grad_output, input, n_fft, hop_length=None, win_length=None, window=None, center=True, pad_mode='reflect', normalized=False, onesided=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(stft_backward, (grad_output, input, n_fft, hop_length, win_length, window, center, pad_mode, normalized, onesided), {})
         if _captured is not None:
             return _captured
@@ -4119,12 +4120,12 @@ def stft_backward(grad_output, input, n_fft, hop_length=None, win_length=None, w
 
 def cumsum(input, dim=0, dtype=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cumsum, (input, dim, dtype), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cumsum(self=input, dim=dim, dtype=dtype, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cumsum, (input, dim, dtype), {})
         if _captured is not None:
             return _captured
@@ -4132,12 +4133,12 @@ def cumsum(input, dim=0, dtype=None, *, out=None):
 
 def flip(input, dims=[], *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(flip, (input, dims), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.flip(self=input, dims=dims, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(flip, (input, dims), {})
         if _captured is not None:
             return _captured
@@ -4145,12 +4146,12 @@ def flip(input, dims=[], *, out=None):
 
 def index_select(input, dim, index, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(index_select, (input, dim, index), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.index_select(self=input, dim=dim, index=index, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(index_select, (input, dim, index), {})
         if _captured is not None:
             return _captured
@@ -4158,12 +4159,12 @@ def index_select(input, dim, index, *, out=None):
 
 def index_add(input, dim, index, source, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(index_add, (input, dim, index, source), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.index_add(self=input, dim=dim, index=index, source=source, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(index_add, (input, dim, index, source), {})
         if _captured is not None:
             return _captured
@@ -4173,18 +4174,18 @@ def nonzero(input, *, out=None, as_tuple=False):
     if as_tuple:
         if out is not None:
             raise RuntimeError("nonzero does not support out when as_tuple is True")
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nonzero, (input,), {'as_tuple': True})
             if _captured is not None:
                 return _captured
         return tuple(_C.nonzero_numpy(input))
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nonzero, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.nonzero(input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nonzero, (input,), {})
         if _captured is not None:
             return _captured
@@ -4199,7 +4200,7 @@ def unique(input, sorted=True, return_inverse=False, return_counts=False, dim=No
         if return_counts:
             outs.append(counts)
         return outs[0] if len(outs) == 1 else tuple(outs)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unique, (input, sorted, return_inverse, return_counts), {})
         if _captured is not None:
             return _captured
@@ -4213,12 +4214,12 @@ def unique(input, sorted=True, return_inverse=False, return_counts=False, dim=No
 
 def count_nonzero(input, dim=[], *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(count_nonzero, (input, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.count_nonzero(input, dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(count_nonzero, (input, dim), {})
         if _captured is not None:
             return _captured
@@ -4226,12 +4227,12 @@ def count_nonzero(input, dim=[], *, out=None):
 
 def log10(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(log10, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.log10(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(log10, (input,), {})
         if _captured is not None:
             return _captured
@@ -4239,12 +4240,12 @@ def log10(input, *, out=None):
 
 def log1p(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(log1p, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.log1p(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(log1p, (input,), {})
         if _captured is not None:
             return _captured
@@ -4252,12 +4253,12 @@ def log1p(input, *, out=None):
 
 def frac(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(frac, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.frac(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(frac, (input,), {})
         if _captured is not None:
             return _captured
@@ -4265,12 +4266,12 @@ def frac(input, *, out=None):
 
 def i0(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(i0, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.i0(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(i0, (input,), {})
         if _captured is not None:
             return _captured
@@ -4278,19 +4279,19 @@ def i0(input, *, out=None):
 
 def polar(abs, angle, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(polar, (abs, angle), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.polar(abs=abs, angle=angle, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(polar, (abs, angle), {})
         if _captured is not None:
             return _captured
     return _C.polar(abs=abs, angle=angle)
 
 def real(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(real, (input,), {})
         if _captured is not None:
             return _captured
@@ -4298,12 +4299,12 @@ def real(input):
 
 def diff(input, n=1, dim=-1, prepend=None, append=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(diff, (input, n, dim, prepend, append), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.diff(self=input, n=n, dim=dim, prepend=prepend, append=append, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(diff, (input, n, dim, prepend, append), {})
         if _captured is not None:
             return _captured
@@ -4311,12 +4312,12 @@ def diff(input, n=1, dim=-1, prepend=None, append=None, *, out=None):
 
 def logical_and(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(logical_and, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.logical_and(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logical_and, (input, other), {})
         if _captured is not None:
             return _captured
@@ -4324,12 +4325,12 @@ def logical_and(input, other, *, out=None):
 
 def cross(input, other, dim=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cross, (input, other, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cross(self=input, other=other, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cross, (input, other, dim), {})
         if _captured is not None:
             return _captured
@@ -4337,19 +4338,19 @@ def cross(input, other, dim=None, *, out=None):
 
 def roll(input, shifts, dims=[], *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(roll, (input, shifts, dims), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.roll(self=input, shifts=shifts, dims=dims, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(roll, (input, shifts, dims), {})
         if _captured is not None:
             return _captured
     return _C.roll(self=input, shifts=shifts, dims=dims)
 
 def unfold(input, dimension, size, step):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unfold, (input, dimension, size, step), {})
         if _captured is not None:
             return _captured
@@ -4357,12 +4358,12 @@ def unfold(input, dimension, size, step):
 
 def unfold_backward(grad_output, input_sizes, dim, size, step, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(unfold_backward, (grad_output, input_sizes, dim, size, step), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.unfold_backward(grad_output=grad_output, input_sizes=input_sizes, dim=dim, size=size, step=step, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unfold_backward, (grad_output, input_sizes, dim, size, step), {})
         if _captured is not None:
             return _captured
@@ -4370,12 +4371,12 @@ def unfold_backward(grad_output, input_sizes, dim, size, step, *, out=None):
 
 def threshold(input, threshold, value, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(threshold, (input, threshold, value), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.threshold(self=input, threshold=threshold, value=value, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(threshold, (input, threshold, value), {})
         if _captured is not None:
             return _captured
@@ -4383,12 +4384,12 @@ def threshold(input, threshold, value, *, out=None):
 
 def relu6(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(relu6, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.relu6(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(relu6, (input,), {})
         if _captured is not None:
             return _captured
@@ -4396,12 +4397,12 @@ def relu6(input, *, out=None):
 
 def leaky_relu(input, negative_slope=0.01, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(leaky_relu, (input, negative_slope), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.leaky_relu(self=input, negative_slope=negative_slope, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(leaky_relu, (input, negative_slope), {})
         if _captured is not None:
             return _captured
@@ -4409,12 +4410,12 @@ def leaky_relu(input, negative_slope=0.01, *, out=None):
 
 def leaky_relu_backward(grad_output, input, negative_slope, self_is_result, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(leaky_relu_backward, (grad_output, input, negative_slope, self_is_result), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.leaky_relu_backward(grad_output=grad_output, self=input, negative_slope=negative_slope, self_is_result=self_is_result, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(leaky_relu_backward, (grad_output, input, negative_slope, self_is_result), {})
         if _captured is not None:
             return _captured
@@ -4422,12 +4423,12 @@ def leaky_relu_backward(grad_output, input, negative_slope, self_is_result, *, o
 
 def rrelu_with_noise(input, noise, lower=0.125, upper=0.3333333333333333, training=False, generator=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(rrelu_with_noise, (input, noise, lower, upper, training, generator), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.rrelu_with_noise(self=input, noise=noise, lower=lower, upper=upper, training=training, generator=generator, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rrelu_with_noise, (input, noise, lower, upper, training, generator), {})
         if _captured is not None:
             return _captured
@@ -4435,12 +4436,12 @@ def rrelu_with_noise(input, noise, lower=0.125, upper=0.3333333333333333, traini
 
 def rrelu_with_noise_backward(grad_output, input, noise, lower, upper, training, self_is_result, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(rrelu_with_noise_backward, (grad_output, input, noise, lower, upper, training, self_is_result), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.rrelu_with_noise_backward(grad_output=grad_output, self=input, noise=noise, lower=lower, upper=upper, training=training, self_is_result=self_is_result, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rrelu_with_noise_backward, (grad_output, input, noise, lower, upper, training, self_is_result), {})
         if _captured is not None:
             return _captured
@@ -4448,12 +4449,12 @@ def rrelu_with_noise_backward(grad_output, input, noise, lower, upper, training,
 
 def log_sigmoid(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(log_sigmoid, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.log_sigmoid(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(log_sigmoid, (input,), {})
         if _captured is not None:
             return _captured
@@ -4461,12 +4462,12 @@ def log_sigmoid(input, *, out=None):
 
 def log_sigmoid_backward(grad_output, input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(log_sigmoid_backward, (grad_output, input), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.log_sigmoid_backward(grad_output=grad_output, self=input, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(log_sigmoid_backward, (grad_output, input), {})
         if _captured is not None:
             return _captured
@@ -4474,12 +4475,12 @@ def log_sigmoid_backward(grad_output, input, *, out=None):
 
 def hardtanh(input, min_val=-1, max_val=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(hardtanh, (input, min_val, max_val), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.hardtanh(self=input, min_val=min_val, max_val=max_val, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hardtanh, (input, min_val, max_val), {})
         if _captured is not None:
             return _captured
@@ -4487,12 +4488,12 @@ def hardtanh(input, min_val=-1, max_val=1, *, out=None):
 
 def hardtanh_backward(grad_output, input, min_val, max_val, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(hardtanh_backward, (grad_output, input, min_val, max_val), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.hardtanh_backward(grad_output=grad_output, self=input, min_val=min_val, max_val=max_val, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hardtanh_backward, (grad_output, input, min_val, max_val), {})
         if _captured is not None:
             return _captured
@@ -4500,12 +4501,12 @@ def hardtanh_backward(grad_output, input, min_val, max_val, *, out=None):
 
 def hardswish(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(hardswish, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.hardswish(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hardswish, (input,), {})
         if _captured is not None:
             return _captured
@@ -4513,54 +4514,54 @@ def hardswish(input, *, out=None):
 
 def hardswish_backward(grad_output, input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(hardswish_backward, (grad_output, input), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.hardswish_backward(grad_output=grad_output, self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hardswish_backward, (grad_output, input), {})
         if _captured is not None:
             return _captured
     return _C.hardswish_backward(grad_output=grad_output, self=input)
 
 def sec(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sec, (input,), {})
         if _captured is not None:
             return _captured
     return _C.sec(input)
 
 def csc(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(csc, (input,), {})
         if _captured is not None:
             return _captured
     return _C.csc(input)
 
 def cot(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cot, (input,), {})
         if _captured is not None:
             return _captured
     return _C.cot(input)
 
 def tanhshrink(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tanhshrink, (input,), {})
         if _captured is not None:
             return _captured
     return _C.tanhshrink(input)
 
 def squared_difference(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(squared_difference, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.squared_difference(input, other)
 
 def swish(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(swish, (input,), {})
         if _captured is not None:
             return _captured
@@ -4568,12 +4569,12 @@ def swish(input):
 
 def hardsigmoid(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(hardsigmoid, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.hardsigmoid(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hardsigmoid, (input,), {})
         if _captured is not None:
             return _captured
@@ -4581,12 +4582,12 @@ def hardsigmoid(input, *, out=None):
 
 def hardsigmoid_backward(grad_output, input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(hardsigmoid_backward, (grad_output, input), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.hardsigmoid_backward(grad_output=grad_output, self=input, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hardsigmoid_backward, (grad_output, input), {})
         if _captured is not None:
             return _captured
@@ -4594,12 +4595,12 @@ def hardsigmoid_backward(grad_output, input, *, out=None):
 
 def softplus(input, beta=1, threshold=20, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(softplus, (input, beta, threshold), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.softplus(self=input, beta=beta, threshold=threshold, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(softplus, (input, beta, threshold), {})
         if _captured is not None:
             return _captured
@@ -4607,12 +4608,12 @@ def softplus(input, beta=1, threshold=20, *, out=None):
 
 def softplus_backward(grad_output, input, beta, threshold, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(softplus_backward, (grad_output, input, beta, threshold), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.softplus_backward(grad_output=grad_output, self=input, beta=beta, threshold=threshold, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(softplus_backward, (grad_output, input, beta, threshold), {})
         if _captured is not None:
             return _captured
@@ -4620,12 +4621,12 @@ def softplus_backward(grad_output, input, beta, threshold, *, out=None):
 
 def elu(input, alpha=1, scale=1, input_scale=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(elu, (input, alpha, scale, input_scale), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.elu(self=input, alpha=alpha, scale=scale, input_scale=input_scale, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(elu, (input, alpha, scale, input_scale), {})
         if _captured is not None:
             return _captured
@@ -4633,12 +4634,12 @@ def elu(input, alpha=1, scale=1, input_scale=1, *, out=None):
 
 def elu_backward(grad_output, alpha, scale, input_scale, is_result, self_or_result, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(elu_backward, (grad_output, alpha, scale, input_scale, is_result, self_or_result), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.elu_backward(grad_output=grad_output, alpha=alpha, scale=scale, input_scale=input_scale, is_result=is_result, self_or_result=self_or_result, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(elu_backward, (grad_output, alpha, scale, input_scale, is_result, self_or_result), {})
         if _captured is not None:
             return _captured
@@ -4646,12 +4647,12 @@ def elu_backward(grad_output, alpha, scale, input_scale, is_result, self_or_resu
 
 def selu(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(selu, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.selu(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(selu, (input,), {})
         if _captured is not None:
             return _captured
@@ -4659,12 +4660,12 @@ def selu(input, *, out=None):
 
 def celu(input, alpha=1.0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(celu, (input, alpha), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.celu(self=input, alpha=alpha, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(celu, (input, alpha), {})
         if _captured is not None:
             return _captured
@@ -4672,19 +4673,19 @@ def celu(input, alpha=1.0, *, out=None):
 
 def mish(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mish, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mish(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mish, (input,), {})
         if _captured is not None:
             return _captured
     return _C.mish(self=input)
 
 def mish_backward(grad_output, input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mish_backward, (grad_output, input), {})
         if _captured is not None:
             return _captured
@@ -4692,12 +4693,12 @@ def mish_backward(grad_output, input):
 
 def softshrink(input, lambd=0.5, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(softshrink, (input, lambd), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.softshrink(self=input, lambd=lambd, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(softshrink, (input, lambd), {})
         if _captured is not None:
             return _captured
@@ -4705,12 +4706,12 @@ def softshrink(input, lambd=0.5, *, out=None):
 
 def softshrink_backward(grad_output, input, lambd, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(softshrink_backward, (grad_output, input, lambd), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.softshrink_backward(grad_output=grad_output, self=input, lambd=lambd, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(softshrink_backward, (grad_output, input, lambd), {})
         if _captured is not None:
             return _captured
@@ -4718,12 +4719,12 @@ def softshrink_backward(grad_output, input, lambd, *, out=None):
 
 def hardshrink(input, lambd=0.5, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(hardshrink, (input, lambd), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.hardshrink(self=input, lambd=lambd, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hardshrink, (input, lambd), {})
         if _captured is not None:
             return _captured
@@ -4731,12 +4732,12 @@ def hardshrink(input, lambd=0.5, *, out=None):
 
 def hardshrink_backward(grad_out, input, lambd, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(hardshrink_backward, (grad_out, input, lambd), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.hardshrink_backward(grad_out=grad_out, self=input, lambd=lambd, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hardshrink_backward, (grad_out, input, lambd), {})
         if _captured is not None:
             return _captured
@@ -4744,12 +4745,12 @@ def hardshrink_backward(grad_out, input, lambd, *, out=None):
 
 def glu(input, dim=-1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(glu, (input, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.glu(self=input, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(glu, (input, dim), {})
         if _captured is not None:
             return _captured
@@ -4757,26 +4758,26 @@ def glu(input, dim=-1, *, out=None):
 
 def glu_backward(grad_output, input, dim=-1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(glu_backward, (grad_output, input, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.glu_backward(grad_output=grad_output, self=input, dim=dim, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(glu_backward, (grad_output, input, dim), {})
         if _captured is not None:
             return _captured
     return _C.glu_backward(grad_output=grad_output, self=input, dim=dim)
 
 def one_hot(input, num_classes=-1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(one_hot, (input, num_classes), {})
         if _captured is not None:
             return _captured
     return _C.one_hot(input, num_classes)
 
 def narrow(input, dim, start, length):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(narrow, (input, dim, start, length), {})
         if _captured is not None:
             return _captured
@@ -4784,12 +4785,12 @@ def narrow(input, dim, start, length):
 
 def pixel_shuffle(input, upscale_factor, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(pixel_shuffle, (input, upscale_factor), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.pixel_shuffle(self=input, upscale_factor=upscale_factor, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(pixel_shuffle, (input, upscale_factor), {})
         if _captured is not None:
             return _captured
@@ -4797,19 +4798,19 @@ def pixel_shuffle(input, upscale_factor, *, out=None):
 
 def pixel_unshuffle(input, downscale_factor, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(pixel_unshuffle, (input, downscale_factor), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.pixel_unshuffle(self=input, downscale_factor=downscale_factor, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(pixel_unshuffle, (input, downscale_factor), {})
         if _captured is not None:
             return _captured
     return _C.pixel_unshuffle(self=input, downscale_factor=downscale_factor)
 
 def reflection_pad_nd(input, pad):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(reflection_pad_nd, (input, pad), {})
         if _captured is not None:
             return _captured
@@ -4818,7 +4819,7 @@ def reflection_pad_nd(input, pad):
     return _C.reflection_pad_nd(input, pad)
 
 def reflection_pad_nd_backward(grad_output, input, pad):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(reflection_pad_nd_backward, (grad_output, input, pad), {})
         if _captured is not None:
             return _captured
@@ -4827,7 +4828,7 @@ def reflection_pad_nd_backward(grad_output, input, pad):
     return _C.reflection_pad_nd_backward(grad_output, input, pad)
 
 def replication_pad_nd(input, pad):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(replication_pad_nd, (input, pad), {})
         if _captured is not None:
             return _captured
@@ -4836,7 +4837,7 @@ def replication_pad_nd(input, pad):
     return _C.replication_pad_nd(input, pad)
 
 def replication_pad_nd_backward(grad_output, input, pad):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(replication_pad_nd_backward, (grad_output, input, pad), {})
         if _captured is not None:
             return _captured
@@ -4845,7 +4846,7 @@ def replication_pad_nd_backward(grad_output, input, pad):
     return _C.replication_pad_nd_backward(grad_output, input, pad)
 
 def circular_pad_nd(input, pad):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(circular_pad_nd, (input, pad), {})
         if _captured is not None:
             return _captured
@@ -4854,7 +4855,7 @@ def circular_pad_nd(input, pad):
     return _C.circular_pad_nd(input, pad)
 
 def circular_pad_nd_backward(grad_output, input, pad):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(circular_pad_nd_backward, (grad_output, input, pad), {})
         if _captured is not None:
             return _captured
@@ -4864,19 +4865,19 @@ def circular_pad_nd_backward(grad_output, input, pad):
 
 def im2col(input, kernel_size, dilation=[], padding=[], stride=[], *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(im2col, (input, kernel_size, dilation, padding, stride), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.im2col(self=input, kernel_size=kernel_size, dilation=dilation, padding=padding, stride=stride, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(im2col, (input, kernel_size, dilation, padding, stride), {})
         if _captured is not None:
             return _captured
     return _C.im2col(self=input, kernel_size=kernel_size, dilation=dilation, padding=padding, stride=stride)
 
 def im2col_backward(grad_output, input_size, kernel_size, dilation, padding, stride):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(im2col_backward, (grad_output, input_size, kernel_size, dilation, padding, stride), {})
         if _captured is not None:
             return _captured
@@ -4894,19 +4895,19 @@ def im2col_backward(grad_output, input_size, kernel_size, dilation, padding, str
 
 def col2im(input, output_size, kernel_size, dilation=[], padding=[], stride=[], *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(col2im, (input, output_size, kernel_size, dilation, padding, stride), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.col2im(self=input, output_size=output_size, kernel_size=kernel_size, dilation=dilation, padding=padding, stride=stride, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(col2im, (input, output_size, kernel_size, dilation, padding, stride), {})
         if _captured is not None:
             return _captured
     return _C.col2im(self=input, output_size=output_size, kernel_size=kernel_size, dilation=dilation, padding=padding, stride=stride)
 
 def col2im_backward(grad_output, input_size, output_size, kernel_size, dilation, padding, stride):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(col2im_backward, (grad_output, input_size, output_size, kernel_size, dilation, padding, stride), {})
         if _captured is not None:
             return _captured
@@ -4925,7 +4926,7 @@ def col2im_backward(grad_output, input_size, output_size, kernel_size, dilation,
     return _C.col2im_backward(grad_output, input_size, output_size, kernel_size, dilation, padding, stride)
 
 def conv_transpose1d(input, weight, bias=None, stride=[], padding=[], output_padding=[], groups=1, dilation=[]):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_transpose1d, (input, weight, bias, stride, padding, output_padding, groups, dilation), {})
         if _captured is not None:
             return _captured
@@ -4940,7 +4941,7 @@ def conv_transpose1d(input, weight, bias=None, stride=[], padding=[], output_pad
     return _C.conv_transpose1d(input, weight, bias, stride, padding, output_padding, groups, dilation)
 
 def conv_transpose1d_grad_input(grad_output, input, weight, stride, padding, output_padding, groups, dilation):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_transpose1d_grad_input, (grad_output, input, weight, stride, padding, output_padding, groups, dilation), {})
         if _captured is not None:
             return _captured
@@ -4955,7 +4956,7 @@ def conv_transpose1d_grad_input(grad_output, input, weight, stride, padding, out
     return _C.conv_transpose1d_grad_input(grad_output, input, weight, stride, padding, output_padding, groups, dilation)
 
 def conv_transpose1d_grad_weight(grad_output, input, weight, stride, padding, output_padding, groups, dilation):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_transpose1d_grad_weight, (grad_output, input, weight, stride, padding, output_padding, groups, dilation), {})
         if _captured is not None:
             return _captured
@@ -4970,7 +4971,7 @@ def conv_transpose1d_grad_weight(grad_output, input, weight, stride, padding, ou
     return _C.conv_transpose1d_grad_weight(grad_output, input, weight, stride, padding, output_padding, groups, dilation)
 
 def conv_transpose1d_grad_bias(grad_output, input, weight, stride, padding, output_padding, groups, dilation):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_transpose1d_grad_bias, (grad_output, input, weight, stride, padding, output_padding, groups, dilation), {})
         if _captured is not None:
             return _captured
@@ -4986,12 +4987,12 @@ def conv_transpose1d_grad_bias(grad_output, input, weight, stride, padding, outp
 
 def upsample_nearest1d(input, output_size, scales=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_nearest1d, (input, output_size, scales), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_nearest1d(input, output_size, scales, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_nearest1d, (input, output_size, scales), {})
         if _captured is not None:
             return _captured
@@ -4999,12 +5000,12 @@ def upsample_nearest1d(input, output_size, scales=None, *, out=None):
 
 def upsample_nearest1d_backward(grad_output, output_size, input_size, scales=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_nearest1d_backward, (grad_output, output_size, input_size, scales), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_nearest1d_backward(grad_output=grad_output, output_size=output_size, input_size=input_size, scales=scales, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_nearest1d_backward, (grad_output, output_size, input_size, scales), {})
         if _captured is not None:
             return _captured
@@ -5012,12 +5013,12 @@ def upsample_nearest1d_backward(grad_output, output_size, input_size, scales=Non
 
 def upsample_nearest2d(input, output_size, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_nearest2d, (input, output_size, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_nearest2d(input, output_size, scales_h, scales_w, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_nearest2d, (input, output_size, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -5025,12 +5026,12 @@ def upsample_nearest2d(input, output_size, scales_h=None, scales_w=None, *, out=
 
 def upsample_nearest2d_backward(grad_output, output_size, input_size, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_nearest2d_backward, (grad_output, output_size, input_size, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_nearest2d_backward(grad_output=grad_output, output_size=output_size, input_size=input_size, scales_h=scales_h, scales_w=scales_w, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_nearest2d_backward, (grad_output, output_size, input_size, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -5038,12 +5039,12 @@ def upsample_nearest2d_backward(grad_output, output_size, input_size, scales_h=N
 
 def upsample_nearest3d(input, output_size, scales_d=None, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_nearest3d, (input, output_size, scales_d, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_nearest3d(input, output_size, scales_d, scales_h, scales_w, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_nearest3d, (input, output_size, scales_d, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -5051,12 +5052,12 @@ def upsample_nearest3d(input, output_size, scales_d=None, scales_h=None, scales_
 
 def upsample_nearest3d_backward(grad_output, output_size, input_size, scales_d=None, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_nearest3d_backward, (grad_output, output_size, input_size, scales_d, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_nearest3d_backward(grad_output=grad_output, output_size=output_size, input_size=input_size, scales_d=scales_d, scales_h=scales_h, scales_w=scales_w, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_nearest3d_backward, (grad_output, output_size, input_size, scales_d, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -5064,12 +5065,12 @@ def upsample_nearest3d_backward(grad_output, output_size, input_size, scales_d=N
 
 def upsample_linear1d(input, output_size, align_corners, scales=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_linear1d, (input, output_size, align_corners, scales), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_linear1d(input, output_size, align_corners, scales, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_linear1d, (input, output_size, align_corners, scales), {})
         if _captured is not None:
             return _captured
@@ -5077,12 +5078,12 @@ def upsample_linear1d(input, output_size, align_corners, scales=None, *, out=Non
 
 def upsample_linear1d_backward(grad_output, output_size, input_size, align_corners, scales=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_linear1d_backward, (grad_output, output_size, input_size, align_corners, scales), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_linear1d_backward(grad_output=grad_output, output_size=output_size, input_size=input_size, align_corners=align_corners, scales=scales, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_linear1d_backward, (grad_output, output_size, input_size, align_corners, scales), {})
         if _captured is not None:
             return _captured
@@ -5090,12 +5091,12 @@ def upsample_linear1d_backward(grad_output, output_size, input_size, align_corne
 
 def upsample_bilinear2d(input, output_size, align_corners, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_bilinear2d, (input, output_size, align_corners, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_bilinear2d(input, output_size, align_corners, scales_h, scales_w, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_bilinear2d, (input, output_size, align_corners, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -5103,12 +5104,12 @@ def upsample_bilinear2d(input, output_size, align_corners, scales_h=None, scales
 
 def upsample_bilinear2d_backward(grad_output, output_size, input_size, align_corners, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_bilinear2d_backward, (grad_output, output_size, input_size, align_corners, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_bilinear2d_backward(grad_output=grad_output, output_size=output_size, input_size=input_size, align_corners=align_corners, scales_h=scales_h, scales_w=scales_w, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_bilinear2d_backward, (grad_output, output_size, input_size, align_corners, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -5116,12 +5117,12 @@ def upsample_bilinear2d_backward(grad_output, output_size, input_size, align_cor
 
 def upsample_bicubic2d(input, output_size, align_corners, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_bicubic2d, (input, output_size, align_corners, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_bicubic2d(input, output_size, align_corners, scales_h, scales_w, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_bicubic2d, (input, output_size, align_corners, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -5129,12 +5130,12 @@ def upsample_bicubic2d(input, output_size, align_corners, scales_h=None, scales_
 
 def upsample_bicubic2d_backward(grad_output, output_size, input_size, align_corners, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_bicubic2d_backward, (grad_output, output_size, input_size, align_corners, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_bicubic2d_backward(grad_output=grad_output, output_size=output_size, input_size=input_size, align_corners=align_corners, scales_h=scales_h, scales_w=scales_w, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_bicubic2d_backward, (grad_output, output_size, input_size, align_corners, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -5142,12 +5143,12 @@ def upsample_bicubic2d_backward(grad_output, output_size, input_size, align_corn
 
 def upsample_trilinear3d(input, output_size, align_corners, scales_d=None, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_trilinear3d, (input, output_size, align_corners, scales_d, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_trilinear3d(input, output_size, align_corners, scales_d, scales_h, scales_w, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_trilinear3d, (input, output_size, align_corners, scales_d, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -5155,12 +5156,12 @@ def upsample_trilinear3d(input, output_size, align_corners, scales_d=None, scale
 
 def upsample_trilinear3d_backward(grad_output, output_size, input_size, align_corners, scales_d=None, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(upsample_trilinear3d_backward, (grad_output, output_size, input_size, align_corners, scales_d, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.upsample_trilinear3d_backward(grad_output=grad_output, output_size=output_size, input_size=input_size, align_corners=align_corners, scales_d=scales_d, scales_h=scales_h, scales_w=scales_w, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(upsample_trilinear3d_backward, (grad_output, output_size, input_size, align_corners, scales_d, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -5168,12 +5169,12 @@ def upsample_trilinear3d_backward(grad_output, output_size, input_size, align_co
 
 def addbmm(input, batch1, batch2, *, beta=1, alpha=1, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(addbmm, (input, batch1, batch2), {'beta': beta, 'alpha': alpha, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.addbmm(self=input, batch1=batch1, batch2=batch2, beta=beta, alpha=alpha, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(addbmm, (input, batch1, batch2), {'beta': beta, 'alpha': alpha})
         if _captured is not None:
             return _captured
@@ -5183,12 +5184,12 @@ def addbmm(input, batch1, batch2, *, beta=1, alpha=1, out=None):
 
 def addmv(input, mat, vec, *, beta=1, alpha=1, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(addmv, (input, mat, vec), {'beta': beta, 'alpha': alpha, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.addmv(self=input, mat=mat, vec=vec, beta=beta, alpha=alpha, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(addmv, (input, mat, vec), {'beta': beta, 'alpha': alpha})
         if _captured is not None:
             return _captured
@@ -5198,12 +5199,12 @@ def addmv(input, mat, vec, *, beta=1, alpha=1, out=None):
 
 def addr(input, vec1, vec2, *, beta=1, alpha=1, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(addr, (input, vec1, vec2), {'beta': beta, 'alpha': alpha, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.addr(self=input, vec1=vec1, vec2=vec2, beta=beta, alpha=alpha, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(addr, (input, vec1, vec2), {'beta': beta, 'alpha': alpha})
         if _captured is not None:
             return _captured
@@ -5213,12 +5214,12 @@ def addr(input, vec1, vec2, *, beta=1, alpha=1, out=None):
 
 def amax(input, dim=[], keepdim=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(amax, (input, dim, keepdim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.amax(self=input, dim=dim, keepdim=keepdim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(amax, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -5226,12 +5227,12 @@ def amax(input, dim=[], keepdim=False, *, out=None):
 
 def amin(input, dim=[], keepdim=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(amin, (input, dim, keepdim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.amin(self=input, dim=dim, keepdim=keepdim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(amin, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -5239,12 +5240,12 @@ def amin(input, dim=[], keepdim=False, *, out=None):
 
 def aminmax(input, dim=[], keepdim=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(aminmax, (input, dim, keepdim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.aminmax(self=input, dim=dim, keepdim=keepdim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(aminmax, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -5253,23 +5254,23 @@ def aminmax(input, dim=[], keepdim=False, *, out=None):
 def argsort(input, dim=-1, descending=False, *, stable=_MISSING, out=None):
     if stable is not _MISSING:
         if out is not None:
-            if _capturing():
+            if _graph_state._TRACE_DEPTH:
                 _captured = _capture_call(argsort, (input, dim, descending), {'stable': stable, 'out': out})
                 if _captured is not None:
                     return _captured
             return _C.argsort(input, stable=stable, dim=dim, descending=descending, out=out)
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(argsort, (input, dim, descending), {'stable': stable})
             if _captured is not None:
                 return _captured
         return _C.argsort(input, stable=stable, dim=dim, descending=descending)
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(argsort, (input, dim, descending), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.argsort(input, dim, descending, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(argsort, (input, dim, descending), {})
         if _captured is not None:
             return _captured
@@ -5277,26 +5278,26 @@ def argsort(input, dim=-1, descending=False, *, stable=_MISSING, out=None):
 
 def bincount(input, weights=None, minlength=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(bincount, (input, weights, minlength), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.bincount(self=input, weights=weights, minlength=minlength, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bincount, (input, weights, minlength), {})
         if _captured is not None:
             return _captured
     return _C.bincount(self=input, weights=weights, minlength=minlength)
 
 def block_diag(*args):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(block_diag, (*args,), {})
         if _captured is not None:
             return _captured
     return _C.block_diag(list(args))
 
 def broadcast_tensors(*args):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(broadcast_tensors, (*args,), {})
         if _captured is not None:
             return _captured
@@ -5304,26 +5305,26 @@ def broadcast_tensors(*args):
 
 def channel_shuffle(input, groups, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(channel_shuffle, (input, groups), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.channel_shuffle(self=input, groups=groups, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(channel_shuffle, (input, groups), {})
         if _captured is not None:
             return _captured
     return _C.channel_shuffle(self=input, groups=groups)
 
 def roi_align(input, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio, aligned):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(roi_align, (input, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio, aligned), {})
         if _captured is not None:
             return _captured
     return _C.roi_align(input, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio, aligned)
 
 def roi_align_backward(grad_output, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio, aligned, input_size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(roi_align_backward, (grad_output, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio, aligned, input_size), {})
         if _captured is not None:
             return _captured
@@ -5332,28 +5333,28 @@ def roi_align_backward(grad_output, rois, spatial_scale, pooled_height, pooled_w
     return _C.roi_align_backward(grad_output, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio, aligned, input_size)
 
 def roi_pool(input, rois, spatial_scale, pooled_height, pooled_width):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(roi_pool, (input, rois, spatial_scale, pooled_height, pooled_width), {})
         if _captured is not None:
             return _captured
     return _C.roi_pool(input, rois, spatial_scale, pooled_height, pooled_width)
 
 def roi_pool_backward(grad_output, input, rois, spatial_scale, pooled_height, pooled_width):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(roi_pool_backward, (grad_output, input, rois, spatial_scale, pooled_height, pooled_width), {})
         if _captured is not None:
             return _captured
     return _C.roi_pool_backward(grad_output, input, rois, spatial_scale, pooled_height, pooled_width)
 
 def ps_roi_align(input, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ps_roi_align, (input, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio), {})
         if _captured is not None:
             return _captured
     return _C.ps_roi_align(input, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio)
 
 def ps_roi_align_backward(grad_output, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio, input_size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ps_roi_align_backward, (grad_output, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio, input_size), {})
         if _captured is not None:
             return _captured
@@ -5362,14 +5363,14 @@ def ps_roi_align_backward(grad_output, rois, spatial_scale, pooled_height, poole
     return _C.ps_roi_align_backward(grad_output, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio, input_size)
 
 def ps_roi_pool(input, rois, spatial_scale, pooled_height, pooled_width):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ps_roi_pool, (input, rois, spatial_scale, pooled_height, pooled_width), {})
         if _captured is not None:
             return _captured
     return _C.ps_roi_pool(input, rois, spatial_scale, pooled_height, pooled_width)
 
 def ps_roi_pool_backward(grad_output, rois, spatial_scale, pooled_height, pooled_width, input_size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ps_roi_pool_backward, (grad_output, rois, spatial_scale, pooled_height, pooled_width, input_size), {})
         if _captured is not None:
             return _captured
@@ -5378,21 +5379,21 @@ def ps_roi_pool_backward(grad_output, rois, spatial_scale, pooled_height, pooled
     return _C.ps_roi_pool_backward(grad_output, rois, spatial_scale, pooled_height, pooled_width, input_size)
 
 def nms(boxes, scores, iou_threshold):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nms, (boxes, scores, iou_threshold), {})
         if _captured is not None:
             return _captured
     return _C.nms(boxes, scores, iou_threshold)
 
 def box_iou(boxes1, boxes2):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(box_iou, (boxes1, boxes2), {})
         if _captured is not None:
             return _captured
     return _C.box_iou(boxes1, boxes2)
 
 def deform_conv2d(input, weight, offset, mask, bias, stride, padding, dilation, groups, offset_groups, use_mask):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(deform_conv2d, (input, weight, offset, mask, bias, stride, padding, dilation, groups, offset_groups, use_mask), {})
         if _captured is not None:
             return _captured
@@ -5405,7 +5406,7 @@ def deform_conv2d(input, weight, offset, mask, bias, stride, padding, dilation, 
     return _C.deform_conv2d(input, weight, offset, mask, bias, stride, padding, dilation, groups, offset_groups, use_mask)
 
 def deform_conv2d_backward(grad_output, input, weight, offset, mask, bias, stride, padding, dilation, groups, offset_groups, use_mask, output_mask):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(deform_conv2d_backward, (grad_output, input, weight, offset, mask, bias, stride, padding, dilation, groups, offset_groups, use_mask, output_mask), {})
         if _captured is not None:
             return _captured
@@ -5418,7 +5419,7 @@ def deform_conv2d_backward(grad_output, input, weight, offset, mask, bias, strid
     return _C.deform_conv2d_backward(grad_output, input, weight, offset, mask, bias, stride, padding, dilation, groups, offset_groups, use_mask, output_mask)
 
 def cholesky(input, upper=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cholesky, (input, upper), {})
         if _captured is not None:
             return _captured
@@ -5426,12 +5427,12 @@ def cholesky(input, upper=False):
 
 def cholesky_inverse(input, upper=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cholesky_inverse, (input, upper), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cholesky_inverse(self=input, upper=upper, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cholesky_inverse, (input, upper), {})
         if _captured is not None:
             return _captured
@@ -5439,12 +5440,12 @@ def cholesky_inverse(input, upper=False, *, out=None):
 
 def cholesky_solve(input, input2, upper=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cholesky_solve, (input, input2, upper), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cholesky_solve(self=input, input2=input2, upper=upper, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cholesky_solve, (input, input2, upper), {})
         if _captured is not None:
             return _captured
@@ -5452,33 +5453,33 @@ def cholesky_solve(input, input2, upper=False, *, out=None):
 
 def clip(input, min=None, max=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(clip, (input, min, max), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.clip(input, min, max, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(clip, (input, min, max), {})
         if _captured is not None:
             return _captured
     return _C.clip(input, min, max)
 
 def clamp_(input, min=None, max=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(clamp_, (input, min, max), {})
         if _captured is not None:
             return _captured
     return _C.clamp_(input, min, max)
 
 def clamp_min_(input, min):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(clamp_min_, (input, min), {})
         if _captured is not None:
             return _captured
     return _C.clamp_min_(input, min)
 
 def clamp_max_(input, max):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(clamp_max_, (input, max), {})
         if _captured is not None:
             return _captured
@@ -5486,33 +5487,33 @@ def clamp_max_(input, max):
 
 def complex(real, imag, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(complex, (real, imag), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.complex(real=real, imag=imag, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(complex, (real, imag), {})
         if _captured is not None:
             return _captured
     return _C.complex(real=real, imag=imag)
 
 def conj(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conj, (input,), {})
         if _captured is not None:
             return _captured
     return _C.conj(input)
 
 def adjoint(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(adjoint, (input,), {})
         if _captured is not None:
             return _captured
     return _C.adjoint(input)
 
 def imag(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(imag, (input,), {})
         if _captured is not None:
             return _captured
@@ -5520,12 +5521,12 @@ def imag(input):
 
 def cummax(input, dim, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cummax, (input, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cummax(self=input, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cummax, (input, dim), {})
         if _captured is not None:
             return _captured
@@ -5533,12 +5534,12 @@ def cummax(input, dim, *, out=None):
 
 def cummin(input, dim, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cummin, (input, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cummin(self=input, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cummin, (input, dim), {})
         if _captured is not None:
             return _captured
@@ -5546,12 +5547,12 @@ def cummin(input, dim, *, out=None):
 
 def cumprod(input, dim, dtype=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cumprod, (input, dim, dtype), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cumprod(self=input, dim=dim, dtype=dtype, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cumprod, (input, dim, dtype), {})
         if _captured is not None:
             return _captured
@@ -5559,12 +5560,12 @@ def cumprod(input, dim, dtype=None, *, out=None):
 
 def logcumsumexp(input, dim, dtype=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(logcumsumexp, (input, dim, dtype), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.logcumsumexp(self=input, dim=dim, dtype=dtype, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logcumsumexp, (input, dim, dtype), {})
         if _captured is not None:
             return _captured
@@ -5572,12 +5573,12 @@ def logcumsumexp(input, dim, dtype=None, *, out=None):
 
 def diag(input, diagonal=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(diag, (input, diagonal), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.diag(self=input, diagonal=diagonal, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(diag, (input, diagonal), {})
         if _captured is not None:
             return _captured
@@ -5585,12 +5586,12 @@ def diag(input, diagonal=0, *, out=None):
 
 def diag_embed(input, offset=0, dim1=-2, dim2=-1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(diag_embed, (input, offset, dim1, dim2), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.diag_embed(self=input, offset=offset, dim1=dim1, dim2=dim2, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(diag_embed, (input, offset, dim1, dim2), {})
         if _captured is not None:
             return _captured
@@ -5598,12 +5599,12 @@ def diag_embed(input, offset=0, dim1=-2, dim2=-1, *, out=None):
 
 def dist(input, other, p=2, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(dist, (input, other, p), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.dist(self=input, other=other, p=p, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(dist, (input, other, p), {})
         if _captured is not None:
             return _captured
@@ -5611,12 +5612,12 @@ def dist(input, other, p=2, *, out=None):
 
 def gather(input, dim, index, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(gather, (input, dim, index), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.gather(self=input, dim=dim, index=index, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(gather, (input, dim, index), {})
         if _captured is not None:
             return _captured
@@ -5624,12 +5625,12 @@ def gather(input, dim, index, *, out=None):
 
 def take(input, index, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(take, (input, index), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.take(self=input, index=index, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(take, (input, index), {})
         if _captured is not None:
             return _captured
@@ -5637,12 +5638,12 @@ def take(input, index, *, out=None):
 
 def take_along_dim(input, indices, dim=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(take_along_dim, (input, indices, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.take_along_dim(self=input, indices=indices, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(take_along_dim, (input, indices, dim), {})
         if _captured is not None:
             return _captured
@@ -5650,12 +5651,12 @@ def take_along_dim(input, indices, dim=None, *, out=None):
 
 def select_scatter(input, src, dim, index, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(select_scatter, (input, src, dim, index), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.select_scatter(self=input, src=src, dim=dim, index=index, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(select_scatter, (input, src, dim, index), {})
         if _captured is not None:
             return _captured
@@ -5663,12 +5664,12 @@ def select_scatter(input, src, dim, index, *, out=None):
 
 def slice_scatter(input, src, dim=0, start=None, end=None, step=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(slice_scatter, (input, src, dim, start, end, step), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.slice_scatter(self=input, src=src, dim=dim, start=start, end=end, step=step, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(slice_scatter, (input, src, dim, start, end, step), {})
         if _captured is not None:
             return _captured
@@ -5676,12 +5677,12 @@ def slice_scatter(input, src, dim=0, start=None, end=None, step=1, *, out=None):
 
 def diagonal_scatter(input, src, offset=0, dim1=0, dim2=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(diagonal_scatter, (input, src, offset, dim1, dim2), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.diagonal_scatter(self=input, src=src, offset=offset, dim1=dim1, dim2=dim2, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(diagonal_scatter, (input, src, offset, dim1, dim2), {})
         if _captured is not None:
             return _captured
@@ -5689,12 +5690,12 @@ def diagonal_scatter(input, src, offset=0, dim1=0, dim2=1, *, out=None):
 
 def msort(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(msort, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.msort(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(msort, (input,), {})
         if _captured is not None:
             return _captured
@@ -5702,12 +5703,12 @@ def msort(input, *, out=None):
 
 def nanmean(input, dim=None, keepdim=False, *, dtype=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nanmean, (input, dim, keepdim), {'dtype': dtype, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.nanmean(self=input, dim=dim, keepdim=keepdim, dtype=dtype, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nanmean, (input, dim, keepdim), {'dtype': dtype})
         if _captured is not None:
             return _captured
@@ -5716,14 +5717,14 @@ def nanmean(input, dim=None, keepdim=False, *, dtype=None, out=None):
     return _C.nanmean(self=input, dim=dim, keepdim=keepdim, dtype=dtype)
 
 def isclose(input, other, rtol=1e-05, atol=1e-08, equal_nan=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(isclose, (input, other, rtol, atol, equal_nan), {})
         if _captured is not None:
             return _captured
     return _C.isclose(input, other, rtol, atol, equal_nan)
 
 def isreal(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(isreal, (input,), {})
         if _captured is not None:
             return _captured
@@ -5731,12 +5732,12 @@ def isreal(input):
 
 def bitwise_not(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(bitwise_not, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.bitwise_not(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bitwise_not, (input,), {})
         if _captured is not None:
             return _captured
@@ -5744,12 +5745,12 @@ def bitwise_not(input, *, out=None):
 
 def bitwise_and(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(bitwise_and, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.bitwise_and(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bitwise_and, (input, other), {})
         if _captured is not None:
             return _captured
@@ -5757,12 +5758,12 @@ def bitwise_and(input, other, *, out=None):
 
 def bitwise_or(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(bitwise_or, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.bitwise_or(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bitwise_or, (input, other), {})
         if _captured is not None:
             return _captured
@@ -5770,12 +5771,12 @@ def bitwise_or(input, other, *, out=None):
 
 def bitwise_xor(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(bitwise_xor, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.bitwise_xor(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bitwise_xor, (input, other), {})
         if _captured is not None:
             return _captured
@@ -5783,12 +5784,12 @@ def bitwise_xor(input, other, *, out=None):
 
 def bitwise_left_shift(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(bitwise_left_shift, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.bitwise_left_shift(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bitwise_left_shift, (input, other), {})
         if _captured is not None:
             return _captured
@@ -5796,12 +5797,12 @@ def bitwise_left_shift(input, other, *, out=None):
 
 def bitwise_right_shift(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(bitwise_right_shift, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.bitwise_right_shift(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bitwise_right_shift, (input, other), {})
         if _captured is not None:
             return _captured
@@ -5809,12 +5810,12 @@ def bitwise_right_shift(input, other, *, out=None):
 
 def index_copy(input, dim, index, source, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(index_copy, (input, dim, index, source), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.index_copy(self=input, dim=dim, index=index, source=source, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(index_copy, (input, dim, index, source), {})
         if _captured is not None:
             return _captured
@@ -5822,19 +5823,19 @@ def index_copy(input, dim, index, source, *, out=None):
 
 def index_fill(input, dim, index, value, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(index_fill, (input, dim, index, value), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.index_fill(input, dim, index, value, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(index_fill, (input, dim, index, value), {})
         if _captured is not None:
             return _captured
     return _C.index_fill(input, dim, index, value)
 
 def index_fill_(input, dim, index, value):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(index_fill_, (input, dim, index, value), {})
         if _captured is not None:
             return _captured
@@ -5842,12 +5843,12 @@ def index_fill_(input, dim, index, value):
 
 def searchsorted(sorted_sequence, input, *, out_int32=False, right=False, side=None, sorter=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(searchsorted, (sorted_sequence, input), {'out_int32': out_int32, 'right': right, 'side': side, 'sorter': sorter, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.searchsorted(sorted_sequence, input, out_int32=out_int32, right=right, side=side, sorter=sorter, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(searchsorted, (sorted_sequence, input), {'out_int32': out_int32, 'right': right, 'side': side, 'sorter': sorter})
         if _captured is not None:
             return _captured
@@ -5857,12 +5858,12 @@ def searchsorted(sorted_sequence, input, *, out_int32=False, right=False, side=N
 
 def bucketize(input, boundaries, *, out_int32=False, right=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(bucketize, (input, boundaries), {'out_int32': out_int32, 'right': right, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.bucketize(input, boundaries, out_int32=out_int32, right=right, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bucketize, (input, boundaries), {'out_int32': out_int32, 'right': right})
         if _captured is not None:
             return _captured
@@ -5873,30 +5874,30 @@ def bucketize(input, boundaries, *, out_int32=False, right=False, out=None):
 def scatter(input, dim, index, src, *, reduce=_MISSING, out=None):
     if reduce is not _MISSING:
         if out is not None:
-            if _capturing():
+            if _graph_state._TRACE_DEPTH:
                 _captured = _capture_call(scatter, (input, dim, index, src), {'reduce': reduce, 'out': out})
                 if _captured is not None:
                     return _captured
             return _C.scatter(input, dim, index, src, reduce=reduce, out=out)
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(scatter, (input, dim, index, src), {'reduce': reduce})
             if _captured is not None:
                 return _captured
         return _C.scatter(input, dim, index, src, reduce=reduce)
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(scatter, (input, dim, index, src), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.scatter(input, dim, index, src, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(scatter, (input, dim, index, src), {})
         if _captured is not None:
             return _captured
     return _C.scatter(input, dim, index, src)
 
 def scatter_(input, dim, index, src):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(scatter_, (input, dim, index, src), {})
         if _captured is not None:
             return _captured
@@ -5904,19 +5905,19 @@ def scatter_(input, dim, index, src):
 
 def masked_fill(input, mask, value, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(masked_fill, (input, mask, value), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.masked_fill(input, mask, value, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(masked_fill, (input, mask, value), {})
         if _captured is not None:
             return _captured
     return _C.masked_fill(input, mask, value)
 
 def masked_fill_(input, mask, value):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(masked_fill_, (input, mask, value), {})
         if _captured is not None:
             return _captured
@@ -5924,19 +5925,19 @@ def masked_fill_(input, mask, value):
 
 def index_put(input, indices, values, accumulate=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(index_put, (input, indices, values, accumulate), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.index_put(self=input, indices=indices, values=values, accumulate=accumulate, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(index_put, (input, indices, values, accumulate), {})
         if _captured is not None:
             return _captured
     return _C.index_put(self=input, indices=indices, values=values, accumulate=accumulate)
 
 def index_put_(input, indices, values, accumulate=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(index_put_, (input, indices, values, accumulate), {})
         if _captured is not None:
             return _captured
@@ -5944,12 +5945,12 @@ def index_put_(input, indices, values, accumulate=False):
 
 def masked_scatter(input, mask, source, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(masked_scatter, (input, mask, source), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.masked_scatter(self=input, mask=mask, source=source, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(masked_scatter, (input, mask, source), {})
         if _captured is not None:
             return _captured
@@ -5957,19 +5958,19 @@ def masked_scatter(input, mask, source, *, out=None):
 
 def scatter_add(input, dim, index, src, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(scatter_add, (input, dim, index, src), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.scatter_add(self=input, dim=dim, index=index, src=src, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(scatter_add, (input, dim, index, src), {})
         if _captured is not None:
             return _captured
     return _C.scatter_add(self=input, dim=dim, index=index, src=src)
 
 def scatter_add_(input, dim, index, src):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(scatter_add_, (input, dim, index, src), {})
         if _captured is not None:
             return _captured
@@ -5977,18 +5978,18 @@ def scatter_add_(input, dim, index, src):
 
 def sort(input, dim=-1, descending=False, *, stable=_MISSING, out=None):
     if stable is not _MISSING:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sort, (input, dim, descending), {'stable': stable})
             if _captured is not None:
                 return _captured
         return _C.sort(input, stable=stable, dim=dim, descending=descending)
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sort, (input, dim, descending), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.sort(input, dim, descending, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sort, (input, dim, descending), {})
         if _captured is not None:
             return _captured
@@ -5996,12 +5997,12 @@ def sort(input, dim=-1, descending=False, *, stable=_MISSING, out=None):
 
 def mode(input, dim=-1, keepdim=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mode, (input, dim, keepdim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mode(self=input, dim=dim, keepdim=keepdim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mode, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -6009,19 +6010,19 @@ def mode(input, dim=-1, keepdim=False, *, out=None):
 
 def kthvalue(input, k, dim=-1, keepdim=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(kthvalue, (input, k, dim, keepdim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.kthvalue(self=input, k=k, dim=dim, keepdim=keepdim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(kthvalue, (input, k, dim, keepdim), {})
         if _captured is not None:
             return _captured
     return _C.kthvalue(self=input, k=k, dim=dim, keepdim=keepdim)
 
 def nanmedian(input, dim=None, keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nanmedian, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -6031,12 +6032,12 @@ def nanmedian(input, dim=None, keepdim=False):
 
 def nansum(input, dim=[], keepdim=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nansum, (input, dim, keepdim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.nansum(self=input, dim=dim, keepdim=keepdim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nansum, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -6045,7 +6046,7 @@ def nansum(input, dim=[], keepdim=False, *, out=None):
 def std_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if isinstance(dim, bool) and unbiased is None and correction is None:
         dim, unbiased = None, dim
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(std_mean, (input, dim, unbiased, keepdim), {"correction": correction})
         if _captured is not None:
             return _captured
@@ -6060,7 +6061,7 @@ def std_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
 def var_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     if isinstance(dim, bool) and unbiased is None and correction is None:
         dim, unbiased = None, dim
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(var_mean, (input, dim, unbiased, keepdim), {"correction": correction})
         if _captured is not None:
             return _captured
@@ -6074,12 +6075,12 @@ def var_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
 
 def trace(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(trace, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.trace(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(trace, (input,), {})
         if _captured is not None:
             return _captured
@@ -6087,12 +6088,12 @@ def trace(input, *, out=None):
 
 def renorm(input, p, dim, maxnorm, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(renorm, (input, p, dim, maxnorm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.renorm(self=input, p=p, dim=dim, maxnorm=maxnorm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(renorm, (input, p, dim, maxnorm), {})
         if _captured is not None:
             return _captured
@@ -6100,19 +6101,19 @@ def renorm(input, p, dim, maxnorm, *, out=None):
 
 def rot90(input, k=1, dims=[0,1], *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(rot90, (input, k, dims), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.rot90(self=input, k=k, dims=dims, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rot90, (input, k, dims), {})
         if _captured is not None:
             return _captured
     return _C.rot90(self=input, k=k, dims=dims)
 
 def split_with_sizes(input, split_sizes, dim=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(split_with_sizes, (input, split_sizes, dim), {})
         if _captured is not None:
             return _captured
@@ -6121,7 +6122,7 @@ def split_with_sizes(input, split_sizes, dim=0):
     return _C.split_with_sizes(input, split_sizes, dim)
 
 def meshgrid(tensors, indexing='ij'):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(meshgrid, (tensors, indexing), {})
         if _captured is not None:
             return _captured
@@ -6129,12 +6130,12 @@ def meshgrid(tensors, indexing='ij'):
 
 def greater(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(greater, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.greater(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(greater, (input, other), {})
         if _captured is not None:
             return _captured
@@ -6142,12 +6143,12 @@ def greater(input, other, *, out=None):
 
 def greater_equal(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(greater_equal, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.greater_equal(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(greater_equal, (input, other), {})
         if _captured is not None:
             return _captured
@@ -6155,12 +6156,12 @@ def greater_equal(input, other, *, out=None):
 
 def less(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(less, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.less(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(less, (input, other), {})
         if _captured is not None:
             return _captured
@@ -6168,12 +6169,12 @@ def less(input, other, *, out=None):
 
 def less_equal(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(less_equal, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.less_equal(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(less_equal, (input, other), {})
         if _captured is not None:
             return _captured
@@ -6181,12 +6182,12 @@ def less_equal(input, other, *, out=None):
 
 def not_equal(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(not_equal, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.not_equal(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(not_equal, (input, other), {})
         if _captured is not None:
             return _captured
@@ -6194,12 +6195,12 @@ def not_equal(input, other, *, out=None):
 
 def logical_not(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(logical_not, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.logical_not(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logical_not, (input,), {})
         if _captured is not None:
             return _captured
@@ -6207,12 +6208,12 @@ def logical_not(input, *, out=None):
 
 def logical_or(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(logical_or, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.logical_or(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logical_or, (input, other), {})
         if _captured is not None:
             return _captured
@@ -6220,12 +6221,12 @@ def logical_or(input, other, *, out=None):
 
 def logical_xor(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(logical_xor, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.logical_xor(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logical_xor, (input, other), {})
         if _captured is not None:
             return _captured
@@ -6233,12 +6234,12 @@ def logical_xor(input, other, *, out=None):
 
 def deg2rad(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(deg2rad, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.deg2rad(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(deg2rad, (input,), {})
         if _captured is not None:
             return _captured
@@ -6246,12 +6247,12 @@ def deg2rad(input, *, out=None):
 
 def rad2deg(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(rad2deg, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.rad2deg(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rad2deg, (input,), {})
         if _captured is not None:
             return _captured
@@ -6259,12 +6260,12 @@ def rad2deg(input, *, out=None):
 
 def exp2(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(exp2, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.exp2(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(exp2, (input,), {})
         if _captured is not None:
             return _captured
@@ -6272,12 +6273,12 @@ def exp2(input, *, out=None):
 
 def fix(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fix, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fix(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fix, (input,), {})
         if _captured is not None:
             return _captured
@@ -6285,12 +6286,12 @@ def fix(input, *, out=None):
 
 def digamma(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(digamma, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.digamma(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(digamma, (input,), {})
         if _captured is not None:
             return _captured
@@ -6298,47 +6299,47 @@ def digamma(input, *, out=None):
 
 def erfinv(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(erfinv, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.erfinv(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(erfinv, (input,), {})
         if _captured is not None:
             return _captured
     return _C.erfinv(self=input)
 
 def erfcx(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(erfcx, (input,), {})
         if _captured is not None:
             return _captured
     return _C.erfcx(input)
 
 def ndtr(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ndtr, (input,), {})
         if _captured is not None:
             return _captured
     return _C.ndtr(input)
 
 def ndtri(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ndtri, (input,), {})
         if _captured is not None:
             return _captured
     return _C.ndtri(input)
 
 def log_ndtr(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(log_ndtr, (input,), {})
         if _captured is not None:
             return _captured
     return _C.log_ndtr(input)
 
 def entr(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(entr, (input,), {})
         if _captured is not None:
             return _captured
@@ -6346,12 +6347,12 @@ def entr(input):
 
 def sgn(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sgn, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.sgn(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sgn, (input,), {})
         if _captured is not None:
             return _captured
@@ -6359,12 +6360,12 @@ def sgn(input, *, out=None):
 
 def signbit(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(signbit, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.signbit(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(signbit, (input,), {})
         if _captured is not None:
             return _captured
@@ -6372,12 +6373,12 @@ def signbit(input, *, out=None):
 
 def sinc(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sinc, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.sinc(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sinc, (input,), {})
         if _captured is not None:
             return _captured
@@ -6385,47 +6386,47 @@ def sinc(input, *, out=None):
 
 def heaviside(input, values, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(heaviside, (input, values), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.heaviside(self=input, values=values, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(heaviside, (input, values), {})
         if _captured is not None:
             return _captured
     return _C.heaviside(self=input, values=values)
 
 def snn_lif_step(input, v, decay, threshold, v_reset=None, surrogate=0, alpha=1.0, detach_reset=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(snn_lif_step, (input, v, decay, threshold, v_reset, surrogate, alpha, detach_reset), {})
         if _captured is not None:
             return _captured
     return _C.snn_lif_step(input, v, decay, threshold, v_reset, surrogate, alpha, detach_reset)
 
 def snn_lif_step_backward(grad_spike, grad_v, input, v, decay, threshold, spike, v_new, v_reset=None, surrogate=0, alpha=1.0, detach_reset=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(snn_lif_step_backward, (grad_spike, grad_v, input, v, decay, threshold, spike, v_new, v_reset, surrogate, alpha, detach_reset), {})
         if _captured is not None:
             return _captured
     return _C.snn_lif_step_backward(grad_spike, grad_v, input, v, decay, threshold, spike, v_new, v_reset, surrogate, alpha, detach_reset)
 
 def snn_lif_seq(input, v_init, decay, threshold, v_reset=None, surrogate=0, alpha=1.0, detach_reset=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(snn_lif_seq, (input, v_init, decay, threshold, v_reset, surrogate, alpha, detach_reset), {})
         if _captured is not None:
             return _captured
     return _C.snn_lif_seq(input, v_init, decay, threshold, v_reset, surrogate, alpha, detach_reset)
 
 def snn_lif_seq_backward(grad_spikes, grad_v_final, grad_v_seq, input, v_init, decay, threshold, spikes, v_final, v_reset=None, surrogate=0, alpha=1.0, detach_reset=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(snn_lif_seq_backward, (grad_spikes, grad_v_final, grad_v_seq, input, v_init, decay, threshold, spikes, v_final, v_reset, surrogate, alpha, detach_reset), {})
         if _captured is not None:
             return _captured
     return _C.snn_lif_seq_backward(grad_spikes, grad_v_final, grad_v_seq, input, v_init, decay, threshold, spikes, v_final, v_reset, surrogate, alpha, detach_reset)
 
 def snn_surrogate_grad(x, surrogate=0, alpha=1.0, beta=1.0, w=1.0, c=0.0, n=1, T_period=1.0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(snn_surrogate_grad, (x, surrogate, alpha, beta, w, c, n, T_period), {})
         if _captured is not None:
             return _captured
@@ -6433,12 +6434,12 @@ def snn_surrogate_grad(x, surrogate=0, alpha=1.0, beta=1.0, w=1.0, c=0.0, n=1, T
 
 def hypot(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(hypot, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.hypot(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hypot, (input, other), {})
         if _captured is not None:
             return _captured
@@ -6446,12 +6447,12 @@ def hypot(input, other, *, out=None):
 
 def logaddexp(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(logaddexp, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.logaddexp(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logaddexp, (input, other), {})
         if _captured is not None:
             return _captured
@@ -6459,12 +6460,12 @@ def logaddexp(input, other, *, out=None):
 
 def logaddexp2(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(logaddexp2, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.logaddexp2(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logaddexp2, (input, other), {})
         if _captured is not None:
             return _captured
@@ -6472,12 +6473,12 @@ def logaddexp2(input, other, *, out=None):
 
 def logit(input, eps=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(logit, (input, eps), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.logit(self=input, eps=eps, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logit, (input, eps), {})
         if _captured is not None:
             return _captured
@@ -6485,12 +6486,12 @@ def logit(input, eps=None, *, out=None):
 
 def logit_backward(grad_output, input, eps=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(logit_backward, (grad_output, input, eps), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.logit_backward(grad_output=grad_output, self=input, eps=eps, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logit_backward, (grad_output, input, eps), {})
         if _captured is not None:
             return _captured
@@ -6498,12 +6499,12 @@ def logit_backward(grad_output, input, eps=None, *, out=None):
 
 def sigmoid_backward(grad_output, output, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sigmoid_backward, (grad_output, output), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.sigmoid_backward(grad_output=grad_output, output=output, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sigmoid_backward, (grad_output, output), {})
         if _captured is not None:
             return _captured
@@ -6511,12 +6512,12 @@ def sigmoid_backward(grad_output, output, *, out=None):
 
 def tanh_backward(grad_output, output, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(tanh_backward, (grad_output, output), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.tanh_backward(grad_output=grad_output, output=output, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tanh_backward, (grad_output, output), {})
         if _captured is not None:
             return _captured
@@ -6524,12 +6525,12 @@ def tanh_backward(grad_output, output, *, out=None):
 
 def gcd(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(gcd, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.gcd(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(gcd, (input, other), {})
         if _captured is not None:
             return _captured
@@ -6537,12 +6538,12 @@ def gcd(input, other, *, out=None):
 
 def lcm(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(lcm, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.lcm(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lcm, (input, other), {})
         if _captured is not None:
             return _captured
@@ -6550,19 +6551,19 @@ def lcm(input, other, *, out=None):
 
 def nextafter(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nextafter, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.nextafter(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nextafter, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.nextafter(self=input, other=other)
 
 def isfinite(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(isfinite, (input,), {})
         if _captured is not None:
             return _captured
@@ -6570,12 +6571,12 @@ def isfinite(input):
 
 def isinf(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(isinf, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.isinf(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(isinf, (input,), {})
         if _captured is not None:
             return _captured
@@ -6583,12 +6584,12 @@ def isinf(input, *, out=None):
 
 def isnan(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(isnan, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.isnan(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(isnan, (input,), {})
         if _captured is not None:
             return _captured
@@ -6596,12 +6597,12 @@ def isnan(input, *, out=None):
 
 def isneginf(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(isneginf, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.isneginf(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(isneginf, (input,), {})
         if _captured is not None:
             return _captured
@@ -6609,12 +6610,12 @@ def isneginf(input, *, out=None):
 
 def isposinf(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(isposinf, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.isposinf(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(isposinf, (input,), {})
         if _captured is not None:
             return _captured
@@ -6622,12 +6623,12 @@ def isposinf(input, *, out=None):
 
 def nan_to_num(input, nan=0.0, posinf=None, neginf=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nan_to_num, (input, nan, posinf, neginf), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.nan_to_num(self=input, nan=nan, posinf=posinf, neginf=neginf, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nan_to_num, (input, nan, posinf, neginf), {})
         if _captured is not None:
             return _captured
@@ -6635,19 +6636,19 @@ def nan_to_num(input, nan=0.0, posinf=None, neginf=None, *, out=None):
 
 def negative(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(negative, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.negative(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(negative, (input,), {})
         if _captured is not None:
             return _captured
     return _C.negative(self=input)
 
 def positive(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(positive, (input,), {})
         if _captured is not None:
             return _captured
@@ -6655,12 +6656,12 @@ def positive(input):
 
 def svd(input, some=True, compute_uv=True, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(svd, (input, some, compute_uv), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.svd(self=input, some=some, compute_uv=compute_uv, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(svd, (input, some, compute_uv), {})
         if _captured is not None:
             return _captured
@@ -6668,12 +6669,12 @@ def svd(input, some=True, compute_uv=True, *, out=None):
 
 def triangular_solve(input, A, upper=True, transpose=False, unitriangular=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(triangular_solve, (input, A, upper, transpose, unitriangular), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.triangular_solve(self=input, A=A, upper=upper, transpose=transpose, unitriangular=unitriangular, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(triangular_solve, (input, A, upper, transpose, unitriangular), {})
         if _captured is not None:
             return _captured
@@ -6681,12 +6682,12 @@ def triangular_solve(input, A, upper=True, transpose=False, unitriangular=False,
 
 def vdot(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(vdot, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.vdot(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(vdot, (input, other), {})
         if _captured is not None:
             return _captured
@@ -6694,33 +6695,33 @@ def vdot(input, other, *, out=None):
 
 def prelu(input, weight, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(prelu, (input, weight), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.prelu(self=input, weight=weight, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(prelu, (input, weight), {})
         if _captured is not None:
             return _captured
     return _C.prelu(self=input, weight=weight)
 
 def pdist(input, p=2.0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(pdist, (input, p), {})
         if _captured is not None:
             return _captured
     return _C.pdist(input, p)
 
 def pairwise_distance(x1, x2, p=2.0, eps=1e-06, keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(pairwise_distance, (x1, x2, p, eps, keepdim), {})
         if _captured is not None:
             return _captured
     return _C.pairwise_distance(x1, x2, p, eps, keepdim)
 
 def l1_loss(input, target, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(l1_loss, (input, target, reduction), {})
         if _captured is not None:
             return _captured
@@ -6728,12 +6729,12 @@ def l1_loss(input, target, reduction=1):
 
 def smooth_l1_loss(input, target, reduction=1, beta=1.0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(smooth_l1_loss, (input, target, reduction, beta), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.smooth_l1_loss(self=input, target=target, reduction=reduction, beta=beta, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(smooth_l1_loss, (input, target, reduction, beta), {})
         if _captured is not None:
             return _captured
@@ -6741,12 +6742,12 @@ def smooth_l1_loss(input, target, reduction=1, beta=1.0, *, out=None):
 
 def smooth_l1_loss_backward(grad_output, input, target, reduction, beta, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(smooth_l1_loss_backward, (grad_output, input, target, reduction, beta), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.smooth_l1_loss_backward(grad_output=grad_output, self=input, target=target, reduction=reduction, beta=beta, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(smooth_l1_loss_backward, (grad_output, input, target, reduction, beta), {})
         if _captured is not None:
             return _captured
@@ -6754,12 +6755,12 @@ def smooth_l1_loss_backward(grad_output, input, target, reduction, beta, *, out=
 
 def huber_loss(input, target, reduction=1, delta=1.0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(huber_loss, (input, target, reduction, delta), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.huber_loss(self=input, target=target, reduction=reduction, delta=delta, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(huber_loss, (input, target, reduction, delta), {})
         if _captured is not None:
             return _captured
@@ -6767,19 +6768,19 @@ def huber_loss(input, target, reduction=1, delta=1.0, *, out=None):
 
 def huber_loss_backward(grad_output, input, target, reduction, delta, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(huber_loss_backward, (grad_output, input, target, reduction, delta), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.huber_loss_backward(grad_output=grad_output, self=input, target=target, reduction=reduction, delta=delta, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(huber_loss_backward, (grad_output, input, target, reduction, delta), {})
         if _captured is not None:
             return _captured
     return _C.huber_loss_backward(grad_output=grad_output, self=input, target=target, reduction=reduction, delta=delta)
 
 def kl_div(input, target, reduction=1, log_target=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(kl_div, (input, target, reduction, log_target), {})
         if _captured is not None:
             return _captured
@@ -6787,12 +6788,12 @@ def kl_div(input, target, reduction=1, log_target=False):
 
 def binary_cross_entropy(input, target, weight=None, reduction=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(binary_cross_entropy, (input, target, weight, reduction), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.binary_cross_entropy(self=input, target=target, weight=weight, reduction=reduction, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(binary_cross_entropy, (input, target, weight, reduction), {})
         if _captured is not None:
             return _captured
@@ -6800,12 +6801,12 @@ def binary_cross_entropy(input, target, weight=None, reduction=1, *, out=None):
 
 def binary_cross_entropy_backward(grad_output, input, target, weight=None, reduction=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(binary_cross_entropy_backward, (grad_output, input, target, weight, reduction), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.binary_cross_entropy_backward(grad_output=grad_output, self=input, target=target, weight=weight, reduction=reduction, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(binary_cross_entropy_backward, (grad_output, input, target, weight, reduction), {})
         if _captured is not None:
             return _captured
@@ -6813,33 +6814,33 @@ def binary_cross_entropy_backward(grad_output, input, target, weight=None, reduc
 
 def binary_cross_entropy_with_logits(input, target, weight=None, pos_weight=None, reduction=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(binary_cross_entropy_with_logits, (input, target, weight, pos_weight, reduction), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.binary_cross_entropy_with_logits(self=input, target=target, weight=weight, pos_weight=pos_weight, reduction=reduction, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(binary_cross_entropy_with_logits, (input, target, weight, pos_weight, reduction), {})
         if _captured is not None:
             return _captured
     return _C.binary_cross_entropy_with_logits(self=input, target=target, weight=weight, pos_weight=pos_weight, reduction=reduction)
 
 def binary_cross_entropy_with_logits_backward(grad_output, input, target, weight=None, pos_weight=None, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(binary_cross_entropy_with_logits_backward, (grad_output, input, target, weight, pos_weight, reduction), {})
         if _captured is not None:
             return _captured
     return _C.binary_cross_entropy_with_logits_backward(grad_output, input, target, weight, pos_weight, reduction)
 
 def binary_cross_entropy_with_logits_target_backward(grad_output, input, target, weight=None, pos_weight=None, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(binary_cross_entropy_with_logits_target_backward, (grad_output, input, target, weight, pos_weight, reduction), {})
         if _captured is not None:
             return _captured
     return _C.binary_cross_entropy_with_logits_target_backward(grad_output, input, target, weight, pos_weight, reduction)
 
 def poisson_nll_loss(input, target, log_input=True, full=False, eps=1e-08, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(poisson_nll_loss, (input, target, log_input, full, eps, reduction), {})
         if _captured is not None:
             return _captured
@@ -6847,33 +6848,33 @@ def poisson_nll_loss(input, target, log_input=True, full=False, eps=1e-08, reduc
 
 def soft_margin_loss(input, target, reduction=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(soft_margin_loss, (input, target, reduction), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.soft_margin_loss(input=input, target=target, reduction=reduction, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(soft_margin_loss, (input, target, reduction), {})
         if _captured is not None:
             return _captured
     return _C.soft_margin_loss(input=input, target=target, reduction=reduction)
 
 def cosine_embedding_loss(input1, input2, target, margin=0.0, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cosine_embedding_loss, (input1, input2, target, margin, reduction), {})
         if _captured is not None:
             return _captured
     return _C.cosine_embedding_loss(input1, input2, target, margin, reduction)
 
 def margin_ranking_loss(input1, input2, target, margin=0.0, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(margin_ranking_loss, (input1, input2, target, margin, reduction), {})
         if _captured is not None:
             return _captured
     return _C.margin_ranking_loss(input1, input2, target, margin, reduction)
 
 def hinge_embedding_loss(input, target, margin=1.0, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hinge_embedding_loss, (input, target, margin, reduction), {})
         if _captured is not None:
             return _captured
@@ -6881,12 +6882,12 @@ def hinge_embedding_loss(input, target, margin=1.0, reduction=1):
 
 def multi_margin_loss(input, target, p=1, margin=1, weight=None, reduction=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(multi_margin_loss, (input, target, p, margin, weight, reduction), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.multi_margin_loss(self=input, target=target, p=p, margin=margin, weight=weight, reduction=reduction, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(multi_margin_loss, (input, target, p, margin, weight, reduction), {})
         if _captured is not None:
             return _captured
@@ -6894,12 +6895,12 @@ def multi_margin_loss(input, target, p=1, margin=1, weight=None, reduction=1, *,
 
 def multi_margin_loss_backward(grad_output, input, target, p, margin, weight=None, reduction=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(multi_margin_loss_backward, (grad_output, input, target, p, margin, weight, reduction), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.multi_margin_loss_backward(grad_output=grad_output, self=input, target=target, p=p, margin=margin, weight=weight, reduction=reduction, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(multi_margin_loss_backward, (grad_output, input, target, p, margin, weight, reduction), {})
         if _captured is not None:
             return _captured
@@ -6907,12 +6908,12 @@ def multi_margin_loss_backward(grad_output, input, target, p, margin, weight=Non
 
 def multilabel_margin_loss(input, target, reduction=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(multilabel_margin_loss, (input, target, reduction), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.multilabel_margin_loss(self=input, target=target, reduction=reduction, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(multilabel_margin_loss, (input, target, reduction), {})
         if _captured is not None:
             return _captured
@@ -6920,12 +6921,12 @@ def multilabel_margin_loss(input, target, reduction=1, *, out=None):
 
 def multilabel_margin_loss_forward(input, target, reduction, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(multilabel_margin_loss_forward, (input, target, reduction), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.multilabel_margin_loss_forward(self=input, target=target, reduction=reduction, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(multilabel_margin_loss_forward, (input, target, reduction), {})
         if _captured is not None:
             return _captured
@@ -6933,68 +6934,68 @@ def multilabel_margin_loss_forward(input, target, reduction, *, out=None):
 
 def multilabel_margin_loss_backward(grad_output, input, target, reduction, is_target, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(multilabel_margin_loss_backward, (grad_output, input, target, reduction, is_target), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.multilabel_margin_loss_backward(grad_output=grad_output, self=input, target=target, reduction=reduction, is_target=is_target, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(multilabel_margin_loss_backward, (grad_output, input, target, reduction, is_target), {})
         if _captured is not None:
             return _captured
     return _C.multilabel_margin_loss_backward(grad_output=grad_output, self=input, target=target, reduction=reduction, is_target=is_target)
 
 def multilabel_soft_margin_loss(input, target, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(multilabel_soft_margin_loss, (input, target, reduction), {})
         if _captured is not None:
             return _captured
     return _C.multilabel_soft_margin_loss(input, target, reduction)
 
 def multilabel_soft_margin_loss_backward(grad_output, input, target, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(multilabel_soft_margin_loss_backward, (grad_output, input, target, reduction), {})
         if _captured is not None:
             return _captured
     return _C.multilabel_soft_margin_loss_backward(grad_output, input, target, reduction)
 
 def multilabel_soft_margin_loss_target_backward(grad_output, input, target, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(multilabel_soft_margin_loss_target_backward, (grad_output, input, target, reduction), {})
         if _captured is not None:
             return _captured
     return _C.multilabel_soft_margin_loss_target_backward(grad_output, input, target, reduction)
 
 def triplet_margin_loss(anchor, positive, negative, margin=1.0, p=2.0, eps=1e-06, swap=False, reduction=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(triplet_margin_loss, (anchor, positive, negative, margin, p, eps, swap, reduction), {})
         if _captured is not None:
             return _captured
     return _C.triplet_margin_loss(anchor, positive, negative, margin, p, eps, swap, reduction)
 
 def lstm(input, hx, params, has_biases=True, num_layers=1, dropout_p=0.0, training=False, bidirectional=False, batch_first=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lstm, (input, hx, params, has_biases, num_layers, dropout_p, training, bidirectional, batch_first), {})
         if _captured is not None:
             return _captured
     return _C.lstm(input, hx, params, has_biases, num_layers, dropout_p, training, bidirectional, batch_first)
 
 def gru(input, hx, params, has_biases=True, num_layers=1, dropout_p=0.0, training=False, bidirectional=False, batch_first=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(gru, (input, hx, params, has_biases, num_layers, dropout_p, training, bidirectional, batch_first), {})
         if _captured is not None:
             return _captured
     return _C.gru(input, hx, params, has_biases, num_layers, dropout_p, training, bidirectional, batch_first)
 
 def rnn_relu(input, hx, params, has_biases=True, num_layers=1, dropout_p=0.0, training=False, bidirectional=False, batch_first=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rnn_relu, (input, hx, params, has_biases, num_layers, dropout_p, training, bidirectional, batch_first), {})
         if _captured is not None:
             return _captured
     return _C.rnn_relu(input, hx, params, has_biases, num_layers, dropout_p, training, bidirectional, batch_first)
 
 def rnn_tanh(input, hx, params, has_biases=True, num_layers=1, dropout_p=0.0, training=False, bidirectional=False, batch_first=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rnn_tanh, (input, hx, params, has_biases, num_layers, dropout_p, training, bidirectional, batch_first), {})
         if _captured is not None:
             return _captured
@@ -7002,12 +7003,12 @@ def rnn_tanh(input, hx, params, has_biases=True, num_layers=1, dropout_p=0.0, tr
 
 def logsumexp(input, dim, keepdim=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(logsumexp, (input, dim, keepdim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.logsumexp(self=input, dim=dim, keepdim=keepdim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logsumexp, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -7015,12 +7016,12 @@ def logsumexp(input, dim, keepdim=False, *, out=None):
 
 def tril(input, diagonal=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(tril, (input, diagonal), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.tril(self=input, diagonal=diagonal, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tril, (input, diagonal), {})
         if _captured is not None:
             return _captured
@@ -7028,222 +7029,222 @@ def tril(input, diagonal=0, *, out=None):
 
 def triu(input, diagonal=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(triu, (input, diagonal), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.triu(self=input, diagonal=diagonal, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(triu, (input, diagonal), {})
         if _captured is not None:
             return _captured
     return _C.triu(self=input, diagonal=diagonal)
 
 def bessel_j0(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bessel_j0, (input,), {})
         if _captured is not None:
             return _captured
     return _C.bessel_j0(input)
 
 def bessel_j1(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bessel_j1, (input,), {})
         if _captured is not None:
             return _captured
     return _C.bessel_j1(input)
 
 def bessel_y0(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bessel_y0, (input,), {})
         if _captured is not None:
             return _captured
     return _C.bessel_y0(input)
 
 def bessel_y1(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bessel_y1, (input,), {})
         if _captured is not None:
             return _captured
     return _C.bessel_y1(input)
 
 def airy_ai(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(airy_ai, (input,), {})
         if _captured is not None:
             return _captured
     return _C.airy_ai(input)
 
 def spherical_bessel_j0(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(spherical_bessel_j0, (input,), {})
         if _captured is not None:
             return _captured
     return _C.spherical_bessel_j0(input)
 
 def modified_bessel_i0(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(modified_bessel_i0, (input,), {})
         if _captured is not None:
             return _captured
     return _C.modified_bessel_i0(input)
 
 def modified_bessel_i1(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(modified_bessel_i1, (input,), {})
         if _captured is not None:
             return _captured
     return _C.modified_bessel_i1(input)
 
 def modified_bessel_k0(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(modified_bessel_k0, (input,), {})
         if _captured is not None:
             return _captured
     return _C.modified_bessel_k0(input)
 
 def modified_bessel_k1(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(modified_bessel_k1, (input,), {})
         if _captured is not None:
             return _captured
     return _C.modified_bessel_k1(input)
 
 def scaled_modified_bessel_k0(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(scaled_modified_bessel_k0, (input,), {})
         if _captured is not None:
             return _captured
     return _C.scaled_modified_bessel_k0(input)
 
 def scaled_modified_bessel_k1(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(scaled_modified_bessel_k1, (input,), {})
         if _captured is not None:
             return _captured
     return _C.scaled_modified_bessel_k1(input)
 
 def i0e(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(i0e, (input,), {})
         if _captured is not None:
             return _captured
     return _C.i0e(input)
 
 def i1(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(i1, (input,), {})
         if _captured is not None:
             return _captured
     return _C.i1(input)
 
 def i1e(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(i1e, (input,), {})
         if _captured is not None:
             return _captured
     return _C.i1e(input)
 
 def chebyshev_polynomial_t(x, n):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(chebyshev_polynomial_t, (x, n), {})
         if _captured is not None:
             return _captured
     return _C.chebyshev_polynomial_t(x, n)
 
 def chebyshev_polynomial_u(x, n):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(chebyshev_polynomial_u, (x, n), {})
         if _captured is not None:
             return _captured
     return _C.chebyshev_polynomial_u(x, n)
 
 def chebyshev_polynomial_v(x, n):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(chebyshev_polynomial_v, (x, n), {})
         if _captured is not None:
             return _captured
     return _C.chebyshev_polynomial_v(x, n)
 
 def chebyshev_polynomial_w(x, n):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(chebyshev_polynomial_w, (x, n), {})
         if _captured is not None:
             return _captured
     return _C.chebyshev_polynomial_w(x, n)
 
 def shifted_chebyshev_polynomial_t(x, n):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(shifted_chebyshev_polynomial_t, (x, n), {})
         if _captured is not None:
             return _captured
     return _C.shifted_chebyshev_polynomial_t(x, n)
 
 def shifted_chebyshev_polynomial_u(x, n):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(shifted_chebyshev_polynomial_u, (x, n), {})
         if _captured is not None:
             return _captured
     return _C.shifted_chebyshev_polynomial_u(x, n)
 
 def shifted_chebyshev_polynomial_v(x, n):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(shifted_chebyshev_polynomial_v, (x, n), {})
         if _captured is not None:
             return _captured
     return _C.shifted_chebyshev_polynomial_v(x, n)
 
 def shifted_chebyshev_polynomial_w(x, n):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(shifted_chebyshev_polynomial_w, (x, n), {})
         if _captured is not None:
             return _captured
     return _C.shifted_chebyshev_polynomial_w(x, n)
 
 def hermite_polynomial_h(x, n):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hermite_polynomial_h, (x, n), {})
         if _captured is not None:
             return _captured
     return _C.hermite_polynomial_h(x, n)
 
 def hermite_polynomial_he(x, n):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hermite_polynomial_he, (x, n), {})
         if _captured is not None:
             return _captured
     return _C.hermite_polynomial_he(x, n)
 
 def laguerre_polynomial_l(x, n):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(laguerre_polynomial_l, (x, n), {})
         if _captured is not None:
             return _captured
     return _C.laguerre_polynomial_l(x, n)
 
 def legendre_polynomial_p(x, n):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(legendre_polynomial_p, (x, n), {})
         if _captured is not None:
             return _captured
     return _C.legendre_polynomial_p(x, n)
 
 def zeta(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(zeta, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.zeta(input, other)
 
 def gammainc(a, x):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(gammainc, (a, x), {})
         if _captured is not None:
             return _captured
     return _C.gammainc(a, x)
 
 def gammaincc(a, x):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(gammaincc, (a, x), {})
         if _captured is not None:
             return _captured
@@ -7251,12 +7252,12 @@ def gammaincc(a, x):
 
 def polygamma(n, input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(polygamma, (n, input), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.polygamma(n=n, self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(polygamma, (n, input), {})
         if _captured is not None:
             return _captured
@@ -7264,26 +7265,26 @@ def polygamma(n, input, *, out=None):
 
 def sparse_coo_tensor(indices, values, size=None, *, is_coalesced=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sparse_coo_tensor, (indices, values, size), {'is_coalesced': is_coalesced, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.sparse_coo_tensor(indices, values, size, is_coalesced=is_coalesced, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sparse_coo_tensor, (indices, values, size), {'is_coalesced': is_coalesced})
         if _captured is not None:
             return _captured
     return _C.sparse_coo_tensor(indices, values, size, is_coalesced=is_coalesced)
 
 def to_dense(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(to_dense, (input,), {})
         if _captured is not None:
             return _captured
     return _C.to_dense(input)
 
 def to_sparse(input, sparse_dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(to_sparse, (input, sparse_dim), {})
         if _captured is not None:
             return _captured
@@ -7292,77 +7293,77 @@ def to_sparse(input, sparse_dim=None):
     return _C.to_sparse(input, sparse_dim)
 
 def to_sparse_csr(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(to_sparse_csr, (input,), {})
         if _captured is not None:
             return _captured
     return _C.to_sparse_csr(input)
 
 def _nnz(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nnz, (input,), {})
         if _captured is not None:
             return _captured
     return _C._nnz(input)
 
 def sparse_mm(input, dense):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sparse_mm, (input, dense), {})
         if _captured is not None:
             return _captured
     return _C.sparse_mm(input, dense)
 
 def _to_sparse_semi_structured(dense):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_to_sparse_semi_structured, (dense,), {})
         if _captured is not None:
             return _captured
     return _C._to_sparse_semi_structured(dense)
 
 def _sparse_semi_structured_to_dense(packed, meta):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_semi_structured_to_dense, (packed, meta), {})
         if _captured is not None:
             return _captured
     return _C._sparse_semi_structured_to_dense(packed, meta)
 
 def _sparse_semi_structured_mask_grad(grad, packed, meta):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_semi_structured_mask_grad, (grad, packed, meta), {})
         if _captured is not None:
             return _captured
     return _C._sparse_semi_structured_mask_grad(grad, packed, meta)
 
 def _sparse_semi_structured_gather_grad(grad_output, packed, meta):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_semi_structured_gather_grad, (grad_output, packed, meta), {})
         if _captured is not None:
             return _captured
     return _C._sparse_semi_structured_gather_grad(grad_output, packed, meta)
 
 def _sparse_semi_structured_mm(mat1, mat1_meta, mat2, out_dtype=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_semi_structured_mm, (mat1, mat1_meta, mat2, out_dtype), {})
         if _captured is not None:
             return _captured
     return _C._sparse_semi_structured_mm(mat1, mat1_meta, mat2, out_dtype=out_dtype)
 
 def _sparse_semi_structured_mm_right(mat2, mat1, mat1_meta, out_dtype=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_semi_structured_mm_right, (mat2, mat1, mat1_meta, out_dtype), {})
         if _captured is not None:
             return _captured
     return _C._sparse_semi_structured_mm_right(mat2, mat1, mat1_meta, out_dtype=out_dtype)
 
 def _sparse_semi_structured_addmm(input, mat1, mat1_meta, mat2, alpha=1, beta=1, out_dtype=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_semi_structured_addmm, (input, mat1, mat1_meta, mat2, alpha, beta, out_dtype), {})
         if _captured is not None:
             return _captured
     return _C._sparse_semi_structured_addmm(input, mat1, mat1_meta, mat2, alpha=alpha, beta=beta, out_dtype=out_dtype)
 
 def sparse_sum(input, dim=None, dtype=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sparse_sum, (input, dim, dtype), {})
         if _captured is not None:
             return _captured
@@ -7371,21 +7372,21 @@ def sparse_sum(input, dim=None, dtype=None):
     return _C.sparse_sum(input, dim, dtype)
 
 def sparse_add(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sparse_add, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.sparse_add(input, other)
 
 def sparse_mul(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sparse_mul, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.sparse_mul(input, other)
 
 def spdiags(diagonals, offsets, shape, layout=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(spdiags, (diagonals, offsets, shape, layout), {})
         if _captured is not None:
             return _captured
@@ -7395,12 +7396,12 @@ def spdiags(diagonals, offsets, shape, layout=None):
 
 def quantize_per_tensor_dynamic(input, dtype, reduce_range, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(quantize_per_tensor_dynamic, (input, dtype, reduce_range), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.quantize_per_tensor_dynamic(self=input, dtype=dtype, reduce_range=reduce_range, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantize_per_tensor_dynamic, (input, dtype, reduce_range), {})
         if _captured is not None:
             return _captured
@@ -7408,12 +7409,12 @@ def quantize_per_tensor_dynamic(input, dtype, reduce_range, *, out=None):
 
 def quantize_per_tensor(input, scale, zero_point, dtype, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(quantize_per_tensor, (input, scale, zero_point, dtype), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.quantize_per_tensor(input, scale, zero_point, dtype, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantize_per_tensor, (input, scale, zero_point, dtype), {})
         if _captured is not None:
             return _captured
@@ -7421,19 +7422,19 @@ def quantize_per_tensor(input, scale, zero_point, dtype, *, out=None):
 
 def quantize_per_channel(input, scales, zero_points, axis, dtype, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(quantize_per_channel, (input, scales, zero_points, axis, dtype), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.quantize_per_channel(self=input, scales=scales, zero_points=zero_points, axis=axis, dtype=dtype, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantize_per_channel, (input, scales, zero_points, axis, dtype), {})
         if _captured is not None:
             return _captured
     return _C.quantize_per_channel(self=input, scales=scales, zero_points=zero_points, axis=axis, dtype=dtype)
 
 def quantize_affine(input, block_size, scales, zero_points, dtype, quant_min, quant_max):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantize_affine, (input, block_size, scales, zero_points, dtype, quant_min, quant_max), {})
         if _captured is not None:
             return _captured
@@ -7442,7 +7443,7 @@ def quantize_affine(input, block_size, scales, zero_points, dtype, quant_min, qu
     return _C.quantize_affine(input, block_size, scales, zero_points, dtype, quant_min, quant_max)
 
 def dequantize_affine(input, block_size, scales, zero_points=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(dequantize_affine, (input, block_size, scales, zero_points), {})
         if _captured is not None:
             return _captured
@@ -7451,21 +7452,21 @@ def dequantize_affine(input, block_size, scales, zero_points=None):
     return _C.dequantize_affine(input, block_size, scales, zero_points)
 
 def quantize_affine_float8(input, scale, dtype):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantize_affine_float8, (input, scale, dtype), {})
         if _captured is not None:
             return _captured
     return _C.quantize_affine_float8(input, scale, dtype)
 
 def dequantize_affine_float8(input, scale, output_dtype):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(dequantize_affine_float8, (input, scale, output_dtype), {})
         if _captured is not None:
             return _captured
     return _C.dequantize_affine_float8(input, scale, output_dtype)
 
 def choose_scale_float8(input, block_size, float8_dtype, hp_value_lb=None, hp_value_ub=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(choose_scale_float8, (input, block_size, float8_dtype, hp_value_lb, hp_value_ub), {})
         if _captured is not None:
             return _captured
@@ -7474,35 +7475,35 @@ def choose_scale_float8(input, block_size, float8_dtype, hp_value_lb=None, hp_va
     return _C.choose_scale_float8(input, block_size, float8_dtype, hp_value_lb, hp_value_ub)
 
 def _quantize_int8_rowwise(input, eps):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantize_int8_rowwise, (input, eps), {})
         if _captured is not None:
             return _captured
     return _C._quantize_int8_rowwise(input, eps)
 
 def _quantize_int4_rowwise(input, eps):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantize_int4_rowwise, (input, eps), {})
         if _captured is not None:
             return _captured
     return _C._quantize_int4_rowwise(input, eps)
 
 def _quantize_int2_rowwise(input, eps):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantize_int2_rowwise, (input, eps), {})
         if _captured is not None:
             return _captured
     return _C._quantize_int2_rowwise(input, eps)
 
 def _quantize_binary_rowwise(input, eps):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantize_binary_rowwise, (input, eps), {})
         if _captured is not None:
             return _captured
     return _C._quantize_binary_rowwise(input, eps)
 
 def _int8_mm_rescale(out, row_scale, col_scale):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_int8_mm_rescale, (out, row_scale, col_scale), {})
         if _captured is not None:
             return _captured
@@ -7510,61 +7511,61 @@ def _int8_mm_rescale(out, row_scale, col_scale):
 
 def dequantize(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(dequantize, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.dequantize(input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(dequantize, (input,), {})
         if _captured is not None:
             return _captured
     return _C.dequantize(input)
 
 def quantized_linear(input, weight, input_scale, input_zero_point, weight_scales, weight_zero_points, bias=None, out_scale=1.0, out_zero_point=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_linear, (input, weight, input_scale, input_zero_point, weight_scales, weight_zero_points, bias, out_scale, out_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_linear(input, weight, input_scale, input_zero_point, weight_scales, weight_zero_points, bias, out_scale, out_zero_point)
 
 def quantized_linear_dynamic(input, weight, weight_scales, weight_zero_points, bias=None, reduce_range=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_linear_dynamic, (input, weight, weight_scales, weight_zero_points, bias, reduce_range), {})
         if _captured is not None:
             return _captured
     return _C.quantized_linear_dynamic(input, weight, weight_scales, weight_zero_points, bias, reduce_range)
 
 def quantized_add(a, b, a_scale, a_zero_point, b_scale, b_zero_point, out_scale, out_zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_add, (a, b, a_scale, a_zero_point, b_scale, b_zero_point, out_scale, out_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_add(a, b, a_scale, a_zero_point, b_scale, b_zero_point, out_scale, out_zero_point)
 
 def quantized_sub(a, b, a_scale, a_zero_point, b_scale, b_zero_point, out_scale, out_zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_sub, (a, b, a_scale, a_zero_point, b_scale, b_zero_point, out_scale, out_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_sub(a, b, a_scale, a_zero_point, b_scale, b_zero_point, out_scale, out_zero_point)
 
 def quantized_mul(a, b, a_scale, a_zero_point, b_scale, b_zero_point, out_scale, out_zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_mul, (a, b, a_scale, a_zero_point, b_scale, b_zero_point, out_scale, out_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_mul(a, b, a_scale, a_zero_point, b_scale, b_zero_point, out_scale, out_zero_point)
 
 def quantized_div(a, b, a_scale, a_zero_point, b_scale, b_zero_point, out_scale, out_zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_div, (a, b, a_scale, a_zero_point, b_scale, b_zero_point, out_scale, out_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_div(a, b, a_scale, a_zero_point, b_scale, b_zero_point, out_scale, out_zero_point)
 
 def quantized_clamp(input, self_scale, self_zero_point, out_scale, out_zero_point, min=None, max=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_clamp, (input, self_scale, self_zero_point, out_scale, out_zero_point, min, max), {})
         if _captured is not None:
             return _captured
@@ -7572,26 +7573,26 @@ def quantized_clamp(input, self_scale, self_zero_point, out_scale, out_zero_poin
 
 def quantized_max_pool2d(input, kernel_size, stride=[], padding=0, dilation=1, ceil_mode=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(quantized_max_pool2d, (input, kernel_size, stride, padding, dilation, ceil_mode), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.quantized_max_pool2d(self=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_max_pool2d, (input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
     return _C.quantized_max_pool2d(self=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode)
 
 def quantized_conv2d_prepack(weight, weight_scales, weight_zero_points, bias=None, transposed=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_conv2d_prepack, (weight, weight_scales, weight_zero_points, bias, transposed), {})
         if _captured is not None:
             return _captured
     return _C.quantized_conv2d_prepack(weight, weight_scales, weight_zero_points, bias, transposed)
 
 def quantized_conv2d_unpack(weight_packed, bias_packed, weight_sizes, transposed=False, depthwise=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_conv2d_unpack, (weight_packed, bias_packed, weight_sizes, transposed, depthwise), {})
         if _captured is not None:
             return _captured
@@ -7600,7 +7601,7 @@ def quantized_conv2d_unpack(weight_packed, bias_packed, weight_sizes, transposed
     return _C.quantized_conv2d_unpack(weight_packed, bias_packed, weight_sizes, transposed, depthwise)
 
 def quantized_conv2d_run(input, weight_packed, bias_packed, weight_sizes, input_scale, input_zero_point, out_scale, out_zero_point, stride=1, padding=0, dilation=1, output_padding=0, groups=1, transposed=False, output_min=None, output_max=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_conv2d_run, (input, weight_packed, bias_packed, weight_sizes, input_scale, input_zero_point, out_scale, out_zero_point, stride, padding, dilation, output_padding, groups, transposed, output_min, output_max), {})
         if _captured is not None:
             return _captured
@@ -7617,7 +7618,7 @@ def quantized_conv2d_run(input, weight_packed, bias_packed, weight_sizes, input_
     return _C.quantized_conv2d_run(input, weight_packed, bias_packed, weight_sizes, input_scale, input_zero_point, out_scale, out_zero_point, stride, padding, dilation, output_padding, groups, transposed, output_min, output_max)
 
 def quantized_conv2d(input, weight, bias, input_scale, input_zero_point, weight_scale, weight_zero_point, out_scale, out_zero_point, stride=1, padding=0, dilation=1, groups=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_conv2d, (input, weight, bias, input_scale, input_zero_point, weight_scale, weight_zero_point, out_scale, out_zero_point, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -7630,77 +7631,77 @@ def quantized_conv2d(input, weight, bias, input_scale, input_zero_point, weight_
     return _C.quantized_conv2d(input, weight, bias, input_scale, input_zero_point, weight_scale, weight_zero_point, out_scale, out_zero_point, stride, padding, dilation, groups)
 
 def quantized_relu(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_relu, (input,), {})
         if _captured is not None:
             return _captured
     return _C.quantized_relu(input)
 
 def quantized_relu6(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_relu6, (input,), {})
         if _captured is not None:
             return _captured
     return _C.quantized_relu6(input)
 
 def quantized_leaky_relu(input, negative_slope, output_scale, output_zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_leaky_relu, (input, negative_slope, output_scale, output_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_leaky_relu(input, negative_slope, output_scale, output_zero_point)
 
 def quantized_elu(input, output_scale, output_zero_point, alpha=1.0, scale=1.0, input_scale=1.0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_elu, (input, output_scale, output_zero_point, alpha, scale, input_scale), {})
         if _captured is not None:
             return _captured
     return _C.quantized_elu(input, output_scale, output_zero_point, alpha, scale, input_scale)
 
 def quantized_hardswish(input, output_scale, output_zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_hardswish, (input, output_scale, output_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_hardswish(input, output_scale, output_zero_point)
 
 def quantized_hardsigmoid(input, output_scale, output_zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_hardsigmoid, (input, output_scale, output_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_hardsigmoid(input, output_scale, output_zero_point)
 
 def quantized_sigmoid(input, output_scale, output_zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_sigmoid, (input, output_scale, output_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_sigmoid(input, output_scale, output_zero_point)
 
 def quantized_tanh(input, output_scale, output_zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_tanh, (input, output_scale, output_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_tanh(input, output_scale, output_zero_point)
 
 def quantized_cat(tensors, dim=0, scale=None, zero_point=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_cat, (tensors, dim, scale, zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_cat(tensors, dim, scale, zero_point)
 
 def quantized_cat_relu(tensors, dim=0, scale=None, zero_point=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_cat_relu, (tensors, dim, scale, zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_cat_relu(tensors, dim, scale, zero_point)
 
 def quantized_conv1d(input, weight, bias, input_scale, input_zero_point, weight_scale, weight_zero_point, out_scale, out_zero_point, stride=1, padding=0, dilation=1, groups=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_conv1d, (input, weight, bias, input_scale, input_zero_point, weight_scale, weight_zero_point, out_scale, out_zero_point, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -7713,7 +7714,7 @@ def quantized_conv1d(input, weight, bias, input_scale, input_zero_point, weight_
     return _C.quantized_conv1d(input, weight, bias, input_scale, input_zero_point, weight_scale, weight_zero_point, out_scale, out_zero_point, stride, padding, dilation, groups)
 
 def quantized_conv3d(input, weight, bias, input_scale, input_zero_point, weight_scale, weight_zero_point, out_scale, out_zero_point, stride=1, padding=0, dilation=1, groups=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_conv3d, (input, weight, bias, input_scale, input_zero_point, weight_scale, weight_zero_point, out_scale, out_zero_point, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -7726,126 +7727,126 @@ def quantized_conv3d(input, weight, bias, input_scale, input_zero_point, weight_
     return _C.quantized_conv3d(input, weight, bias, input_scale, input_zero_point, weight_scale, weight_zero_point, out_scale, out_zero_point, stride, padding, dilation, groups)
 
 def forward_neg(a, da):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_neg, (a, da), {})
         if _captured is not None:
             return _captured
     return _C.forward_neg(a, da)
 
 def forward_exp(a, da):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_exp, (a, da), {})
         if _captured is not None:
             return _captured
     return _C.forward_exp(a, da)
 
 def forward_log(a, da):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_log, (a, da), {})
         if _captured is not None:
             return _captured
     return _C.forward_log(a, da)
 
 def forward_sin(a, da):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_sin, (a, da), {})
         if _captured is not None:
             return _captured
     return _C.forward_sin(a, da)
 
 def forward_cos(a, da):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_cos, (a, da), {})
         if _captured is not None:
             return _captured
     return _C.forward_cos(a, da)
 
 def forward_sqrt(a, da):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_sqrt, (a, da), {})
         if _captured is not None:
             return _captured
     return _C.forward_sqrt(a, da)
 
 def forward_tanh(a, da):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_tanh, (a, da), {})
         if _captured is not None:
             return _captured
     return _C.forward_tanh(a, da)
 
 def forward_sigmoid(a, da):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_sigmoid, (a, da), {})
         if _captured is not None:
             return _captured
     return _C.forward_sigmoid(a, da)
 
 def forward_relu(a, da):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_relu, (a, da), {})
         if _captured is not None:
             return _captured
     return _C.forward_relu(a, da)
 
 def forward_add(a, da, b, db):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_add, (a, da, b, db), {})
         if _captured is not None:
             return _captured
     return _C.forward_add(a, da, b, db)
 
 def forward_sub(a, da, b, db):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_sub, (a, da, b, db), {})
         if _captured is not None:
             return _captured
     return _C.forward_sub(a, da, b, db)
 
 def forward_mul(a, da, b, db):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_mul, (a, da, b, db), {})
         if _captured is not None:
             return _captured
     return _C.forward_mul(a, da, b, db)
 
 def forward_div(a, da, b, db):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_div, (a, da, b, db), {})
         if _captured is not None:
             return _captured
     return _C.forward_div(a, da, b, db)
 
 def forward_pow(a, da, b, db):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_pow, (a, da, b, db), {})
         if _captured is not None:
             return _captured
     return _C.forward_pow(a, da, b, db)
 
 def forward_mm(a, da, b, db):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(forward_mm, (a, da, b, db), {})
         if _captured is not None:
             return _captured
     return _C.forward_mm(a, da, b, db)
 
 def expand(input, size, implicit=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(expand, (input, size, implicit), {})
         if _captured is not None:
             return _captured
     return input.expand(size=size, implicit=implicit)
 
 def expand_as(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(expand_as, (input, other), {})
         if _captured is not None:
             return _captured
     return input.expand_as(other=other)
 
 def broadcast_to(input, size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(broadcast_to, (input, size), {})
         if _captured is not None:
             return _captured
@@ -7854,14 +7855,14 @@ def broadcast_to(input, size):
     return _C.broadcast_to(input, size)
 
 def repeat(input, repeats):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(repeat, (input, repeats), {})
         if _captured is not None:
             return _captured
     return input.repeat(repeats=repeats)
 
 def tile(input, dims):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tile, (input, dims), {})
         if _captured is not None:
             return _captured
@@ -7870,70 +7871,70 @@ def tile(input, dims):
     return _C.tile(input, dims)
 
 def hstack(*args):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hstack, (*args,), {})
         if _captured is not None:
             return _captured
     return _C.hstack(*args)
 
 def vstack(*args):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(vstack, (*args,), {})
         if _captured is not None:
             return _captured
     return _C.vstack(*args)
 
 def dstack(*args):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(dstack, (*args,), {})
         if _captured is not None:
             return _captured
     return _C.dstack(*args)
 
 def row_stack(*args):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(row_stack, (*args,), {})
         if _captured is not None:
             return _captured
     return _C.row_stack(*args)
 
 def column_stack(*args):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(column_stack, (*args,), {})
         if _captured is not None:
             return _captured
     return _C.column_stack(*args)
 
 def tensor_split(input, sections, dim=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tensor_split, (input, sections, dim), {})
         if _captured is not None:
             return _captured
     return _C.tensor_split(input, sections, dim)
 
 def hsplit(input, sections):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hsplit, (input, sections), {})
         if _captured is not None:
             return _captured
     return _C.hsplit(input, sections)
 
 def vsplit(input, sections):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(vsplit, (input, sections), {})
         if _captured is not None:
             return _captured
     return _C.vsplit(input, sections)
 
 def dsplit(input, sections):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(dsplit, (input, sections), {})
         if _captured is not None:
             return _captured
     return _C.dsplit(input, sections)
 
 def atleast_1d(*args):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(atleast_1d, (*args,), {})
         if _captured is not None:
             return _captured
@@ -7942,7 +7943,7 @@ def atleast_1d(*args):
     return _C.atleast_1d(list(args))
 
 def atleast_2d(*args):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(atleast_2d, (*args,), {})
         if _captured is not None:
             return _captured
@@ -7951,7 +7952,7 @@ def atleast_2d(*args):
     return _C.atleast_2d(list(args))
 
 def atleast_3d(*args):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(atleast_3d, (*args,), {})
         if _captured is not None:
             return _captured
@@ -7960,14 +7961,14 @@ def atleast_3d(*args):
     return _C.atleast_3d(list(args))
 
 def flatten(input, start_dim=0, end_dim=-1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(flatten, (input, start_dim, end_dim), {})
         if _captured is not None:
             return _captured
     return _C.flatten(input, start_dim, end_dim)
 
 def unflatten(input, dim, sizes):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unflatten, (input, dim, sizes), {})
         if _captured is not None:
             return _captured
@@ -7976,14 +7977,14 @@ def unflatten(input, dim, sizes):
     return _C.unflatten(input, dim, sizes)
 
 def ravel(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ravel, (input,), {})
         if _captured is not None:
             return _captured
     return _C.ravel(input)
 
 def moveaxis(input, source, destination):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(moveaxis, (input, source, destination), {})
         if _captured is not None:
             return _captured
@@ -7994,21 +7995,21 @@ def moveaxis(input, source, destination):
     return _C.moveaxis(input, source, destination)
 
 def swapaxes(input, axis0, axis1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(swapaxes, (input, axis0, axis1), {})
         if _captured is not None:
             return _captured
     return _C.swapaxes(input, axis0, axis1)
 
 def swapdims(input, dim0, dim1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(swapdims, (input, dim0, dim1), {})
         if _captured is not None:
             return _captured
     return _C.swapdims(input, dim0, dim1)
 
 def argwhere(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(argwhere, (input,), {})
         if _captured is not None:
             return _captured
@@ -8016,19 +8017,19 @@ def argwhere(input):
 
 def fill(input, value, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fill, (input, value), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fill(input, value, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fill, (input, value), {})
         if _captured is not None:
             return _captured
     return _C.fill(input, value)
 
 def equal(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(equal, (input, other), {})
         if _captured is not None:
             return _captured
@@ -8040,7 +8041,7 @@ def equal(input, other):
     return _C.equal(input, other)
 
 def allclose(input, other, rtol=1e-05, atol=1e-08, equal_nan=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(allclose, (input, other, rtol, atol, equal_nan), {})
         if _captured is not None:
             return _captured
@@ -8050,12 +8051,12 @@ def allclose(input, other, rtol=1e-05, atol=1e-08, equal_nan=False):
 
 def scatter_reduce(input, dim, index, src, reduce, *, include_self=True, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(scatter_reduce, (input, dim, index, src, reduce), {'include_self': include_self, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.scatter_reduce(input, dim, index, src, reduce, include_self=include_self, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(scatter_reduce, (input, dim, index, src, reduce), {'include_self': include_self})
         if _captured is not None:
             return _captured
@@ -8065,12 +8066,12 @@ def scatter_reduce(input, dim, index, src, reduce, *, include_self=True, out=Non
 
 def index_reduce(input, dim, index, source, reduce, *, include_self=True, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(index_reduce, (input, dim, index, source, reduce), {'include_self': include_self, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.index_reduce(self=input, dim=dim, index=index, source=source, reduce=reduce, include_self=include_self, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(index_reduce, (input, dim, index, source, reduce), {'include_self': include_self})
         if _captured is not None:
             return _captured
@@ -8079,42 +8080,42 @@ def index_reduce(input, dim, index, source, reduce, *, include_self=True, out=No
     return _C.index_reduce(self=input, dim=dim, index=index, source=source, reduce=reduce, include_self=include_self)
 
 def _scatter_reduce_backward_self(grad, input, dim, index, src, reduce, include_self):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scatter_reduce_backward_self, (grad, input, dim, index, src, reduce, include_self), {})
         if _captured is not None:
             return _captured
     return _C._scatter_reduce_backward_self(grad, input, dim, index, src, reduce, include_self)
 
 def _scatter_reduce_backward_src(grad, input, dim, index, src, reduce, include_self):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scatter_reduce_backward_src, (grad, input, dim, index, src, reduce, include_self), {})
         if _captured is not None:
             return _captured
     return _C._scatter_reduce_backward_src(grad, input, dim, index, src, reduce, include_self)
 
 def _index_reduce_backward_self(grad, input, dim, index, source, reduce, include_self):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_index_reduce_backward_self, (grad, input, dim, index, source, reduce, include_self), {})
         if _captured is not None:
             return _captured
     return _C._index_reduce_backward_self(grad, input, dim, index, source, reduce, include_self)
 
 def _index_reduce_backward_src(grad, input, dim, index, source, reduce, include_self):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_index_reduce_backward_src, (grad, input, dim, index, source, reduce, include_self), {})
         if _captured is not None:
             return _captured
     return _C._index_reduce_backward_src(grad, input, dim, index, source, reduce, include_self)
 
 def grouped_mm(input, mat2, offs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(grouped_mm, (input, mat2, offs), {})
         if _captured is not None:
             return _captured
     return _C.grouped_mm(input, mat2, offs)
 
 def rms_norm(input, normalized_shape, weight=None, eps=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rms_norm, (input, normalized_shape, weight, eps), {})
         if _captured is not None:
             return _captured
@@ -8123,7 +8124,7 @@ def rms_norm(input, normalized_shape, weight=None, eps=None):
     return _C.rms_norm(input, normalized_shape, weight, eps)
 
 def linear(input, weight, bias=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(linear, (input, weight, bias), {})
         if _captured is not None:
             return _captured
@@ -8131,12 +8132,12 @@ def linear(input, weight, bias=None):
 
 def absolute(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(absolute, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.absolute(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(absolute, (input,), {})
         if _captured is not None:
             return _captured
@@ -8147,19 +8148,19 @@ def absolute_(input):
 
 def arccos(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(arccos, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.arccos(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(arccos, (input,), {})
         if _captured is not None:
             return _captured
     return _C.arccos(self=input)
 
 def arccos_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(arccos_, (input,), {})
         if _captured is not None:
             return _captured
@@ -8167,19 +8168,19 @@ def arccos_(input):
 
 def arccosh(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(arccosh, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.arccosh(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(arccosh, (input,), {})
         if _captured is not None:
             return _captured
     return _C.arccosh(self=input)
 
 def arccosh_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(arccosh_, (input,), {})
         if _captured is not None:
             return _captured
@@ -8187,19 +8188,19 @@ def arccosh_(input):
 
 def arcsin(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(arcsin, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.arcsin(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(arcsin, (input,), {})
         if _captured is not None:
             return _captured
     return _C.arcsin(self=input)
 
 def arcsin_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(arcsin_, (input,), {})
         if _captured is not None:
             return _captured
@@ -8207,19 +8208,19 @@ def arcsin_(input):
 
 def arcsinh(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(arcsinh, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.arcsinh(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(arcsinh, (input,), {})
         if _captured is not None:
             return _captured
     return _C.arcsinh(self=input)
 
 def arcsinh_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(arcsinh_, (input,), {})
         if _captured is not None:
             return _captured
@@ -8227,19 +8228,19 @@ def arcsinh_(input):
 
 def arctan(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(arctan, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.arctan(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(arctan, (input,), {})
         if _captured is not None:
             return _captured
     return _C.arctan(self=input)
 
 def arctan_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(arctan_, (input,), {})
         if _captured is not None:
             return _captured
@@ -8247,19 +8248,19 @@ def arctan_(input):
 
 def arctanh(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(arctanh, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.arctanh(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(arctanh, (input,), {})
         if _captured is not None:
             return _captured
     return _C.arctanh(self=input)
 
 def arctanh_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(arctanh_, (input,), {})
         if _captured is not None:
             return _captured
@@ -8267,12 +8268,12 @@ def arctanh_(input):
 
 def avg_pool1d(input, kernel_size, stride=[], padding=0, ceil_mode=False, count_include_pad=True, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(avg_pool1d, (input, kernel_size, stride, padding, ceil_mode, count_include_pad), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.avg_pool1d(self=input, kernel_size=kernel_size, stride=stride, padding=padding, ceil_mode=ceil_mode, count_include_pad=count_include_pad, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(avg_pool1d, (input, kernel_size, stride, padding, ceil_mode, count_include_pad), {})
         if _captured is not None:
             return _captured
@@ -8280,19 +8281,19 @@ def avg_pool1d(input, kernel_size, stride=[], padding=0, ceil_mode=False, count_
 
 def adaptive_avg_pool1d(input, output_size, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(adaptive_avg_pool1d, (input, output_size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.adaptive_avg_pool1d(self=input, output_size=output_size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(adaptive_avg_pool1d, (input, output_size), {})
         if _captured is not None:
             return _captured
     return _C.adaptive_avg_pool1d(self=input, output_size=output_size)
 
 def adaptive_max_pool1d(input, output_size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(adaptive_max_pool1d, (input, output_size), {})
         if _captured is not None:
             return _captured
@@ -8301,7 +8302,7 @@ def adaptive_max_pool1d(input, output_size):
     return _C.adaptive_max_pool1d(input, output_size)
 
 def max_pool1d_with_indices(input, kernel_size, stride=[], padding=0, dilation=1, ceil_mode=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_pool1d_with_indices, (input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
@@ -8316,7 +8317,7 @@ def max_pool1d_with_indices(input, kernel_size, stride=[], padding=0, dilation=1
     return _C.max_pool1d_with_indices(input, kernel_size, stride, padding, dilation, ceil_mode)
 
 def max_pool1d(input, kernel_size, stride=[], padding=0, dilation=1, ceil_mode=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(max_pool1d, (input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
@@ -8332,12 +8333,12 @@ def max_pool1d(input, kernel_size, stride=[], padding=0, dilation=1, ceil_mode=F
 
 def concat(tensors, dim=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(concat, (tensors, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.concat(tensors=tensors, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(concat, (tensors, dim), {})
         if _captured is not None:
             return _captured
@@ -8345,19 +8346,19 @@ def concat(tensors, dim=0, *, out=None):
 
 def concatenate(tensors, dim=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(concatenate, (tensors, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.concatenate(tensors=tensors, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(concatenate, (tensors, dim), {})
         if _captured is not None:
             return _captured
     return _C.concatenate(tensors=tensors, dim=dim)
 
 def diagflat(input, offset=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(diagflat, (input, offset), {})
         if _captured is not None:
             return _captured
@@ -8365,12 +8366,12 @@ def diagflat(input, offset=0):
 
 def ger(input, vec2, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(ger, (input, vec2), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.ger(self=input, vec2=vec2, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ger, (input, vec2), {})
         if _captured is not None:
             return _captured
@@ -8378,12 +8379,12 @@ def ger(input, vec2, *, out=None):
 
 def kron(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(kron, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.kron(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(kron, (input, other), {})
         if _captured is not None:
             return _captured
@@ -8391,614 +8392,614 @@ def kron(input, other, *, out=None):
 
 def matrix_power(input, n, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(matrix_power, (input, n), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.matrix_power(self=input, n=n, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(matrix_power, (input, n), {})
         if _captured is not None:
             return _captured
     return _C.matrix_power(self=input, n=n)
 
 def vander(x, N=None, increasing=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(vander, (x, N, increasing), {})
         if _captured is not None:
             return _captured
     return _C.vander(x, N, increasing)
 
 def cartesian_prod(*args):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cartesian_prod, (*args,), {})
         if _captured is not None:
             return _captured
     return _C.cartesian_prod(list(args))
 
 def silu_mul(gate, up):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(silu_mul, (gate, up), {})
         if _captured is not None:
             return _captured
     return _C.silu_mul(gate, up)
 
 def fused_swiglu(gate, up):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fused_swiglu, (gate, up), {})
         if _captured is not None:
             return _captured
     return _C.fused_swiglu(gate, up)
 
 def silu_and_mul(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(silu_and_mul, (input,), {})
         if _captured is not None:
             return _captured
     return _C.silu_and_mul(input)
 
 def rotary_embedding(input, cos, sin, position_offset=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rotary_embedding, (input, cos, sin, position_offset), {})
         if _captured is not None:
             return _captured
     return _C.rotary_embedding(input, cos, sin, position_offset)
 
 def fused_rope(query, key, cos, sin, position_offset=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fused_rope, (query, key, cos, sin, position_offset), {})
         if _captured is not None:
             return _captured
     return _C.fused_rope(query, key, cos, sin, position_offset)
 
 def _fused_rope_neox(input, cos, sin):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_rope_neox, (input, cos, sin), {})
         if _captured is not None:
             return _captured
     return _C._fused_rope_neox(input, cos, sin)
 
 def _fused_rope_neox_backward(grad_out, input, cos, sin):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_rope_neox_backward, (grad_out, input, cos, sin), {})
         if _captured is not None:
             return _captured
     return _C._fused_rope_neox_backward(grad_out, input, cos, sin)
 
 def acos_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(acos_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.acos_(input)
 
 def acosh_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(acosh_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.acosh_(input)
 
 def addbmm_(input, batch1, batch2, beta=1, alpha=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(addbmm_, (input, batch1, batch2, beta, alpha), {})
         if _captured is not None:
             return _captured
     return _C.addbmm_(input, batch1, batch2, beta=beta, alpha=alpha)
 
 def addmm_(input, mat1, mat2, beta=1, alpha=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(addmm_, (input, mat1, mat2, beta, alpha), {})
         if _captured is not None:
             return _captured
     return _C.addmm_(input, mat1, mat2, beta=beta, alpha=alpha)
 
 def addmv_(input, mat, vec, beta=1, alpha=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(addmv_, (input, mat, vec, beta, alpha), {})
         if _captured is not None:
             return _captured
     return _C.addmv_(input, mat, vec, beta=beta, alpha=alpha)
 
 def addr_(input, vec1, vec2, beta=1, alpha=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(addr_, (input, vec1, vec2, beta, alpha), {})
         if _captured is not None:
             return _captured
     return _C.addr_(input, vec1, vec2, beta=beta, alpha=alpha)
 
 def asin_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(asin_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.asin_(input)
 
 def asinh_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(asinh_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.asinh_(input)
 
 def atan2_(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(atan2_, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.atan2_(input, other)
 
 def atan_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(atan_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.atan_(input)
 
 def atanh_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(atanh_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.atanh_(input)
 
 def bitwise_not_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bitwise_not_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.bitwise_not_(input)
 
 def ceil_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ceil_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.ceil_(input)
 
 def celu_(input, alpha=1.0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(celu_, (input, alpha), {})
         if _captured is not None:
             return _captured
     return _C.celu_(input, alpha)
 
 def clip_(input, min=None, max=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(clip_, (input, min, max), {})
         if _captured is not None:
             return _captured
     return _C.clip_(input, min, max)
 
 def cos_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cos_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.cos_(input)
 
 def cosh_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cosh_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.cosh_(input)
 
 def cumprod_(input, dim, dtype=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cumprod_, (input, dim, dtype), {})
         if _captured is not None:
             return _captured
     return _C.cumprod_(input, dim, dtype)
 
 def cumsum_(input, dim=0, dtype=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cumsum_, (input, dim, dtype), {})
         if _captured is not None:
             return _captured
     return _C.cumsum_(input, dim, dtype)
 
 def deg2rad_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(deg2rad_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.deg2rad_(input)
 
 def elu_(input, alpha=1, scale=1, input_scale=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(elu_, (input, alpha, scale, input_scale), {})
         if _captured is not None:
             return _captured
     return _C.elu_(input, alpha, scale, input_scale)
 
 def erf_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(erf_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.erf_(input)
 
 def erfc_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(erfc_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.erfc_(input)
 
 def erfinv_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(erfinv_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.erfinv_(input)
 
 def exp2_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(exp2_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.exp2_(input)
 
 def exp_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(exp_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.exp_(input)
 
 def expm1_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(expm1_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.expm1_(input)
 
 def floor_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(floor_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.floor_(input)
 
 def frac_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(frac_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.frac_(input)
 
 def gcd_(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(gcd_, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.gcd_(input, other)
 
 def gelu_(input, approximate='none'):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(gelu_, (input, approximate), {})
         if _captured is not None:
             return _captured
     return _C.gelu_(input, approximate)
 
 def hardsigmoid_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hardsigmoid_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.hardsigmoid_(input)
 
 def hardswish_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hardswish_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.hardswish_(input)
 
 def hardtanh_(input, min_val=-1, max_val=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hardtanh_, (input, min_val, max_val), {})
         if _captured is not None:
             return _captured
     return _C.hardtanh_(input, min_val, max_val)
 
 def heaviside_(input, values):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(heaviside_, (input, values), {})
         if _captured is not None:
             return _captured
     return _C.heaviside_(input, values)
 
 def hypot_(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hypot_, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.hypot_(input, other)
 
 def index_add_(input, dim, index, source):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(index_add_, (input, dim, index, source), {})
         if _captured is not None:
             return _captured
     return _C.index_add_(input, dim, index, source)
 
 def index_copy_(input, dim, index, source):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(index_copy_, (input, dim, index, source), {})
         if _captured is not None:
             return _captured
     return _C.index_copy_(input, dim, index, source)
 
 def index_reduce_(input, dim, index, source, reduce, include_self=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(index_reduce_, (input, dim, index, source, reduce, include_self), {})
         if _captured is not None:
             return _captured
     return _C.index_reduce_(input, dim, index, source, reduce, include_self=include_self)
 
 def lcm_(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lcm_, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.lcm_(input, other)
 
 def leaky_relu_(input, negative_slope=0.01):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(leaky_relu_, (input, negative_slope), {})
         if _captured is not None:
             return _captured
     return _C.leaky_relu_(input, negative_slope)
 
 def lgamma_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lgamma_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.lgamma_(input)
 
 def log10_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(log10_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.log10_(input)
 
 def log1p_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(log1p_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.log1p_(input)
 
 def log2_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(log2_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.log2_(input)
 
 def log_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(log_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.log_(input)
 
 def logical_and_(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logical_and_, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.logical_and_(input, other)
 
 def logical_not_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logical_not_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.logical_not_(input)
 
 def logical_or_(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logical_or_, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.logical_or_(input, other)
 
 def logical_xor_(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logical_xor_, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.logical_xor_(input, other)
 
 def logit_(input, eps=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logit_, (input, eps), {})
         if _captured is not None:
             return _captured
     return _C.logit_(input, eps)
 
 def masked_scatter_(input, mask, source):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(masked_scatter_, (input, mask, source), {})
         if _captured is not None:
             return _captured
     return _C.masked_scatter_(input, mask, source)
 
 def mish_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mish_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.mish_(input)
 
 def nan_to_num_(input, nan=0.0, posinf=None, neginf=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nan_to_num_, (input, nan, posinf, neginf), {})
         if _captured is not None:
             return _captured
     return _C.nan_to_num_(input, nan, posinf, neginf)
 
 def nextafter_(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nextafter_, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.nextafter_(input, other)
 
 def rad2deg_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rad2deg_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.rad2deg_(input)
 
 def reciprocal_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(reciprocal_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.reciprocal_(input)
 
 def relu6_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(relu6_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.relu6_(input)
 
 def renorm_(input, p, dim, maxnorm):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(renorm_, (input, p, dim, maxnorm), {})
         if _captured is not None:
             return _captured
     return _C.renorm_(input, p, dim, maxnorm)
 
 def round_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(round_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.round_(input)
 
 def selu_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(selu_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.selu_(input)
 
 def sgn_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sgn_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.sgn_(input)
 
 def sigmoid_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sigmoid_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.sigmoid_(input)
 
 def sign_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sign_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.sign_(input)
 
 def silu_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(silu_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.silu_(input)
 
 def sin_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sin_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.sin_(input)
 
 def sinc_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sinc_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.sinc_(input)
 
 def sinh_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sinh_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.sinh_(input)
 
 def square_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(square_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.square_(input)
 
 def tan_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tan_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.tan_(input)
 
 def tanh_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tanh_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.tanh_(input)
 
 def tril_(input, diagonal=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tril_, (input, diagonal), {})
         if _captured is not None:
             return _captured
     return _C.tril_(input, diagonal)
 
 def triu_(input, diagonal=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(triu_, (input, diagonal), {})
         if _captured is not None:
             return _captured
     return _C.triu_(input, diagonal)
 
 def trunc_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(trunc_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.trunc_(input)
 
 def threshold_(input, threshold, value):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(threshold_, (input, threshold, value), {})
         if _captured is not None:
             return _captured
     return _C.threshold_(input, threshold, value)
 
 def i0_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(i0_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.i0_(input)
 
 def chain_matmul(*args, out=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(chain_matmul, (*args,), {'out': out})
         if _captured is not None:
             return _captured
@@ -9008,12 +9009,12 @@ def chain_matmul(*args, out=None):
 
 def tril_indices(row, col, offset=0, *, dtype=DType.int64, device=None, pin_memory=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(tril_indices, (row, col, offset), {'dtype': dtype, 'device': device, 'pin_memory': pin_memory, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.tril_indices(row=row, col=col, offset=offset, dtype=dtype, device=device, pin_memory=pin_memory, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tril_indices, (row, col, offset), {'dtype': dtype, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -9021,26 +9022,26 @@ def tril_indices(row, col, offset=0, *, dtype=DType.int64, device=None, pin_memo
 
 def triu_indices(row, col, offset=0, *, dtype=DType.int64, device=None, pin_memory=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(triu_indices, (row, col, offset), {'dtype': dtype, 'device': device, 'pin_memory': pin_memory, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.triu_indices(row=row, col=col, offset=offset, dtype=dtype, device=device, pin_memory=pin_memory, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(triu_indices, (row, col, offset), {'dtype': dtype, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
     return _C.triu_indices(row=row, col=col, offset=offset, dtype=dtype, device=device, pin_memory=pin_memory)
 
 def combinations(input, r=2, with_replacement=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(combinations, (input, r, with_replacement), {})
         if _captured is not None:
             return _captured
     return _C.combinations(input, r, with_replacement)
 
 def trapz(y, x=None, dx=None, dim=-1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(trapz, (y, x, dx, dim), {})
         if _captured is not None:
             return _captured
@@ -9052,12 +9053,12 @@ def trapz(y, x=None, dx=None, dim=-1):
 
 def histc(input, bins=100, min=0, max=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(histc, (input, bins, min, max), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.histc(self=input, bins=bins, min=min, max=max, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(histc, (input, bins, min, max), {})
         if _captured is not None:
             return _captured
@@ -9065,12 +9066,12 @@ def histc(input, bins=100, min=0, max=0, *, out=None):
 
 def isin(elements, test_elements, *, assume_unique=False, invert=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(isin, (elements, test_elements), {'assume_unique': assume_unique, 'invert': invert, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.isin(elements, test_elements, assume_unique=assume_unique, invert=invert, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(isin, (elements, test_elements), {'assume_unique': assume_unique, 'invert': invert})
         if _captured is not None:
             return _captured
@@ -9079,7 +9080,7 @@ def isin(elements, test_elements, *, assume_unique=False, invert=False, out=None
     return _C.isin(elements, test_elements, assume_unique=assume_unique, invert=invert)
 
 def unique_consecutive(input, return_inverse=False, return_counts=False, dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unique_consecutive, (input, return_inverse, return_counts, dim), {})
         if _captured is not None:
             return _captured
@@ -9094,12 +9095,12 @@ def unique_consecutive(input, return_inverse=False, return_counts=False, dim=Non
 
 def scalar_tensor(s, *, dtype=None, device=None, pin_memory=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(scalar_tensor, (s,), {'dtype': dtype, 'device': device, 'pin_memory': pin_memory, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.scalar_tensor(s=s, dtype=dtype, device=device, pin_memory=pin_memory, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(scalar_tensor, (s,), {'dtype': dtype, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -9108,56 +9109,56 @@ def scalar_tensor(s, *, dtype=None, device=None, pin_memory=False, out=None):
     return _C.scalar_tensor(s=s, dtype=dtype, device=device, pin_memory=pin_memory)
 
 def is_conj(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_conj, (input,), {})
         if _captured is not None:
             return _captured
     return _C.is_conj(input)
 
 def is_neg(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_neg, (input,), {})
         if _captured is not None:
             return _captured
     return _C.is_neg(input)
 
 def is_nonzero(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_nonzero, (input,), {})
         if _captured is not None:
             return _captured
     return _C.is_nonzero(input)
 
 def is_same_size(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_same_size, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.is_same_size(input, other)
 
 def get_device(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(get_device, (input,), {})
         if _captured is not None:
             return _captured
     return _C.get_device(input)
 
 def can_cast(from_, to):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(can_cast, (from_, to), {})
         if _captured is not None:
             return _captured
     return _C.can_cast(from_, to)
 
 def promote_types(type1, type2):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(promote_types, (type1, type2), {})
         if _captured is not None:
             return _captured
     return _C.promote_types(type1, type2)
 
 def result_type(tensor, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(result_type, (tensor, other), {})
         if _captured is not None:
             return _captured
@@ -9165,26 +9166,26 @@ def result_type(tensor, other):
 
 def put(input, index, source, accumulate=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(put, (input, index, source, accumulate), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.put(self=input, index=index, source=source, accumulate=accumulate, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(put, (input, index, source, accumulate), {})
         if _captured is not None:
             return _captured
     return _C.put(self=input, index=index, source=source, accumulate=accumulate)
 
 def resolve_conj(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(resolve_conj, (input,), {})
         if _captured is not None:
             return _captured
     return _C.resolve_conj(input)
 
 def resolve_neg(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(resolve_neg, (input,), {})
         if _captured is not None:
             return _captured
@@ -9192,12 +9193,12 @@ def resolve_neg(input):
 
 def alias_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(alias_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.alias_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(alias_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -9205,12 +9206,12 @@ def alias_copy(input, *, out=None):
 
 def t_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(t_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.t_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(t_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -9218,12 +9219,12 @@ def t_copy(input, *, out=None):
 
 def permute_copy(input, dims, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(permute_copy, (input, dims), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.permute_copy(self=input, dims=dims, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(permute_copy, (input, dims), {})
         if _captured is not None:
             return _captured
@@ -9231,19 +9232,19 @@ def permute_copy(input, dims, *, out=None):
 
 def transpose_copy(input, dim0, dim1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(transpose_copy, (input, dim0, dim1), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.transpose_copy(self=input, dim0=dim0, dim1=dim1, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(transpose_copy, (input, dim0, dim1), {})
         if _captured is not None:
             return _captured
     return _C.transpose_copy(self=input, dim0=dim0, dim1=dim1)
 
 def squeeze_copy(input, dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(squeeze_copy, (input, dim), {})
         if _captured is not None:
             return _captured
@@ -9255,12 +9256,12 @@ def squeeze_copy(input, dim=None):
 
 def unsqueeze_copy(input, dim, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(unsqueeze_copy, (input, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.unsqueeze_copy(self=input, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unsqueeze_copy, (input, dim), {})
         if _captured is not None:
             return _captured
@@ -9268,12 +9269,12 @@ def unsqueeze_copy(input, dim, *, out=None):
 
 def select_copy(input, dim, index, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(select_copy, (input, dim, index), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.select_copy(self=input, dim=dim, index=index, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(select_copy, (input, dim, index), {})
         if _captured is not None:
             return _captured
@@ -9281,12 +9282,12 @@ def select_copy(input, dim, index, *, out=None):
 
 def slice_copy(input, dim=0, start=None, end=None, step=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(slice_copy, (input, dim, start, end, step), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.slice_copy(self=input, dim=dim, start=start, end=end, step=step, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(slice_copy, (input, dim, start, end, step), {})
         if _captured is not None:
             return _captured
@@ -9294,12 +9295,12 @@ def slice_copy(input, dim=0, start=None, end=None, step=1, *, out=None):
 
 def narrow_copy(input, dim, start, length, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(narrow_copy, (input, dim, start, length), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.narrow_copy(self=input, dim=dim, start=start, length=length, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(narrow_copy, (input, dim, start, length), {})
         if _captured is not None:
             return _captured
@@ -9307,12 +9308,12 @@ def narrow_copy(input, dim, start, length, *, out=None):
 
 def diagonal_copy(input, offset=0, dim1=0, dim2=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(diagonal_copy, (input, offset, dim1, dim2), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.diagonal_copy(self=input, offset=offset, dim1=dim1, dim2=dim2, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(diagonal_copy, (input, offset, dim1, dim2), {})
         if _captured is not None:
             return _captured
@@ -9320,12 +9321,12 @@ def diagonal_copy(input, offset=0, dim1=0, dim2=1, *, out=None):
 
 def unbind_copy(input, dim=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(unbind_copy, (input, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.unbind_copy(self=input, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unbind_copy, (input, dim), {})
         if _captured is not None:
             return _captured
@@ -9333,12 +9334,12 @@ def unbind_copy(input, dim=0, *, out=None):
 
 def split_copy(input, split_size, dim=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(split_copy, (input, split_size, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.split_copy(input, split_size, dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(split_copy, (input, split_size, dim), {})
         if _captured is not None:
             return _captured
@@ -9346,12 +9347,12 @@ def split_copy(input, split_size, dim=0, *, out=None):
 
 def view_copy(input, size, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(view_copy, (input, size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.view_copy(input, size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(view_copy, (input, size), {})
         if _captured is not None:
             return _captured
@@ -9359,12 +9360,12 @@ def view_copy(input, size, *, out=None):
 
 def unfold_copy(input, dimension, size, step, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(unfold_copy, (input, dimension, size, step), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.unfold_copy(self=input, dimension=dimension, size=size, step=step, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unfold_copy, (input, dimension, size, step), {})
         if _captured is not None:
             return _captured
@@ -9372,12 +9373,12 @@ def unfold_copy(input, dimension, size, step, *, out=None):
 
 def expand_copy(input, size, *, implicit=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(expand_copy, (input, size), {'implicit': implicit, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.expand_copy(self=input, size=size, implicit=implicit, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(expand_copy, (input, size), {'implicit': implicit})
         if _captured is not None:
             return _captured
@@ -9386,14 +9387,14 @@ def expand_copy(input, size, *, implicit=False, out=None):
     return _C.expand_copy(self=input, size=size, implicit=implicit)
 
 def reshape_as(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(reshape_as, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.reshape_as(input, other)
 
 def unsafe_chunk(input, chunks, dim=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unsafe_chunk, (input, chunks, dim), {})
         if _captured is not None:
             return _captured
@@ -9401,96 +9402,96 @@ def unsafe_chunk(input, chunks, dim=0):
 
 def unsafe_split(input, split_size, dim=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(unsafe_split, (input, split_size, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.unsafe_split(self=input, split_size=split_size, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unsafe_split, (input, split_size, dim), {})
         if _captured is not None:
             return _captured
     return _C.unsafe_split(self=input, split_size=split_size, dim=dim)
 
 def cosine_similarity(x1, x2, dim=1, eps=1e-8):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cosine_similarity, (x1, x2, dim, eps), {})
         if _captured is not None:
             return _captured
     return _C.cosine_similarity(x1, x2, dim, eps)
 
 def dropout(input, p=0.5, train=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(dropout, (input, p, train), {})
         if _captured is not None:
             return _captured
     return _C.dropout(input, p, train)
 
 def dropout_(input, p=0.5, train=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(dropout_, (input, p, train), {})
         if _captured is not None:
             return _captured
     return _C.dropout_(input, p, train)
 
 def alpha_dropout(input, p=0.5, train=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(alpha_dropout, (input, p, train), {})
         if _captured is not None:
             return _captured
     return _C.alpha_dropout(input, p, train)
 
 def alpha_dropout_(input, p=0.5, train=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(alpha_dropout_, (input, p, train), {})
         if _captured is not None:
             return _captured
     return _C.alpha_dropout_(input, p, train)
 
 def feature_dropout(input, p=0.5, train=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(feature_dropout, (input, p, train), {})
         if _captured is not None:
             return _captured
     return _C.feature_dropout(input, p, train)
 
 def feature_dropout_(input, p=0.5, train=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(feature_dropout_, (input, p, train), {})
         if _captured is not None:
             return _captured
     return _C.feature_dropout_(input, p, train)
 
 def feature_alpha_dropout(input, p=0.5, train=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(feature_alpha_dropout, (input, p, train), {})
         if _captured is not None:
             return _captured
     return _C.feature_alpha_dropout(input, p, train)
 
 def feature_alpha_dropout_(input, p=0.5, train=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(feature_alpha_dropout_, (input, p, train), {})
         if _captured is not None:
             return _captured
     return _C.feature_alpha_dropout_(input, p, train)
 
 def rrelu(input, lower=0.125, upper=0.3333333333333333, training=False, generator=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rrelu, (input, lower, upper, training, generator), {})
         if _captured is not None:
             return _captured
     return _C.rrelu(input, lower, upper, training, generator)
 
 def rrelu_(input, lower=0.125, upper=0.3333333333333333, training=False, generator=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rrelu_, (input, lower, upper, training, generator), {})
         if _captured is not None:
             return _captured
     return _C.rrelu_(input, lower, upper, training, generator)
 
 def bilinear(input1, input2, weight, bias=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(bilinear, (input1, input2, weight, bias), {})
         if _captured is not None:
             return _captured
@@ -9498,47 +9499,47 @@ def bilinear(input1, input2, weight, bias=None):
 
 def conv_tbc(input, weight, bias, pad=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(conv_tbc, (input, weight, bias, pad), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.conv_tbc(self=input, weight=weight, bias=bias, pad=pad, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_tbc, (input, weight, bias, pad), {})
         if _captured is not None:
             return _captured
     return _C.conv_tbc(self=input, weight=weight, bias=bias, pad=pad)
 
 def lstm_cell(input, hx, cx, w_ih, w_hh, b_ih=None, b_hh=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lstm_cell, (input, hx, cx, w_ih, w_hh, b_ih, b_hh), {})
         if _captured is not None:
             return _captured
     return _C.lstm_cell(input, hx, cx, w_ih, w_hh, b_ih, b_hh)
 
 def rnn_relu_cell(input, hx, w_ih, w_hh, b_ih=None, b_hh=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rnn_relu_cell, (input, hx, w_ih, w_hh, b_ih, b_hh), {})
         if _captured is not None:
             return _captured
     return _C.rnn_relu_cell(input, hx, w_ih, w_hh, b_ih, b_hh)
 
 def rnn_tanh_cell(input, hx, w_ih, w_hh, b_ih=None, b_hh=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rnn_tanh_cell, (input, hx, w_ih, w_hh, b_ih, b_hh), {})
         if _captured is not None:
             return _captured
     return _C.rnn_tanh_cell(input, hx, w_ih, w_hh, b_ih, b_hh)
 
 def native_channel_shuffle(input, groups):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(native_channel_shuffle, (input, groups), {})
         if _captured is not None:
             return _captured
     return _C.native_channel_shuffle(input, groups)
 
 def kaiser_window(window_length, periodic=True, beta=12.0, *, dtype=None, device=None, pin_memory=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(kaiser_window, (window_length, periodic, beta), {'dtype': dtype, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -9547,14 +9548,14 @@ def kaiser_window(window_length, periodic=True, beta=12.0, *, dtype=None, device
     return _C.kaiser_window(window_length, periodic, beta, dtype=dtype, device=_ensure_device(device), pin_memory=pin_memory)
 
 def fliplr(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fliplr, (input,), {})
         if _captured is not None:
             return _captured
     return _C.fliplr(input)
 
 def flipud(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(flipud, (input,), {})
         if _captured is not None:
             return _captured
@@ -9562,12 +9563,12 @@ def flipud(input):
 
 def split_with_sizes_copy(input, split_sizes, dim=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(split_with_sizes_copy, (input, split_sizes, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.split_with_sizes_copy(self=input, split_sizes=split_sizes, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(split_with_sizes_copy, (input, split_sizes, dim), {})
         if _captured is not None:
             return _captured
@@ -9575,12 +9576,12 @@ def split_with_sizes_copy(input, split_sizes, dim=0, *, out=None):
 
 def unsafe_split_with_sizes(input, split_sizes, dim=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(unsafe_split_with_sizes, (input, split_sizes, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.unsafe_split_with_sizes(self=input, split_sizes=split_sizes, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unsafe_split_with_sizes, (input, split_sizes, dim), {})
         if _captured is not None:
             return _captured
@@ -9588,33 +9589,33 @@ def unsafe_split_with_sizes(input, split_sizes, dim=0, *, out=None):
 
 def detach_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(detach_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.detach_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(detach_copy, (input,), {})
         if _captured is not None:
             return _captured
     return _C.detach_copy(self=input)
 
 def detach_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(detach_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.detach_(input)
 
 def resize_as_(input, other, memory_format=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(resize_as_, (input, other, memory_format), {})
         if _captured is not None:
             return _captured
     return _C.resize_as_(input, other, memory_format=memory_format)
 
 def gru_cell(input, hx, w_ih, w_hh, b_ih=None, b_hh=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(gru_cell, (input, hx, w_ih, w_hh, b_ih, b_hh), {})
         if _captured is not None:
             return _captured
@@ -9632,7 +9633,7 @@ def cdist(x1, x2, p=2, compute_mode=None):
         if compute_mode not in _CDIST_COMPUTE_MODES:
             raise ValueError(f"{compute_mode!r} is not a valid value for compute_mode")
         compute_mode = _CDIST_COMPUTE_MODES[compute_mode]
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cdist, (x1, x2, p, compute_mode), {})
         if _captured is not None:
             return _captured
@@ -9640,19 +9641,19 @@ def cdist(x1, x2, p=2, compute_mode=None):
 
 def xlogy(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(xlogy, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.xlogy(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(xlogy, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.xlogy(input, other)
 
 def xlogy_(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(xlogy_, (input, other), {})
         if _captured is not None:
             return _captured
@@ -9660,19 +9661,19 @@ def xlogy_(input, other):
 
 def xlog1py(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(xlog1py, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.xlog1py(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(xlog1py, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.xlog1py(self=input, other=other)
 
 def xlog1py_(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(xlog1py_, (input, other), {})
         if _captured is not None:
             return _captured
@@ -9680,19 +9681,19 @@ def xlog1py_(input, other):
 
 def ldexp(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(ldexp, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.ldexp(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ldexp, (input, other), {})
         if _captured is not None:
             return _captured
     return _C.ldexp(input, other)
 
 def ldexp_(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ldexp_, (input, other), {})
         if _captured is not None:
             return _captured
@@ -9700,12 +9701,12 @@ def ldexp_(input, other):
 
 def fmax(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fmax, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fmax(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fmax, (input, other), {})
         if _captured is not None:
             return _captured
@@ -9713,12 +9714,12 @@ def fmax(input, other, *, out=None):
 
 def fmin(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fmin, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fmin(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fmin, (input, other), {})
         if _captured is not None:
             return _captured
@@ -9726,12 +9727,12 @@ def fmin(input, other, *, out=None):
 
 def float_power(input, exponent, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(float_power, (input, exponent), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.float_power(input, exponent, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(float_power, (input, exponent), {})
         if _captured is not None:
             return _captured
@@ -9742,12 +9743,12 @@ def float_power(input, exponent, *, out=None):
 
 def mvlgamma(input, p, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mvlgamma, (input, p), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mvlgamma(self=input, p=p, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mvlgamma, (input, p), {})
         if _captured is not None:
             return _captured
@@ -9755,26 +9756,26 @@ def mvlgamma(input, p, *, out=None):
 
 def conj_physical(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(conj_physical, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.conj_physical(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conj_physical, (input,), {})
         if _captured is not None:
             return _captured
     return _C.conj_physical(self=input)
 
 def conj_physical_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conj_physical_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.conj_physical_(input)
 
 def negative_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(negative_, (input,), {})
         if _captured is not None:
             return _captured
@@ -9782,12 +9783,12 @@ def negative_(input):
 
 def range(start, end, step=1, *, dtype=None, device=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(range, (start, end, step), {'dtype': dtype, 'device': device, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.range(start, end, step, dtype=dtype, device=device, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(range, (start, end, step), {'dtype': dtype, 'device': device})
         if _captured is not None:
             return _captured
@@ -9796,7 +9797,7 @@ def range(start, end, step=1, *, dtype=None, device=None, out=None):
     return _C.range(start, end, step, dtype=dtype, device=device)
 
 def is_signed(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_signed, (input,), {})
         if _captured is not None:
             return _captured
@@ -9804,12 +9805,12 @@ def is_signed(input):
 
 def nonzero_static(input, *, size, fill_value=-1, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nonzero_static, (input,), {'size': size, 'fill_value': fill_value, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.nonzero_static(self=input, size=size, fill_value=fill_value, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nonzero_static, (input,), {'size': size, 'fill_value': fill_value})
         if _captured is not None:
             return _captured
@@ -9817,12 +9818,12 @@ def nonzero_static(input, *, size, fill_value=-1, out=None):
 
 def frexp(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(frexp, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.frexp(input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(frexp, (input,), {})
         if _captured is not None:
             return _captured
@@ -9830,12 +9831,12 @@ def frexp(input, *, out=None):
 
 def igamma(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(igamma, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.igamma(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(igamma, (input, other), {})
         if _captured is not None:
             return _captured
@@ -9843,12 +9844,12 @@ def igamma(input, other, *, out=None):
 
 def igammac(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(igammac, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.igammac(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(igammac, (input, other), {})
         if _captured is not None:
             return _captured
@@ -9856,12 +9857,12 @@ def igammac(input, other, *, out=None):
 
 def empty_strided(size, stride, *, dtype=None, device=None, pin_memory=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(empty_strided, (size, stride), {'dtype': dtype, 'device': device, 'pin_memory': pin_memory, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.empty_strided(size=size, stride=stride, dtype=dtype, device=device, pin_memory=pin_memory, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(empty_strided, (size, stride), {'dtype': dtype, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -9870,105 +9871,105 @@ def empty_strided(size, stride, *, dtype=None, device=None, pin_memory=False, ou
     return _C.empty_strided(size=size, stride=stride, dtype=dtype, device=device, pin_memory=pin_memory)
 
 def _cast_Byte(input, non_blocking=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cast_Byte, (input, non_blocking), {})
         if _captured is not None:
             return _captured
     return _C._cast_Byte(input, non_blocking)
 
 def _cast_Char(input, non_blocking=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cast_Char, (input, non_blocking), {})
         if _captured is not None:
             return _captured
     return _C._cast_Char(input, non_blocking)
 
 def _cast_Double(input, non_blocking=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cast_Double, (input, non_blocking), {})
         if _captured is not None:
             return _captured
     return _C._cast_Double(input, non_blocking)
 
 def _cast_Float(input, non_blocking=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cast_Float, (input, non_blocking), {})
         if _captured is not None:
             return _captured
     return _C._cast_Float(input, non_blocking)
 
 def _cast_Int(input, non_blocking=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cast_Int, (input, non_blocking), {})
         if _captured is not None:
             return _captured
     return _C._cast_Int(input, non_blocking)
 
 def _cast_Long(input, non_blocking=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cast_Long, (input, non_blocking), {})
         if _captured is not None:
             return _captured
     return _C._cast_Long(input, non_blocking)
 
 def _cast_Short(input, non_blocking=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cast_Short, (input, non_blocking), {})
         if _captured is not None:
             return _captured
     return _C._cast_Short(input, non_blocking)
 
 def _cast_Half(input, non_blocking=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cast_Half, (input, non_blocking), {})
         if _captured is not None:
             return _captured
     return _C._cast_Half(input, non_blocking)
 
 def _backward(input, inputs, gradient=None, retain_graph=None, create_graph=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_backward, (input, inputs, gradient, retain_graph, create_graph), {})
         if _captured is not None:
             return _captured
     return input._backward(inputs=inputs, gradient=gradient, retain_graph=retain_graph, create_graph=create_graph)
 
 def set_data(input, new_data):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(set_data, (input, new_data), {})
         if _captured is not None:
             return _captured
     return input.set_data(new_data=new_data)
 
 def shallow_copy_data(input, new_data):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(shallow_copy_data, (input, new_data), {})
         if _captured is not None:
             return _captured
     return input.shallow_copy_data(new_data=new_data)
 
 def data(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(data, (input,), {})
         if _captured is not None:
             return _captured
     return input.data()
 
 def is_leaf(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_leaf, (input,), {})
         if _captured is not None:
             return _captured
     return input.is_leaf()
 
 def output_nr(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(output_nr, (input,), {})
         if _captured is not None:
             return _captured
     return input.output_nr()
 
 def _version(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_version, (input,), {})
         if _captured is not None:
             return _captured
@@ -9978,35 +9979,35 @@ def requires_grad_(input, requires_grad=True):
     return input.requires_grad_(requires_grad=requires_grad)
 
 def retain_grad(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(retain_grad, (input,), {})
         if _captured is not None:
             return _captured
     return input.retain_grad()
 
 def retains_grad(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(retains_grad, (input,), {})
         if _captured is not None:
             return _captured
     return input.retains_grad()
 
 def _fw_primal(input, level):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fw_primal, (input, level), {})
         if _captured is not None:
             return _captured
     return input._fw_primal(level=level)
 
 def _make_dual(primal, tangent, level):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_make_dual, (primal, tangent, level), {})
         if _captured is not None:
             return _captured
     return _C._make_dual(primal, tangent, level)
 
 def _unpack_dual(dual, level):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_unpack_dual, (dual, level), {})
         if _captured is not None:
             return _captured
@@ -10014,12 +10015,12 @@ def _unpack_dual(dual, level):
 
 def _new_zeros_with_same_feature_meta(input, other, *, self_num_batch_dims=0, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_new_zeros_with_same_feature_meta, (input, other), {'self_num_batch_dims': self_num_batch_dims, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._new_zeros_with_same_feature_meta(self=input, other=other, self_num_batch_dims=self_num_batch_dims, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_new_zeros_with_same_feature_meta, (input, other), {'self_num_batch_dims': self_num_batch_dims})
         if _captured is not None:
             return _captured
@@ -10028,42 +10029,42 @@ def _new_zeros_with_same_feature_meta(input, other, *, self_num_batch_dims=0, ou
     return _C._new_zeros_with_same_feature_meta(self=input, other=other, self_num_batch_dims=self_num_batch_dims)
 
 def _has_same_storage_numel(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_has_same_storage_numel, (input, other), {})
         if _captured is not None:
             return _captured
     return _C._has_same_storage_numel(input, other)
 
 def _assert_async(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_assert_async, (input,), {})
         if _captured is not None:
             return _captured
     return _C._assert_async(input)
 
 def _assert_scalar(input, assert_msg):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_assert_scalar, (input, assert_msg), {})
         if _captured is not None:
             return _captured
     return _C._assert_scalar(input, assert_msg)
 
 def _functional_assert_scalar(input, assert_msg, dep_token):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_functional_assert_scalar, (input, assert_msg, dep_token), {})
         if _captured is not None:
             return _captured
     return _C._functional_assert_scalar(input, assert_msg, dep_token)
 
 def _functional_assert_async(input, assert_msg, dep_token):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_functional_assert_async, (input, assert_msg, dep_token), {})
         if _captured is not None:
             return _captured
     return _C._functional_assert_async(input, assert_msg, dep_token)
 
 def _assert_tensor_metadata(a, size=None, stride=None, dtype=None, device=None, layout=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_assert_tensor_metadata, (a, size, stride, dtype, device, layout), {})
         if _captured is not None:
             return _captured
@@ -10074,42 +10075,42 @@ def _assert_tensor_metadata(a, size=None, stride=None, dtype=None, device=None, 
     return _C._assert_tensor_metadata(a, size, stride, dtype, device=_ensure_device(device), layout=layout)
 
 def _print(s):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_print, (s,), {})
         if _captured is not None:
             return _captured
     return _C._print(s)
 
 def sym_constrain_range(size, min=None, max=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sym_constrain_range, (size, min, max), {})
         if _captured is not None:
             return _captured
     return _C.sym_constrain_range(size, min=min, max=max)
 
 def sym_constrain_range_for_size(size, min=None, max=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sym_constrain_range_for_size, (size, min, max), {})
         if _captured is not None:
             return _captured
     return _C.sym_constrain_range_for_size(size, min=min, max=max)
 
 def _functional_sym_constrain_range(size, min, max, dep_token):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_functional_sym_constrain_range, (size, min, max, dep_token), {})
         if _captured is not None:
             return _captured
     return _C._functional_sym_constrain_range(size, min, max, dep_token)
 
 def _functional_sym_constrain_range_for_size(size, min, max, dep_token):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_functional_sym_constrain_range_for_size, (size, min, max, dep_token), {})
         if _captured is not None:
             return _captured
     return _C._functional_sym_constrain_range_for_size(size, min, max, dep_token)
 
 def _make_dep_token(dtype=None, layout=None, device=None, pin_memory=None, memory_format=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_make_dep_token, (dtype, layout, device, pin_memory, memory_format), {})
         if _captured is not None:
             return _captured
@@ -10118,7 +10119,7 @@ def _make_dep_token(dtype=None, layout=None, device=None, pin_memory=None, memor
     return _C._make_dep_token(dtype=dtype, layout=layout, device=_ensure_device(device), pin_memory=pin_memory, memory_format=memory_format)
 
 def _use_cudnn_ctc_loss(log_probs, targets, input_lengths, target_lengths, blank):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_use_cudnn_ctc_loss, (log_probs, targets, input_lengths, target_lengths, blank), {})
         if _captured is not None:
             return _captured
@@ -10130,19 +10131,19 @@ def _use_cudnn_ctc_loss(log_probs, targets, input_lengths, target_lengths, blank
 
 def _cudnn_ctc_loss(log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_cudnn_ctc_loss, (log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._cudnn_ctc_loss(log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cudnn_ctc_loss, (log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity), {})
         if _captured is not None:
             return _captured
     return _C._cudnn_ctc_loss(log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity)
 
 def _use_cudnn_rnn_flatten_weight():
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_use_cudnn_rnn_flatten_weight, (), {})
         if _captured is not None:
             return _captured
@@ -10150,12 +10151,12 @@ def _use_cudnn_rnn_flatten_weight():
 
 def _cudnn_rnn_flatten_weight(weight_arr, weight_stride0, input_size, mode, hidden_size, proj_size, num_layers, batch_first, bidirectional, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_cudnn_rnn_flatten_weight, (weight_arr, weight_stride0, input_size, mode, hidden_size, proj_size, num_layers, batch_first, bidirectional), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._cudnn_rnn_flatten_weight(weight_arr=weight_arr, weight_stride0=weight_stride0, input_size=input_size, mode=mode, hidden_size=hidden_size, proj_size=proj_size, num_layers=num_layers, batch_first=batch_first, bidirectional=bidirectional, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cudnn_rnn_flatten_weight, (weight_arr, weight_stride0, input_size, mode, hidden_size, proj_size, num_layers, batch_first, bidirectional), {})
         if _captured is not None:
             return _captured
@@ -10163,12 +10164,12 @@ def _cudnn_rnn_flatten_weight(weight_arr, weight_stride0, input_size, mode, hidd
 
 def _cudnn_rnn(input, weight, weight_stride0, weight_buf, hx, cx, mode, hidden_size, proj_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_cudnn_rnn, (input, weight, weight_stride0, weight_buf, hx, cx, mode, hidden_size, proj_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._cudnn_rnn(input=input, weight=weight, weight_stride0=weight_stride0, weight_buf=weight_buf, hx=hx, cx=cx, mode=mode, hidden_size=hidden_size, proj_size=proj_size, num_layers=num_layers, batch_first=batch_first, dropout=dropout, train=train, bidirectional=bidirectional, batch_sizes=batch_sizes, dropout_state=dropout_state, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cudnn_rnn, (input, weight, weight_stride0, weight_buf, hx, cx, mode, hidden_size, proj_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state), {})
         if _captured is not None:
             return _captured
@@ -10176,12 +10177,12 @@ def _cudnn_rnn(input, weight, weight_stride0, weight_buf, hx, cx, mode, hidden_s
 
 def _cudnn_rnn_backward(input, weight, weight_stride0, weight_buf, hx, cx, output, grad_output, grad_hy, grad_cy, mode, hidden_size, proj_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, reserve, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_cudnn_rnn_backward, (input, weight, weight_stride0, weight_buf, hx, cx, output, grad_output, grad_hy, grad_cy, mode, hidden_size, proj_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, reserve, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._cudnn_rnn_backward(input=input, weight=weight, weight_stride0=weight_stride0, weight_buf=weight_buf, hx=hx, cx=cx, output=output, grad_output=grad_output, grad_hy=grad_hy, grad_cy=grad_cy, mode=mode, hidden_size=hidden_size, proj_size=proj_size, num_layers=num_layers, batch_first=batch_first, dropout=dropout, train=train, bidirectional=bidirectional, batch_sizes=batch_sizes, dropout_state=dropout_state, reserve=reserve, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cudnn_rnn_backward, (input, weight, weight_stride0, weight_buf, hx, cx, output, grad_output, grad_hy, grad_cy, mode, hidden_size, proj_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, reserve, output_mask), {})
         if _captured is not None:
             return _captured
@@ -10189,12 +10190,12 @@ def _cudnn_rnn_backward(input, weight, weight_stride0, weight_buf, hx, cx, outpu
 
 def _cudnn_init_dropout_state(dropout, train, dropout_seed, *, dtype=None, layout=None, device=None, pin_memory=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_cudnn_init_dropout_state, (dropout, train, dropout_seed), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._cudnn_init_dropout_state(dropout=dropout, train=train, dropout_seed=dropout_seed, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cudnn_init_dropout_state, (dropout, train, dropout_seed), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -10203,7 +10204,7 @@ def _cudnn_init_dropout_state(dropout, train, dropout_seed, *, dtype=None, layou
     return _C._cudnn_init_dropout_state(dropout=dropout, train=train, dropout_seed=dropout_seed, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory)
 
 def _debug_has_internal_overlap(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_debug_has_internal_overlap, (input,), {})
         if _captured is not None:
             return _captured
@@ -10211,12 +10212,12 @@ def _debug_has_internal_overlap(input):
 
 def _fused_dropout(input, p, generator=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_fused_dropout, (input, p, generator), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._fused_dropout(self=input, p=p, generator=generator, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_dropout, (input, p, generator), {})
         if _captured is not None:
             return _captured
@@ -10224,68 +10225,68 @@ def _fused_dropout(input, p, generator=None, *, out=None):
 
 def _masked_scale(input, mask, scale, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_masked_scale, (input, mask, scale), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._masked_scale(self=input, mask=mask, scale=scale, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_masked_scale, (input, mask, scale), {})
         if _captured is not None:
             return _captured
     return _C._masked_scale(self=input, mask=mask, scale=scale)
 
 def _sobol_engine_draw(quasi, n, sobolstate, dimension, num_generated, dtype):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sobol_engine_draw, (quasi, n, sobolstate, dimension, num_generated, dtype), {})
         if _captured is not None:
             return _captured
     return _C._sobol_engine_draw(quasi, n, sobolstate, dimension, num_generated, dtype)
 
 def _sobol_engine_ff_(input, n, sobolstate, dimension, num_generated):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sobol_engine_ff_, (input, n, sobolstate, dimension, num_generated), {})
         if _captured is not None:
             return _captured
     return _C._sobol_engine_ff_(input, n, sobolstate, dimension, num_generated)
 
 def _sobol_engine_scramble_(input, ltm, dimension):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sobol_engine_scramble_, (input, ltm, dimension), {})
         if _captured is not None:
             return _captured
     return _C._sobol_engine_scramble_(input, ltm, dimension)
 
 def _sobol_engine_initialize_state_(input, dimension):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sobol_engine_initialize_state_, (input, dimension), {})
         if _captured is not None:
             return _captured
     return _C._sobol_engine_initialize_state_(input, dimension)
 
 def _reshape_from_tensor(input, shape):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_reshape_from_tensor, (input, shape), {})
         if _captured is not None:
             return _captured
     return _C._reshape_from_tensor(input, shape)
 
 def _shape_as_tensor(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_shape_as_tensor, (input,), {})
         if _captured is not None:
             return _captured
     return _C._shape_as_tensor(input)
 
 def chalf(input, memory_format=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(chalf, (input, memory_format), {})
         if _captured is not None:
             return _captured
     return input.chalf(memory_format=memory_format)
 
 def _conj(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_conj, (input,), {})
         if _captured is not None:
             return _captured
@@ -10293,19 +10294,19 @@ def _conj(input):
 
 def _conj_physical(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_conj_physical, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._conj_physical(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_conj_physical, (input,), {})
         if _captured is not None:
             return _captured
     return _C._conj_physical(self=input)
 
 def _neg_view(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_neg_view, (input,), {})
         if _captured is not None:
             return _captured
@@ -10313,19 +10314,19 @@ def _neg_view(input):
 
 def _add_relu(input, other, *, alpha=1, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_add_relu, (input, other), {'alpha': alpha, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._add_relu(input, other, alpha=alpha, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_add_relu, (input, other), {'alpha': alpha})
         if _captured is not None:
             return _captured
     return _C._add_relu(input, other, alpha=alpha)
 
 def _add_relu_(input, other, alpha=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_add_relu_, (input, other, alpha), {})
         if _captured is not None:
             return _captured
@@ -10333,19 +10334,19 @@ def _add_relu_(input, other, alpha=1):
 
 def affine_grid_generator(theta, size, align_corners, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(affine_grid_generator, (theta, size, align_corners), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.affine_grid_generator(theta=theta, size=size, align_corners=align_corners, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(affine_grid_generator, (theta, size, align_corners), {})
         if _captured is not None:
             return _captured
     return _C.affine_grid_generator(theta=theta, size=size, align_corners=align_corners)
 
 def affine_grid_generator_backward(grad, size, align_corners):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(affine_grid_generator_backward, (grad, size, align_corners), {})
         if _captured is not None:
             return _captured
@@ -10354,21 +10355,21 @@ def affine_grid_generator_backward(grad, size, align_corners):
     return _C.affine_grid_generator_backward(grad, size, align_corners)
 
 def _is_all_true(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_is_all_true, (input,), {})
         if _captured is not None:
             return _captured
     return _C._is_all_true(input)
 
 def _is_any_true(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_is_any_true, (input,), {})
         if _captured is not None:
             return _captured
     return _C._is_any_true(input)
 
 def _test_check_tensor(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_test_check_tensor, (input,), {})
         if _captured is not None:
             return _captured
@@ -10376,26 +10377,26 @@ def _test_check_tensor(input):
 
 def _test_functorch_fallback(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_test_functorch_fallback, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._test_functorch_fallback(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_test_functorch_fallback, (input, other), {})
         if _captured is not None:
             return _captured
     return _C._test_functorch_fallback(self=input, other=other)
 
 def _dim_arange(like, dim):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_dim_arange, (like, dim), {})
         if _captured is not None:
             return _captured
     return _C._dim_arange(like, dim)
 
 def as_strided(input, size, stride, storage_offset=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(as_strided, (input, size, stride, storage_offset), {})
         if _captured is not None:
             return _captured
@@ -10406,7 +10407,7 @@ def as_strided(input, size, stride, storage_offset=None):
     return _C.as_strided(input, size, stride, storage_offset)
 
 def as_strided_(input, size, stride, storage_offset=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(as_strided_, (input, size, stride, storage_offset), {})
         if _captured is not None:
             return _captured
@@ -10421,19 +10422,19 @@ def baddbmm_(input, batch1, batch2, beta=1, alpha=1):
 
 def quantized_batch_norm(input, weight, bias, mean, var, eps, output_scale, output_zero_point, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(quantized_batch_norm, (input, weight, bias, mean, var, eps, output_scale, output_zero_point), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.quantized_batch_norm(input=input, weight=weight, bias=bias, mean=mean, var=var, eps=eps, output_scale=output_scale, output_zero_point=output_zero_point, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_batch_norm, (input, weight, bias, mean, var, eps, output_scale, output_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_batch_norm(input=input, weight=weight, bias=bias, mean=mean, var=var, eps=eps, output_scale=output_scale, output_zero_point=output_zero_point)
 
 def quantized_layer_norm(input, normalized_shape, weight, bias, eps, output_scale, output_zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_layer_norm, (input, normalized_shape, weight, bias, eps, output_scale, output_zero_point), {})
         if _captured is not None:
             return _captured
@@ -10442,28 +10443,28 @@ def quantized_layer_norm(input, normalized_shape, weight, bias, eps, output_scal
     return _C.quantized_layer_norm(input, normalized_shape, weight, bias, eps, output_scale, output_zero_point)
 
 def quantized_group_norm(input, num_groups, weight, bias, eps, output_scale, output_zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_group_norm, (input, num_groups, weight, bias, eps, output_scale, output_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_group_norm(input, num_groups, weight, bias, eps, output_scale, output_zero_point)
 
 def quantized_instance_norm(input, weight, bias, eps, output_scale, output_zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_instance_norm, (input, weight, bias, eps, output_scale, output_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_instance_norm(input, weight, bias, eps, output_scale, output_zero_point)
 
 def _batch_norm_impl_index(input, weight, bias, running_mean, running_var, training, momentum, eps, cudnn_enabled):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_batch_norm_impl_index, (input, weight, bias, running_mean, running_var, training, momentum, eps, cudnn_enabled), {})
         if _captured is not None:
             return _captured
     return _C._batch_norm_impl_index(input, weight, bias, running_mean, running_var, training, momentum, eps, cudnn_enabled)
 
 def _batch_norm_impl_index_backward(impl_index, input, grad_output, weight, running_mean, running_var, save_mean, save_var_transform, train, eps, output_mask, reservedSpace):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_batch_norm_impl_index_backward, (impl_index, input, grad_output, weight, running_mean, running_var, save_mean, save_var_transform, train, eps, output_mask, reservedSpace), {})
         if _captured is not None:
             return _captured
@@ -10473,14 +10474,14 @@ def copysign_(input, other):
     return input.copysign_(other=other)
 
 def _lazy_clone(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_lazy_clone, (input,), {})
         if _captured is not None:
             return _captured
     return _C._lazy_clone(input)
 
 def _sparse_broadcast_to(input, size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_broadcast_to, (input, size), {})
         if _captured is not None:
             return _captured
@@ -10489,7 +10490,7 @@ def _sparse_broadcast_to(input, size):
     return _C._sparse_broadcast_to(input, size)
 
 def cudnn_is_acceptable(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cudnn_is_acceptable, (input,), {})
         if _captured is not None:
             return _captured
@@ -10497,19 +10498,19 @@ def cudnn_is_acceptable(input):
 
 def _convolution(input, weight, bias, stride, padding, dilation, transposed, output_padding, groups, benchmark, deterministic, cudnn_enabled, allow_tf32, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_convolution, (input, weight, bias, stride, padding, dilation, transposed, output_padding, groups, benchmark, deterministic, cudnn_enabled, allow_tf32), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._convolution(input, weight, bias, stride, padding, dilation, transposed, output_padding, groups, benchmark, deterministic, cudnn_enabled, allow_tf32, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_convolution, (input, weight, bias, stride, padding, dilation, transposed, output_padding, groups, benchmark, deterministic, cudnn_enabled, allow_tf32), {})
         if _captured is not None:
             return _captured
     return _C._convolution(input, weight, bias, stride, padding, dilation, transposed, output_padding, groups, benchmark, deterministic, cudnn_enabled, allow_tf32)
 
 def _convolution_mode(input, weight, bias, stride, padding, dilation, groups):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_convolution_mode, (input, weight, bias, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -10520,7 +10521,7 @@ def _convolution_mode(input, weight, bias, stride, padding, dilation, groups):
     return _C._convolution_mode(input, weight, bias, stride, padding, dilation, groups)
 
 def _convolution_double_backward(ggI, ggW, ggb, gO, weight, input, stride, padding, dilation, transposed, output_padding, groups, output_mask):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_convolution_double_backward, (ggI, ggW, ggb, gO, weight, input, stride, padding, dilation, transposed, output_padding, groups, output_mask), {})
         if _captured is not None:
             return _captured
@@ -10535,7 +10536,7 @@ def _convolution_double_backward(ggI, ggW, ggb, gO, weight, input, stride, paddi
     return _C._convolution_double_backward(ggI, ggW, ggb, gO, weight, input, stride, padding, dilation, transposed, output_padding, groups, output_mask)
 
 def conv_tbc_backward(input, input1, weight, bias, pad):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_tbc_backward, (input, input1, weight, bias, pad), {})
         if _captured is not None:
             return _captured
@@ -10543,12 +10544,12 @@ def conv_tbc_backward(input, input1, weight, bias, pad):
 
 def copy(input, src, non_blocking=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(copy, (input, src, non_blocking), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.copy(self=input, src=src, non_blocking=non_blocking, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(copy, (input, src, non_blocking), {})
         if _captured is not None:
             return _captured
@@ -10556,12 +10557,12 @@ def copy(input, src, non_blocking=False, *, out=None):
 
 def _copy_from(input, dst, non_blocking=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_copy_from, (input, dst, non_blocking), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._copy_from(self=input, dst=dst, non_blocking=non_blocking, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_copy_from, (input, dst, non_blocking), {})
         if _captured is not None:
             return _captured
@@ -10569,12 +10570,12 @@ def _copy_from(input, dst, non_blocking=False, *, out=None):
 
 def _copy_from_and_resize(input, dst, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_copy_from_and_resize, (input, dst), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._copy_from_and_resize(self=input, dst=dst, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_copy_from_and_resize, (input, dst), {})
         if _captured is not None:
             return _captured
@@ -10582,12 +10583,12 @@ def _copy_from_and_resize(input, dst, *, out=None):
 
 def cudnn_affine_grid_generator(theta, N, C, H, W, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cudnn_affine_grid_generator, (theta, N, C, H, W), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cudnn_affine_grid_generator(theta=theta, N=N, C=C, H=H, W=W, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cudnn_affine_grid_generator, (theta, N, C, H, W), {})
         if _captured is not None:
             return _captured
@@ -10595,12 +10596,12 @@ def cudnn_affine_grid_generator(theta, N, C, H, W, *, out=None):
 
 def cudnn_affine_grid_generator_backward(grad, N, C, H, W, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cudnn_affine_grid_generator_backward, (grad, N, C, H, W), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cudnn_affine_grid_generator_backward(grad=grad, N=N, C=C, H=H, W=W, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cudnn_affine_grid_generator_backward, (grad, N, C, H, W), {})
         if _captured is not None:
             return _captured
@@ -10608,12 +10609,12 @@ def cudnn_affine_grid_generator_backward(grad, N, C, H, W, *, out=None):
 
 def cudnn_batch_norm(input, weight, bias, running_mean, running_var, training, exponential_average_factor, epsilon, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cudnn_batch_norm, (input, weight, bias, running_mean, running_var, training, exponential_average_factor, epsilon), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cudnn_batch_norm(input=input, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var, training=training, exponential_average_factor=exponential_average_factor, epsilon=epsilon, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cudnn_batch_norm, (input, weight, bias, running_mean, running_var, training, exponential_average_factor, epsilon), {})
         if _captured is not None:
             return _captured
@@ -10621,12 +10622,12 @@ def cudnn_batch_norm(input, weight, bias, running_mean, running_var, training, e
 
 def cudnn_batch_norm_backward(input, grad_output, weight, running_mean, running_var, save_mean, save_var, epsilon, reserveSpace, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cudnn_batch_norm_backward, (input, grad_output, weight, running_mean, running_var, save_mean, save_var, epsilon, reserveSpace), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cudnn_batch_norm_backward(input=input, grad_output=grad_output, weight=weight, running_mean=running_mean, running_var=running_var, save_mean=save_mean, save_var=save_var, epsilon=epsilon, reserveSpace=reserveSpace, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cudnn_batch_norm_backward, (input, grad_output, weight, running_mean, running_var, save_mean, save_var, epsilon, reserveSpace), {})
         if _captured is not None:
             return _captured
@@ -10634,12 +10635,12 @@ def cudnn_batch_norm_backward(input, grad_output, weight, running_mean, running_
 
 def cudnn_convolution(input, weight, padding, stride, dilation, groups, benchmark, deterministic, allow_tf32, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cudnn_convolution, (input, weight, padding, stride, dilation, groups, benchmark, deterministic, allow_tf32), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cudnn_convolution(self=input, weight=weight, padding=padding, stride=stride, dilation=dilation, groups=groups, benchmark=benchmark, deterministic=deterministic, allow_tf32=allow_tf32, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cudnn_convolution, (input, weight, padding, stride, dilation, groups, benchmark, deterministic, allow_tf32), {})
         if _captured is not None:
             return _captured
@@ -10647,12 +10648,12 @@ def cudnn_convolution(input, weight, padding, stride, dilation, groups, benchmar
 
 def cudnn_convolution_transpose(input, weight, padding, output_padding, stride, dilation, groups, benchmark, deterministic, allow_tf32, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cudnn_convolution_transpose, (input, weight, padding, output_padding, stride, dilation, groups, benchmark, deterministic, allow_tf32), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cudnn_convolution_transpose(self=input, weight=weight, padding=padding, output_padding=output_padding, stride=stride, dilation=dilation, groups=groups, benchmark=benchmark, deterministic=deterministic, allow_tf32=allow_tf32, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cudnn_convolution_transpose, (input, weight, padding, output_padding, stride, dilation, groups, benchmark, deterministic, allow_tf32), {})
         if _captured is not None:
             return _captured
@@ -10660,12 +10661,12 @@ def cudnn_convolution_transpose(input, weight, padding, output_padding, stride, 
 
 def _mps_convolution_transpose(input, weight, padding, output_padding, stride, dilation, groups, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_mps_convolution_transpose, (input, weight, padding, output_padding, stride, dilation, groups), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._mps_convolution_transpose(self=input, weight=weight, padding=padding, output_padding=output_padding, stride=stride, dilation=dilation, groups=groups, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_mps_convolution_transpose, (input, weight, padding, output_padding, stride, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -10673,12 +10674,12 @@ def _mps_convolution_transpose(input, weight, padding, output_padding, stride, d
 
 def mps_convolution_transpose_backward(input, grad_output, weight, padding, output_padding, stride, dilation, groups, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mps_convolution_transpose_backward, (input, grad_output, weight, padding, output_padding, stride, dilation, groups, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mps_convolution_transpose_backward(self=input, grad_output=grad_output, weight=weight, padding=padding, output_padding=output_padding, stride=stride, dilation=dilation, groups=groups, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mps_convolution_transpose_backward, (input, grad_output, weight, padding, output_padding, stride, dilation, groups, output_mask), {})
         if _captured is not None:
             return _captured
@@ -10686,12 +10687,12 @@ def mps_convolution_transpose_backward(input, grad_output, weight, padding, outp
 
 def cudnn_convolution_relu(input, weight, bias, stride, padding, dilation, groups, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cudnn_convolution_relu, (input, weight, bias, stride, padding, dilation, groups), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cudnn_convolution_relu(self=input, weight=weight, bias=bias, stride=stride, padding=padding, dilation=dilation, groups=groups, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cudnn_convolution_relu, (input, weight, bias, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -10699,12 +10700,12 @@ def cudnn_convolution_relu(input, weight, bias, stride, padding, dilation, group
 
 def cudnn_convolution_add_relu(input, weight, z, alpha, bias, stride, padding, dilation, groups, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cudnn_convolution_add_relu, (input, weight, z, alpha, bias, stride, padding, dilation, groups), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cudnn_convolution_add_relu(self=input, weight=weight, z=z, alpha=alpha, bias=bias, stride=stride, padding=padding, dilation=dilation, groups=groups, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cudnn_convolution_add_relu, (input, weight, z, alpha, bias, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -10712,12 +10713,12 @@ def cudnn_convolution_add_relu(input, weight, z, alpha, bias, stride, padding, d
 
 def cudnn_grid_sampler(input, grid, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cudnn_grid_sampler, (input, grid), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cudnn_grid_sampler(self=input, grid=grid, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cudnn_grid_sampler, (input, grid), {})
         if _captured is not None:
             return _captured
@@ -10725,47 +10726,47 @@ def cudnn_grid_sampler(input, grid, *, out=None):
 
 def cudnn_grid_sampler_backward(input, grid, grad_output, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(cudnn_grid_sampler_backward, (input, grid, grad_output), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.cudnn_grid_sampler_backward(self=input, grid=grid, grad_output=grad_output, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cudnn_grid_sampler_backward, (input, grid, grad_output), {})
         if _captured is not None:
             return _captured
     return _C.cudnn_grid_sampler_backward(self=input, grid=grid, grad_output=grad_output)
 
 def _cummax_helper(input, values, indices, dim):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cummax_helper, (input, values, indices, dim), {})
         if _captured is not None:
             return _captured
     return _C._cummax_helper(input, values, indices, dim)
 
 def _cummin_helper(input, values, indices, dim):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cummin_helper, (input, values, indices, dim), {})
         if _captured is not None:
             return _captured
     return _C._cummin_helper(input, values, indices, dim)
 
 def cummaxmin_backward(grad, input, indices, dim):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cummaxmin_backward, (grad, input, indices, dim), {})
         if _captured is not None:
             return _captured
     return _C.cummaxmin_backward(grad, input, indices, dim)
 
 def cumprod_backward(grad, input, dim, output):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cumprod_backward, (grad, input, dim, output), {})
         if _captured is not None:
             return _captured
     return _C.cumprod_backward(grad, input, dim, output)
 
 def ctc_loss(log_probs, targets, input_lengths, target_lengths, blank=0, reduction=1, zero_infinity=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ctc_loss, (log_probs, targets, input_lengths, target_lengths, blank, reduction, zero_infinity), {})
         if _captured is not None:
             return _captured
@@ -10780,7 +10781,7 @@ def fill_diagonal_(input, fill_value, wrap=False):
 
 def divide_(input, other, rounding_mode=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(divide_, (input, other, rounding_mode), {'out': out})
             if _captured is not None:
                 return _captured
@@ -10794,7 +10795,7 @@ def divide_(input, other, rounding_mode=None, *, out=None):
         if rounding_mode is None:
             return _C.divide_(input, other, out=out)
         return _C.divide_(input, other, rounding_mode=rounding_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(divide_, (input, other), {'rounding_mode': rounding_mode})
         if _captured is not None:
             return _captured
@@ -10808,35 +10809,35 @@ def true_divide_(input, other):
     return input.true_divide_(other=other)
 
 def embedding_backward(grad, indices, num_weights, padding_idx, scale_grad_by_freq, sparse):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(embedding_backward, (grad, indices, num_weights, padding_idx, scale_grad_by_freq, sparse), {})
         if _captured is not None:
             return _captured
     return _C.embedding_backward(grad, indices, num_weights, padding_idx, scale_grad_by_freq, sparse)
 
 def embedding_renorm_(input, indices, max_norm, norm_type):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(embedding_renorm_, (input, indices, max_norm, norm_type), {})
         if _captured is not None:
             return _captured
     return _C.embedding_renorm_(input, indices, max_norm, norm_type)
 
 def embedding_sparse_backward(grad, indices, num_weights, padding_idx, scale_grad_by_freq):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(embedding_sparse_backward, (grad, indices, num_weights, padding_idx, scale_grad_by_freq), {})
         if _captured is not None:
             return _captured
     return _C.embedding_sparse_backward(grad, indices, num_weights, padding_idx, scale_grad_by_freq)
 
 def _rowwise_prune(weight, mask, compressed_indices_dtype):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_rowwise_prune, (weight, mask, compressed_indices_dtype), {})
         if _captured is not None:
             return _captured
     return _C._rowwise_prune(weight, mask, compressed_indices_dtype)
 
 def embedding_bag(input, indices=None, offsets=None, scale_grad_by_freq=False, mode=0, sparse=False, per_sample_weights=None, include_last_offset=False, padding_idx=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(embedding_bag, (input, indices, offsets, scale_grad_by_freq, mode, sparse, per_sample_weights, include_last_offset, padding_idx), {})
         if _captured is not None:
             return _captured
@@ -10845,14 +10846,14 @@ def embedding_bag(input, indices=None, offsets=None, scale_grad_by_freq=False, m
     return _C.embedding_bag(input, indices, offsets, scale_grad_by_freq, mode, sparse, per_sample_weights, include_last_offset, padding_idx)
 
 def _embedding_bag_backward(grad, indices, offsets, offset2bag, bag_size, maximum_indices, num_weights, scale_grad_by_freq, mode, sparse, per_sample_weights, padding_idx=-1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_embedding_bag_backward, (grad, indices, offsets, offset2bag, bag_size, maximum_indices, num_weights, scale_grad_by_freq, mode, sparse, per_sample_weights, padding_idx), {})
         if _captured is not None:
             return _captured
     return _C._embedding_bag_backward(grad, indices, offsets, offset2bag, bag_size, maximum_indices, num_weights, scale_grad_by_freq, mode, sparse, per_sample_weights, padding_idx)
 
 def _embedding_bag_sparse_backward(grad, indices, offsets, offset2bag, bag_size, num_weights, scale_grad_by_freq, mode, per_sample_weights, padding_idx=-1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_embedding_bag_sparse_backward, (grad, indices, offsets, offset2bag, bag_size, num_weights, scale_grad_by_freq, mode, per_sample_weights, padding_idx), {})
         if _captured is not None:
             return _captured
@@ -10860,12 +10861,12 @@ def _embedding_bag_sparse_backward(grad, indices, offsets, offset2bag, bag_size,
 
 def empty_permuted(size, physical_layout, *, dtype=None, layout=None, device=None, pin_memory=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(empty_permuted, (size, physical_layout), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.empty_permuted(size=size, physical_layout=physical_layout, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(empty_permuted, (size, physical_layout), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -10874,35 +10875,35 @@ def empty_permuted(size, physical_layout, *, dtype=None, layout=None, device=Non
     return _C.empty_permuted(size=size, physical_layout=physical_layout, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory)
 
 def new_empty(input, size, dtype=None, layout=None, device=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(new_empty, (input, size, dtype, layout, device, pin_memory), {})
         if _captured is not None:
             return _captured
     return input.new_empty(size=size, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory)
 
 def new_empty_strided(input, size, stride, dtype=None, layout=None, device=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(new_empty_strided, (input, size, stride, dtype, layout, device, pin_memory), {})
         if _captured is not None:
             return _captured
     return input.new_empty_strided(size=size, stride=stride, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory)
 
 def new_full(input, size, fill_value, dtype=None, layout=None, device=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(new_full, (input, size, fill_value, dtype, layout, device, pin_memory), {})
         if _captured is not None:
             return _captured
     return input.new_full(size=size, fill_value=fill_value, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory)
 
 def new_zeros(input, size, dtype=None, layout=None, device=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(new_zeros, (input, size, dtype, layout, device, pin_memory), {})
         if _captured is not None:
             return _captured
     return input.new_zeros(size=size, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory)
 
 def new_ones(input, size, dtype=None, layout=None, device=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(new_ones, (input, size, dtype, layout, device, pin_memory), {})
         if _captured is not None:
             return _captured
@@ -10910,12 +10911,12 @@ def new_ones(input, size, dtype=None, layout=None, device=None, pin_memory=None)
 
 def _empty_affine_quantized(size, *, dtype=None, layout=None, device=None, pin_memory=None, scale=1, zero_point=0, memory_format=tensorplay.contiguous_format, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_empty_affine_quantized, (size,), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'scale': scale, 'zero_point': zero_point, 'memory_format': memory_format, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._empty_affine_quantized(size=size, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, scale=scale, zero_point=zero_point, memory_format=memory_format, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_empty_affine_quantized, (size,), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'scale': scale, 'zero_point': zero_point, 'memory_format': memory_format})
         if _captured is not None:
             return _captured
@@ -10923,19 +10924,19 @@ def _empty_affine_quantized(size, *, dtype=None, layout=None, device=None, pin_m
 
 def _empty_per_channel_affine_quantized(size, *, scales, zero_points, axis, dtype=None, layout=None, device=None, pin_memory=None, memory_format=tensorplay.contiguous_format, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_empty_per_channel_affine_quantized, (size,), {'scales': scales, 'zero_points': zero_points, 'axis': axis, 'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'memory_format': memory_format, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._empty_per_channel_affine_quantized(size=size, scales=scales, zero_points=zero_points, axis=axis, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, memory_format=memory_format, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_empty_per_channel_affine_quantized, (size,), {'scales': scales, 'zero_points': zero_points, 'axis': axis, 'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'memory_format': memory_format})
         if _captured is not None:
             return _captured
     return _C._empty_per_channel_affine_quantized(size=size, scales=scales, zero_points=zero_points, axis=axis, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, memory_format=memory_format)
 
 def _resize_output_(input, size, device):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_resize_output_, (input, size, device), {})
         if _captured is not None:
             return _captured
@@ -10945,12 +10946,12 @@ def _resize_output_(input, size, device):
 
 def empty_quantized(size, qtensor, *, dtype=None, layout=None, device=None, pin_memory=None, memory_format=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(empty_quantized, (size, qtensor), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'memory_format': memory_format, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.empty_quantized(size=size, qtensor=qtensor, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, memory_format=memory_format, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(empty_quantized, (size, qtensor), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'memory_format': memory_format})
         if _captured is not None:
             return _captured
@@ -10963,12 +10964,12 @@ def floor_divide_(input, other):
 
 def from_file(filename, shared=None, size=0, *, dtype=None, layout=None, device=None, pin_memory=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(from_file, (filename, shared, size), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.from_file(filename=filename, shared=shared, size=size, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(from_file, (filename, shared, size), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -10977,7 +10978,7 @@ def from_file(filename, shared=None, size=0, *, dtype=None, layout=None, device=
     return _C.from_file(filename=filename, shared=shared, size=size, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory)
 
 def grid_sampler(input, grid, interpolation_mode, padding_mode, align_corners):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(grid_sampler, (input, grid, interpolation_mode, padding_mode, align_corners), {})
         if _captured is not None:
             return _captured
@@ -10985,19 +10986,19 @@ def grid_sampler(input, grid, interpolation_mode, padding_mode, align_corners):
 
 def _grid_sampler_2d_cpu_fallback(input, grid, interpolation_mode, padding_mode, align_corners, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_grid_sampler_2d_cpu_fallback, (input, grid, interpolation_mode, padding_mode, align_corners), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._grid_sampler_2d_cpu_fallback(input=input, grid=grid, interpolation_mode=interpolation_mode, padding_mode=padding_mode, align_corners=align_corners, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_grid_sampler_2d_cpu_fallback, (input, grid, interpolation_mode, padding_mode, align_corners), {})
         if _captured is not None:
             return _captured
     return _C._grid_sampler_2d_cpu_fallback(input=input, grid=grid, interpolation_mode=interpolation_mode, padding_mode=padding_mode, align_corners=align_corners)
 
 def _grid_sampler_2d_cpu_fallback_backward(grad_output, input, grid, interpolation_mode, padding_mode, align_corners):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_grid_sampler_2d_cpu_fallback_backward, (grad_output, input, grid, interpolation_mode, padding_mode, align_corners), {})
         if _captured is not None:
             return _captured
@@ -11005,12 +11006,12 @@ def _grid_sampler_2d_cpu_fallback_backward(grad_output, input, grid, interpolati
 
 def native_group_norm(input, weight, bias, N, C, HxW, group, eps, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(native_group_norm, (input, weight, bias, N, C, HxW, group, eps), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.native_group_norm(input=input, weight=weight, bias=bias, N=N, C=C, HxW=HxW, group=group, eps=eps, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(native_group_norm, (input, weight, bias, N, C, HxW, group, eps), {})
         if _captured is not None:
             return _captured
@@ -11018,12 +11019,12 @@ def native_group_norm(input, weight, bias, N, C, HxW, group, eps, *, out=None):
 
 def native_group_norm_backward(grad_out, input, mean, rstd, weight, N, C, HxW, group, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(native_group_norm_backward, (grad_out, input, mean, rstd, weight, N, C, HxW, group, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.native_group_norm_backward(grad_out=grad_out, input=input, mean=mean, rstd=rstd, weight=weight, N=N, C=C, HxW=HxW, group=group, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(native_group_norm_backward, (grad_out, input, mean, rstd, weight, N, C, HxW, group, output_mask), {})
         if _captured is not None:
             return _captured
@@ -11031,12 +11032,12 @@ def native_group_norm_backward(grad_out, input, mean, rstd, weight, N, C, HxW, g
 
 def _fft_r2c(input, dim, normalization, onesided, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_fft_r2c, (input, dim, normalization, onesided), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._fft_r2c(self=input, dim=dim, normalization=normalization, onesided=onesided, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fft_r2c, (input, dim, normalization, onesided), {})
         if _captured is not None:
             return _captured
@@ -11044,12 +11045,12 @@ def _fft_r2c(input, dim, normalization, onesided, *, out=None):
 
 def _fft_c2r(input, dim, normalization, last_dim_size, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_fft_c2r, (input, dim, normalization, last_dim_size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._fft_c2r(self=input, dim=dim, normalization=normalization, last_dim_size=last_dim_size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fft_c2r, (input, dim, normalization, last_dim_size), {})
         if _captured is not None:
             return _captured
@@ -11057,19 +11058,19 @@ def _fft_c2r(input, dim, normalization, last_dim_size, *, out=None):
 
 def _fft_c2c(input, dim, normalization, forward, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_fft_c2c, (input, dim, normalization, forward), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._fft_c2c(self=input, dim=dim, normalization=normalization, forward=forward, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fft_c2c, (input, dim, normalization, forward), {})
         if _captured is not None:
             return _captured
     return _C._fft_c2c(self=input, dim=dim, normalization=normalization, forward=forward)
 
 def _validate_compressed_sparse_indices(is_crow, compressed_idx, plain_idx, cdim, dim, nnz):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_validate_compressed_sparse_indices, (is_crow, compressed_idx, plain_idx, cdim, dim, nnz), {})
         if _captured is not None:
             return _captured
@@ -11077,103 +11078,103 @@ def _validate_compressed_sparse_indices(is_crow, compressed_idx, plain_idx, cdim
 
 def index(input, indices, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(index, (input, indices), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.index(self=input, indices=indices, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(index, (input, indices), {})
         if _captured is not None:
             return _captured
     return _C.index(self=input, indices=indices)
 
 def _unsafe_index(input, indices):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_unsafe_index, (input, indices), {})
         if _captured is not None:
             return _captured
     return _C._unsafe_index(input, indices)
 
 def _unsafe_masked_index(input, mask, indices, fill):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_unsafe_masked_index, (input, mask, indices, fill), {})
         if _captured is not None:
             return _captured
     return _C._unsafe_masked_index(input, mask, indices, fill)
 
 def _unsafe_masked_index_put_accumulate(input, mask, indices, values):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_unsafe_masked_index_put_accumulate, (input, mask, indices, values), {})
         if _captured is not None:
             return _captured
     return _C._unsafe_masked_index_put_accumulate(input, mask, indices, values)
 
 def _unsafe_index_put(input, indices, values, accumulate=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_unsafe_index_put, (input, indices, values, accumulate), {})
         if _captured is not None:
             return _captured
     return _C._unsafe_index_put(input, indices, values, accumulate)
 
 def _index_put_impl_(input, indices, values, accumulate=False, unsafe=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_index_put_impl_, (input, indices, values, accumulate, unsafe), {})
         if _captured is not None:
             return _captured
     return _C._index_put_impl_(input, indices, values, accumulate, unsafe)
 
 def is_distributed(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_distributed, (input,), {})
         if _captured is not None:
             return _captured
     return _C.is_distributed(input)
 
 def is_floating_point(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_floating_point, (input,), {})
         if _captured is not None:
             return _captured
     return _C.is_floating_point(input)
 
 def _is_zerotensor(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_is_zerotensor, (input,), {})
         if _captured is not None:
             return _captured
     return _C._is_zerotensor(input)
 
 def is_inference(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_inference, (input,), {})
         if _captured is not None:
             return _captured
     return _C.is_inference(input)
 
 def numel(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(numel, (input,), {})
         if _captured is not None:
             return _captured
     return input.numel()
 
 def dim(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(dim, (input,), {})
         if _captured is not None:
             return _captured
     return input.dim()
 
 def storage_offset(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(storage_offset, (input,), {})
         if _captured is not None:
             return _captured
     return input.storage_offset()
 
 def is_contiguous(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_contiguous, (input,), {})
         if _captured is not None:
             return _captured
@@ -11181,12 +11182,12 @@ def is_contiguous(input):
 
 def native_layer_norm(input, normalized_shape, weight, bias, eps, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(native_layer_norm, (input, normalized_shape, weight, bias, eps), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.native_layer_norm(input=input, normalized_shape=normalized_shape, weight=weight, bias=bias, eps=eps, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(native_layer_norm, (input, normalized_shape, weight, bias, eps), {})
         if _captured is not None:
             return _captured
@@ -11194,19 +11195,19 @@ def native_layer_norm(input, normalized_shape, weight, bias, eps, *, out=None):
 
 def native_layer_norm_backward(grad_out, input, normalized_shape, mean, rstd, weight, bias, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(native_layer_norm_backward, (grad_out, input, normalized_shape, mean, rstd, weight, bias, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.native_layer_norm_backward(grad_out=grad_out, input=input, normalized_shape=normalized_shape, mean=mean, rstd=rstd, weight=weight, bias=bias, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(native_layer_norm_backward, (grad_out, input, normalized_shape, mean, rstd, weight, bias, output_mask), {})
         if _captured is not None:
             return _captured
     return _C.native_layer_norm_backward(grad_out=grad_out, input=input, normalized_shape=normalized_shape, mean=mean, rstd=rstd, weight=weight, bias=bias, output_mask=output_mask)
 
 def _fused_rms_norm(input, normalized_shape, weight, eps):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_rms_norm, (input, normalized_shape, weight, eps), {})
         if _captured is not None:
             return _captured
@@ -11215,7 +11216,7 @@ def _fused_rms_norm(input, normalized_shape, weight, eps):
     return _C._fused_rms_norm(input, normalized_shape, weight, eps)
 
 def _fused_rms_norm_backward(grad_out, input, normalized_shape, rstd, weight, output_mask):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_rms_norm_backward, (grad_out, input, normalized_shape, rstd, weight, output_mask), {})
         if _captured is not None:
             return _captured
@@ -11225,12 +11226,12 @@ def _fused_rms_norm_backward(grad_out, input, normalized_shape, rstd, weight, ou
 
 def linear_backward(input, grad_output, weight, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(linear_backward, (input, grad_output, weight, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.linear_backward(self=input, grad_output=grad_output, weight=weight, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(linear_backward, (input, grad_output, weight, output_mask), {})
         if _captured is not None:
             return _captured
@@ -11238,12 +11239,12 @@ def linear_backward(input, grad_output, weight, output_mask, *, out=None):
 
 def mkldnn_linear(input, weight, bias=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_linear, (input, weight, bias), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_linear(self=input, weight=weight, bias=bias, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_linear, (input, weight, bias), {})
         if _captured is not None:
             return _captured
@@ -11251,12 +11252,12 @@ def mkldnn_linear(input, weight, bias=None, *, out=None):
 
 def mkldnn_linear_backward_input(input_size, grad_output, weight, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_linear_backward_input, (input_size, grad_output, weight), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_linear_backward_input(input_size=input_size, grad_output=grad_output, weight=weight, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_linear_backward_input, (input_size, grad_output, weight), {})
         if _captured is not None:
             return _captured
@@ -11264,12 +11265,12 @@ def mkldnn_linear_backward_input(input_size, grad_output, weight, *, out=None):
 
 def mkldnn_linear_backward_weights(grad_output, input, weight, bias_defined, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_linear_backward_weights, (grad_output, input, weight, bias_defined), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_linear_backward_weights(grad_output=grad_output, input=input, weight=weight, bias_defined=bias_defined, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_linear_backward_weights, (grad_output, input, weight, bias_defined), {})
         if _captured is not None:
             return _captured
@@ -11277,110 +11278,110 @@ def mkldnn_linear_backward_weights(grad_output, input, weight, bias_defined, *, 
 
 def mkldnn_linear_backward(input, grad_output, weight, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_linear_backward, (input, grad_output, weight, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_linear_backward(self=input, grad_output=grad_output, weight=weight, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_linear_backward, (input, grad_output, weight, output_mask), {})
         if _captured is not None:
             return _captured
     return _C.mkldnn_linear_backward(self=input, grad_output=grad_output, weight=weight, output_mask=output_mask)
 
 def _cslt_compress(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cslt_compress, (input,), {})
         if _captured is not None:
             return _captured
     return _C._cslt_compress(input)
 
 def _cslt_sparse_mm(compressed_A, dense_B, bias=None, alpha=None, out_dtype=None, transpose_result=False, alg_id=0, split_k=1, split_k_mode=-1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cslt_sparse_mm, (compressed_A, dense_B, bias, alpha, out_dtype, transpose_result, alg_id, split_k, split_k_mode), {})
         if _captured is not None:
             return _captured
     return _C._cslt_sparse_mm(compressed_A, dense_B, bias, alpha, out_dtype, transpose_result, alg_id, split_k, split_k_mode)
 
 def _cslt_sparse_mm_search(compressed_A, dense_B, bias=None, alpha=None, out_dtype=None, transpose_result=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cslt_sparse_mm_search, (compressed_A, dense_B, bias, alpha, out_dtype, transpose_result), {})
         if _captured is not None:
             return _captured
     return _C._cslt_sparse_mm_search(compressed_A, dense_B, bias, alpha, out_dtype, transpose_result)
 
 def _sparse_semi_structured_tile(input, algorithm='', use_cutlass=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_semi_structured_tile, (input, algorithm, use_cutlass), {})
         if _captured is not None:
             return _captured
     return _C._sparse_semi_structured_tile(input, algorithm, use_cutlass)
 
 def _sparse_semi_structured_apply(input, thread_masks):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_semi_structured_apply, (input, thread_masks), {})
         if _captured is not None:
             return _captured
     return _C._sparse_semi_structured_apply(input, thread_masks)
 
 def _sparse_semi_structured_apply_dense(input, thread_masks):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_semi_structured_apply_dense, (input, thread_masks), {})
         if _captured is not None:
             return _captured
     return _C._sparse_semi_structured_apply_dense(input, thread_masks)
 
 def _sparse_semi_structured_linear(input, weight, meta, bias=None, activation=None, out_dtype=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_semi_structured_linear, (input, weight, meta, bias, activation, out_dtype), {})
         if _captured is not None:
             return _captured
     return _C._sparse_semi_structured_linear(input, weight, meta, bias=bias, activation=activation, out_dtype=out_dtype)
 
 def _mixed_dtypes_linear(input, weight, scale, bias=None, activation=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_mixed_dtypes_linear, (input, weight, scale, bias, activation), {})
         if _captured is not None:
             return _captured
     return _C._mixed_dtypes_linear(input, weight, scale, bias=bias, activation=activation)
 
 def fbgemm_linear_int8_weight_fp32_activation(input, weight, packed, col_offsets, weight_scale, weight_zero_point, bias):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fbgemm_linear_int8_weight_fp32_activation, (input, weight, packed, col_offsets, weight_scale, weight_zero_point, bias), {})
         if _captured is not None:
             return _captured
     return _C.fbgemm_linear_int8_weight_fp32_activation(input, weight, packed, col_offsets, weight_scale, weight_zero_point, bias)
 
 def fbgemm_linear_int8_weight(input, weight, packed, col_offsets, weight_scale, weight_zero_point, bias):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fbgemm_linear_int8_weight, (input, weight, packed, col_offsets, weight_scale, weight_zero_point, bias), {})
         if _captured is not None:
             return _captured
     return _C.fbgemm_linear_int8_weight(input, weight, packed, col_offsets, weight_scale, weight_zero_point, bias)
 
 def fbgemm_linear_quantize_weight(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fbgemm_linear_quantize_weight, (input,), {})
         if _captured is not None:
             return _captured
     return _C.fbgemm_linear_quantize_weight(input)
 
 def fbgemm_pack_gemm_matrix_fp16(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fbgemm_pack_gemm_matrix_fp16, (input,), {})
         if _captured is not None:
             return _captured
     return _C.fbgemm_pack_gemm_matrix_fp16(input)
 
 def _wrapped_linear_prepack(weight, weight_scale, weight_zero_point, bias):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_wrapped_linear_prepack, (weight, weight_scale, weight_zero_point, bias), {})
         if _captured is not None:
             return _captured
     return _C._wrapped_linear_prepack(weight, weight_scale, weight_zero_point, bias)
 
 def _wrapped_quantized_linear_prepacked(input, input_scale, input_zero_point, packed_weight, output_scale, output_zero_point, out_channel):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_wrapped_quantized_linear_prepacked, (input, input_scale, input_zero_point, packed_weight, output_scale, output_zero_point, out_channel), {})
         if _captured is not None:
             return _captured
@@ -11388,12 +11389,12 @@ def _wrapped_quantized_linear_prepacked(input, input_scale, input_zero_point, pa
 
 def fbgemm_linear_fp16_weight_fp32_activation(input, packed_weight, bias, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fbgemm_linear_fp16_weight_fp32_activation, (input, packed_weight, bias), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fbgemm_linear_fp16_weight_fp32_activation(input=input, packed_weight=packed_weight, bias=bias, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fbgemm_linear_fp16_weight_fp32_activation, (input, packed_weight, bias), {})
         if _captured is not None:
             return _captured
@@ -11401,19 +11402,19 @@ def fbgemm_linear_fp16_weight_fp32_activation(input, packed_weight, bias, *, out
 
 def fbgemm_linear_fp16_weight(input, packed_weight, bias, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fbgemm_linear_fp16_weight, (input, packed_weight, bias), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fbgemm_linear_fp16_weight(input=input, packed_weight=packed_weight, bias=bias, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fbgemm_linear_fp16_weight, (input, packed_weight, bias), {})
         if _captured is not None:
             return _captured
     return _C.fbgemm_linear_fp16_weight(input=input, packed_weight=packed_weight, bias=bias)
 
 def fbgemm_pack_quantized_matrix(input, K=None, N=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fbgemm_pack_quantized_matrix, (input, K, N), {})
         if _captured is not None:
             return _captured
@@ -11423,12 +11424,12 @@ def fbgemm_pack_quantized_matrix(input, K=None, N=None):
 
 def _log_softmax(input, dim, half_to_float, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_log_softmax, (input, dim, half_to_float), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._log_softmax(self=input, dim=dim, half_to_float=half_to_float, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_log_softmax, (input, dim, half_to_float), {})
         if _captured is not None:
             return _captured
@@ -11436,12 +11437,12 @@ def _log_softmax(input, dim, half_to_float, *, out=None):
 
 def _log_softmax_backward_data(grad_output, output, dim, input_dtype, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_log_softmax_backward_data, (grad_output, output, dim, input_dtype), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._log_softmax_backward_data(grad_output=grad_output, output=output, dim=dim, input_dtype=input_dtype, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_log_softmax_backward_data, (grad_output, output, dim, input_dtype), {})
         if _captured is not None:
             return _captured
@@ -11449,12 +11450,12 @@ def _log_softmax_backward_data(grad_output, output, dim, input_dtype, *, out=Non
 
 def _logcumsumexp(input, dim, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_logcumsumexp, (input, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._logcumsumexp(self=input, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_logcumsumexp, (input, dim), {})
         if _captured is not None:
             return _captured
@@ -11462,33 +11463,33 @@ def _logcumsumexp(input, dim, *, out=None):
 
 def matmul_backward(grad, input, other, mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(matmul_backward, (grad, input, other, mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.matmul_backward(grad=grad, self=input, other=other, mask=mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(matmul_backward, (grad, input, other, mask), {})
         if _captured is not None:
             return _captured
     return _C.matmul_backward(grad=grad, self=input, other=other, mask=mask)
 
 def matrix_exp(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(matrix_exp, (input,), {})
         if _captured is not None:
             return _captured
     return _C.matrix_exp(input)
 
 def matrix_exp_backward(input, grad):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(matrix_exp_backward, (input, grad), {})
         if _captured is not None:
             return _captured
     return _C.matrix_exp_backward(input, grad)
 
 def _aminmax(input, dim=None, keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_aminmax, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -11498,19 +11499,19 @@ def _aminmax(input, dim=None, keepdim=False):
 
 def _compute_linear_combination(input, coefficients, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_compute_linear_combination, (input, coefficients), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._compute_linear_combination(input=input, coefficients=coefficients, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_compute_linear_combination, (input, coefficients), {})
         if _captured is not None:
             return _captured
     return _C._compute_linear_combination(input=input, coefficients=coefficients)
 
 def value_selecting_reduction_backward(grad, dim, indices, sizes, keepdim):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(value_selecting_reduction_backward, (grad, dim, indices, sizes, keepdim), {})
         if _captured is not None:
             return _captured
@@ -11520,12 +11521,12 @@ def value_selecting_reduction_backward(grad, dim, indices, sizes, keepdim):
 
 def mkldnn_max_pool2d(input, kernel_size, stride=[], padding=0, dilation=1, ceil_mode=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_max_pool2d, (input, kernel_size, stride, padding, dilation, ceil_mode), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_max_pool2d(self=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_max_pool2d, (input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
@@ -11533,12 +11534,12 @@ def mkldnn_max_pool2d(input, kernel_size, stride=[], padding=0, dilation=1, ceil
 
 def mkldnn_max_pool2d_backward(grad_output, output, input, kernel_size, stride=[], padding=0, dilation=1, ceil_mode=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_max_pool2d_backward, (grad_output, output, input, kernel_size, stride, padding, dilation, ceil_mode), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_max_pool2d_backward(grad_output=grad_output, output=output, input=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_max_pool2d_backward, (grad_output, output, input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
@@ -11546,12 +11547,12 @@ def mkldnn_max_pool2d_backward(grad_output, output, input, kernel_size, stride=[
 
 def mkldnn_max_pool3d(input, kernel_size, stride=[], padding=0, dilation=1, ceil_mode=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_max_pool3d, (input, kernel_size, stride, padding, dilation, ceil_mode), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_max_pool3d(self=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_max_pool3d, (input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
@@ -11559,12 +11560,12 @@ def mkldnn_max_pool3d(input, kernel_size, stride=[], padding=0, dilation=1, ceil
 
 def mkldnn_max_pool3d_backward(grad_output, output, input, kernel_size, stride=[], padding=0, dilation=1, ceil_mode=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_max_pool3d_backward, (grad_output, output, input, kernel_size, stride, padding, dilation, ceil_mode), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_max_pool3d_backward(grad_output=grad_output, output=output, input=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_max_pool3d_backward, (grad_output, output, input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
@@ -11572,12 +11573,12 @@ def mkldnn_max_pool3d_backward(grad_output, output, input, kernel_size, stride=[
 
 def quantized_max_pool1d(input, kernel_size, stride=[], padding=0, dilation=1, ceil_mode=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(quantized_max_pool1d, (input, kernel_size, stride, padding, dilation, ceil_mode), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.quantized_max_pool1d(self=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_max_pool1d, (input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
@@ -11585,12 +11586,12 @@ def quantized_max_pool1d(input, kernel_size, stride=[], padding=0, dilation=1, c
 
 def quantized_max_pool3d(input, kernel_size, stride=[], padding=0, dilation=1, ceil_mode=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(quantized_max_pool3d, (input, kernel_size, stride, padding, dilation, ceil_mode), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.quantized_max_pool3d(self=input, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, ceil_mode=ceil_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_max_pool3d, (input, kernel_size, stride, padding, dilation, ceil_mode), {})
         if _captured is not None:
             return _captured
@@ -11598,12 +11599,12 @@ def quantized_max_pool3d(input, kernel_size, stride=[], padding=0, dilation=1, c
 
 def _mps_convolution(input, weight, bias, padding, stride, dilation, groups, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_mps_convolution, (input, weight, bias, padding, stride, dilation, groups), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._mps_convolution(self=input, weight=weight, bias=bias, padding=padding, stride=stride, dilation=dilation, groups=groups, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_mps_convolution, (input, weight, bias, padding, stride, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -11611,12 +11612,12 @@ def _mps_convolution(input, weight, bias, padding, stride, dilation, groups, *, 
 
 def mps_convolution_backward(input, grad_output, weight, padding, stride, dilation, groups, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mps_convolution_backward, (input, grad_output, weight, padding, stride, dilation, groups, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mps_convolution_backward(self=input, grad_output=grad_output, weight=weight, padding=padding, stride=stride, dilation=dilation, groups=groups, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mps_convolution_backward, (input, grad_output, weight, padding, stride, dilation, groups, output_mask), {})
         if _captured is not None:
             return _captured
@@ -11624,12 +11625,12 @@ def mps_convolution_backward(input, grad_output, weight, padding, stride, dilati
 
 def mkldnn_convolution(input, weight, bias, padding, stride, dilation, groups, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_convolution, (input, weight, bias, padding, stride, dilation, groups), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_convolution(self=input, weight=weight, bias=bias, padding=padding, stride=stride, dilation=dilation, groups=groups, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_convolution, (input, weight, bias, padding, stride, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -11637,12 +11638,12 @@ def mkldnn_convolution(input, weight, bias, padding, stride, dilation, groups, *
 
 def mkldnn_rnn_layer(input, weight0, weight1, weight2, weight3, hx_, cx_, reverse, batch_sizes, mode, hidden_size, num_layers, has_biases, bidirectional, batch_first, train, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_rnn_layer, (input, weight0, weight1, weight2, weight3, hx_, cx_, reverse, batch_sizes, mode, hidden_size, num_layers, has_biases, bidirectional, batch_first, train), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_rnn_layer(input=input, weight0=weight0, weight1=weight1, weight2=weight2, weight3=weight3, hx_=hx_, cx_=cx_, reverse=reverse, batch_sizes=batch_sizes, mode=mode, hidden_size=hidden_size, num_layers=num_layers, has_biases=has_biases, bidirectional=bidirectional, batch_first=batch_first, train=train, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_rnn_layer, (input, weight0, weight1, weight2, weight3, hx_, cx_, reverse, batch_sizes, mode, hidden_size, num_layers, has_biases, bidirectional, batch_first, train), {})
         if _captured is not None:
             return _captured
@@ -11650,12 +11651,12 @@ def mkldnn_rnn_layer(input, weight0, weight1, weight2, weight3, hx_, cx_, revers
 
 def mkldnn_rnn_layer_backward(input, weight1, weight2, weight3, weight4, hx_, cx_tmp, output, hy_, cy_, grad_output, grad_hy, grad_cy, reverse, mode, hidden_size, num_layers, has_biases, train, bidirectional, batch_sizes, batch_first, workspace, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_rnn_layer_backward, (input, weight1, weight2, weight3, weight4, hx_, cx_tmp, output, hy_, cy_, grad_output, grad_hy, grad_cy, reverse, mode, hidden_size, num_layers, has_biases, train, bidirectional, batch_sizes, batch_first, workspace), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_rnn_layer_backward(input=input, weight1=weight1, weight2=weight2, weight3=weight3, weight4=weight4, hx_=hx_, cx_tmp=cx_tmp, output=output, hy_=hy_, cy_=cy_, grad_output=grad_output, grad_hy=grad_hy, grad_cy=grad_cy, reverse=reverse, mode=mode, hidden_size=hidden_size, num_layers=num_layers, has_biases=has_biases, train=train, bidirectional=bidirectional, batch_sizes=batch_sizes, batch_first=batch_first, workspace=workspace, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_rnn_layer_backward, (input, weight1, weight2, weight3, weight4, hx_, cx_tmp, output, hy_, cy_, grad_output, grad_hy, grad_cy, reverse, mode, hidden_size, num_layers, has_biases, train, bidirectional, batch_sizes, batch_first, workspace), {})
         if _captured is not None:
             return _captured
@@ -11663,12 +11664,12 @@ def mkldnn_rnn_layer_backward(input, weight1, weight2, weight3, weight4, hx_, cx
 
 def miopen_batch_norm(input, weight, bias, running_mean, running_var, training, exponential_average_factor, epsilon, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(miopen_batch_norm, (input, weight, bias, running_mean, running_var, training, exponential_average_factor, epsilon), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.miopen_batch_norm(input=input, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var, training=training, exponential_average_factor=exponential_average_factor, epsilon=epsilon, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(miopen_batch_norm, (input, weight, bias, running_mean, running_var, training, exponential_average_factor, epsilon), {})
         if _captured is not None:
             return _captured
@@ -11676,12 +11677,12 @@ def miopen_batch_norm(input, weight, bias, running_mean, running_var, training, 
 
 def miopen_batch_norm_backward(input, grad_output, weight, running_mean, running_var, save_mean, save_var, epsilon, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(miopen_batch_norm_backward, (input, grad_output, weight, running_mean, running_var, save_mean, save_var, epsilon), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.miopen_batch_norm_backward(input=input, grad_output=grad_output, weight=weight, running_mean=running_mean, running_var=running_var, save_mean=save_mean, save_var=save_var, epsilon=epsilon, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(miopen_batch_norm_backward, (input, grad_output, weight, running_mean, running_var, save_mean, save_var, epsilon), {})
         if _captured is not None:
             return _captured
@@ -11689,12 +11690,12 @@ def miopen_batch_norm_backward(input, grad_output, weight, running_mean, running
 
 def miopen_convolution(input, weight, bias, padding, stride, dilation, groups, benchmark, deterministic, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(miopen_convolution, (input, weight, bias, padding, stride, dilation, groups, benchmark, deterministic), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.miopen_convolution(self=input, weight=weight, bias=bias, padding=padding, stride=stride, dilation=dilation, groups=groups, benchmark=benchmark, deterministic=deterministic, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(miopen_convolution, (input, weight, bias, padding, stride, dilation, groups, benchmark, deterministic), {})
         if _captured is not None:
             return _captured
@@ -11702,12 +11703,12 @@ def miopen_convolution(input, weight, bias, padding, stride, dilation, groups, b
 
 def miopen_convolution_transpose(input, weight, bias, padding, output_padding, stride, dilation, groups, benchmark, deterministic, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(miopen_convolution_transpose, (input, weight, bias, padding, output_padding, stride, dilation, groups, benchmark, deterministic), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.miopen_convolution_transpose(self=input, weight=weight, bias=bias, padding=padding, output_padding=output_padding, stride=stride, dilation=dilation, groups=groups, benchmark=benchmark, deterministic=deterministic, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(miopen_convolution_transpose, (input, weight, bias, padding, output_padding, stride, dilation, groups, benchmark, deterministic), {})
         if _captured is not None:
             return _captured
@@ -11715,19 +11716,19 @@ def miopen_convolution_transpose(input, weight, bias, padding, output_padding, s
 
 def miopen_depthwise_convolution(input, weight, bias, padding, stride, dilation, groups, benchmark, deterministic, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(miopen_depthwise_convolution, (input, weight, bias, padding, stride, dilation, groups, benchmark, deterministic), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.miopen_depthwise_convolution(self=input, weight=weight, bias=bias, padding=padding, stride=stride, dilation=dilation, groups=groups, benchmark=benchmark, deterministic=deterministic, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(miopen_depthwise_convolution, (input, weight, bias, padding, stride, dilation, groups, benchmark, deterministic), {})
         if _captured is not None:
             return _captured
     return _C.miopen_depthwise_convolution(self=input, weight=weight, bias=bias, padding=padding, stride=stride, dilation=dilation, groups=groups, benchmark=benchmark, deterministic=deterministic)
 
 def miopen_convolution_relu(input, weight, bias, stride, padding, dilation, groups):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(miopen_convolution_relu, (input, weight, bias, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -11740,7 +11741,7 @@ def miopen_convolution_relu(input, weight, bias, stride, padding, dilation, grou
     return _C.miopen_convolution_relu(input, weight, bias, stride, padding, dilation, groups)
 
 def miopen_convolution_add_relu(input, weight, z, alpha, bias, stride, padding, dilation, groups):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(miopen_convolution_add_relu, (input, weight, z, alpha, bias, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
@@ -11754,12 +11755,12 @@ def miopen_convolution_add_relu(input, weight, z, alpha, bias, stride, padding, 
 
 def miopen_rnn(input, weight, weight_stride0, hx, cx, mode, hidden_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(miopen_rnn, (input, weight, weight_stride0, hx, cx, mode, hidden_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.miopen_rnn(input=input, weight=weight, weight_stride0=weight_stride0, hx=hx, cx=cx, mode=mode, hidden_size=hidden_size, num_layers=num_layers, batch_first=batch_first, dropout=dropout, train=train, bidirectional=bidirectional, batch_sizes=batch_sizes, dropout_state=dropout_state, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(miopen_rnn, (input, weight, weight_stride0, hx, cx, mode, hidden_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state), {})
         if _captured is not None:
             return _captured
@@ -11767,19 +11768,19 @@ def miopen_rnn(input, weight, weight_stride0, hx, cx, mode, hidden_size, num_lay
 
 def miopen_rnn_backward(input, weight, weight_stride0, weight_buf, hx, cx, output, grad_output, grad_hy, grad_cy, mode, hidden_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, reserve, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(miopen_rnn_backward, (input, weight, weight_stride0, weight_buf, hx, cx, output, grad_output, grad_hy, grad_cy, mode, hidden_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, reserve, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.miopen_rnn_backward(input=input, weight=weight, weight_stride0=weight_stride0, weight_buf=weight_buf, hx=hx, cx=cx, output=output, grad_output=grad_output, grad_hy=grad_hy, grad_cy=grad_cy, mode=mode, hidden_size=hidden_size, num_layers=num_layers, batch_first=batch_first, dropout=dropout, train=train, bidirectional=bidirectional, batch_sizes=batch_sizes, dropout_state=dropout_state, reserve=reserve, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(miopen_rnn_backward, (input, weight, weight_stride0, weight_buf, hx, cx, output, grad_output, grad_hy, grad_cy, mode, hidden_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, reserve, output_mask), {})
         if _captured is not None:
             return _captured
     return _C.miopen_rnn_backward(input=input, weight=weight, weight_stride0=weight_stride0, weight_buf=weight_buf, hx=hx, cx=cx, output=output, grad_output=grad_output, grad_hy=grad_hy, grad_cy=grad_cy, mode=mode, hidden_size=hidden_size, num_layers=num_layers, batch_first=batch_first, dropout=dropout, train=train, bidirectional=bidirectional, batch_sizes=batch_sizes, dropout_state=dropout_state, reserve=reserve, output_mask=output_mask)
 
 def _use_miopen_ctc_loss(log_probs, targets, input_lengths, target_lengths, blank):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_use_miopen_ctc_loss, (log_probs, targets, input_lengths, target_lengths, blank), {})
         if _captured is not None:
             return _captured
@@ -11791,12 +11792,12 @@ def _use_miopen_ctc_loss(log_probs, targets, input_lengths, target_lengths, blan
 
 def miopen_ctc_loss(log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(miopen_ctc_loss, (log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.miopen_ctc_loss(log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(miopen_ctc_loss, (log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity), {})
         if _captured is not None:
             return _captured
@@ -11804,75 +11805,75 @@ def miopen_ctc_loss(log_probs, targets, input_lengths, target_lengths, blank, de
 
 def _int_mm(input, mat2, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_int_mm, (input, mat2), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._int_mm(self=input, mat2=mat2, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_int_mm, (input, mat2), {})
         if _captured is not None:
             return _captured
     return _C._int_mm(self=input, mat2=mat2)
 
 def _convert_weight_to_int4pack(input, innerKTiles):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_convert_weight_to_int4pack, (input, innerKTiles), {})
         if _captured is not None:
             return _captured
     return _C._convert_weight_to_int4pack(input, innerKTiles)
 
 def _weight_int4pack_mm(input, mat2, qGroupSize, qScaleAndZeros):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_weight_int4pack_mm, (input, mat2, qGroupSize, qScaleAndZeros), {})
         if _captured is not None:
             return _captured
     return _C._weight_int4pack_mm(input, mat2, qGroupSize, qScaleAndZeros)
 
 def _weight_int4pack_mm_with_scales_and_zeros(input, mat2, qGroupSize, qScale, qZeros):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_weight_int4pack_mm_with_scales_and_zeros, (input, mat2, qGroupSize, qScale, qZeros), {})
         if _captured is not None:
             return _captured
     return _C._weight_int4pack_mm_with_scales_and_zeros(input, mat2, qGroupSize, qScale, qZeros)
 
 def _convert_weight_to_int4pack_for_cpu(input, innerKTiles):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_convert_weight_to_int4pack_for_cpu, (input, innerKTiles), {})
         if _captured is not None:
             return _captured
     return _C._convert_weight_to_int4pack_for_cpu(input, innerKTiles)
 
 def _weight_int4pack_mm_for_cpu(input, mat2, qGroupSize, qScaleAndZeros):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_weight_int4pack_mm_for_cpu, (input, mat2, qGroupSize, qScaleAndZeros), {})
         if _captured is not None:
             return _captured
     return _C._weight_int4pack_mm_for_cpu(input, mat2, qGroupSize, qScaleAndZeros)
 
 def _dyn_quant_pack_4bit_weight(weights, scales_zeros, bias, block_size, in_features, out_features):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_dyn_quant_pack_4bit_weight, (weights, scales_zeros, bias, block_size, in_features, out_features), {})
         if _captured is not None:
             return _captured
     return _C._dyn_quant_pack_4bit_weight(weights, scales_zeros, bias, block_size, in_features, out_features)
 
 def _dyn_quant_matmul_4bit(inp, packed_weights, block_size, in_features, out_features):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_dyn_quant_matmul_4bit, (inp, packed_weights, block_size, in_features, out_features), {})
         if _captured is not None:
             return _captured
     return _C._dyn_quant_matmul_4bit(inp, packed_weights, block_size, in_features, out_features)
 
 def _weight_int8pack_mm(input, mat2, scales):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_weight_int8pack_mm, (input, mat2, scales), {})
         if _captured is not None:
             return _captured
     return _C._weight_int8pack_mm(input, mat2, scales)
 
 def _sparse_mm(sparse, dense):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_mm, (sparse, dense), {})
         if _captured is not None:
             return _captured
@@ -11880,12 +11881,12 @@ def _sparse_mm(sparse, dense):
 
 def _sparse_sparse_matmul(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_sparse_sparse_matmul, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._sparse_sparse_matmul(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_sparse_matmul, (input, other), {})
         if _captured is not None:
             return _captured
@@ -11899,12 +11900,12 @@ def mvlgamma_(input, p):
 
 def native_batch_norm(input, weight, bias, running_mean, running_var, training, momentum, eps, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(native_batch_norm, (input, weight, bias, running_mean, running_var, training, momentum, eps), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.native_batch_norm(input=input, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var, training=training, momentum=momentum, eps=eps, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(native_batch_norm, (input, weight, bias, running_mean, running_var, training, momentum, eps), {})
         if _captured is not None:
             return _captured
@@ -11912,12 +11913,12 @@ def native_batch_norm(input, weight, bias, running_mean, running_var, training, 
 
 def _native_batch_norm_legit(input, weight, bias, running_mean, running_var, training, momentum, eps, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_native_batch_norm_legit, (input, weight, bias, running_mean, running_var, training, momentum, eps), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._native_batch_norm_legit(input, weight, bias, running_mean, running_var, training, momentum, eps, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_native_batch_norm_legit, (input, weight, bias, running_mean, running_var, training, momentum, eps), {})
         if _captured is not None:
             return _captured
@@ -11925,12 +11926,12 @@ def _native_batch_norm_legit(input, weight, bias, running_mean, running_var, tra
 
 def _native_batch_norm_legit_no_training(input, weight, bias, running_mean, running_var, momentum, eps, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_native_batch_norm_legit_no_training, (input, weight, bias, running_mean, running_var, momentum, eps), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._native_batch_norm_legit_no_training(input=input, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var, momentum=momentum, eps=eps, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_native_batch_norm_legit_no_training, (input, weight, bias, running_mean, running_var, momentum, eps), {})
         if _captured is not None:
             return _captured
@@ -11938,12 +11939,12 @@ def _native_batch_norm_legit_no_training(input, weight, bias, running_mean, runn
 
 def batch_norm_stats(input, eps, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(batch_norm_stats, (input, eps), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.batch_norm_stats(input=input, eps=eps, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(batch_norm_stats, (input, eps), {})
         if _captured is not None:
             return _captured
@@ -11951,12 +11952,12 @@ def batch_norm_stats(input, eps, *, out=None):
 
 def batch_norm_elemt(input, weight, bias, mean, invstd, eps, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(batch_norm_elemt, (input, weight, bias, mean, invstd, eps), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.batch_norm_elemt(input=input, weight=weight, bias=bias, mean=mean, invstd=invstd, eps=eps, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(batch_norm_elemt, (input, weight, bias, mean, invstd, eps), {})
         if _captured is not None:
             return _captured
@@ -11964,12 +11965,12 @@ def batch_norm_elemt(input, weight, bias, mean, invstd, eps, *, out=None):
 
 def batch_norm_gather_stats(input, mean, invstd, running_mean, running_var, momentum, eps, count, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(batch_norm_gather_stats, (input, mean, invstd, running_mean, running_var, momentum, eps, count), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.batch_norm_gather_stats(input=input, mean=mean, invstd=invstd, running_mean=running_mean, running_var=running_var, momentum=momentum, eps=eps, count=count, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(batch_norm_gather_stats, (input, mean, invstd, running_mean, running_var, momentum, eps, count), {})
         if _captured is not None:
             return _captured
@@ -11977,12 +11978,12 @@ def batch_norm_gather_stats(input, mean, invstd, running_mean, running_var, mome
 
 def batch_norm_gather_stats_with_counts(input, mean, invstd, running_mean, running_var, momentum, eps, counts, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(batch_norm_gather_stats_with_counts, (input, mean, invstd, running_mean, running_var, momentum, eps, counts), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.batch_norm_gather_stats_with_counts(input=input, mean=mean, invstd=invstd, running_mean=running_mean, running_var=running_var, momentum=momentum, eps=eps, counts=counts, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(batch_norm_gather_stats_with_counts, (input, mean, invstd, running_mean, running_var, momentum, eps, counts), {})
         if _captured is not None:
             return _captured
@@ -11990,12 +11991,12 @@ def batch_norm_gather_stats_with_counts(input, mean, invstd, running_mean, runni
 
 def native_batch_norm_backward(grad_out, input, weight, running_mean, running_var, save_mean, save_invstd, train, eps, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(native_batch_norm_backward, (grad_out, input, weight, running_mean, running_var, save_mean, save_invstd, train, eps, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.native_batch_norm_backward(grad_out=grad_out, input=input, weight=weight, running_mean=running_mean, running_var=running_var, save_mean=save_mean, save_invstd=save_invstd, train=train, eps=eps, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(native_batch_norm_backward, (grad_out, input, weight, running_mean, running_var, save_mean, save_invstd, train, eps, output_mask), {})
         if _captured is not None:
             return _captured
@@ -12003,12 +12004,12 @@ def native_batch_norm_backward(grad_out, input, weight, running_mean, running_va
 
 def batch_norm_backward_reduce(grad_out, input, mean, invstd, weight, input_g, weight_g, bias_g, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(batch_norm_backward_reduce, (grad_out, input, mean, invstd, weight, input_g, weight_g, bias_g), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.batch_norm_backward_reduce(grad_out=grad_out, input=input, mean=mean, invstd=invstd, weight=weight, input_g=input_g, weight_g=weight_g, bias_g=bias_g, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(batch_norm_backward_reduce, (grad_out, input, mean, invstd, weight, input_g, weight_g, bias_g), {})
         if _captured is not None:
             return _captured
@@ -12016,12 +12017,12 @@ def batch_norm_backward_reduce(grad_out, input, mean, invstd, weight, input_g, w
 
 def batch_norm_backward_elemt(grad_out, input, mean, invstd, weight, sum_dy, sum_dy_xmu, count, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(batch_norm_backward_elemt, (grad_out, input, mean, invstd, weight, sum_dy, sum_dy_xmu, count), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.batch_norm_backward_elemt(grad_out=grad_out, input=input, mean=mean, invstd=invstd, weight=weight, sum_dy=sum_dy, sum_dy_xmu=sum_dy_xmu, count=count, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(batch_norm_backward_elemt, (grad_out, input, mean, invstd, weight, sum_dy, sum_dy_xmu, count), {})
         if _captured is not None:
             return _captured
@@ -12029,26 +12030,26 @@ def batch_norm_backward_elemt(grad_out, input, mean, invstd, weight, sum_dy, sum
 
 def batch_norm_update_stats(input, running_mean, running_var, momentum, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(batch_norm_update_stats, (input, running_mean, running_var, momentum), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.batch_norm_update_stats(input=input, running_mean=running_mean, running_var=running_var, momentum=momentum, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(batch_norm_update_stats, (input, running_mean, running_var, momentum), {})
         if _captured is not None:
             return _captured
     return _C.batch_norm_update_stats(input=input, running_mean=running_mean, running_var=running_var, momentum=momentum)
 
 def is_vulkan_available():
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_vulkan_available, (), {})
         if _captured is not None:
             return _captured
     return _C.is_vulkan_available()
 
 def _nnpack_available():
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nnpack_available, (), {})
         if _captured is not None:
             return _captured
@@ -12056,12 +12057,12 @@ def _nnpack_available():
 
 def _nnpack_spatial_convolution(input, weight, bias, padding, stride=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_nnpack_spatial_convolution, (input, weight, bias, padding, stride), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._nnpack_spatial_convolution(input=input, weight=weight, bias=bias, padding=padding, stride=stride, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nnpack_spatial_convolution, (input, weight, bias, padding, stride), {})
         if _captured is not None:
             return _captured
@@ -12069,12 +12070,12 @@ def _nnpack_spatial_convolution(input, weight, bias, padding, stride=1, *, out=N
 
 def _euclidean_dist(x1, x2, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_euclidean_dist, (x1, x2), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._euclidean_dist(x1=x1, x2=x2, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_euclidean_dist, (x1, x2), {})
         if _captured is not None:
             return _captured
@@ -12082,12 +12083,12 @@ def _euclidean_dist(x1, x2, *, out=None):
 
 def _cdist_forward(x1, x2, p, compute_mode, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_cdist_forward, (x1, x2, p, compute_mode), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._cdist_forward(x1=x1, x2=x2, p=p, compute_mode=compute_mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cdist_forward, (x1, x2, p, compute_mode), {})
         if _captured is not None:
             return _captured
@@ -12095,12 +12096,12 @@ def _cdist_forward(x1, x2, p, compute_mode, *, out=None):
 
 def _cdist_backward(grad_output, x1, x2, p, cdist, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_cdist_backward, (grad_output, x1, x2, p, cdist), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._cdist_backward(grad_output=grad_output, x1=x1, x2=x2, p=p, cdist=cdist, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cdist_backward, (grad_output, x1, x2, p, cdist), {})
         if _captured is not None:
             return _captured
@@ -12108,12 +12109,12 @@ def _cdist_backward(grad_output, x1, x2, p, cdist, *, out=None):
 
 def _pdist_forward(input, p=2, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_pdist_forward, (input, p), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._pdist_forward(self=input, p=p, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_pdist_forward, (input, p), {})
         if _captured is not None:
             return _captured
@@ -12121,54 +12122,54 @@ def _pdist_forward(input, p=2, *, out=None):
 
 def _pdist_backward(grad_output, input, p, pdist, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_pdist_backward, (grad_output, input, p, pdist), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._pdist_backward(grad_output=grad_output, self=input, p=p, pdist=pdist, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_pdist_backward, (grad_output, input, p, pdist), {})
         if _captured is not None:
             return _captured
     return _C._pdist_backward(grad_output=grad_output, self=input, p=p, pdist=pdist)
 
 def numpy_T(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(numpy_T, (input,), {})
         if _captured is not None:
             return _captured
     return input.numpy_T()
 
 def matrix_H(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(matrix_H, (input,), {})
         if _captured is not None:
             return _captured
     return input.matrix_H()
 
 def mT(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mT, (input,), {})
         if _captured is not None:
             return _captured
     return input.mT()
 
 def mH(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mH, (input,), {})
         if _captured is not None:
             return _captured
     return input.mH()
 
 def is_pinned(input, device=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_pinned, (input, device), {})
         if _captured is not None:
             return _captured
     return input.is_pinned(device=device)
 
 def pin_memory(input, device=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(pin_memory, (input, device), {})
         if _captured is not None:
             return _captured
@@ -12176,26 +12177,26 @@ def pin_memory(input, device=None):
 
 def _pin_memory(input, device=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_pin_memory, (input, device), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._pin_memory(self=input, device=device, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_pin_memory, (input, device), {})
         if _captured is not None:
             return _captured
     return _C._pin_memory(self=input, device=device)
 
 def pinverse(input, rcond=1e-15):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(pinverse, (input, rcond), {})
         if _captured is not None:
             return _captured
     return _C.pinverse(input, rcond)
 
 def repeat_interleave(input, repeats=None, dim=None, *, output_size=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(repeat_interleave, (input, repeats, dim), {'output_size': output_size})
         if _captured is not None:
             return _captured
@@ -12204,7 +12205,7 @@ def repeat_interleave(input, repeats=None, dim=None, *, output_size=None):
     return _C.repeat_interleave(input, repeats, dim, output_size=output_size)
 
 def _reshape_copy(input, size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_reshape_copy, (input, size), {})
         if _captured is not None:
             return _captured
@@ -12213,7 +12214,7 @@ def _reshape_copy(input, size):
     return _C._reshape_copy(input, size)
 
 def _reshape_alias(input, size, stride):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_reshape_alias, (input, size, stride), {})
         if _captured is not None:
             return _captured
@@ -12225,103 +12226,103 @@ def _reshape_alias(input, size, stride):
 
 def _mkldnn_reshape(input, shape, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_mkldnn_reshape, (input, shape), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._mkldnn_reshape(self=input, shape=shape, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_mkldnn_reshape, (input, shape), {})
         if _captured is not None:
             return _captured
     return _C._mkldnn_reshape(self=input, shape=shape)
 
 def _prelu_kernel(input, weight):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_prelu_kernel, (input, weight), {})
         if _captured is not None:
             return _captured
     return _C._prelu_kernel(input, weight)
 
 def _prelu_kernel_backward(grad_output, input, weight):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_prelu_kernel_backward, (grad_output, input, weight), {})
         if _captured is not None:
             return _captured
     return _C._prelu_kernel_backward(grad_output, input, weight)
 
 def infinitely_differentiable_gelu_backward(grad, input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(infinitely_differentiable_gelu_backward, (grad, input), {})
         if _captured is not None:
             return _captured
     return _C.infinitely_differentiable_gelu_backward(grad, input)
 
 def select(input, dim, index):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(select, (input, dim, index), {})
         if _captured is not None:
             return _captured
     return _C.select(input, dim, index)
 
 def _nested_select_backward(grad_output, input, dim, index):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_select_backward, (grad_output, input, dim, index), {})
         if _captured is not None:
             return _captured
     return _C._nested_select_backward(grad_output, input, dim, index)
 
 def detach(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(detach, (input,), {})
         if _captured is not None:
             return _captured
     return _C.detach(input)
 
 def size(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(size, (input,), {})
         if _captured is not None:
             return _captured
     return input.size()
 
 def sym_size(input, dim):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sym_size, (input, dim), {})
         if _captured is not None:
             return _captured
     return _C.sym_size(input, dim)
 
 def sym_is_contiguous(input, memory_format=tensorplay.contiguous_format):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sym_is_contiguous, (input, memory_format), {})
         if _captured is not None:
             return _captured
     return _C.sym_is_contiguous(input, memory_format)
 
 def sym_numel(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sym_numel, (input,), {})
         if _captured is not None:
             return _captured
     return _C.sym_numel(input)
 
 def sym_storage_offset(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sym_storage_offset, (input,), {})
         if _captured is not None:
             return _captured
     return _C.sym_storage_offset(input)
 
 def slice(input, dim=0, start=None, end=None, step=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(slice, (input, dim, start, end, step), {})
         if _captured is not None:
             return _captured
     return _C.slice(input, dim, start, end, step)
 
 def slice_inverse(input, src, dim=0, start=None, end=None, step=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(slice_inverse, (input, src, dim, start, end, step), {})
         if _captured is not None:
             return _captured
@@ -12329,19 +12330,19 @@ def slice_inverse(input, src, dim=0, start=None, end=None, step=1):
 
 def as_strided_scatter(input, src, size, stride, storage_offset=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(as_strided_scatter, (input, src, size, stride, storage_offset), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.as_strided_scatter(self=input, src=src, size=size, stride=stride, storage_offset=storage_offset, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(as_strided_scatter, (input, src, size, stride, storage_offset), {})
         if _captured is not None:
             return _captured
     return _C.as_strided_scatter(self=input, src=src, size=size, stride=stride, storage_offset=storage_offset)
 
 def smm(input, mat2):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(smm, (input, mat2), {})
         if _captured is not None:
             return _captured
@@ -12349,12 +12350,12 @@ def smm(input, mat2):
 
 def _softmax(input, dim, half_to_float, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_softmax, (input, dim, half_to_float), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._softmax(self=input, dim=dim, half_to_float=half_to_float, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_softmax, (input, dim, half_to_float), {})
         if _captured is not None:
             return _captured
@@ -12362,12 +12363,12 @@ def _softmax(input, dim, half_to_float, *, out=None):
 
 def _softmax_backward_data(grad_output, output, dim, input_dtype, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_softmax_backward_data, (grad_output, output, dim, input_dtype), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._softmax_backward_data(grad_output=grad_output, output=output, dim=dim, input_dtype=input_dtype, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_softmax_backward_data, (grad_output, output, dim, input_dtype), {})
         if _captured is not None:
             return _captured
@@ -12378,12 +12379,12 @@ def squeeze_(input):
 
 def sspaddmm(input, mat1, mat2, *, beta=1, alpha=1, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sspaddmm, (input, mat1, mat2), {'beta': beta, 'alpha': alpha, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.sspaddmm(self=input, mat1=mat1, mat2=mat2, beta=beta, alpha=alpha, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sspaddmm, (input, mat1, mat2), {'beta': beta, 'alpha': alpha})
         if _captured is not None:
             return _captured
@@ -12393,12 +12394,12 @@ def sspaddmm(input, mat1, mat2, *, beta=1, alpha=1, out=None):
 
 def _chunk_cat(tensors, dim, num_chunks, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_chunk_cat, (tensors, dim, num_chunks), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._chunk_cat(tensors=tensors, dim=dim, num_chunks=num_chunks, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_chunk_cat, (tensors, dim, num_chunks), {})
         if _captured is not None:
             return _captured
@@ -12406,33 +12407,33 @@ def _chunk_cat(tensors, dim, num_chunks, *, out=None):
 
 def _stack(tensors, dim=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_stack, (tensors, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._stack(tensors=tensors, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_stack, (tensors, dim), {})
         if _captured is not None:
             return _captured
     return _C._stack(tensors=tensors, dim=dim)
 
 def stride(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(stride, (input,), {})
         if _captured is not None:
             return _captured
     return input.stride()
 
 def sym_stride(input, dim):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sym_stride, (input, dim), {})
         if _captured is not None:
             return _captured
     return _C.sym_stride(input, dim)
 
 def _nested_sum_backward(grad, input, dim, keepdim=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_sum_backward, (grad, input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -12442,12 +12443,12 @@ def _nested_sum_backward(grad, input, dim, keepdim=False):
 
 def hash_tensor(input, dim=[], *, keepdim=False, mode=0, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(hash_tensor, (input, dim), {'keepdim': keepdim, 'mode': mode, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.hash_tensor(self=input, dim=dim, keepdim=keepdim, mode=mode, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hash_tensor, (input, dim), {'keepdim': keepdim, 'mode': mode})
         if _captured is not None:
             return _captured
@@ -12456,7 +12457,7 @@ def hash_tensor(input, dim=[], *, keepdim=False, mode=0, out=None):
     return _C.hash_tensor(self=input, dim=dim, keepdim=keepdim, mode=mode)
 
 def sum_to_size(input, size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sum_to_size, (input, size), {})
         if _captured is not None:
             return _captured
@@ -12467,12 +12468,12 @@ def t_(input):
 
 def tensordot(input, other, dims_self, dims_other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(tensordot, (input, other, dims_self, dims_other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.tensordot(self=input, other=other, dims_self=dims_self, dims_other=dims_other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(tensordot, (input, other, dims_self, dims_other), {})
         if _captured is not None:
             return _captured
@@ -12480,12 +12481,12 @@ def tensordot(input, other, dims_self, dims_other, *, out=None):
 
 def _mkldnn_transpose(input, dim0, dim1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_mkldnn_transpose, (input, dim0, dim1), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._mkldnn_transpose(self=input, dim0=dim0, dim1=dim1, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_mkldnn_transpose, (input, dim0, dim1), {})
         if _captured is not None:
             return _captured
@@ -12495,7 +12496,7 @@ def transpose_(input, dim0, dim1):
     return input.transpose_(dim0=dim0, dim1=dim1)
 
 def _mkldnn_transpose_(input, dim0, dim1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_mkldnn_transpose_, (input, dim0, dim1), {})
         if _captured is not None:
             return _captured
@@ -12503,12 +12504,12 @@ def _mkldnn_transpose_(input, dim0, dim1):
 
 def _transform_bias_rescale_qkv(qkv, qkv_bias, num_heads, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_transform_bias_rescale_qkv, (qkv, qkv_bias, num_heads), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._transform_bias_rescale_qkv(qkv=qkv, qkv_bias=qkv_bias, num_heads=num_heads, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_transform_bias_rescale_qkv, (qkv, qkv_bias, num_heads), {})
         if _captured is not None:
             return _captured
@@ -12516,19 +12517,19 @@ def _transform_bias_rescale_qkv(qkv, qkv_bias, num_heads, *, out=None):
 
 def _nested_tensor_from_mask(t, mask, mask_check=True, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_nested_tensor_from_mask, (t, mask, mask_check), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._nested_tensor_from_mask(t=t, mask=mask, mask_check=mask_check, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_tensor_from_mask, (t, mask, mask_check), {})
         if _captured is not None:
             return _captured
     return _C._nested_tensor_from_mask(t=t, mask=mask, mask_check=mask_check)
 
 def _nested_tensor_from_mask_left_aligned(t, mask):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_tensor_from_mask_left_aligned, (t, mask), {})
         if _captured is not None:
             return _captured
@@ -12536,33 +12537,33 @@ def _nested_tensor_from_mask_left_aligned(t, mask):
 
 def _nested_from_padded(padded, cpu_nested_shape_example, fuse_transform_0213=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_nested_from_padded, (padded, cpu_nested_shape_example, fuse_transform_0213), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._nested_from_padded(padded=padded, cpu_nested_shape_example=cpu_nested_shape_example, fuse_transform_0213=fuse_transform_0213, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_from_padded, (padded, cpu_nested_shape_example, fuse_transform_0213), {})
         if _captured is not None:
             return _captured
     return _C._nested_from_padded(padded=padded, cpu_nested_shape_example=cpu_nested_shape_example, fuse_transform_0213=fuse_transform_0213)
 
 def _nested_tensor_size(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_tensor_size, (input,), {})
         if _captured is not None:
             return _captured
     return input._nested_tensor_size()
 
 def _nested_tensor_strides(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_tensor_strides, (input,), {})
         if _captured is not None:
             return _captured
     return input._nested_tensor_strides()
 
 def _nested_tensor_storage_offsets(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_tensor_storage_offsets, (input,), {})
         if _captured is not None:
             return _captured
@@ -12570,19 +12571,19 @@ def _nested_tensor_storage_offsets(input):
 
 def _nested_from_padded_and_nested_example(padded, nt_example, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_nested_from_padded_and_nested_example, (padded, nt_example), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._nested_from_padded_and_nested_example(padded=padded, nt_example=nt_example, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_from_padded_and_nested_example, (padded, nt_example), {})
         if _captured is not None:
             return _captured
     return _C._nested_from_padded_and_nested_example(padded=padded, nt_example=nt_example)
 
 def _nested_view_from_buffer(input, nested_size, nested_strides, offsets):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_view_from_buffer, (input, nested_size, nested_strides, offsets), {})
         if _captured is not None:
             return _captured
@@ -12590,19 +12591,19 @@ def _nested_view_from_buffer(input, nested_size, nested_strides, offsets):
 
 def _nested_view_from_buffer_copy(input, nested_size, nested_strides, offsets, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_nested_view_from_buffer_copy, (input, nested_size, nested_strides, offsets), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._nested_view_from_buffer_copy(self=input, nested_size=nested_size, nested_strides=nested_strides, offsets=offsets, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_view_from_buffer_copy, (input, nested_size, nested_strides, offsets), {})
         if _captured is not None:
             return _captured
     return _C._nested_view_from_buffer_copy(self=input, nested_size=nested_size, nested_strides=nested_strides, offsets=offsets)
 
 def _nested_view_from_jagged(input, offsets, dummy, lengths=None, ragged_idx=1, min_seqlen=None, max_seqlen=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_view_from_jagged, (input, offsets, dummy, lengths, ragged_idx, min_seqlen, max_seqlen), {})
         if _captured is not None:
             return _captured
@@ -12610,19 +12611,19 @@ def _nested_view_from_jagged(input, offsets, dummy, lengths=None, ragged_idx=1, 
 
 def _nested_view_from_jagged_copy(input, offsets, dummy, lengths=None, ragged_idx=1, min_seqlen=None, max_seqlen=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_nested_view_from_jagged_copy, (input, offsets, dummy, lengths, ragged_idx, min_seqlen, max_seqlen), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._nested_view_from_jagged_copy(self=input, offsets=offsets, dummy=dummy, lengths=lengths, ragged_idx=ragged_idx, min_seqlen=min_seqlen, max_seqlen=max_seqlen, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_view_from_jagged_copy, (input, offsets, dummy, lengths, ragged_idx, min_seqlen, max_seqlen), {})
         if _captured is not None:
             return _captured
     return _C._nested_view_from_jagged_copy(self=input, offsets=offsets, dummy=dummy, lengths=lengths, ragged_idx=ragged_idx, min_seqlen=min_seqlen, max_seqlen=max_seqlen)
 
 def _nested_get_values(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_get_values, (input,), {})
         if _captured is not None:
             return _captured
@@ -12630,61 +12631,61 @@ def _nested_get_values(input):
 
 def _nested_get_values_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_nested_get_values_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._nested_get_values_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_get_values_copy, (input,), {})
         if _captured is not None:
             return _captured
     return _C._nested_get_values_copy(self=input)
 
 def _nested_get_offsets(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_get_offsets, (input,), {})
         if _captured is not None:
             return _captured
     return _C._nested_get_offsets(input)
 
 def _nested_get_lengths(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_get_lengths, (input,), {})
         if _captured is not None:
             return _captured
     return _C._nested_get_lengths(input)
 
 def _nested_get_ragged_idx(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_get_ragged_idx, (input,), {})
         if _captured is not None:
             return _captured
     return _C._nested_get_ragged_idx(input)
 
 def _nested_get_min_seqlen(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_get_min_seqlen, (input,), {})
         if _captured is not None:
             return _captured
     return _C._nested_get_min_seqlen(input)
 
 def _nested_get_max_seqlen(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_get_max_seqlen, (input,), {})
         if _captured is not None:
             return _captured
     return _C._nested_get_max_seqlen(input)
 
 def _nested_get_jagged_dummy(any):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_get_jagged_dummy, (any,), {})
         if _captured is not None:
             return _captured
     return _C._nested_get_jagged_dummy(any)
 
 def _nested_compute_contiguous_strides_offsets(nested_size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_compute_contiguous_strides_offsets, (nested_size,), {})
         if _captured is not None:
             return _captured
@@ -12692,33 +12693,33 @@ def _nested_compute_contiguous_strides_offsets(nested_size):
 
 def _trilinear(i1, i2, i3, expand1, expand2, expand3, sumdim, unroll_dim=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_trilinear, (i1, i2, i3, expand1, expand2, expand3, sumdim, unroll_dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._trilinear(i1=i1, i2=i2, i3=i3, expand1=expand1, expand2=expand2, expand3=expand3, sumdim=sumdim, unroll_dim=unroll_dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_trilinear, (i1, i2, i3, expand1, expand2, expand3, sumdim, unroll_dim), {})
         if _captured is not None:
             return _captured
     return _C._trilinear(i1=i1, i2=i2, i3=i3, expand1=expand1, expand2=expand2, expand3=expand3, sumdim=sumdim, unroll_dim=unroll_dim)
 
 def fix_(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fix_, (input,), {})
         if _captured is not None:
             return _captured
     return _C.fix_(input)
 
 def type_as(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(type_as, (input, other), {})
         if _captured is not None:
             return _captured
     return input.type_as(other=other)
 
 def _has_compatible_shallow_copy_type(input, from_):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_has_compatible_shallow_copy_type, (input, from_), {})
         if _captured is not None:
             return _captured
@@ -12726,12 +12727,12 @@ def _has_compatible_shallow_copy_type(input, from_):
 
 def _unique(input, sorted=True, return_inverse=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_unique, (input, sorted, return_inverse), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._unique(self=input, sorted=sorted, return_inverse=return_inverse, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_unique, (input, sorted, return_inverse), {})
         if _captured is not None:
             return _captured
@@ -12739,12 +12740,12 @@ def _unique(input, sorted=True, return_inverse=False, *, out=None):
 
 def unique_dim(input, dim, sorted=True, return_inverse=False, return_counts=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(unique_dim, (input, dim, sorted, return_inverse, return_counts), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.unique_dim(self=input, dim=dim, sorted=sorted, return_inverse=return_inverse, return_counts=return_counts, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unique_dim, (input, dim, sorted, return_inverse, return_counts), {})
         if _captured is not None:
             return _captured
@@ -12752,12 +12753,12 @@ def unique_dim(input, dim, sorted=True, return_inverse=False, return_counts=Fals
 
 def unique_dim_consecutive(input, dim, return_inverse=False, return_counts=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(unique_dim_consecutive, (input, dim, return_inverse, return_counts), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.unique_dim_consecutive(self=input, dim=dim, return_inverse=return_inverse, return_counts=return_counts, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unique_dim_consecutive, (input, dim, return_inverse, return_counts), {})
         if _captured is not None:
             return _captured
@@ -12765,12 +12766,12 @@ def unique_dim_consecutive(input, dim, return_inverse=False, return_counts=False
 
 def _unique2(input, sorted=True, return_inverse=False, return_counts=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_unique2, (input, sorted, return_inverse, return_counts), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._unique2(self=input, sorted=sorted, return_inverse=return_inverse, return_counts=return_counts, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_unique2, (input, sorted, return_inverse, return_counts), {})
         if _captured is not None:
             return _captured
@@ -12778,12 +12779,12 @@ def _unique2(input, sorted=True, return_inverse=False, return_counts=False, *, o
 
 def _unsafe_view(input, size, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_unsafe_view, (input, size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._unsafe_view(self=input, size=size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_unsafe_view, (input, size), {})
         if _captured is not None:
             return _captured
@@ -12793,21 +12794,21 @@ def unsqueeze_(input, dim):
     return input.unsqueeze_(dim=dim)
 
 def view_as(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(view_as, (input, other), {})
         if _captured is not None:
             return _captured
     return input.view_as(other=other)
 
 def norm_except_dim(v, pow=2, dim=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(norm_except_dim, (v, pow, dim), {})
         if _captured is not None:
             return _captured
     return _C.norm_except_dim(v, pow, dim)
 
 def _weight_norm(v, g, dim=0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_weight_norm, (v, g, dim), {})
         if _captured is not None:
             return _captured
@@ -12815,12 +12816,12 @@ def _weight_norm(v, g, dim=0):
 
 def _weight_norm_interface(v, g, dim=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_weight_norm_interface, (v, g, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._weight_norm_interface(v=v, g=g, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_weight_norm_interface, (v, g, dim), {})
         if _captured is not None:
             return _captured
@@ -12828,19 +12829,19 @@ def _weight_norm_interface(v, g, dim=0, *, out=None):
 
 def _weight_norm_interface_backward(grad_w, saved_v, saved_g, saved_norms, dim, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_weight_norm_interface_backward, (grad_w, saved_v, saved_g, saved_norms, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._weight_norm_interface_backward(grad_w=grad_w, saved_v=saved_v, saved_g=saved_g, saved_norms=saved_norms, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_weight_norm_interface_backward, (grad_w, saved_v, saved_g, saved_norms, dim), {})
         if _captured is not None:
             return _captured
     return _C._weight_norm_interface_backward(grad_w=grad_w, saved_v=saved_v, saved_g=saved_g, saved_norms=saved_norms, dim=dim)
 
 def _weight_norm_differentiable_backward(grad_w, saved_v, saved_g, saved_norms, dim):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_weight_norm_differentiable_backward, (grad_w, saved_v, saved_g, saved_norms, dim), {})
         if _captured is not None:
             return _captured
@@ -12848,12 +12849,12 @@ def _weight_norm_differentiable_backward(grad_w, saved_v, saved_g, saved_norms, 
 
 def _efficientzerotensor(size, *, dtype=None, layout=None, device=None, pin_memory=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_efficientzerotensor, (size,), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._efficientzerotensor(size=size, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_efficientzerotensor, (size,), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -12863,12 +12864,12 @@ def _efficientzerotensor(size, *, dtype=None, layout=None, device=None, pin_memo
 
 def _standard_gamma_grad(input, output, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_standard_gamma_grad, (input, output), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._standard_gamma_grad(self=input, output=output, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_standard_gamma_grad, (input, output), {})
         if _captured is not None:
             return _captured
@@ -12876,40 +12877,40 @@ def _standard_gamma_grad(input, output, *, out=None):
 
 def _standard_gamma(input, generator=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_standard_gamma, (input, generator), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._standard_gamma(self=input, generator=generator, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_standard_gamma, (input, generator), {})
         if _captured is not None:
             return _captured
     return _C._standard_gamma(self=input, generator=generator)
 
 def _philox_key_split(key, num_splits):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_philox_key_split, (key, num_splits), {})
         if _captured is not None:
             return _captured
     return _C._philox_key_split(key, num_splits)
 
 def _philox_key_fold_in(key, data):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_philox_key_fold_in, (key, data), {})
         if _captured is not None:
             return _captured
     return _C._philox_key_fold_in(key, data)
 
 def _philox_normal_(input, key, mean=0, std=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_philox_normal_, (input, key, mean, std), {})
         if _captured is not None:
             return _captured
     return _C._philox_normal_(input, key, mean, std)
 
 def _philox_uniform_(input, key, low=0, high=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_philox_uniform_, (input, key, low, high), {})
         if _captured is not None:
             return _captured
@@ -12917,12 +12918,12 @@ def _philox_uniform_(input, key, low=0, high=1):
 
 def _dirichlet_grad(x, alpha, total, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_dirichlet_grad, (x, alpha, total), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._dirichlet_grad(x=x, alpha=alpha, total=total, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_dirichlet_grad, (x, alpha, total), {})
         if _captured is not None:
             return _captured
@@ -12930,12 +12931,12 @@ def _dirichlet_grad(x, alpha, total, *, out=None):
 
 def _sample_dirichlet(input, generator=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_sample_dirichlet, (input, generator), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._sample_dirichlet(self=input, generator=generator, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sample_dirichlet, (input, generator), {})
         if _captured is not None:
             return _captured
@@ -12943,12 +12944,12 @@ def _sample_dirichlet(input, generator=None, *, out=None):
 
 def binomial(count, prob, generator=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(binomial, (count, prob, generator), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.binomial(count=count, prob=prob, generator=generator, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(binomial, (count, prob, generator), {})
         if _captured is not None:
             return _captured
@@ -12956,12 +12957,12 @@ def binomial(count, prob, generator=None, *, out=None):
 
 def native_norm(input, p=2, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(native_norm, (input, p), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.native_norm(input, p, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(native_norm, (input, p), {})
         if _captured is not None:
             return _captured
@@ -12969,12 +12970,12 @@ def native_norm(input, p=2, *, out=None):
 
 def _batch_norm_with_update(input, weight, bias, running_mean, running_var, momentum, eps, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_batch_norm_with_update, (input, weight, bias, running_mean, running_var, momentum, eps), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._batch_norm_with_update(input=input, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var, momentum=momentum, eps=eps, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_batch_norm_with_update, (input, weight, bias, running_mean, running_var, momentum, eps), {})
         if _captured is not None:
             return _captured
@@ -12982,19 +12983,19 @@ def _batch_norm_with_update(input, weight, bias, running_mean, running_var, mome
 
 def _batch_norm_no_update(input, weight, bias, running_mean, running_var, momentum, eps, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_batch_norm_no_update, (input, weight, bias, running_mean, running_var, momentum, eps), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._batch_norm_no_update(input=input, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var, momentum=momentum, eps=eps, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_batch_norm_no_update, (input, weight, bias, running_mean, running_var, momentum, eps), {})
         if _captured is not None:
             return _captured
     return _C._batch_norm_no_update(input=input, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var, momentum=momentum, eps=eps)
 
 def _sparse_sum(input, dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_sum, (input, dim), {})
         if _captured is not None:
             return _captured
@@ -13004,12 +13005,12 @@ def _sparse_sum(input, dim=None):
 
 def _sparse_sum_backward(grad_output, input, dim, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_sparse_sum_backward, (grad_output, input, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._sparse_sum_backward(grad_output=grad_output, self=input, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_sum_backward, (grad_output, input, dim), {})
         if _captured is not None:
             return _captured
@@ -13017,12 +13018,12 @@ def _sparse_sum_backward(grad_output, input, dim, *, out=None):
 
 def _sparse_csr_sum(input, dim, keepdim=False, *, dtype=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_sparse_csr_sum, (input, dim, keepdim), {'dtype': dtype, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._sparse_csr_sum(self=input, dim=dim, keepdim=keepdim, dtype=dtype, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_csr_sum, (input, dim, keepdim), {'dtype': dtype})
         if _captured is not None:
             return _captured
@@ -13032,12 +13033,12 @@ def _sparse_csr_sum(input, dim, keepdim=False, *, dtype=None, out=None):
 
 def _sparse_csr_prod(input, dim, keepdim=False, *, dtype=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_sparse_csr_prod, (input, dim, keepdim), {'dtype': dtype, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._sparse_csr_prod(self=input, dim=dim, keepdim=keepdim, dtype=dtype, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_csr_prod, (input, dim, keepdim), {'dtype': dtype})
         if _captured is not None:
             return _captured
@@ -13047,12 +13048,12 @@ def _sparse_csr_prod(input, dim, keepdim=False, *, dtype=None, out=None):
 
 def _sparse_softmax(input, dim, dtype=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_sparse_softmax, (input, dim, dtype), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._sparse_softmax(input, dim, dtype, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_softmax, (input, dim, dtype), {})
         if _captured is not None:
             return _captured
@@ -13060,12 +13061,12 @@ def _sparse_softmax(input, dim, dtype=None, *, out=None):
 
 def _sparse_softmax_backward_data(grad_output, output, dim, input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_sparse_softmax_backward_data, (grad_output, output, dim, input), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._sparse_softmax_backward_data(grad_output=grad_output, output=output, dim=dim, self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_softmax_backward_data, (grad_output, output, dim, input), {})
         if _captured is not None:
             return _captured
@@ -13073,12 +13074,12 @@ def _sparse_softmax_backward_data(grad_output, output, dim, input, *, out=None):
 
 def _sparse_log_softmax(input, dim, dtype=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_sparse_log_softmax, (input, dim, dtype), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._sparse_log_softmax(input, dim, dtype, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_log_softmax, (input, dim, dtype), {})
         if _captured is not None:
             return _captured
@@ -13086,12 +13087,12 @@ def _sparse_log_softmax(input, dim, dtype=None, *, out=None):
 
 def _sparse_log_softmax_backward_data(grad_output, output, dim, input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_sparse_log_softmax_backward_data, (grad_output, output, dim, input), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._sparse_log_softmax_backward_data(grad_output=grad_output, output=output, dim=dim, self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_log_softmax_backward_data, (grad_output, output, dim, input), {})
         if _captured is not None:
             return _captured
@@ -13099,12 +13100,12 @@ def _sparse_log_softmax_backward_data(grad_output, output, dim, input, *, out=No
 
 def _spdiags(diagonals, offsets, shape, layout=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_spdiags, (diagonals, offsets, shape, layout), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._spdiags(diagonals=diagonals, offsets=offsets, shape=shape, layout=layout, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_spdiags, (diagonals, offsets, shape, layout), {})
         if _captured is not None:
             return _captured
@@ -13112,19 +13113,19 @@ def _spdiags(diagonals, offsets, shape, layout=None, *, out=None):
 
 def frobenius_norm(input, dim, keepdim=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(frobenius_norm, (input, dim, keepdim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.frobenius_norm(self=input, dim=dim, keepdim=keepdim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(frobenius_norm, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
     return _C.frobenius_norm(self=input, dim=dim, keepdim=keepdim)
 
 def nuclear_norm(input, keepdim=False, dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nuclear_norm, (input, keepdim, dim), {})
         if _captured is not None:
             return _captured
@@ -13133,7 +13134,7 @@ def nuclear_norm(input, keepdim=False, dim=None):
     return _C.nuclear_norm(input, dim, keepdim)
 
 def resize_as_sparse_(input, the_template):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(resize_as_sparse_, (input, the_template), {})
         if _captured is not None:
             return _captured
@@ -13144,12 +13145,12 @@ def subtract_(input, other, alpha=1):
 
 def _sparse_addmm(input, mat1, mat2, *, beta=1, alpha=1, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_sparse_addmm, (input, mat1, mat2), {'beta': beta, 'alpha': alpha, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._sparse_addmm(self=input, mat1=mat1, mat2=mat2, beta=beta, alpha=alpha, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_addmm, (input, mat1, mat2), {'beta': beta, 'alpha': alpha})
         if _captured is not None:
             return _captured
@@ -13159,12 +13160,12 @@ def _sparse_addmm(input, mat1, mat2, *, beta=1, alpha=1, out=None):
 
 def sparse_sampled_addmm(input, mat1, mat2, *, beta=1, alpha=1, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(sparse_sampled_addmm, (input, mat1, mat2), {'beta': beta, 'alpha': alpha, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.sparse_sampled_addmm(self=input, mat1=mat1, mat2=mat2, beta=beta, alpha=alpha, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sparse_sampled_addmm, (input, mat1, mat2), {'beta': beta, 'alpha': alpha})
         if _captured is not None:
             return _captured
@@ -13173,14 +13174,14 @@ def sparse_sampled_addmm(input, mat1, mat2, *, beta=1, alpha=1, out=None):
     return _C.sparse_sampled_addmm(self=input, mat1=mat1, mat2=mat2, beta=beta, alpha=alpha)
 
 def _sparse_mm_reduce_impl(input, other, reduce):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_mm_reduce_impl, (input, other, reduce), {})
         if _captured is not None:
             return _captured
     return _C._sparse_mm_reduce_impl(input, other, reduce)
 
 def _sparse_mm_reduce_impl_backward(input, grad_out, weight, reduce, arg_out, output_mask):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_mm_reduce_impl_backward, (input, grad_out, weight, reduce, arg_out, output_mask), {})
         if _captured is not None:
             return _captured
@@ -13188,12 +13189,12 @@ def _sparse_mm_reduce_impl_backward(input, grad_out, weight, reduce, arg_out, ou
 
 def _addmm_activation(input, mat1, mat2, *, beta=1, alpha=1, use_gelu=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_addmm_activation, (input, mat1, mat2), {'beta': beta, 'alpha': alpha, 'use_gelu': use_gelu, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._addmm_activation(self=input, mat1=mat1, mat2=mat2, beta=beta, alpha=alpha, use_gelu=use_gelu, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_addmm_activation, (input, mat1, mat2), {'beta': beta, 'alpha': alpha, 'use_gelu': use_gelu})
         if _captured is not None:
             return _captured
@@ -13203,12 +13204,12 @@ def _addmm_activation(input, mat1, mat2, *, beta=1, alpha=1, use_gelu=False, out
 
 def _scaled_mm(input, mat2, scale_a, scale_b, bias=None, scale_result=None, out_dtype=None, use_fast_accum=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_scaled_mm, (input, mat2, scale_a, scale_b, bias, scale_result, out_dtype, use_fast_accum), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._scaled_mm(self=input, mat2=mat2, scale_a=scale_a, scale_b=scale_b, bias=bias, scale_result=scale_result, out_dtype=out_dtype, use_fast_accum=use_fast_accum, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_mm, (input, mat2, scale_a, scale_b, bias, scale_result, out_dtype, use_fast_accum), {})
         if _captured is not None:
             return _captured
@@ -13216,19 +13217,19 @@ def _scaled_mm(input, mat2, scale_a, scale_b, bias=None, scale_result=None, out_
 
 def _scaled_mm_v2(input, mat2, scale_a, recipe_a, swizzle_a, scale_b, recipe_b, swizzle_b, bias, out_dtype, contraction_dim=[], use_fast_accum=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_scaled_mm_v2, (input, mat2, scale_a, recipe_a, swizzle_a, scale_b, recipe_b, swizzle_b, bias, out_dtype, contraction_dim, use_fast_accum), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._scaled_mm_v2(self=input, mat2=mat2, scale_a=scale_a, recipe_a=recipe_a, swizzle_a=swizzle_a, scale_b=scale_b, recipe_b=recipe_b, swizzle_b=swizzle_b, bias=bias, out_dtype=out_dtype, contraction_dim=contraction_dim, use_fast_accum=use_fast_accum, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_mm_v2, (input, mat2, scale_a, recipe_a, swizzle_a, scale_b, recipe_b, swizzle_b, bias, out_dtype, contraction_dim, use_fast_accum), {})
         if _captured is not None:
             return _captured
     return _C._scaled_mm_v2(self=input, mat2=mat2, scale_a=scale_a, recipe_a=recipe_a, swizzle_a=swizzle_a, scale_b=scale_b, recipe_b=recipe_b, swizzle_b=swizzle_b, bias=bias, out_dtype=out_dtype, contraction_dim=contraction_dim, use_fast_accum=use_fast_accum)
 
 def _scaled_grouped_mm(input, mat2, scale_a, scale_b, offs=None, bias=None, scale_result=None, out_dtype=None, use_fast_accum=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_grouped_mm, (input, mat2, scale_a, scale_b, offs, bias, scale_result, out_dtype, use_fast_accum), {})
         if _captured is not None:
             return _captured
@@ -13236,26 +13237,26 @@ def _scaled_grouped_mm(input, mat2, scale_a, scale_b, offs=None, bias=None, scal
 
 def _scaled_grouped_mm_v2(input, mat2, scale_a, recipe_a, swizzle_a, scale_b, recipe_b, swizzle_b, offs=None, bias=None, out_dtype=None, contraction_dim=[], use_fast_accum=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_scaled_grouped_mm_v2, (input, mat2, scale_a, recipe_a, swizzle_a, scale_b, recipe_b, swizzle_b, offs, bias, out_dtype, contraction_dim, use_fast_accum), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._scaled_grouped_mm_v2(self=input, mat2=mat2, scale_a=scale_a, recipe_a=recipe_a, swizzle_a=swizzle_a, scale_b=scale_b, recipe_b=recipe_b, swizzle_b=swizzle_b, offs=offs, bias=bias, out_dtype=out_dtype, contraction_dim=contraction_dim, use_fast_accum=use_fast_accum, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_grouped_mm_v2, (input, mat2, scale_a, recipe_a, swizzle_a, scale_b, recipe_b, swizzle_b, offs, bias, out_dtype, contraction_dim, use_fast_accum), {})
         if _captured is not None:
             return _captured
     return _C._scaled_grouped_mm_v2(self=input, mat2=mat2, scale_a=scale_a, recipe_a=recipe_a, swizzle_a=swizzle_a, scale_b=scale_b, recipe_b=recipe_b, swizzle_b=swizzle_b, offs=offs, bias=bias, out_dtype=out_dtype, contraction_dim=contraction_dim, use_fast_accum=use_fast_accum)
 
 def _grouped_mm(input, mat2, offs=None, bias=None, out_dtype=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_grouped_mm, (input, mat2, offs, bias, out_dtype), {})
         if _captured is not None:
             return _captured
     return _C._grouped_mm(input, mat2, offs, bias, out_dtype)
 
 def _sparse_compressed_tensor_with_dims(nnz, dense_dim, size, blocksize, index_dtype, dtype=None, layout=None, device=None, pin_memory=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_compressed_tensor_with_dims, (nnz, dense_dim, size, blocksize, index_dtype, dtype, layout, device, pin_memory), {})
         if _captured is not None:
             return _captured
@@ -13268,7 +13269,7 @@ def _sparse_compressed_tensor_with_dims(nnz, dense_dim, size, blocksize, index_d
     return _C._sparse_compressed_tensor_with_dims(nnz, dense_dim, size, blocksize, index_dtype, dtype=dtype, layout=layout, device=_ensure_device(device), pin_memory=pin_memory)
 
 def sparse_compressed_tensor(compressed_indices, plain_indices, values, size=None, *, dtype=None, layout=None, device=None, pin_memory=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sparse_compressed_tensor, (compressed_indices, plain_indices, values, size), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -13280,7 +13281,7 @@ def sparse_compressed_tensor(compressed_indices, plain_indices, values, size=Non
     return _C.sparse_compressed_tensor(compressed_indices, plain_indices, values, size, dtype=dtype, layout=layout, device=_device, pin_memory=pin_memory)
 
 def sparse_csr_tensor(crow_indices, col_indices, values, size=None, *, dtype=None, layout=None, device=None, pin_memory=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sparse_csr_tensor, (crow_indices, col_indices, values, size), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -13292,7 +13293,7 @@ def sparse_csr_tensor(crow_indices, col_indices, values, size=None, *, dtype=Non
     return _C.sparse_csr_tensor(crow_indices, col_indices, values, size, dtype=dtype, layout=layout, device=_device, pin_memory=pin_memory)
 
 def sparse_csc_tensor(ccol_indices, row_indices, values, size=None, *, dtype=None, layout=None, device=None, pin_memory=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sparse_csc_tensor, (ccol_indices, row_indices, values, size), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -13304,7 +13305,7 @@ def sparse_csc_tensor(ccol_indices, row_indices, values, size=None, *, dtype=Non
     return _C.sparse_csc_tensor(ccol_indices, row_indices, values, size, dtype=dtype, layout=layout, device=_device, pin_memory=pin_memory)
 
 def sparse_bsr_tensor(crow_indices, col_indices, values, size=None, *, dtype=None, layout=None, device=None, pin_memory=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sparse_bsr_tensor, (crow_indices, col_indices, values, size), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -13316,7 +13317,7 @@ def sparse_bsr_tensor(crow_indices, col_indices, values, size=None, *, dtype=Non
     return _C.sparse_bsr_tensor(crow_indices, col_indices, values, size, dtype=dtype, layout=layout, device=_device, pin_memory=pin_memory)
 
 def sparse_bsc_tensor(ccol_indices, row_indices, values, size=None, *, dtype=None, layout=None, device=None, pin_memory=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sparse_bsc_tensor, (ccol_indices, row_indices, values, size), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -13328,7 +13329,7 @@ def sparse_bsc_tensor(ccol_indices, row_indices, values, size=None, *, dtype=Non
     return _C.sparse_bsc_tensor(ccol_indices, row_indices, values, size, dtype=dtype, layout=layout, device=_device, pin_memory=pin_memory)
 
 def _sparse_compressed_tensor_unsafe(compressed_indices, plain_indices, values, size, dtype=None, layout=None, device=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_compressed_tensor_unsafe, (compressed_indices, plain_indices, values, size, dtype, layout, device, pin_memory), {})
         if _captured is not None:
             return _captured
@@ -13337,7 +13338,7 @@ def _sparse_compressed_tensor_unsafe(compressed_indices, plain_indices, values, 
     return _C._sparse_compressed_tensor_unsafe(compressed_indices, plain_indices, values, size, dtype=dtype, layout=layout, device=_ensure_device(device), pin_memory=pin_memory)
 
 def _sparse_csr_tensor_unsafe(crow_indices, col_indices, values, size, dtype=None, layout=None, device=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_csr_tensor_unsafe, (crow_indices, col_indices, values, size, dtype, layout, device, pin_memory), {})
         if _captured is not None:
             return _captured
@@ -13346,7 +13347,7 @@ def _sparse_csr_tensor_unsafe(crow_indices, col_indices, values, size, dtype=Non
     return _C._sparse_csr_tensor_unsafe(crow_indices, col_indices, values, size, dtype=dtype, layout=layout, device=_ensure_device(device), pin_memory=pin_memory)
 
 def _sparse_csc_tensor_unsafe(ccol_indices, row_indices, values, size, dtype=None, layout=None, device=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_csc_tensor_unsafe, (ccol_indices, row_indices, values, size, dtype, layout, device, pin_memory), {})
         if _captured is not None:
             return _captured
@@ -13355,7 +13356,7 @@ def _sparse_csc_tensor_unsafe(ccol_indices, row_indices, values, size, dtype=Non
     return _C._sparse_csc_tensor_unsafe(ccol_indices, row_indices, values, size, dtype=dtype, layout=layout, device=_ensure_device(device), pin_memory=pin_memory)
 
 def _sparse_bsr_tensor_unsafe(crow_indices, col_indices, values, size, dtype=None, layout=None, device=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_bsr_tensor_unsafe, (crow_indices, col_indices, values, size, dtype, layout, device, pin_memory), {})
         if _captured is not None:
             return _captured
@@ -13364,7 +13365,7 @@ def _sparse_bsr_tensor_unsafe(crow_indices, col_indices, values, size, dtype=Non
     return _C._sparse_bsr_tensor_unsafe(crow_indices, col_indices, values, size, dtype=dtype, layout=layout, device=_ensure_device(device), pin_memory=pin_memory)
 
 def _sparse_bsc_tensor_unsafe(ccol_indices, row_indices, values, size, dtype=None, layout=None, device=None, pin_memory=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_bsc_tensor_unsafe, (ccol_indices, row_indices, values, size, dtype, layout, device, pin_memory), {})
         if _captured is not None:
             return _captured
@@ -13373,7 +13374,7 @@ def _sparse_bsc_tensor_unsafe(ccol_indices, row_indices, values, size, dtype=Non
     return _C._sparse_bsc_tensor_unsafe(ccol_indices, row_indices, values, size, dtype=dtype, layout=layout, device=_ensure_device(device), pin_memory=pin_memory)
 
 def _sparse_coo_tensor_unsafe(indices, values, size, dtype=None, layout=None, device=None, pin_memory=None, is_coalesced=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_coo_tensor_unsafe, (indices, values, size, dtype, layout, device, pin_memory, is_coalesced), {})
         if _captured is not None:
             return _captured
@@ -13382,7 +13383,7 @@ def _sparse_coo_tensor_unsafe(indices, values, size, dtype=None, layout=None, de
     return _C._sparse_coo_tensor_unsafe(indices, values, size, dtype=dtype, layout=layout, device=_ensure_device(device), pin_memory=pin_memory, is_coalesced=is_coalesced)
 
 def _validate_sparse_coo_tensor_args(indices, values, size, is_coalesced=None, check_pinning=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_validate_sparse_coo_tensor_args, (indices, values, size, is_coalesced, check_pinning), {})
         if _captured is not None:
             return _captured
@@ -13391,7 +13392,7 @@ def _validate_sparse_coo_tensor_args(indices, values, size, is_coalesced=None, c
     return _C._validate_sparse_coo_tensor_args(indices, values, size, is_coalesced, check_pinning)
 
 def _validate_sparse_compressed_tensor_args(compressed_indices, plain_indices, values, size, layout, check_pinning=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_validate_sparse_compressed_tensor_args, (compressed_indices, plain_indices, values, size, layout, check_pinning), {})
         if _captured is not None:
             return _captured
@@ -13400,7 +13401,7 @@ def _validate_sparse_compressed_tensor_args(compressed_indices, plain_indices, v
     return _C._validate_sparse_compressed_tensor_args(compressed_indices, plain_indices, values, size, layout, check_pinning)
 
 def _validate_sparse_csr_tensor_args(crow_indices, col_indices, values, size, check_pinning=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_validate_sparse_csr_tensor_args, (crow_indices, col_indices, values, size, check_pinning), {})
         if _captured is not None:
             return _captured
@@ -13409,7 +13410,7 @@ def _validate_sparse_csr_tensor_args(crow_indices, col_indices, values, size, ch
     return _C._validate_sparse_csr_tensor_args(crow_indices, col_indices, values, size, check_pinning)
 
 def _validate_sparse_csc_tensor_args(ccol_indices, row_indices, values, size, check_pinning=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_validate_sparse_csc_tensor_args, (ccol_indices, row_indices, values, size, check_pinning), {})
         if _captured is not None:
             return _captured
@@ -13418,7 +13419,7 @@ def _validate_sparse_csc_tensor_args(ccol_indices, row_indices, values, size, ch
     return _C._validate_sparse_csc_tensor_args(ccol_indices, row_indices, values, size, check_pinning)
 
 def _validate_sparse_bsr_tensor_args(crow_indices, col_indices, values, size, check_pinning=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_validate_sparse_bsr_tensor_args, (crow_indices, col_indices, values, size, check_pinning), {})
         if _captured is not None:
             return _captured
@@ -13427,7 +13428,7 @@ def _validate_sparse_bsr_tensor_args(crow_indices, col_indices, values, size, ch
     return _C._validate_sparse_bsr_tensor_args(crow_indices, col_indices, values, size, check_pinning)
 
 def _validate_sparse_bsc_tensor_args(ccol_indices, row_indices, values, size, check_pinning=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_validate_sparse_bsc_tensor_args, (ccol_indices, row_indices, values, size, check_pinning), {})
         if _captured is not None:
             return _captured
@@ -13437,12 +13438,12 @@ def _validate_sparse_bsc_tensor_args(ccol_indices, row_indices, values, size, ch
 
 def _sparse_coo_tensor_with_dims(sparse_dim, dense_dim, size, *, dtype=None, layout=None, device=None, pin_memory=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_sparse_coo_tensor_with_dims, (sparse_dim, dense_dim, size), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._sparse_coo_tensor_with_dims(sparse_dim=sparse_dim, dense_dim=dense_dim, size=size, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_coo_tensor_with_dims, (sparse_dim, dense_dim, size), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -13452,12 +13453,12 @@ def _sparse_coo_tensor_with_dims(sparse_dim, dense_dim, size, *, dtype=None, lay
 
 def _sparse_coo_tensor_with_dims_and_tensors(sparse_dim, dense_dim, size, indices, values, *, dtype=None, layout=None, device=None, pin_memory=False, is_coalesced=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_sparse_coo_tensor_with_dims_and_tensors, (sparse_dim, dense_dim, size, indices, values), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'is_coalesced': is_coalesced, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._sparse_coo_tensor_with_dims_and_tensors(sparse_dim=sparse_dim, dense_dim=dense_dim, size=size, indices=indices, values=values, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, is_coalesced=is_coalesced, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_coo_tensor_with_dims_and_tensors, (sparse_dim, dense_dim, size, indices, values), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'is_coalesced': is_coalesced})
         if _captured is not None:
             return _captured
@@ -13472,70 +13473,70 @@ def sparse_resize_and_clear_(input, size, sparse_dim, dense_dim):
     return input.sparse_resize_and_clear_(size=size, sparse_dim=sparse_dim, dense_dim=dense_dim)
 
 def sparse_mask(input, mask):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sparse_mask, (input, mask), {})
         if _captured is not None:
             return _captured
     return input.sparse_mask(mask=mask)
 
 def _sparse_mask_projection(input, mask, accumulate_matches=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_mask_projection, (input, mask, accumulate_matches), {})
         if _captured is not None:
             return _captured
     return input._sparse_mask_projection(mask=mask, accumulate_matches=accumulate_matches)
 
 def _to_cpu(*args):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_to_cpu, (*args,), {})
         if _captured is not None:
             return _captured
     return _C._to_cpu(*args)
 
 def _to_dense(input, dtype=None, masked_grad=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_to_dense, (input, dtype, masked_grad), {})
         if _captured is not None:
             return _captured
     return input._to_dense(dtype=dtype, masked_grad=masked_grad)
 
 def to_dense_backward(grad, input, masked_grad=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(to_dense_backward, (grad, input, masked_grad), {})
         if _captured is not None:
             return _captured
     return _C.to_dense_backward(grad, input, masked_grad)
 
 def sparse_dim(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(sparse_dim, (input,), {})
         if _captured is not None:
             return _captured
     return input.sparse_dim()
 
 def _dimI(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_dimI, (input,), {})
         if _captured is not None:
             return _captured
     return input._dimI()
 
 def dense_dim(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(dense_dim, (input,), {})
         if _captured is not None:
             return _captured
     return input.dense_dim()
 
 def _dimV(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_dimV, (input,), {})
         if _captured is not None:
             return _captured
     return input._dimV()
 
 def coalesce(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(coalesce, (input,), {})
         if _captured is not None:
             return _captured
@@ -13543,33 +13544,33 @@ def coalesce(input):
 
 def _coalesce(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_coalesce, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._coalesce(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_coalesce, (input,), {})
         if _captured is not None:
             return _captured
     return _C._coalesce(self=input)
 
 def is_coalesced(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_coalesced, (input,), {})
         if _captured is not None:
             return _captured
     return input.is_coalesced()
 
 def _indices(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_indices, (input,), {})
         if _captured is not None:
             return _captured
     return input._indices()
 
 def _values(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_values, (input,), {})
         if _captured is not None:
             return _captured
@@ -13579,42 +13580,42 @@ def _coalesced_(input, coalesced):
     return input._coalesced_(coalesced=coalesced)
 
 def indices(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(indices, (input,), {})
         if _captured is not None:
             return _captured
     return input.indices()
 
 def values(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(values, (input,), {})
         if _captured is not None:
             return _captured
     return input.values()
 
 def crow_indices(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(crow_indices, (input,), {})
         if _captured is not None:
             return _captured
     return input.crow_indices()
 
 def col_indices(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(col_indices, (input,), {})
         if _captured is not None:
             return _captured
     return input.col_indices()
 
 def ccol_indices(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ccol_indices, (input,), {})
         if _captured is not None:
             return _captured
     return input.ccol_indices()
 
 def row_indices(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(row_indices, (input,), {})
         if _captured is not None:
             return _captured
@@ -13622,82 +13623,82 @@ def row_indices(input):
 
 def hspmm(mat1, mat2, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(hspmm, (mat1, mat2), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.hspmm(mat1=mat1, mat2=mat2, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(hspmm, (mat1, mat2), {})
         if _captured is not None:
             return _captured
     return _C.hspmm(mat1=mat1, mat2=mat2)
 
 def copy_sparse_to_sparse_(input, src, non_blocking=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(copy_sparse_to_sparse_, (input, src, non_blocking), {})
         if _captured is not None:
             return _captured
     return _C.copy_sparse_to_sparse_(input, src, non_blocking)
 
 def _to_sparse(input, sparse_dim):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_to_sparse, (input, sparse_dim), {})
         if _captured is not None:
             return _captured
     return input._to_sparse(sparse_dim=sparse_dim)
 
 def _to_sparse_csr(input, dense_dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_to_sparse_csr, (input, dense_dim), {})
         if _captured is not None:
             return _captured
     return input._to_sparse_csr(dense_dim=dense_dim)
 
 def to_sparse_csc(input, dense_dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(to_sparse_csc, (input, dense_dim), {})
         if _captured is not None:
             return _captured
     return input.to_sparse_csc(dense_dim=dense_dim)
 
 def _to_sparse_csc(input, dense_dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_to_sparse_csc, (input, dense_dim), {})
         if _captured is not None:
             return _captured
     return input._to_sparse_csc(dense_dim=dense_dim)
 
 def to_sparse_bsr(input, blocksize, dense_dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(to_sparse_bsr, (input, blocksize, dense_dim), {})
         if _captured is not None:
             return _captured
     return input.to_sparse_bsr(blocksize=blocksize, dense_dim=dense_dim)
 
 def _to_sparse_bsr(input, blocksize, dense_dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_to_sparse_bsr, (input, blocksize, dense_dim), {})
         if _captured is not None:
             return _captured
     return input._to_sparse_bsr(blocksize=blocksize, dense_dim=dense_dim)
 
 def to_sparse_bsc(input, blocksize, dense_dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(to_sparse_bsc, (input, blocksize, dense_dim), {})
         if _captured is not None:
             return _captured
     return input.to_sparse_bsc(blocksize=blocksize, dense_dim=dense_dim)
 
 def _to_sparse_bsc(input, blocksize, dense_dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_to_sparse_bsc, (input, blocksize, dense_dim), {})
         if _captured is not None:
             return _captured
     return input._to_sparse_bsc(blocksize=blocksize, dense_dim=dense_dim)
 
 def to_mkldnn(input, dtype=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(to_mkldnn, (input, dtype), {})
         if _captured is not None:
             return _captured
@@ -13705,12 +13706,12 @@ def to_mkldnn(input, dtype=None):
 
 def mkldnn_reorder_conv2d_weight(input, padding=0, stride=1, dilation=1, groups=1, input_size=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_reorder_conv2d_weight, (input, padding, stride, dilation, groups, input_size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_reorder_conv2d_weight(self=input, padding=padding, stride=stride, dilation=dilation, groups=groups, input_size=input_size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_reorder_conv2d_weight, (input, padding, stride, dilation, groups, input_size), {})
         if _captured is not None:
             return _captured
@@ -13718,33 +13719,33 @@ def mkldnn_reorder_conv2d_weight(input, padding=0, stride=1, dilation=1, groups=
 
 def mkldnn_reorder_conv3d_weight(input, padding=0, stride=1, dilation=1, groups=1, input_size=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_reorder_conv3d_weight, (input, padding, stride, dilation, groups, input_size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_reorder_conv3d_weight(self=input, padding=padding, stride=stride, dilation=dilation, groups=groups, input_size=input_size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_reorder_conv3d_weight, (input, padding, stride, dilation, groups, input_size), {})
         if _captured is not None:
             return _captured
     return _C.mkldnn_reorder_conv3d_weight(self=input, padding=padding, stride=stride, dilation=dilation, groups=groups, input_size=input_size)
 
 def to_mkldnn_backward(grad, input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(to_mkldnn_backward, (grad, input), {})
         if _captured is not None:
             return _captured
     return _C.to_mkldnn_backward(grad, input)
 
 def q_scale(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(q_scale, (input,), {})
         if _captured is not None:
             return _captured
     return _C.q_scale(input)
 
 def q_zero_point(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(q_zero_point, (input,), {})
         if _captured is not None:
             return _captured
@@ -13752,12 +13753,12 @@ def q_zero_point(input):
 
 def q_per_channel_scales(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(q_per_channel_scales, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.q_per_channel_scales(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(q_per_channel_scales, (input,), {})
         if _captured is not None:
             return _captured
@@ -13765,40 +13766,40 @@ def q_per_channel_scales(input, *, out=None):
 
 def q_per_channel_zero_points(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(q_per_channel_zero_points, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.q_per_channel_zero_points(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(q_per_channel_zero_points, (input,), {})
         if _captured is not None:
             return _captured
     return _C.q_per_channel_zero_points(self=input)
 
 def q_per_channel_axis(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(q_per_channel_axis, (input,), {})
         if _captured is not None:
             return _captured
     return _C.q_per_channel_axis(input)
 
 def is_quantized(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_quantized, (input,), {})
         if _captured is not None:
             return _captured
     return _C.is_quantized(input)
 
 def is_nested(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_nested, (input,), {})
         if _captured is not None:
             return _captured
     return _C.is_nested(input)
 
 def qscheme(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(qscheme, (input,), {})
         if _captured is not None:
             return _captured
@@ -13806,12 +13807,12 @@ def qscheme(input):
 
 def int_repr(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(int_repr, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.int_repr(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(int_repr, (input,), {})
         if _captured is not None:
             return _captured
@@ -13819,12 +13820,12 @@ def int_repr(input, *, out=None):
 
 def _make_per_tensor_quantized_tensor(input, scale, zero_point, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_make_per_tensor_quantized_tensor, (input, scale, zero_point), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._make_per_tensor_quantized_tensor(self=input, scale=scale, zero_point=zero_point, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_make_per_tensor_quantized_tensor, (input, scale, zero_point), {})
         if _captured is not None:
             return _captured
@@ -13832,19 +13833,19 @@ def _make_per_tensor_quantized_tensor(input, scale, zero_point, *, out=None):
 
 def _make_per_channel_quantized_tensor(input, scale, zero_point, axis, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_make_per_channel_quantized_tensor, (input, scale, zero_point, axis), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._make_per_channel_quantized_tensor(self=input, scale=scale, zero_point=zero_point, axis=axis, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_make_per_channel_quantized_tensor, (input, scale, zero_point, axis), {})
         if _captured is not None:
             return _captured
     return _C._make_per_channel_quantized_tensor(self=input, scale=scale, zero_point=zero_point, axis=axis)
 
 def fake_quantize_per_tensor_affine(input, scale, zero_point, quant_min, quant_max):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fake_quantize_per_tensor_affine, (input, scale, zero_point, quant_min, quant_max), {})
         if _captured is not None:
             return _captured
@@ -13852,12 +13853,12 @@ def fake_quantize_per_tensor_affine(input, scale, zero_point, quant_min, quant_m
 
 def fake_quantize_per_tensor_affine_cachemask(input, scale, zero_point, quant_min, quant_max, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fake_quantize_per_tensor_affine_cachemask, (input, scale, zero_point, quant_min, quant_max), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fake_quantize_per_tensor_affine_cachemask(self=input, scale=scale, zero_point=zero_point, quant_min=quant_min, quant_max=quant_max, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fake_quantize_per_tensor_affine_cachemask, (input, scale, zero_point, quant_min, quant_max), {})
         if _captured is not None:
             return _captured
@@ -13865,19 +13866,19 @@ def fake_quantize_per_tensor_affine_cachemask(input, scale, zero_point, quant_mi
 
 def _fake_quantize_per_tensor_affine_cachemask_tensor_qparams(input, scale, zero_point, fake_quant_enabled, quant_min, quant_max, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_fake_quantize_per_tensor_affine_cachemask_tensor_qparams, (input, scale, zero_point, fake_quant_enabled, quant_min, quant_max), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._fake_quantize_per_tensor_affine_cachemask_tensor_qparams(self=input, scale=scale, zero_point=zero_point, fake_quant_enabled=fake_quant_enabled, quant_min=quant_min, quant_max=quant_max, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fake_quantize_per_tensor_affine_cachemask_tensor_qparams, (input, scale, zero_point, fake_quant_enabled, quant_min, quant_max), {})
         if _captured is not None:
             return _captured
     return _C._fake_quantize_per_tensor_affine_cachemask_tensor_qparams(self=input, scale=scale, zero_point=zero_point, fake_quant_enabled=fake_quant_enabled, quant_min=quant_min, quant_max=quant_max)
 
 def fake_quantize_per_tensor_affine_cachemask_backward(grad, mask):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fake_quantize_per_tensor_affine_cachemask_backward, (grad, mask), {})
         if _captured is not None:
             return _captured
@@ -13885,26 +13886,26 @@ def fake_quantize_per_tensor_affine_cachemask_backward(grad, mask):
 
 def _fake_quantize_learnable_per_tensor_affine(input, scale, zero_point, quant_min, quant_max, grad_factor=1.0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_fake_quantize_learnable_per_tensor_affine, (input, scale, zero_point, quant_min, quant_max, grad_factor), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._fake_quantize_learnable_per_tensor_affine(self=input, scale=scale, zero_point=zero_point, quant_min=quant_min, quant_max=quant_max, grad_factor=grad_factor, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fake_quantize_learnable_per_tensor_affine, (input, scale, zero_point, quant_min, quant_max, grad_factor), {})
         if _captured is not None:
             return _captured
     return _C._fake_quantize_learnable_per_tensor_affine(self=input, scale=scale, zero_point=zero_point, quant_min=quant_min, quant_max=quant_max, grad_factor=grad_factor)
 
 def _fake_quantize_learnable_per_tensor_affine_backward(grad, input, scale, zero_point, quant_min, quant_max, grad_factor=1.0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fake_quantize_learnable_per_tensor_affine_backward, (grad, input, scale, zero_point, quant_min, quant_max, grad_factor), {})
         if _captured is not None:
             return _captured
     return _C._fake_quantize_learnable_per_tensor_affine_backward(grad, input, scale, zero_point, quant_min, quant_max, grad_factor)
 
 def fake_quantize_per_channel_affine(input, scale, zero_point, axis, quant_min, quant_max):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fake_quantize_per_channel_affine, (input, scale, zero_point, axis, quant_min, quant_max), {})
         if _captured is not None:
             return _captured
@@ -13912,19 +13913,19 @@ def fake_quantize_per_channel_affine(input, scale, zero_point, axis, quant_min, 
 
 def fake_quantize_per_channel_affine_cachemask(input, scale, zero_point, axis, quant_min, quant_max, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fake_quantize_per_channel_affine_cachemask, (input, scale, zero_point, axis, quant_min, quant_max), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fake_quantize_per_channel_affine_cachemask(self=input, scale=scale, zero_point=zero_point, axis=axis, quant_min=quant_min, quant_max=quant_max, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fake_quantize_per_channel_affine_cachemask, (input, scale, zero_point, axis, quant_min, quant_max), {})
         if _captured is not None:
             return _captured
     return _C.fake_quantize_per_channel_affine_cachemask(self=input, scale=scale, zero_point=zero_point, axis=axis, quant_min=quant_min, quant_max=quant_max)
 
 def fake_quantize_per_channel_affine_cachemask_backward(grad, mask):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fake_quantize_per_channel_affine_cachemask_backward, (grad, mask), {})
         if _captured is not None:
             return _captured
@@ -13932,26 +13933,26 @@ def fake_quantize_per_channel_affine_cachemask_backward(grad, mask):
 
 def _fake_quantize_learnable_per_channel_affine(input, scale, zero_point, axis, quant_min, quant_max, grad_factor=1.0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_fake_quantize_learnable_per_channel_affine, (input, scale, zero_point, axis, quant_min, quant_max, grad_factor), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._fake_quantize_learnable_per_channel_affine(self=input, scale=scale, zero_point=zero_point, axis=axis, quant_min=quant_min, quant_max=quant_max, grad_factor=grad_factor, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fake_quantize_learnable_per_channel_affine, (input, scale, zero_point, axis, quant_min, quant_max, grad_factor), {})
         if _captured is not None:
             return _captured
     return _C._fake_quantize_learnable_per_channel_affine(self=input, scale=scale, zero_point=zero_point, axis=axis, quant_min=quant_min, quant_max=quant_max, grad_factor=grad_factor)
 
 def _fake_quantize_learnable_per_channel_affine_backward(grad, input, scale, zero_point, axis, quant_min, quant_max, grad_factor=1.0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fake_quantize_learnable_per_channel_affine_backward, (grad, input, scale, zero_point, axis, quant_min, quant_max, grad_factor), {})
         if _captured is not None:
             return _captured
     return _C._fake_quantize_learnable_per_channel_affine_backward(grad, input, scale, zero_point, axis, quant_min, quant_max, grad_factor)
 
 def fused_moving_avg_obs_fake_quant(input, observer_on, fake_quant_on, running_min, running_max, scale, zero_point, averaging_const, quant_min, quant_max, ch_axis, per_row_fake_quant=False, symmetric_quant=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fused_moving_avg_obs_fake_quant, (input, observer_on, fake_quant_on, running_min, running_max, scale, zero_point, averaging_const, quant_min, quant_max, ch_axis, per_row_fake_quant, symmetric_quant), {})
         if _captured is not None:
             return _captured
@@ -13959,47 +13960,47 @@ def fused_moving_avg_obs_fake_quant(input, observer_on, fake_quant_on, running_m
 
 def _fused_moving_avg_obs_fq_helper(input, observer_on, fake_quant_on, running_min, running_max, scale, zero_point, averaging_const, quant_min, quant_max, ch_axis, per_row_fake_quant=False, symmetric_quant=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_fused_moving_avg_obs_fq_helper, (input, observer_on, fake_quant_on, running_min, running_max, scale, zero_point, averaging_const, quant_min, quant_max, ch_axis, per_row_fake_quant, symmetric_quant), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._fused_moving_avg_obs_fq_helper(self=input, observer_on=observer_on, fake_quant_on=fake_quant_on, running_min=running_min, running_max=running_max, scale=scale, zero_point=zero_point, averaging_const=averaging_const, quant_min=quant_min, quant_max=quant_max, ch_axis=ch_axis, per_row_fake_quant=per_row_fake_quant, symmetric_quant=symmetric_quant, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_moving_avg_obs_fq_helper, (input, observer_on, fake_quant_on, running_min, running_max, scale, zero_point, averaging_const, quant_min, quant_max, ch_axis, per_row_fake_quant, symmetric_quant), {})
         if _captured is not None:
             return _captured
     return _C._fused_moving_avg_obs_fq_helper(self=input, observer_on=observer_on, fake_quant_on=fake_quant_on, running_min=running_min, running_max=running_max, scale=scale, zero_point=zero_point, averaging_const=averaging_const, quant_min=quant_min, quant_max=quant_max, ch_axis=ch_axis, per_row_fake_quant=per_row_fake_quant, symmetric_quant=symmetric_quant)
 
 def _choose_qparams_per_tensor(input, reduce_range=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_choose_qparams_per_tensor, (input, reduce_range), {})
         if _captured is not None:
             return _captured
     return _C._choose_qparams_per_tensor(input, reduce_range)
 
 def _saturate_weight_to_fp16(weight):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_saturate_weight_to_fp16, (weight,), {})
         if _captured is not None:
             return _captured
     return _C._saturate_weight_to_fp16(weight)
 
 def choose_qparams_optimized(input, numel, n_bins, ratio, bit_width):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(choose_qparams_optimized, (input, numel, n_bins, ratio, bit_width), {})
         if _captured is not None:
             return _captured
     return _C.choose_qparams_optimized(input, numel, n_bins, ratio, bit_width)
 
 def _autocast_to_reduced_precision(input, cuda_enabled, cpu_enabled, cuda_dtype, cpu_dtype):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_autocast_to_reduced_precision, (input, cuda_enabled, cpu_enabled, cuda_dtype, cpu_dtype), {})
         if _captured is not None:
             return _captured
     return input._autocast_to_reduced_precision(cuda_enabled=cuda_enabled, cpu_enabled=cpu_enabled, cuda_dtype=cuda_dtype, cpu_dtype=cpu_dtype)
 
 def _autocast_to_full_precision(input, cuda_enabled, cpu_enabled):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_autocast_to_full_precision, (input, cuda_enabled, cpu_enabled), {})
         if _captured is not None:
             return _captured
@@ -14007,12 +14008,12 @@ def _autocast_to_full_precision(input, cuda_enabled, cpu_enabled):
 
 def _to_copy(input, *, dtype=None, layout=None, device=None, pin_memory=None, non_blocking=False, memory_format=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_to_copy, (input,), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'non_blocking': non_blocking, 'memory_format': memory_format, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._to_copy(self=input, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, non_blocking=non_blocking, memory_format=memory_format, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_to_copy, (input,), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'non_blocking': non_blocking, 'memory_format': memory_format})
         if _captured is not None:
             return _captured
@@ -14021,14 +14022,14 @@ def _to_copy(input, *, dtype=None, layout=None, device=None, pin_memory=None, no
     return _C._to_copy(self=input, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, non_blocking=non_blocking, memory_format=memory_format)
 
 def to(input, dtype=None, layout=None, device=None, pin_memory=None, non_blocking=False, copy=False, memory_format=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(to, (input, dtype, layout, device, pin_memory, non_blocking, copy, memory_format), {})
         if _captured is not None:
             return _captured
     return input.to(dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, non_blocking=non_blocking, copy=copy, memory_format=memory_format)
 
 def _local_scalar_dense(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_local_scalar_dense, (input,), {})
         if _captured is not None:
             return _captured
@@ -14036,12 +14037,12 @@ def _local_scalar_dense(input):
 
 def _lstm_mps(input, hx, params, has_biases, num_layers, dropout, train, bidirectional, batch_first, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_lstm_mps, (input, hx, params, has_biases, num_layers, dropout, train, bidirectional, batch_first), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._lstm_mps(input=input, hx=hx, params=params, has_biases=has_biases, num_layers=num_layers, dropout=dropout, train=train, bidirectional=bidirectional, batch_first=batch_first, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_lstm_mps, (input, hx, params, has_biases, num_layers, dropout, train, bidirectional, batch_first), {})
         if _captured is not None:
             return _captured
@@ -14049,12 +14050,12 @@ def _lstm_mps(input, hx, params, has_biases, num_layers, dropout, train, bidirec
 
 def lstm_mps_backward(grad_y, grad_hy, grad_cy, z_state, cell_state_fwd, input, layersOutputs, hx, params, has_biases, num_layers, dropout, train, bidirectional, batch_first, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(lstm_mps_backward, (grad_y, grad_hy, grad_cy, z_state, cell_state_fwd, input, layersOutputs, hx, params, has_biases, num_layers, dropout, train, bidirectional, batch_first), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.lstm_mps_backward(grad_y=grad_y, grad_hy=grad_hy, grad_cy=grad_cy, z_state=z_state, cell_state_fwd=cell_state_fwd, input=input, layersOutputs=layersOutputs, hx=hx, params=params, has_biases=has_biases, num_layers=num_layers, dropout=dropout, train=train, bidirectional=bidirectional, batch_first=batch_first, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lstm_mps_backward, (grad_y, grad_hy, grad_cy, z_state, cell_state_fwd, input, layersOutputs, hx, params, has_biases, num_layers, dropout, train, bidirectional, batch_first), {})
         if _captured is not None:
             return _captured
@@ -14062,12 +14063,12 @@ def lstm_mps_backward(grad_y, grad_hy, grad_cy, z_state, cell_state_fwd, input, 
 
 def _thnn_fused_lstm_cell(input_gates, hidden_gates, cx, input_bias=None, hidden_bias=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_thnn_fused_lstm_cell, (input_gates, hidden_gates, cx, input_bias, hidden_bias), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._thnn_fused_lstm_cell(input_gates=input_gates, hidden_gates=hidden_gates, cx=cx, input_bias=input_bias, hidden_bias=hidden_bias, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_thnn_fused_lstm_cell, (input_gates, hidden_gates, cx, input_bias, hidden_bias), {})
         if _captured is not None:
             return _captured
@@ -14075,26 +14076,26 @@ def _thnn_fused_lstm_cell(input_gates, hidden_gates, cx, input_bias=None, hidden
 
 def _thnn_fused_lstm_cell_backward_impl(grad_hy, grad_cy, cx, cy, workspace, has_bias, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_thnn_fused_lstm_cell_backward_impl, (grad_hy, grad_cy, cx, cy, workspace, has_bias), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._thnn_fused_lstm_cell_backward_impl(grad_hy=grad_hy, grad_cy=grad_cy, cx=cx, cy=cy, workspace=workspace, has_bias=has_bias, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_thnn_fused_lstm_cell_backward_impl, (grad_hy, grad_cy, cx, cy, workspace, has_bias), {})
         if _captured is not None:
             return _captured
     return _C._thnn_fused_lstm_cell_backward_impl(grad_hy=grad_hy, grad_cy=grad_cy, cx=cx, cy=cy, workspace=workspace, has_bias=has_bias)
 
 def _thnn_fused_lstm_cell_backward(grad_hy, grad_cy, cx, cy, workspace, has_bias):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_thnn_fused_lstm_cell_backward, (grad_hy, grad_cy, cx, cy, workspace, has_bias), {})
         if _captured is not None:
             return _captured
     return _C._thnn_fused_lstm_cell_backward(grad_hy, grad_cy, cx, cy, workspace, has_bias)
 
 def _thnn_differentiable_lstm_cell_backward(grad_hy, grad_cy, input_gates, hidden_gates, input_bias, hidden_bias, cx, cy):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_thnn_differentiable_lstm_cell_backward, (grad_hy, grad_cy, input_gates, hidden_gates, input_bias, hidden_bias, cx, cy), {})
         if _captured is not None:
             return _captured
@@ -14102,12 +14103,12 @@ def _thnn_differentiable_lstm_cell_backward(grad_hy, grad_cy, input_gates, hidde
 
 def _thnn_fused_gru_cell(input_gates, hidden_gates, hx, input_bias=None, hidden_bias=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_thnn_fused_gru_cell, (input_gates, hidden_gates, hx, input_bias, hidden_bias), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._thnn_fused_gru_cell(input_gates=input_gates, hidden_gates=hidden_gates, hx=hx, input_bias=input_bias, hidden_bias=hidden_bias, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_thnn_fused_gru_cell, (input_gates, hidden_gates, hx, input_bias, hidden_bias), {})
         if _captured is not None:
             return _captured
@@ -14115,47 +14116,47 @@ def _thnn_fused_gru_cell(input_gates, hidden_gates, hx, input_bias=None, hidden_
 
 def _thnn_fused_gru_cell_backward(grad_hy, workspace, has_bias, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_thnn_fused_gru_cell_backward, (grad_hy, workspace, has_bias), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._thnn_fused_gru_cell_backward(grad_hy=grad_hy, workspace=workspace, has_bias=has_bias, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_thnn_fused_gru_cell_backward, (grad_hy, workspace, has_bias), {})
         if _captured is not None:
             return _captured
     return _C._thnn_fused_gru_cell_backward(grad_hy=grad_hy, workspace=workspace, has_bias=has_bias)
 
 def _thnn_differentiable_gru_cell_backward(grad_hy, input_gates, hidden_gates, hx, input_bias, hidden_bias):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_thnn_differentiable_gru_cell_backward, (grad_hy, input_gates, hidden_gates, hx, input_bias, hidden_bias), {})
         if _captured is not None:
             return _captured
     return _C._thnn_differentiable_gru_cell_backward(grad_hy, input_gates, hidden_gates, hx, input_bias, hidden_bias)
 
 def quantized_lstm_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_lstm_cell, (input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh), {})
         if _captured is not None:
             return _captured
     return _C.quantized_lstm_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh)
 
 def quantized_gru_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_gru_cell, (input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh), {})
         if _captured is not None:
             return _captured
     return _C.quantized_gru_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh)
 
 def quantized_rnn_relu_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_rnn_relu_cell, (input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh), {})
         if _captured is not None:
             return _captured
     return _C.quantized_rnn_relu_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh)
 
 def quantized_rnn_tanh_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_rnn_tanh_cell, (input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh), {})
         if _captured is not None:
             return _captured
@@ -14163,19 +14164,19 @@ def quantized_rnn_tanh_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed
 
 def _pack_padded_sequence(input, lengths, batch_first, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_pack_padded_sequence, (input, lengths, batch_first), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._pack_padded_sequence(input=input, lengths=lengths, batch_first=batch_first, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_pack_padded_sequence, (input, lengths, batch_first), {})
         if _captured is not None:
             return _captured
     return _C._pack_padded_sequence(input=input, lengths=lengths, batch_first=batch_first)
 
 def _pack_padded_sequence_backward(grad, input_size, batch_sizes, batch_first):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_pack_padded_sequence_backward, (grad, input_size, batch_sizes, batch_first), {})
         if _captured is not None:
             return _captured
@@ -14184,7 +14185,7 @@ def _pack_padded_sequence_backward(grad, input_size, batch_sizes, batch_first):
     return _C._pack_padded_sequence_backward(grad, input_size, batch_sizes, batch_first)
 
 def _pad_packed_sequence(data, batch_sizes, batch_first, padding_value, total_length):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_pad_packed_sequence, (data, batch_sizes, batch_first, padding_value, total_length), {})
         if _captured is not None:
             return _captured
@@ -14195,19 +14196,19 @@ def set_(input, source):
 
 def lift(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(lift, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.lift(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lift, (input,), {})
         if _captured is not None:
             return _captured
     return _C.lift(self=input)
 
 def lift_fresh(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lift_fresh, (input,), {})
         if _captured is not None:
             return _captured
@@ -14215,26 +14216,26 @@ def lift_fresh(input):
 
 def lift_fresh_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(lift_fresh_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.lift_fresh_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lift_fresh_copy, (input,), {})
         if _captured is not None:
             return _captured
     return _C.lift_fresh_copy(self=input)
 
 def is_set_to(input, tensor):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(is_set_to, (input, tensor), {})
         if _captured is not None:
             return _captured
     return input.is_set_to(tensor=tensor)
 
 def masked_scatter_backward(grad_output, mask, sizes):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(masked_scatter_backward, (grad_output, mask, sizes), {})
         if _captured is not None:
             return _captured
@@ -14244,12 +14245,12 @@ def masked_scatter_backward(grad_output, mask, sizes):
 
 def _masked_softmax(input, mask, dim=None, mask_type=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_masked_softmax, (input, mask, dim, mask_type), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._masked_softmax(self=input, mask=mask, dim=dim, mask_type=mask_type, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_masked_softmax, (input, mask, dim, mask_type), {})
         if _captured is not None:
             return _captured
@@ -14257,12 +14258,12 @@ def _masked_softmax(input, mask, dim=None, mask_type=None, *, out=None):
 
 def _masked_softmax_backward(grad_output, output, mask, dim=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_masked_softmax_backward, (grad_output, output, mask, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._masked_softmax_backward(grad_output=grad_output, output=output, mask=mask, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_masked_softmax_backward, (grad_output, output, mask, dim), {})
         if _captured is not None:
             return _captured
@@ -14281,7 +14282,7 @@ def bitwise_and_(input, other):
     return input.bitwise_and_(other=other)
 
 def __and__(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(__and__, (input, other), {})
         if _captured is not None:
             return _captured
@@ -14294,7 +14295,7 @@ def bitwise_or_(input, other):
     return input.bitwise_or_(other=other)
 
 def __or__(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(__or__, (input, other), {})
         if _captured is not None:
             return _captured
@@ -14307,7 +14308,7 @@ def bitwise_xor_(input, other):
     return input.bitwise_xor_(other=other)
 
 def __xor__(input, other):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(__xor__, (input, other), {})
         if _captured is not None:
             return _captured
@@ -14318,12 +14319,12 @@ def __ixor__(input, other):
 
 def __lshift__(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(__lshift__, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.__lshift__(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(__lshift__, (input, other), {})
         if _captured is not None:
             return _captured
@@ -14337,12 +14338,12 @@ def bitwise_left_shift_(input, other):
 
 def __rshift__(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(__rshift__, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.__rshift__(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(__rshift__, (input, other), {})
         if _captured is not None:
             return _captured
@@ -14358,7 +14359,7 @@ def digamma_(input):
     return input.digamma_()
 
 def trace_backward(grad, sizes):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(trace_backward, (grad, sizes), {})
         if _captured is not None:
             return _captured
@@ -14397,7 +14398,7 @@ def less_(input, other):
     return input.less_(other=other)
 
 def index_select_backward(grad, self_sizes, dim, index):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(index_select_backward, (grad, self_sizes, dim, index), {})
         if _captured is not None:
             return _captured
@@ -14406,42 +14407,42 @@ def index_select_backward(grad, self_sizes, dim, index):
     return _C.index_select_backward(grad, self_sizes, dim, index)
 
 def masked_select_backward(grad, input, mask):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(masked_select_backward, (grad, input, mask), {})
         if _captured is not None:
             return _captured
     return _C.masked_select_backward(grad, input, mask)
 
 def nonzero_numpy(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nonzero_numpy, (input,), {})
         if _captured is not None:
             return _captured
     return _C.nonzero_numpy(input)
 
 def gather_backward(grad, input, dim, index, sparse_grad):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(gather_backward, (grad, input, dim, index, sparse_grad), {})
         if _captured is not None:
             return _captured
     return _C.gather_backward(grad, input, dim, index, sparse_grad)
 
 def _gather_sparse_backward(input, dim, index, grad):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_gather_sparse_backward, (input, dim, index, grad), {})
         if _captured is not None:
             return _captured
     return _C._gather_sparse_backward(input, dim, index, grad)
 
 def cross_entropy_loss(input, target, weight=None, reduction=1, ignore_index=-100, label_smoothing=0.0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(cross_entropy_loss, (input, target, weight, reduction, ignore_index, label_smoothing), {})
         if _captured is not None:
             return _captured
     return _C.cross_entropy_loss(input, target, weight, reduction, ignore_index, label_smoothing)
 
 def _linalg_check_errors(info, api_name, is_matrix):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_linalg_check_errors, (info, api_name, is_matrix), {})
         if _captured is not None:
             return _captured
@@ -14455,12 +14456,12 @@ def swapdims_(input, dim0, dim1):
 
 def _cholesky_solve_helper(input, A, upper, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_cholesky_solve_helper, (input, A, upper), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._cholesky_solve_helper(self=input, A=A, upper=upper, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cholesky_solve_helper, (input, A, upper), {})
         if _captured is not None:
             return _captured
@@ -14468,12 +14469,12 @@ def _cholesky_solve_helper(input, A, upper, *, out=None):
 
 def geqrf(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(geqrf, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.geqrf(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(geqrf, (input,), {})
         if _captured is not None:
             return _captured
@@ -14481,12 +14482,12 @@ def geqrf(input, *, out=None):
 
 def orgqr(input, input2, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(orgqr, (input, input2), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.orgqr(self=input, input2=input2, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(orgqr, (input, input2), {})
         if _captured is not None:
             return _captured
@@ -14494,19 +14495,19 @@ def orgqr(input, input2, *, out=None):
 
 def ormqr(input, input2, input3, left=True, transpose=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(ormqr, (input, input2, input3, left, transpose), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.ormqr(self=input, input2=input2, input3=input3, left=left, transpose=transpose, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ormqr, (input, input2, input3, left, transpose), {})
         if _captured is not None:
             return _captured
     return _C.ormqr(self=input, input2=input2, input3=input3, left=left, transpose=transpose)
 
 def _lu_with_info(input, pivot=True, check_errors=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_lu_with_info, (input, pivot, check_errors), {})
         if _captured is not None:
             return _captured
@@ -14514,12 +14515,12 @@ def _lu_with_info(input, pivot=True, check_errors=True):
 
 def lu_solve(input, LU_data, LU_pivots, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(lu_solve, (input, LU_data, LU_pivots), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.lu_solve(self=input, LU_data=LU_data, LU_pivots=LU_pivots, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lu_solve, (input, LU_data, LU_pivots), {})
         if _captured is not None:
             return _captured
@@ -14527,12 +14528,12 @@ def lu_solve(input, LU_data, LU_pivots, *, out=None):
 
 def lu_unpack(LU_data, LU_pivots, unpack_data=True, unpack_pivots=True, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(lu_unpack, (LU_data, LU_pivots, unpack_data, unpack_pivots), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.lu_unpack(LU_data=LU_data, LU_pivots=LU_pivots, unpack_data=unpack_data, unpack_pivots=unpack_pivots, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(lu_unpack, (LU_data, LU_pivots, unpack_data, unpack_pivots), {})
         if _captured is not None:
             return _captured
@@ -14543,12 +14544,12 @@ def polygamma_(input, n):
 
 def arctan2(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(arctan2, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.arctan2(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(arctan2, (input, other), {})
         if _captured is not None:
             return _captured
@@ -14559,12 +14560,12 @@ def arctan2_(input, other):
 
 def _histogramdd_bin_edges(input, bins, *, range=None, weight=None, density=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_histogramdd_bin_edges, (input, bins), {'range': range, 'weight': weight, 'density': density, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._histogramdd_bin_edges(self=input, bins=bins, range=range, weight=weight, density=density, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_histogramdd_bin_edges, (input, bins), {'range': range, 'weight': weight, 'density': density})
         if _captured is not None:
             return _captured
@@ -14574,12 +14575,12 @@ def _histogramdd_bin_edges(input, bins, *, range=None, weight=None, density=Fals
 
 def _histogramdd_from_bin_cts(input, bins, *, range=None, weight=None, density=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_histogramdd_from_bin_cts, (input, bins), {'range': range, 'weight': weight, 'density': density, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._histogramdd_from_bin_cts(self=input, bins=bins, range=range, weight=weight, density=density, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_histogramdd_from_bin_cts, (input, bins), {'range': range, 'weight': weight, 'density': density})
         if _captured is not None:
             return _captured
@@ -14589,12 +14590,12 @@ def _histogramdd_from_bin_cts(input, bins, *, range=None, weight=None, density=F
 
 def _histogramdd_from_bin_tensors(input, bins, *, weight=None, density=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_histogramdd_from_bin_tensors, (input, bins), {'weight': weight, 'density': density, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._histogramdd_from_bin_tensors(self=input, bins=bins, weight=weight, density=density, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_histogramdd_from_bin_tensors, (input, bins), {'weight': weight, 'density': density})
         if _captured is not None:
             return _captured
@@ -14603,7 +14604,7 @@ def _histogramdd_from_bin_tensors(input, bins, *, weight=None, density=False, ou
     return _C._histogramdd_from_bin_tensors(self=input, bins=bins, weight=weight, density=density)
 
 def histogramdd(input, bins, range=None, weight=None, density=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(histogramdd, (input, bins, range, weight, density), {})
         if _captured is not None:
             return _captured
@@ -14630,7 +14631,7 @@ def float_power_(input, exponent):
     return input.float_power_(exponent=exponent)
 
 def normal_functional(input, mean=0, std=1, generator=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(normal_functional, (input, mean, std, generator), {})
         if _captured is not None:
             return _captured
@@ -14641,12 +14642,12 @@ def normal(mean, std=_MISSING, size=None, *, generator=None, out=None, dtype=Non
         if std is _MISSING:
             raise TypeError('normal() with a size takes both mean and std')
         if out is not None:
-            if _capturing():
+            if _graph_state._TRACE_DEPTH:
                 _captured = _capture_call(normal, (mean, std, size), {'generator': generator, 'out': out})
                 if _captured is not None:
                     return _captured
             return _C.normal(mean, std, size, generator=generator, out=out)
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(normal, (mean, std, size), {'generator': generator, 'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory, 'requires_grad': requires_grad})
             if _captured is not None:
                 return _captured
@@ -14654,397 +14655,397 @@ def normal(mean, std=_MISSING, size=None, *, generator=None, out=None, dtype=Non
     if std is _MISSING:
         std = 1.0
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(normal, (mean, std), {'generator': generator, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.normal(mean, std, generator=generator, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(normal, (mean, std), {'generator': generator})
         if _captured is not None:
             return _captured
     return _C.normal(mean, std, generator=generator)
 
 def alias(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(alias, (input,), {})
         if _captured is not None:
             return _captured
     return _C.alias(input)
 
 def _foreach_acos(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_acos, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_acos(input, *args, **kwargs)
 
 def _foreach_acos_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_acos_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_acos_(input, *args, **kwargs)
 
 def _foreach_asin(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_asin, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_asin(input, *args, **kwargs)
 
 def _foreach_asin_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_asin_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_asin_(input, *args, **kwargs)
 
 def _foreach_atan(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_atan, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_atan(input, *args, **kwargs)
 
 def _foreach_atan_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_atan_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_atan_(input, *args, **kwargs)
 
 def _foreach_ceil(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_ceil, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_ceil(input, *args, **kwargs)
 
 def _foreach_ceil_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_ceil_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_ceil_(input, *args, **kwargs)
 
 def _foreach_cos(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_cos, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_cos(input, *args, **kwargs)
 
 def _foreach_cos_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_cos_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_cos_(input, *args, **kwargs)
 
 def _foreach_cosh(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_cosh, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_cosh(input, *args, **kwargs)
 
 def _foreach_cosh_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_cosh_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_cosh_(input, *args, **kwargs)
 
 def _foreach_erf(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_erf, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_erf(input, *args, **kwargs)
 
 def _foreach_erf_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_erf_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_erf_(input, *args, **kwargs)
 
 def _foreach_erfc(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_erfc, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_erfc(input, *args, **kwargs)
 
 def _foreach_erfc_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_erfc_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_erfc_(input, *args, **kwargs)
 
 def _foreach_exp(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_exp, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_exp(input, *args, **kwargs)
 
 def _foreach_exp_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_exp_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_exp_(input, *args, **kwargs)
 
 def _foreach_expm1(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_expm1, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_expm1(input, *args, **kwargs)
 
 def _foreach_expm1_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_expm1_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_expm1_(input, *args, **kwargs)
 
 def _foreach_floor(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_floor, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_floor(input, *args, **kwargs)
 
 def _foreach_floor_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_floor_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_floor_(input, *args, **kwargs)
 
 def _foreach_frac(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_frac, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_frac(input, *args, **kwargs)
 
 def _foreach_frac_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_frac_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_frac_(input, *args, **kwargs)
 
 def _foreach_lgamma(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_lgamma, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_lgamma(input, *args, **kwargs)
 
 def _foreach_lgamma_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_lgamma_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_lgamma_(input, *args, **kwargs)
 
 def _foreach_log(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_log, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_log(input, *args, **kwargs)
 
 def _foreach_log_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_log_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_log_(input, *args, **kwargs)
 
 def _foreach_log10(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_log10, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_log10(input, *args, **kwargs)
 
 def _foreach_log10_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_log10_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_log10_(input, *args, **kwargs)
 
 def _foreach_log1p(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_log1p, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_log1p(input, *args, **kwargs)
 
 def _foreach_log1p_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_log1p_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_log1p_(input, *args, **kwargs)
 
 def _foreach_log2(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_log2, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_log2(input, *args, **kwargs)
 
 def _foreach_log2_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_log2_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_log2_(input, *args, **kwargs)
 
 def _foreach_max(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_max, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_max(input, *args, **kwargs)
 
 def _foreach_norm(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_norm, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_norm(input, *args, **kwargs)
 
 def _foreach_powsum(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_powsum, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_powsum(input, *args, **kwargs)
 
 def _foreach_round(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_round, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_round(input, *args, **kwargs)
 
 def _foreach_round_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_round_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_round_(input, *args, **kwargs)
 
 def _foreach_sigmoid(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_sigmoid, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_sigmoid(input, *args, **kwargs)
 
 def _foreach_sigmoid_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_sigmoid_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_sigmoid_(input, *args, **kwargs)
 
 def _foreach_sin(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_sin, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_sin(input, *args, **kwargs)
 
 def _foreach_sin_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_sin_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_sin_(input, *args, **kwargs)
 
 def _foreach_sinh(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_sinh, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_sinh(input, *args, **kwargs)
 
 def _foreach_sinh_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_sinh_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_sinh_(input, *args, **kwargs)
 
 def _foreach_tan(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_tan, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_tan(input, *args, **kwargs)
 
 def _foreach_tan_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_tan_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_tan_(input, *args, **kwargs)
 
 def _foreach_tanh(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_tanh, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_tanh(input, *args, **kwargs)
 
 def _foreach_tanh_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_tanh_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_tanh_(input, *args, **kwargs)
 
 def _foreach_trunc(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_trunc, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_trunc(input, *args, **kwargs)
 
 def _foreach_trunc_(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_trunc_, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_trunc_(input, *args, **kwargs)
 
 def _foreach_clone(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_clone, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_clone(input, *args, **kwargs)
 
 def _foreach_copy(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_copy, (input, *args), kwargs)
         if _captured is not None:
             return _captured
     return _C._foreach_copy(input, *args, **kwargs)
 
 def _foreach_mm(input, *args, **kwargs):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foreach_mm, (input, *args), kwargs)
         if _captured is not None:
             return _captured
@@ -15052,12 +15053,12 @@ def _foreach_mm(input, *args, **kwargs):
 
 def _convert_indices_from_coo_to_csr(input, size, *, out_int32=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_convert_indices_from_coo_to_csr, (input, size), {'out_int32': out_int32, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._convert_indices_from_coo_to_csr(self=input, size=size, out_int32=out_int32, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_convert_indices_from_coo_to_csr, (input, size), {'out_int32': out_int32})
         if _captured is not None:
             return _captured
@@ -15067,12 +15068,12 @@ def _convert_indices_from_coo_to_csr(input, size, *, out_int32=False, out=None):
 
 def _convert_indices_from_csr_to_coo(crow_indices, col_indices, *, out_int32=False, transpose=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_convert_indices_from_csr_to_coo, (crow_indices, col_indices), {'out_int32': out_int32, 'transpose': transpose, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._convert_indices_from_csr_to_coo(crow_indices=crow_indices, col_indices=col_indices, out_int32=out_int32, transpose=transpose, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_convert_indices_from_csr_to_coo, (crow_indices, col_indices), {'out_int32': out_int32, 'transpose': transpose})
         if _captured is not None:
             return _captured
@@ -15081,7 +15082,7 @@ def _convert_indices_from_csr_to_coo(crow_indices, col_indices, *, out_int32=Fal
     return _C._convert_indices_from_csr_to_coo(crow_indices=crow_indices, col_indices=col_indices, out_int32=out_int32, transpose=transpose)
 
 def nll_loss_nd(input, target, weight=None, reduction=1, ignore_index=-100):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nll_loss_nd, (input, target, weight, reduction, ignore_index), {})
         if _captured is not None:
             return _captured
@@ -15089,12 +15090,12 @@ def nll_loss_nd(input, target, weight=None, reduction=1, ignore_index=-100):
 
 def nll_loss_forward(input, target, weight, reduction, ignore_index, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nll_loss_forward, (input, target, weight, reduction, ignore_index), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.nll_loss_forward(self=input, target=target, weight=weight, reduction=reduction, ignore_index=ignore_index, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nll_loss_forward, (input, target, weight, reduction, ignore_index), {})
         if _captured is not None:
             return _captured
@@ -15102,12 +15103,12 @@ def nll_loss_forward(input, target, weight, reduction, ignore_index, *, out=None
 
 def nll_loss2d_forward(input, target, weight, reduction, ignore_index, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(nll_loss2d_forward, (input, target, weight, reduction, ignore_index), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.nll_loss2d_forward(self=input, target=target, weight=weight, reduction=reduction, ignore_index=ignore_index, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nll_loss2d_forward, (input, target, weight, reduction, ignore_index), {})
         if _captured is not None:
             return _captured
@@ -15115,12 +15116,12 @@ def nll_loss2d_forward(input, target, weight, reduction, ignore_index, *, out=No
 
 def soft_margin_loss_backward(grad_output, input, target, reduction, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(soft_margin_loss_backward, (grad_output, input, target, reduction), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.soft_margin_loss_backward(grad_output=grad_output, self=input, target=target, reduction=reduction, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(soft_margin_loss_backward, (grad_output, input, target, reduction), {})
         if _captured is not None:
             return _captured
@@ -15128,12 +15129,12 @@ def soft_margin_loss_backward(grad_output, input, target, reduction, *, out=None
 
 def glu_jvp(glu, x, dx, dim, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(glu_jvp, (glu, x, dx, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.glu_jvp(glu=glu, x=x, dx=dx, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(glu_jvp, (glu, x, dx, dim), {})
         if _captured is not None:
             return _captured
@@ -15141,12 +15142,12 @@ def glu_jvp(glu, x, dx, dim, *, out=None):
 
 def glu_backward_jvp(grad_x, grad_glu, x, dgrad_glu, dx, dim, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(glu_backward_jvp, (grad_x, grad_glu, x, dgrad_glu, dx, dim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.glu_backward_jvp(grad_x=grad_x, grad_glu=grad_glu, x=x, dgrad_glu=dgrad_glu, dx=dx, dim=dim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(glu_backward_jvp, (grad_x, grad_glu, x, dgrad_glu, dx, dim), {})
         if _captured is not None:
             return _captured
@@ -15154,19 +15155,19 @@ def glu_backward_jvp(grad_x, grad_glu, x, dgrad_glu, dx, dim, *, out=None):
 
 def log_sigmoid_forward(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(log_sigmoid_forward, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.log_sigmoid_forward(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(log_sigmoid_forward, (input,), {})
         if _captured is not None:
             return _captured
     return _C.log_sigmoid_forward(self=input)
 
 def rrelu_with_noise_(input, noise, lower=0.125, upper=0.3333333333333333, training=False, generator=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(rrelu_with_noise_, (input, noise, lower, upper, training, generator), {})
         if _captured is not None:
             return _captured
@@ -15174,12 +15175,12 @@ def rrelu_with_noise_(input, noise, lower=0.125, upper=0.3333333333333333, train
 
 def mkldnn_adaptive_avg_pool2d(input, output_size, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_adaptive_avg_pool2d, (input, output_size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_adaptive_avg_pool2d(self=input, output_size=output_size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_adaptive_avg_pool2d, (input, output_size), {})
         if _captured is not None:
             return _captured
@@ -15187,12 +15188,12 @@ def mkldnn_adaptive_avg_pool2d(input, output_size, *, out=None):
 
 def mkldnn_adaptive_avg_pool2d_backward(grad_output, input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(mkldnn_adaptive_avg_pool2d_backward, (grad_output, input), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.mkldnn_adaptive_avg_pool2d_backward(grad_output=grad_output, self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(mkldnn_adaptive_avg_pool2d_backward, (grad_output, input), {})
         if _captured is not None:
             return _captured
@@ -15200,12 +15201,12 @@ def mkldnn_adaptive_avg_pool2d_backward(grad_output, input, *, out=None):
 
 def _adaptive_avg_pool2d(input, output_size, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_adaptive_avg_pool2d, (input, output_size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._adaptive_avg_pool2d(self=input, output_size=output_size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_adaptive_avg_pool2d, (input, output_size), {})
         if _captured is not None:
             return _captured
@@ -15213,12 +15214,12 @@ def _adaptive_avg_pool2d(input, output_size, *, out=None):
 
 def _adaptive_avg_pool2d_backward(grad_output, input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_adaptive_avg_pool2d_backward, (grad_output, input), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._adaptive_avg_pool2d_backward(grad_output=grad_output, self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_adaptive_avg_pool2d_backward, (grad_output, input), {})
         if _captured is not None:
             return _captured
@@ -15226,12 +15227,12 @@ def _adaptive_avg_pool2d_backward(grad_output, input, *, out=None):
 
 def _adaptive_avg_pool3d(input, output_size, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_adaptive_avg_pool3d, (input, output_size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._adaptive_avg_pool3d(self=input, output_size=output_size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_adaptive_avg_pool3d, (input, output_size), {})
         if _captured is not None:
             return _captured
@@ -15239,12 +15240,12 @@ def _adaptive_avg_pool3d(input, output_size, *, out=None):
 
 def _adaptive_avg_pool3d_backward(grad_output, input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_adaptive_avg_pool3d_backward, (grad_output, input), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._adaptive_avg_pool3d_backward(grad_output=grad_output, self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_adaptive_avg_pool3d_backward, (grad_output, input), {})
         if _captured is not None:
             return _captured
@@ -15252,12 +15253,12 @@ def _adaptive_avg_pool3d_backward(grad_output, input, *, out=None):
 
 def reflection_pad1d(input, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(reflection_pad1d, (input, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.reflection_pad1d(self=input, padding=padding, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(reflection_pad1d, (input, padding), {})
         if _captured is not None:
             return _captured
@@ -15265,12 +15266,12 @@ def reflection_pad1d(input, padding, *, out=None):
 
 def reflection_pad1d_backward(grad_output, input, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(reflection_pad1d_backward, (grad_output, input, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.reflection_pad1d_backward(grad_output=grad_output, self=input, padding=padding, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(reflection_pad1d_backward, (grad_output, input, padding), {})
         if _captured is not None:
             return _captured
@@ -15278,12 +15279,12 @@ def reflection_pad1d_backward(grad_output, input, padding, *, out=None):
 
 def reflection_pad2d(input, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(reflection_pad2d, (input, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.reflection_pad2d(self=input, padding=padding, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(reflection_pad2d, (input, padding), {})
         if _captured is not None:
             return _captured
@@ -15291,12 +15292,12 @@ def reflection_pad2d(input, padding, *, out=None):
 
 def reflection_pad2d_backward(grad_output, input, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(reflection_pad2d_backward, (grad_output, input, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.reflection_pad2d_backward(grad_output=grad_output, self=input, padding=padding, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(reflection_pad2d_backward, (grad_output, input, padding), {})
         if _captured is not None:
             return _captured
@@ -15304,12 +15305,12 @@ def reflection_pad2d_backward(grad_output, input, padding, *, out=None):
 
 def reflection_pad3d(input, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(reflection_pad3d, (input, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.reflection_pad3d(self=input, padding=padding, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(reflection_pad3d, (input, padding), {})
         if _captured is not None:
             return _captured
@@ -15317,12 +15318,12 @@ def reflection_pad3d(input, padding, *, out=None):
 
 def reflection_pad3d_backward(grad_output, input, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(reflection_pad3d_backward, (grad_output, input, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.reflection_pad3d_backward(grad_output=grad_output, self=input, padding=padding, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(reflection_pad3d_backward, (grad_output, input, padding), {})
         if _captured is not None:
             return _captured
@@ -15330,12 +15331,12 @@ def reflection_pad3d_backward(grad_output, input, padding, *, out=None):
 
 def replication_pad1d(input, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(replication_pad1d, (input, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.replication_pad1d(self=input, padding=padding, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(replication_pad1d, (input, padding), {})
         if _captured is not None:
             return _captured
@@ -15343,12 +15344,12 @@ def replication_pad1d(input, padding, *, out=None):
 
 def replication_pad1d_backward(grad_output, input, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(replication_pad1d_backward, (grad_output, input, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.replication_pad1d_backward(grad_output=grad_output, self=input, padding=padding, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(replication_pad1d_backward, (grad_output, input, padding), {})
         if _captured is not None:
             return _captured
@@ -15356,12 +15357,12 @@ def replication_pad1d_backward(grad_output, input, padding, *, out=None):
 
 def replication_pad2d(input, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(replication_pad2d, (input, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.replication_pad2d(self=input, padding=padding, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(replication_pad2d, (input, padding), {})
         if _captured is not None:
             return _captured
@@ -15369,12 +15370,12 @@ def replication_pad2d(input, padding, *, out=None):
 
 def replication_pad2d_backward(grad_output, input, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(replication_pad2d_backward, (grad_output, input, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.replication_pad2d_backward(grad_output=grad_output, self=input, padding=padding, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(replication_pad2d_backward, (grad_output, input, padding), {})
         if _captured is not None:
             return _captured
@@ -15382,12 +15383,12 @@ def replication_pad2d_backward(grad_output, input, padding, *, out=None):
 
 def replication_pad3d(input, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(replication_pad3d, (input, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.replication_pad3d(self=input, padding=padding, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(replication_pad3d, (input, padding), {})
         if _captured is not None:
             return _captured
@@ -15395,19 +15396,19 @@ def replication_pad3d(input, padding, *, out=None):
 
 def replication_pad3d_backward(grad_output, input, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(replication_pad3d_backward, (grad_output, input, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.replication_pad3d_backward(grad_output=grad_output, self=input, padding=padding, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(replication_pad3d_backward, (grad_output, input, padding), {})
         if _captured is not None:
             return _captured
     return _C.replication_pad3d_backward(grad_output=grad_output, self=input, padding=padding)
 
 def _pad_circular(input, pad):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_pad_circular, (input, pad), {})
         if _captured is not None:
             return _captured
@@ -15416,7 +15417,7 @@ def _pad_circular(input, pad):
     return _C._pad_circular(input, pad)
 
 def _pad_enum(input, pad, mode, value=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_pad_enum, (input, pad, mode, value), {})
         if _captured is not None:
             return _captured
@@ -15425,7 +15426,7 @@ def _pad_enum(input, pad, mode, value=None):
     return _C._pad_enum(input, pad, mode, value)
 
 def pad(input, pad, mode='constant', value=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(pad, (input, pad, mode, value), {})
         if _captured is not None:
             return _captured
@@ -15435,12 +15436,12 @@ def pad(input, pad, mode='constant', value=None):
 
 def _upsample_bilinear2d_aa(input, output_size, align_corners, scale_factors, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_upsample_bilinear2d_aa, (input, output_size, align_corners, scale_factors), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._upsample_bilinear2d_aa(input, output_size, align_corners, scale_factors, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_upsample_bilinear2d_aa, (input, output_size, align_corners, scale_factors), {})
         if _captured is not None:
             return _captured
@@ -15448,12 +15449,12 @@ def _upsample_bilinear2d_aa(input, output_size, align_corners, scale_factors, *,
 
 def _upsample_bicubic2d_aa(input, output_size, align_corners, scale_factors, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_upsample_bicubic2d_aa, (input, output_size, align_corners, scale_factors), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._upsample_bicubic2d_aa(input, output_size, align_corners, scale_factors, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_upsample_bicubic2d_aa, (input, output_size, align_corners, scale_factors), {})
         if _captured is not None:
             return _captured
@@ -15461,12 +15462,12 @@ def _upsample_bicubic2d_aa(input, output_size, align_corners, scale_factors, *, 
 
 def _upsample_lanczos2d_aa(input, output_size, align_corners, scale_factors, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_upsample_lanczos2d_aa, (input, output_size, align_corners, scale_factors), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._upsample_lanczos2d_aa(input, output_size, align_corners, scale_factors, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_upsample_lanczos2d_aa, (input, output_size, align_corners, scale_factors), {})
         if _captured is not None:
             return _captured
@@ -15474,12 +15475,12 @@ def _upsample_lanczos2d_aa(input, output_size, align_corners, scale_factors, *, 
 
 def _upsample_nearest_exact1d(input, output_size, scale_factors, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_upsample_nearest_exact1d, (input, output_size, scale_factors), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._upsample_nearest_exact1d(input, output_size, scale_factors, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_upsample_nearest_exact1d, (input, output_size, scale_factors), {})
         if _captured is not None:
             return _captured
@@ -15487,12 +15488,12 @@ def _upsample_nearest_exact1d(input, output_size, scale_factors, *, out=None):
 
 def _upsample_nearest_exact2d(input, output_size, scale_factors, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_upsample_nearest_exact2d, (input, output_size, scale_factors), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._upsample_nearest_exact2d(input, output_size, scale_factors, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_upsample_nearest_exact2d, (input, output_size, scale_factors), {})
         if _captured is not None:
             return _captured
@@ -15500,12 +15501,12 @@ def _upsample_nearest_exact2d(input, output_size, scale_factors, *, out=None):
 
 def _upsample_nearest_exact3d(input, output_size, scale_factors, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_upsample_nearest_exact3d, (input, output_size, scale_factors), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._upsample_nearest_exact3d(input, output_size, scale_factors, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_upsample_nearest_exact3d, (input, output_size, scale_factors), {})
         if _captured is not None:
             return _captured
@@ -15513,12 +15514,12 @@ def _upsample_nearest_exact3d(input, output_size, scale_factors, *, out=None):
 
 def _upsample_bilinear2d_aa_backward(grad_output, output_size, input_size, align_corners, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_upsample_bilinear2d_aa_backward, (grad_output, output_size, input_size, align_corners, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._upsample_bilinear2d_aa_backward(grad_output=grad_output, output_size=output_size, input_size=input_size, align_corners=align_corners, scales_h=scales_h, scales_w=scales_w, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_upsample_bilinear2d_aa_backward, (grad_output, output_size, input_size, align_corners, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -15526,12 +15527,12 @@ def _upsample_bilinear2d_aa_backward(grad_output, output_size, input_size, align
 
 def _upsample_bicubic2d_aa_backward(grad_output, output_size, input_size, align_corners, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_upsample_bicubic2d_aa_backward, (grad_output, output_size, input_size, align_corners, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._upsample_bicubic2d_aa_backward(grad_output=grad_output, output_size=output_size, input_size=input_size, align_corners=align_corners, scales_h=scales_h, scales_w=scales_w, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_upsample_bicubic2d_aa_backward, (grad_output, output_size, input_size, align_corners, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -15539,12 +15540,12 @@ def _upsample_bicubic2d_aa_backward(grad_output, output_size, input_size, align_
 
 def _upsample_lanczos2d_aa_backward(grad_output, output_size, input_size, align_corners, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_upsample_lanczos2d_aa_backward, (grad_output, output_size, input_size, align_corners, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._upsample_lanczos2d_aa_backward(grad_output=grad_output, output_size=output_size, input_size=input_size, align_corners=align_corners, scales_h=scales_h, scales_w=scales_w, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_upsample_lanczos2d_aa_backward, (grad_output, output_size, input_size, align_corners, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -15552,12 +15553,12 @@ def _upsample_lanczos2d_aa_backward(grad_output, output_size, input_size, align_
 
 def _upsample_nearest_exact1d_backward(grad_output, output_size, input_size, scales=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_upsample_nearest_exact1d_backward, (grad_output, output_size, input_size, scales), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._upsample_nearest_exact1d_backward(grad_output=grad_output, output_size=output_size, input_size=input_size, scales=scales, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_upsample_nearest_exact1d_backward, (grad_output, output_size, input_size, scales), {})
         if _captured is not None:
             return _captured
@@ -15565,12 +15566,12 @@ def _upsample_nearest_exact1d_backward(grad_output, output_size, input_size, sca
 
 def _upsample_nearest_exact2d_backward(grad_output, output_size, input_size, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_upsample_nearest_exact2d_backward, (grad_output, output_size, input_size, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._upsample_nearest_exact2d_backward(grad_output=grad_output, output_size=output_size, input_size=input_size, scales_h=scales_h, scales_w=scales_w, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_upsample_nearest_exact2d_backward, (grad_output, output_size, input_size, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -15578,12 +15579,12 @@ def _upsample_nearest_exact2d_backward(grad_output, output_size, input_size, sca
 
 def _upsample_nearest_exact3d_backward(grad_output, output_size, input_size, scales_d=None, scales_h=None, scales_w=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_upsample_nearest_exact3d_backward, (grad_output, output_size, input_size, scales_d, scales_h, scales_w), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._upsample_nearest_exact3d_backward(grad_output=grad_output, output_size=output_size, input_size=input_size, scales_d=scales_d, scales_h=scales_h, scales_w=scales_w, grad_input=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_upsample_nearest_exact3d_backward, (grad_output, output_size, input_size, scales_d, scales_h, scales_w), {})
         if _captured is not None:
             return _captured
@@ -15591,12 +15592,12 @@ def _upsample_nearest_exact3d_backward(grad_output, output_size, input_size, sca
 
 def slow_conv_transpose2d(input, weight, kernel_size, bias=None, stride=1, padding=0, output_padding=0, dilation=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(slow_conv_transpose2d, (input, weight, kernel_size, bias, stride, padding, output_padding, dilation), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.slow_conv_transpose2d(self=input, weight=weight, kernel_size=kernel_size, bias=bias, stride=stride, padding=padding, output_padding=output_padding, dilation=dilation, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(slow_conv_transpose2d, (input, weight, kernel_size, bias, stride, padding, output_padding, dilation), {})
         if _captured is not None:
             return _captured
@@ -15604,12 +15605,12 @@ def slow_conv_transpose2d(input, weight, kernel_size, bias=None, stride=1, paddi
 
 def slow_conv_transpose3d(input, weight, kernel_size, bias=None, stride=1, padding=0, output_padding=0, dilation=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(slow_conv_transpose3d, (input, weight, kernel_size, bias, stride, padding, output_padding, dilation), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.slow_conv_transpose3d(self=input, weight=weight, kernel_size=kernel_size, bias=bias, stride=stride, padding=padding, output_padding=output_padding, dilation=dilation, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(slow_conv_transpose3d, (input, weight, kernel_size, bias, stride, padding, output_padding, dilation), {})
         if _captured is not None:
             return _captured
@@ -15617,12 +15618,12 @@ def slow_conv_transpose3d(input, weight, kernel_size, bias=None, stride=1, paddi
 
 def thnn_conv2d(input, weight, kernel_size, bias=None, stride=1, padding=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(thnn_conv2d, (input, weight, kernel_size, bias, stride, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.thnn_conv2d(self=input, weight=weight, kernel_size=kernel_size, bias=bias, stride=stride, padding=padding, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(thnn_conv2d, (input, weight, kernel_size, bias, stride, padding), {})
         if _captured is not None:
             return _captured
@@ -15630,12 +15631,12 @@ def thnn_conv2d(input, weight, kernel_size, bias=None, stride=1, padding=0, *, o
 
 def _slow_conv2d_forward(input, weight, kernel_size, bias, stride, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_slow_conv2d_forward, (input, weight, kernel_size, bias, stride, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._slow_conv2d_forward(self=input, weight=weight, kernel_size=kernel_size, bias=bias, stride=stride, padding=padding, output=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_slow_conv2d_forward, (input, weight, kernel_size, bias, stride, padding), {})
         if _captured is not None:
             return _captured
@@ -15643,12 +15644,12 @@ def _slow_conv2d_forward(input, weight, kernel_size, bias, stride, padding, *, o
 
 def _slow_conv2d_backward(grad_output, input, weight, kernel_size, stride, padding, output_mask, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_slow_conv2d_backward, (grad_output, input, weight, kernel_size, stride, padding, output_mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._slow_conv2d_backward(grad_output=grad_output, self=input, weight=weight, kernel_size=kernel_size, stride=stride, padding=padding, output_mask=output_mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_slow_conv2d_backward, (grad_output, input, weight, kernel_size, stride, padding, output_mask), {})
         if _captured is not None:
             return _captured
@@ -15656,12 +15657,12 @@ def _slow_conv2d_backward(grad_output, input, weight, kernel_size, stride, paddi
 
 def _conv_depthwise2d(input, weight, kernel_size, bias, stride, padding, dilation, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_conv_depthwise2d, (input, weight, kernel_size, bias, stride, padding, dilation), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._conv_depthwise2d(self=input, weight=weight, kernel_size=kernel_size, bias=bias, stride=stride, padding=padding, dilation=dilation, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_conv_depthwise2d, (input, weight, kernel_size, bias, stride, padding, dilation), {})
         if _captured is not None:
             return _captured
@@ -15669,12 +15670,12 @@ def _conv_depthwise2d(input, weight, kernel_size, bias, stride, padding, dilatio
 
 def conv_depthwise3d(input, weight, kernel_size, bias, stride, padding, dilation, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(conv_depthwise3d, (input, weight, kernel_size, bias, stride, padding, dilation), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.conv_depthwise3d(self=input, weight=weight, kernel_size=kernel_size, bias=bias, stride=stride, padding=padding, dilation=dilation, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(conv_depthwise3d, (input, weight, kernel_size, bias, stride, padding, dilation), {})
         if _captured is not None:
             return _captured
@@ -15682,12 +15683,12 @@ def conv_depthwise3d(input, weight, kernel_size, bias, stride, padding, dilation
 
 def slow_conv3d(input, weight, kernel_size, bias=None, stride=1, padding=0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(slow_conv3d, (input, weight, kernel_size, bias, stride, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.slow_conv3d(self=input, weight=weight, kernel_size=kernel_size, bias=bias, stride=stride, padding=padding, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(slow_conv3d, (input, weight, kernel_size, bias, stride, padding), {})
         if _captured is not None:
             return _captured
@@ -15695,12 +15696,12 @@ def slow_conv3d(input, weight, kernel_size, bias=None, stride=1, padding=0, *, o
 
 def slow_conv3d_forward(input, weight, kernel_size, bias, stride, padding, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(slow_conv3d_forward, (input, weight, kernel_size, bias, stride, padding), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.slow_conv3d_forward(self=input, weight=weight, kernel_size=kernel_size, bias=bias, stride=stride, padding=padding, output=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(slow_conv3d_forward, (input, weight, kernel_size, bias, stride, padding), {})
         if _captured is not None:
             return _captured
@@ -15708,12 +15709,12 @@ def slow_conv3d_forward(input, weight, kernel_size, bias, stride, padding, *, ou
 
 def slow_conv_dilated2d(input, weight, kernel_size, bias=None, stride=1, padding=0, dilation=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(slow_conv_dilated2d, (input, weight, kernel_size, bias, stride, padding, dilation), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.slow_conv_dilated2d(self=input, weight=weight, kernel_size=kernel_size, bias=bias, stride=stride, padding=padding, dilation=dilation, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(slow_conv_dilated2d, (input, weight, kernel_size, bias, stride, padding, dilation), {})
         if _captured is not None:
             return _captured
@@ -15721,26 +15722,26 @@ def slow_conv_dilated2d(input, weight, kernel_size, bias=None, stride=1, padding
 
 def slow_conv_dilated3d(input, weight, kernel_size, bias=None, stride=1, padding=0, dilation=1, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(slow_conv_dilated3d, (input, weight, kernel_size, bias, stride, padding, dilation), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.slow_conv_dilated3d(self=input, weight=weight, kernel_size=kernel_size, bias=bias, stride=stride, padding=padding, dilation=dilation, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(slow_conv_dilated3d, (input, weight, kernel_size, bias, stride, padding, dilation), {})
         if _captured is not None:
             return _captured
     return _C.slow_conv_dilated3d(self=input, weight=weight, kernel_size=kernel_size, bias=bias, stride=stride, padding=padding, dilation=dilation)
 
 def _add_batch_dim(input, batch_dim, level):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_add_batch_dim, (input, batch_dim, level), {})
         if _captured is not None:
             return _captured
     return _C._add_batch_dim(input, batch_dim, level)
 
 def _remove_batch_dim(input, level, batch_size, out_dim):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_remove_batch_dim, (input, level, batch_size, out_dim), {})
         if _captured is not None:
             return _captured
@@ -15748,12 +15749,12 @@ def _remove_batch_dim(input, level, batch_size, out_dim):
 
 def special_entr(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_entr, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_entr(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_entr, (input,), {})
         if _captured is not None:
             return _captured
@@ -15761,12 +15762,12 @@ def special_entr(input, *, out=None):
 
 def special_ndtri(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_ndtri, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_ndtri(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_ndtri, (input,), {})
         if _captured is not None:
             return _captured
@@ -15774,12 +15775,12 @@ def special_ndtri(input, *, out=None):
 
 def special_log_ndtr(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_log_ndtr, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_log_ndtr(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_log_ndtr, (input,), {})
         if _captured is not None:
             return _captured
@@ -15787,12 +15788,12 @@ def special_log_ndtr(input, *, out=None):
 
 def special_expm1(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_expm1, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_expm1(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_expm1, (input,), {})
         if _captured is not None:
             return _captured
@@ -15800,12 +15801,12 @@ def special_expm1(input, *, out=None):
 
 def special_exp2(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_exp2, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_exp2(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_exp2, (input,), {})
         if _captured is not None:
             return _captured
@@ -15813,12 +15814,12 @@ def special_exp2(input, *, out=None):
 
 def special_psi(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_psi, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_psi(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_psi, (input,), {})
         if _captured is not None:
             return _captured
@@ -15826,12 +15827,12 @@ def special_psi(input, *, out=None):
 
 def special_digamma(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_digamma, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_digamma(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_digamma, (input,), {})
         if _captured is not None:
             return _captured
@@ -15839,12 +15840,12 @@ def special_digamma(input, *, out=None):
 
 def special_gammaln(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_gammaln, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_gammaln(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_gammaln, (input,), {})
         if _captured is not None:
             return _captured
@@ -15852,12 +15853,12 @@ def special_gammaln(input, *, out=None):
 
 def special_erf(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_erf, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_erf(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_erf, (input,), {})
         if _captured is not None:
             return _captured
@@ -15865,12 +15866,12 @@ def special_erf(input, *, out=None):
 
 def special_erfc(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_erfc, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_erfc(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_erfc, (input,), {})
         if _captured is not None:
             return _captured
@@ -15878,12 +15879,12 @@ def special_erfc(input, *, out=None):
 
 def special_erfcx(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_erfcx, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_erfcx(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_erfcx, (input,), {})
         if _captured is not None:
             return _captured
@@ -15891,12 +15892,12 @@ def special_erfcx(input, *, out=None):
 
 def special_erfinv(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_erfinv, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_erfinv(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_erfinv, (input,), {})
         if _captured is not None:
             return _captured
@@ -15904,12 +15905,12 @@ def special_erfinv(input, *, out=None):
 
 def special_ndtr(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_ndtr, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_ndtr(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_ndtr, (input,), {})
         if _captured is not None:
             return _captured
@@ -15917,12 +15918,12 @@ def special_ndtr(input, *, out=None):
 
 def special_xlog1py(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_xlog1py, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_xlog1py(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_xlog1py, (input, other), {})
         if _captured is not None:
             return _captured
@@ -15930,12 +15931,12 @@ def special_xlog1py(input, other, *, out=None):
 
 def special_xlogy(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_xlogy, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_xlogy(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_xlogy, (input, other), {})
         if _captured is not None:
             return _captured
@@ -15943,12 +15944,12 @@ def special_xlogy(input, other, *, out=None):
 
 def special_zeta(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_zeta, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_zeta(input, other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_zeta, (input, other), {})
         if _captured is not None:
             return _captured
@@ -15956,12 +15957,12 @@ def special_zeta(input, other, *, out=None):
 
 def special_i0(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_i0, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_i0(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_i0, (input,), {})
         if _captured is not None:
             return _captured
@@ -15969,12 +15970,12 @@ def special_i0(input, *, out=None):
 
 def special_i0e(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_i0e, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_i0e(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_i0e, (input,), {})
         if _captured is not None:
             return _captured
@@ -15982,12 +15983,12 @@ def special_i0e(input, *, out=None):
 
 def special_i1(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_i1, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_i1(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_i1, (input,), {})
         if _captured is not None:
             return _captured
@@ -15995,12 +15996,12 @@ def special_i1(input, *, out=None):
 
 def special_i1e(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_i1e, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_i1e(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_i1e, (input,), {})
         if _captured is not None:
             return _captured
@@ -16008,12 +16009,12 @@ def special_i1e(input, *, out=None):
 
 def special_logit(input, eps=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_logit, (input, eps), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_logit(self=input, eps=eps, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_logit, (input, eps), {})
         if _captured is not None:
             return _captured
@@ -16021,12 +16022,12 @@ def special_logit(input, eps=None, *, out=None):
 
 def special_polygamma(n, input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_polygamma, (n, input), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_polygamma(n=n, self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_polygamma, (n, input), {})
         if _captured is not None:
             return _captured
@@ -16034,12 +16035,12 @@ def special_polygamma(n, input, *, out=None):
 
 def special_logsumexp(input, dim, keepdim=False, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_logsumexp, (input, dim, keepdim), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_logsumexp(self=input, dim=dim, keepdim=keepdim, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_logsumexp, (input, dim, keepdim), {})
         if _captured is not None:
             return _captured
@@ -16047,12 +16048,12 @@ def special_logsumexp(input, dim, keepdim=False, *, out=None):
 
 def special_expit(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_expit, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_expit(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_expit, (input,), {})
         if _captured is not None:
             return _captured
@@ -16060,12 +16061,12 @@ def special_expit(input, *, out=None):
 
 def special_sinc(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_sinc, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_sinc(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_sinc, (input,), {})
         if _captured is not None:
             return _captured
@@ -16073,12 +16074,12 @@ def special_sinc(input, *, out=None):
 
 def special_round(input, *, decimals=0, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_round, (input,), {'decimals': decimals, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_round(self=input, decimals=decimals, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_round, (input,), {'decimals': decimals})
         if _captured is not None:
             return _captured
@@ -16088,19 +16089,19 @@ def special_round(input, *, decimals=0, out=None):
 
 def special_log1p(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_log1p, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_log1p(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_log1p, (input,), {})
         if _captured is not None:
             return _captured
     return _C.special_log1p(self=input)
 
 def special_log_softmax(input, dim, dtype=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_log_softmax, (input, dim, dtype), {})
         if _captured is not None:
             return _captured
@@ -16108,12 +16109,12 @@ def special_log_softmax(input, dim, dtype=None):
 
 def special_gammainc(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_gammainc, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_gammainc(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_gammainc, (input, other), {})
         if _captured is not None:
             return _captured
@@ -16121,12 +16122,12 @@ def special_gammainc(input, other, *, out=None):
 
 def special_gammaincc(input, other, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_gammaincc, (input, other), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_gammaincc(self=input, other=other, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_gammaincc, (input, other), {})
         if _captured is not None:
             return _captured
@@ -16134,19 +16135,19 @@ def special_gammaincc(input, other, *, out=None):
 
 def special_multigammaln(input, p, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_multigammaln, (input, p), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_multigammaln(self=input, p=p, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_multigammaln, (input, p), {})
         if _captured is not None:
             return _captured
     return _C.special_multigammaln(self=input, p=p)
 
 def special_softmax(input, dim, dtype=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_softmax, (input, dim, dtype), {})
         if _captured is not None:
             return _captured
@@ -16154,12 +16155,12 @@ def special_softmax(input, dim, dtype=None):
 
 def fft_hfft(input, n=None, dim=-1, norm=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_hfft, (input, n, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_hfft(self=input, n=n, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_hfft, (input, n, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -16167,12 +16168,12 @@ def fft_hfft(input, n=None, dim=-1, norm=None, *, out=None):
 
 def fft_ihfft(input, n=None, dim=-1, norm=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_ihfft, (input, n, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_ihfft(self=input, n=n, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_ihfft, (input, n, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -16180,12 +16181,12 @@ def fft_ihfft(input, n=None, dim=-1, norm=None, *, out=None):
 
 def fft_hfft2(input, s=None, dim=[-2,-1], norm=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_hfft2, (input, s, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_hfft2(self=input, s=s, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_hfft2, (input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -16193,12 +16194,12 @@ def fft_hfft2(input, s=None, dim=[-2,-1], norm=None, *, out=None):
 
 def fft_ihfft2(input, s=None, dim=[-2,-1], norm=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_ihfft2, (input, s, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_ihfft2(self=input, s=s, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_ihfft2, (input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -16206,12 +16207,12 @@ def fft_ihfft2(input, s=None, dim=[-2,-1], norm=None, *, out=None):
 
 def fft_fftn(input, s=None, dim=None, norm=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_fftn, (input, s, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_fftn(self=input, s=s, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_fftn, (input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -16219,12 +16220,12 @@ def fft_fftn(input, s=None, dim=None, norm=None, *, out=None):
 
 def fft_ifftn(input, s=None, dim=None, norm=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_ifftn, (input, s, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_ifftn(self=input, s=s, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_ifftn, (input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -16232,12 +16233,12 @@ def fft_ifftn(input, s=None, dim=None, norm=None, *, out=None):
 
 def fft_rfftn(input, s=None, dim=None, norm=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_rfftn, (input, s, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_rfftn(self=input, s=s, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_rfftn, (input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -16245,12 +16246,12 @@ def fft_rfftn(input, s=None, dim=None, norm=None, *, out=None):
 
 def fft_irfftn(input, s=None, dim=None, norm=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_irfftn, (input, s, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_irfftn(self=input, s=s, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_irfftn, (input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -16258,12 +16259,12 @@ def fft_irfftn(input, s=None, dim=None, norm=None, *, out=None):
 
 def fft_hfftn(input, s=None, dim=None, norm=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_hfftn, (input, s, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_hfftn(self=input, s=s, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_hfftn, (input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -16271,12 +16272,12 @@ def fft_hfftn(input, s=None, dim=None, norm=None, *, out=None):
 
 def fft_ihfftn(input, s=None, dim=None, norm=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_ihfftn, (input, s, dim, norm), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_ihfftn(self=input, s=s, dim=dim, norm=norm, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_ihfftn, (input, s, dim, norm), {})
         if _captured is not None:
             return _captured
@@ -16284,12 +16285,12 @@ def fft_ihfftn(input, s=None, dim=None, norm=None, *, out=None):
 
 def fft_fftfreq(n, d=1.0, *, dtype=None, layout=None, device=None, pin_memory=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_fftfreq, (n, d), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_fftfreq(n, d, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_fftfreq, (n, d), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -16299,12 +16300,12 @@ def fft_fftfreq(n, d=1.0, *, dtype=None, layout=None, device=None, pin_memory=No
 
 def fft_rfftfreq(n, d=1.0, *, dtype=None, layout=None, device=None, pin_memory=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(fft_rfftfreq, (n, d), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.fft_rfftfreq(n, d, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_rfftfreq, (n, d), {'dtype': dtype, 'layout': layout, 'device': device, 'pin_memory': pin_memory})
         if _captured is not None:
             return _captured
@@ -16313,7 +16314,7 @@ def fft_rfftfreq(n, d=1.0, *, dtype=None, layout=None, device=None, pin_memory=N
     return _C.fft_rfftfreq(n=n, d=d, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory)
 
 def fft_fftshift(input, dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_fftshift, (input, dim), {})
         if _captured is not None:
             return _captured
@@ -16322,7 +16323,7 @@ def fft_fftshift(input, dim=None):
     return _C.fft_fftshift(input, dim)
 
 def fft_ifftshift(input, dim=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(fft_ifftshift, (input, dim), {})
         if _captured is not None:
             return _captured
@@ -16332,19 +16333,19 @@ def fft_ifftshift(input, dim=None):
 
 def _linalg_det(A, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_linalg_det, (A,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._linalg_det(A=A, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_linalg_det, (A,), {})
         if _captured is not None:
             return _captured
     return _C._linalg_det(A=A)
 
 def det(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(det, (input,), {})
         if _captured is not None:
             return _captured
@@ -16352,12 +16353,12 @@ def det(input):
 
 def _linalg_slogdet(A, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_linalg_slogdet, (A,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._linalg_slogdet(A=A, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_linalg_slogdet, (A,), {})
         if _captured is not None:
             return _captured
@@ -16365,26 +16366,26 @@ def _linalg_slogdet(A, *, out=None):
 
 def slogdet(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(slogdet, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.slogdet(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(slogdet, (input,), {})
         if _captured is not None:
             return _captured
     return _C.slogdet(self=input)
 
 def logdet(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(logdet, (input,), {})
         if _captured is not None:
             return _captured
     return _C.logdet(input)
 
 def _linalg_eigvals(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_linalg_eigvals, (input,), {})
         if _captured is not None:
             return _captured
@@ -16392,12 +16393,12 @@ def _linalg_eigvals(input):
 
 def _linalg_eigh(A, UPLO='L', compute_v=True, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_linalg_eigh, (A, UPLO, compute_v), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._linalg_eigh(A=A, UPLO=UPLO, compute_v=compute_v, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_linalg_eigh, (A, UPLO, compute_v), {})
         if _captured is not None:
             return _captured
@@ -16405,12 +16406,12 @@ def _linalg_eigh(A, UPLO='L', compute_v=True, *, out=None):
 
 def inverse(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(inverse, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.inverse(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(inverse, (input,), {})
         if _captured is not None:
             return _captured
@@ -16418,12 +16419,12 @@ def inverse(input, *, out=None):
 
 def _linalg_svd(A, full_matrices=False, compute_uv=True, *, driver=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_linalg_svd, (A, full_matrices, compute_uv), {'driver': driver, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._linalg_svd(A=A, full_matrices=full_matrices, compute_uv=compute_uv, driver=driver, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_linalg_svd, (A, full_matrices, compute_uv), {'driver': driver})
         if _captured is not None:
             return _captured
@@ -16433,12 +16434,12 @@ def _linalg_svd(A, full_matrices=False, compute_uv=True, *, driver=None, out=Non
 
 def _linalg_solve_ex(A, B, *, left=True, check_errors=False, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_linalg_solve_ex, (A, B), {'left': left, 'check_errors': check_errors, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._linalg_solve_ex(A=A, B=B, left=left, check_errors=check_errors, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_linalg_solve_ex, (A, B), {'left': left, 'check_errors': check_errors})
         if _captured is not None:
             return _captured
@@ -16447,14 +16448,14 @@ def _linalg_solve_ex(A, B, *, left=True, check_errors=False, out=None):
     return _C._linalg_solve_ex(A=A, B=B, left=left, check_errors=check_errors)
 
 def _spsolve(A, B, left=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_spsolve, (A, B, left), {})
         if _captured is not None:
             return _captured
     return _C._spsolve(A, B, left=left)
 
 def nested_to_padded_tensor(input, padding, output_size=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(nested_to_padded_tensor, (input, padding, output_size), {})
         if _captured is not None:
             return _captured
@@ -16463,14 +16464,14 @@ def nested_to_padded_tensor(input, padding, output_size=None):
     return _C.nested_to_padded_tensor(input, padding, output_size)
 
 def _test_serialization_subcmul(input, other, alpha=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_test_serialization_subcmul, (input, other, alpha), {})
         if _captured is not None:
             return _captured
     return _C._test_serialization_subcmul(input, other, alpha)
 
 def _test_parallel_materialize(input, num_parallel, skip_first=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_test_parallel_materialize, (input, num_parallel, skip_first), {})
         if _captured is not None:
             return _captured
@@ -16478,12 +16479,12 @@ def _test_parallel_materialize(input, num_parallel, skip_first=False):
 
 def _test_optional_intlist(values, addends, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_test_optional_intlist, (values, addends), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._test_optional_intlist(values=values, addends=addends, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_test_optional_intlist, (values, addends), {})
         if _captured is not None:
             return _captured
@@ -16491,12 +16492,12 @@ def _test_optional_intlist(values, addends, *, out=None):
 
 def _test_optional_filled_intlist(values, addends, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_test_optional_filled_intlist, (values, addends), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._test_optional_filled_intlist(values=values, addends=addends, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_test_optional_filled_intlist, (values, addends), {})
         if _captured is not None:
             return _captured
@@ -16504,26 +16505,26 @@ def _test_optional_filled_intlist(values, addends, *, out=None):
 
 def _test_optional_floatlist(values, addends, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_test_optional_floatlist, (values, addends), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._test_optional_floatlist(values=values, addends=addends, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_test_optional_floatlist, (values, addends), {})
         if _captured is not None:
             return _captured
     return _C._test_optional_floatlist(values=values, addends=addends)
 
 def _test_string_default(dummy, a='"\'\\', b='"\'\\'):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_test_string_default, (dummy, a, b), {})
         if _captured is not None:
             return _captured
     return _C._test_string_default(dummy, a, b)
 
 def _test_ambiguous_defaults(dummy, a=1, b=1):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_test_ambiguous_defaults, (dummy, a, b), {})
         if _captured is not None:
             return _captured
@@ -16531,12 +16532,12 @@ def _test_ambiguous_defaults(dummy, a=1, b=1):
 
 def _test_warn_in_autograd(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_test_warn_in_autograd, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._test_warn_in_autograd(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_test_warn_in_autograd, (input,), {})
         if _captured is not None:
             return _captured
@@ -16544,19 +16545,19 @@ def _test_warn_in_autograd(input, *, out=None):
 
 def _test_autograd_multiple_dispatch(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_test_autograd_multiple_dispatch, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._test_autograd_multiple_dispatch(input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_test_autograd_multiple_dispatch, (input,), {})
         if _captured is not None:
             return _captured
     return _C._test_autograd_multiple_dispatch(input)
 
 def _test_autograd_multiple_dispatch_view(input):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_test_autograd_multiple_dispatch_view, (input,), {})
         if _captured is not None:
             return _captured
@@ -16564,12 +16565,12 @@ def _test_autograd_multiple_dispatch_view(input):
 
 def _test_autograd_multiple_dispatch_view_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_test_autograd_multiple_dispatch_view_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._test_autograd_multiple_dispatch_view_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_test_autograd_multiple_dispatch_view_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -16577,12 +16578,12 @@ def _test_autograd_multiple_dispatch_view_copy(input, *, out=None):
 
 def segment_reduce(data, reduce, *, lengths=None, indices=None, offsets=None, axis=0, unsafe=False, initial=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(segment_reduce, (data, reduce), {'lengths': lengths, 'indices': indices, 'offsets': offsets, 'axis': axis, 'unsafe': unsafe, 'initial': initial, 'out': out})
             if _captured is not None:
                 return _captured
         return _C.segment_reduce(data=data, reduce=reduce, lengths=lengths, indices=indices, offsets=offsets, axis=axis, unsafe=unsafe, initial=initial, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(segment_reduce, (data, reduce), {'lengths': lengths, 'indices': indices, 'offsets': offsets, 'axis': axis, 'unsafe': unsafe, 'initial': initial})
         if _captured is not None:
             return _captured
@@ -16592,12 +16593,12 @@ def segment_reduce(data, reduce, *, lengths=None, indices=None, offsets=None, ax
 
 def _segment_reduce_backward(grad_output, output, data, reduce, *, lengths=None, offsets=None, axis=0, initial=None, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_segment_reduce_backward, (grad_output, output, data, reduce), {'lengths': lengths, 'offsets': offsets, 'axis': axis, 'initial': initial, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._segment_reduce_backward(grad_output=grad_output, output=output, data=data, reduce=reduce, lengths=lengths, offsets=offsets, axis=axis, initial=initial, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_segment_reduce_backward, (grad_output, output, data, reduce), {'lengths': lengths, 'offsets': offsets, 'axis': axis, 'initial': initial})
         if _captured is not None:
             return _captured
@@ -16606,28 +16607,28 @@ def _segment_reduce_backward(grad_output, output, data, reduce, *, lengths=None,
     return _C._segment_reduce_backward(grad_output=grad_output, output=output, data=data, reduce=reduce, lengths=lengths, offsets=offsets, axis=axis, initial=initial)
 
 def _segment_reduce(data, reduce, lengths=None, offsets=None, axis=0, initial=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_segment_reduce, (data, reduce, lengths, offsets, axis, initial), {})
         if _captured is not None:
             return _captured
     return _C._segment_reduce(data, reduce, lengths=lengths, offsets=offsets, axis=axis, initial=initial)
 
 def pad_sequence(sequences, batch_first=False, padding_value=0.0, padding_side='right'):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(pad_sequence, (sequences, batch_first, padding_value, padding_side), {})
         if _captured is not None:
             return _captured
     return _C.pad_sequence(sequences, batch_first, padding_value, padding_side)
 
 def flatten_dense_tensors(*args):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(flatten_dense_tensors, (*args,), {})
         if _captured is not None:
             return _captured
     return _C.flatten_dense_tensors(*args)
 
 def unflatten_dense_tensors(flat, tensors):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(unflatten_dense_tensors, (flat, tensors), {})
         if _captured is not None:
             return _captured
@@ -16635,12 +16636,12 @@ def unflatten_dense_tensors(flat, tensors):
 
 def _nested_tensor_from_tensor_list(list, dtype=None, layout=None, device=None, pin_memory=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_nested_tensor_from_tensor_list, (list, dtype, layout, device, pin_memory), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._nested_tensor_from_tensor_list(list=list, dtype=dtype, layout=layout, device=device, pin_memory=pin_memory, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_tensor_from_tensor_list, (list, dtype, layout, device, pin_memory), {})
         if _captured is not None:
             return _captured
@@ -16648,12 +16649,12 @@ def _nested_tensor_from_tensor_list(list, dtype=None, layout=None, device=None, 
 
 def _fw_primal_copy(input, level, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_fw_primal_copy, (input, level), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._fw_primal_copy(self=input, level=level, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fw_primal_copy, (input, level), {})
         if _captured is not None:
             return _captured
@@ -16661,12 +16662,12 @@ def _fw_primal_copy(input, level, *, out=None):
 
 def _make_dual_copy(primal, tangent, level, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_make_dual_copy, (primal, tangent, level), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._make_dual_copy(primal=primal, tangent=tangent, level=level, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_make_dual_copy, (primal, tangent, level), {})
         if _captured is not None:
             return _captured
@@ -16674,12 +16675,12 @@ def _make_dual_copy(primal, tangent, level, *, out=None):
 
 def view_as_real_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(view_as_real_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.view_as_real_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(view_as_real_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -16687,12 +16688,12 @@ def view_as_real_copy(input, *, out=None):
 
 def view_as_complex_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(view_as_complex_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.view_as_complex_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(view_as_complex_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -16700,12 +16701,12 @@ def view_as_complex_copy(input, *, out=None):
 
 def _conj_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_conj_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._conj_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_conj_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -16713,12 +16714,12 @@ def _conj_copy(input, *, out=None):
 
 def _neg_view_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_neg_view_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._neg_view_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_neg_view_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -16726,12 +16727,12 @@ def _neg_view_copy(input, *, out=None):
 
 def as_strided_copy(input, size, stride, storage_offset=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(as_strided_copy, (input, size, stride, storage_offset), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.as_strided_copy(self=input, size=size, stride=stride, storage_offset=storage_offset, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(as_strided_copy, (input, size, stride, storage_offset), {})
         if _captured is not None:
             return _captured
@@ -16739,12 +16740,12 @@ def as_strided_copy(input, size, stride, storage_offset=None, *, out=None):
 
 def _sparse_broadcast_to_copy(input, size, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_sparse_broadcast_to_copy, (input, size), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._sparse_broadcast_to_copy(self=input, size=size, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_sparse_broadcast_to_copy, (input, size), {})
         if _captured is not None:
             return _captured
@@ -16752,12 +16753,12 @@ def _sparse_broadcast_to_copy(input, size, *, out=None):
 
 def _reshape_alias_copy(input, size, stride, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_reshape_alias_copy, (input, size, stride), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._reshape_alias_copy(self=input, size=size, stride=stride, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_reshape_alias_copy, (input, size, stride), {})
         if _captured is not None:
             return _captured
@@ -16765,12 +16766,12 @@ def _reshape_alias_copy(input, size, stride, *, out=None):
 
 def _indices_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_indices_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._indices_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_indices_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -16778,12 +16779,12 @@ def _indices_copy(input, *, out=None):
 
 def _values_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_values_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._values_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_values_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -16791,12 +16792,12 @@ def _values_copy(input, *, out=None):
 
 def indices_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(indices_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.indices_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(indices_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -16804,12 +16805,12 @@ def indices_copy(input, *, out=None):
 
 def values_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(values_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.values_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(values_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -16817,12 +16818,12 @@ def values_copy(input, *, out=None):
 
 def crow_indices_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(crow_indices_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.crow_indices_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(crow_indices_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -16830,12 +16831,12 @@ def crow_indices_copy(input, *, out=None):
 
 def col_indices_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(col_indices_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.col_indices_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(col_indices_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -16843,12 +16844,12 @@ def col_indices_copy(input, *, out=None):
 
 def ccol_indices_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(ccol_indices_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.ccol_indices_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(ccol_indices_copy, (input,), {})
         if _captured is not None:
             return _captured
@@ -16856,26 +16857,26 @@ def ccol_indices_copy(input, *, out=None):
 
 def row_indices_copy(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(row_indices_copy, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.row_indices_copy(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(row_indices_copy, (input,), {})
         if _captured is not None:
             return _captured
     return _C.row_indices_copy(self=input)
 
 def to_padded_tensor(input, padding, output_size=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(to_padded_tensor, (input, padding, output_size), {})
         if _captured is not None:
             return _captured
     return input.to_padded_tensor(padding=padding, output_size=output_size)
 
 def _jagged_to_padded_dense_forward(values, offsets, max_lengths, padding_value=0.0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_jagged_to_padded_dense_forward, (values, offsets, max_lengths, padding_value), {})
         if _captured is not None:
             return _captured
@@ -16884,28 +16885,28 @@ def _jagged_to_padded_dense_forward(values, offsets, max_lengths, padding_value=
     return _C._jagged_to_padded_dense_forward(values, offsets, max_lengths, padding_value)
 
 def _padded_dense_to_jagged_forward(dense, offsets, total_L=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_padded_dense_to_jagged_forward, (dense, offsets, total_L), {})
         if _captured is not None:
             return _captured
     return _C._padded_dense_to_jagged_forward(dense, offsets, total_L)
 
 def _nested_from_padded_tensor(padded, offsets, dummy, ragged_idx=1, min_seqlen=None, max_seqlen=None, sum_S=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_from_padded_tensor, (padded, offsets, dummy, ragged_idx, min_seqlen, max_seqlen, sum_S), {})
         if _captured is not None:
             return _captured
     return _C._nested_from_padded_tensor(padded, offsets, dummy, ragged_idx, min_seqlen, max_seqlen, sum_S)
 
 def _nested_tensor_softmax_with_shape(input, query):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_nested_tensor_softmax_with_shape, (input, query), {})
         if _captured is not None:
             return _captured
     return _C._nested_tensor_softmax_with_shape(input, query)
 
 def _safe_softmax(input, dim, dtype=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_safe_softmax, (input, dim, dtype), {})
         if _captured is not None:
             return _captured
@@ -16913,12 +16914,12 @@ def _safe_softmax(input, dim, dtype=None):
 
 def _transformer_encoder_layer_fwd(src, embed_dim, num_heads, qkv_weight, qkv_bias, proj_weight, proj_bias, use_gelu, norm_first, eps, norm_weight_1, norm_bias_1, norm_weight_2, norm_bias_2, ffn_weight_1, ffn_bias_1, ffn_weight_2, ffn_bias_2, mask=None, mask_type=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_transformer_encoder_layer_fwd, (src, embed_dim, num_heads, qkv_weight, qkv_bias, proj_weight, proj_bias, use_gelu, norm_first, eps, norm_weight_1, norm_bias_1, norm_weight_2, norm_bias_2, ffn_weight_1, ffn_bias_1, ffn_weight_2, ffn_bias_2, mask, mask_type), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._transformer_encoder_layer_fwd(src=src, embed_dim=embed_dim, num_heads=num_heads, qkv_weight=qkv_weight, qkv_bias=qkv_bias, proj_weight=proj_weight, proj_bias=proj_bias, use_gelu=use_gelu, norm_first=norm_first, eps=eps, norm_weight_1=norm_weight_1, norm_bias_1=norm_bias_1, norm_weight_2=norm_weight_2, norm_bias_2=norm_bias_2, ffn_weight_1=ffn_weight_1, ffn_bias_1=ffn_bias_1, ffn_weight_2=ffn_weight_2, ffn_bias_2=ffn_bias_2, mask=mask, mask_type=mask_type, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_transformer_encoder_layer_fwd, (src, embed_dim, num_heads, qkv_weight, qkv_bias, proj_weight, proj_bias, use_gelu, norm_first, eps, norm_weight_1, norm_bias_1, norm_weight_2, norm_bias_2, ffn_weight_1, ffn_bias_1, ffn_weight_2, ffn_bias_2, mask, mask_type), {})
         if _captured is not None:
             return _captured
@@ -16926,152 +16927,152 @@ def _transformer_encoder_layer_fwd(src, embed_dim, num_heads, qkv_weight, qkv_bi
 
 def _native_multi_head_attention(query, key, value, embed_dim, num_head, qkv_weight, qkv_bias, proj_weight, proj_bias, mask=None, need_weights=True, average_attn_weights=True, mask_type=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_native_multi_head_attention, (query, key, value, embed_dim, num_head, qkv_weight, qkv_bias, proj_weight, proj_bias, mask, need_weights, average_attn_weights, mask_type), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._native_multi_head_attention(query=query, key=key, value=value, embed_dim=embed_dim, num_head=num_head, qkv_weight=qkv_weight, qkv_bias=qkv_bias, proj_weight=proj_weight, proj_bias=proj_bias, mask=mask, need_weights=need_weights, average_attn_weights=average_attn_weights, mask_type=mask_type, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_native_multi_head_attention, (query, key, value, embed_dim, num_head, qkv_weight, qkv_bias, proj_weight, proj_bias, mask, need_weights, average_attn_weights, mask_type), {})
         if _captured is not None:
             return _captured
     return _C._native_multi_head_attention(query=query, key=key, value=value, embed_dim=embed_dim, num_head=num_head, qkv_weight=qkv_weight, qkv_bias=qkv_bias, proj_weight=proj_weight, proj_bias=proj_bias, mask=mask, need_weights=need_weights, average_attn_weights=average_attn_weights, mask_type=mask_type)
 
 def _fused_sdp_choice(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None, enable_gqa=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fused_sdp_choice, (query, key, value, attn_mask, dropout_p, is_causal, scale, enable_gqa), {})
         if _captured is not None:
             return _captured
     return _C._fused_sdp_choice(query, key, value, attn_mask, dropout_p, is_causal, scale=scale, enable_gqa=enable_gqa)
 
 def _scaled_dot_product_attention_math(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, dropout_mask=None, scale=None, enable_gqa=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_attention_math, (query, key, value, attn_mask, dropout_p, is_causal, dropout_mask, scale, enable_gqa), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_attention_math(query, key, value, attn_mask, dropout_p, is_causal, dropout_mask, scale=scale, enable_gqa=enable_gqa)
 
 def _scaled_dot_product_attention_math_for_mps(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, dropout_mask=None, scale=None, enable_gqa=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_attention_math_for_mps, (query, key, value, attn_mask, dropout_p, is_causal, dropout_mask, scale, enable_gqa), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_attention_math_for_mps(query, key, value, attn_mask, dropout_p, is_causal, dropout_mask, scale=scale, enable_gqa=enable_gqa)
 
 def _scaled_dot_product_flash_attention(query, key, value, dropout_p=0.0, is_causal=False, return_debug_mask=False, scale=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_flash_attention, (query, key, value, dropout_p, is_causal, return_debug_mask, scale), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_flash_attention(query, key, value, dropout_p, is_causal, return_debug_mask, scale=scale)
 
 def _scaled_dot_product_flash_attention_for_cpu(query, key, value, dropout_p=0.0, is_causal=False, attn_mask=None, scale=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_flash_attention_for_cpu, (query, key, value, dropout_p, is_causal, attn_mask, scale), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_flash_attention_for_cpu(query, key, value, dropout_p, is_causal, attn_mask=attn_mask, scale=scale)
 
 def _scaled_dot_product_fused_attention_overrideable(query, key, value, attn_bias=None, dropout_p=0.0, is_causal=False, return_debug_mask=False, scale=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_fused_attention_overrideable, (query, key, value, attn_bias, dropout_p, is_causal, return_debug_mask, scale), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_fused_attention_overrideable(query, key, value, attn_bias, dropout_p, is_causal, return_debug_mask, scale=scale)
 
 def _scaled_dot_product_flash_attention_backward(grad_out, query, key, value, out, logsumexp, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, philox_seed, philox_offset, scale=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_flash_attention_backward, (grad_out, query, key, value, out, logsumexp, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, philox_seed, philox_offset, scale), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_flash_attention_backward(grad_out, query, key, value, out, logsumexp, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, philox_seed, philox_offset, scale=scale)
 
 def _scaled_dot_product_flash_attention_for_cpu_backward(grad_out, query, key, value, out, logsumexp, dropout_p, is_causal, attn_mask=None, scale=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_flash_attention_for_cpu_backward, (grad_out, query, key, value, out, logsumexp, dropout_p, is_causal, attn_mask, scale), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_flash_attention_for_cpu_backward(grad_out, query, key, value, out, logsumexp, dropout_p, is_causal, attn_mask=attn_mask, scale=scale)
 
 def _scaled_dot_product_fused_attention_overrideable_backward(grad_out, query, key, value, attn_bias, grad_input_mask, out, logsumexp, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, philox_seed, philox_offset, scale=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_fused_attention_overrideable_backward, (grad_out, query, key, value, attn_bias, grad_input_mask, out, logsumexp, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, philox_seed, philox_offset, scale), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_fused_attention_overrideable_backward(grad_out, query, key, value, attn_bias, grad_input_mask, out, logsumexp, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, philox_seed, philox_offset, scale=scale)
 
 def _scaled_dot_product_efficient_attention(query, key, value, attn_bias, compute_log_sumexp, dropout_p=0.0, is_causal=False, scale=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_efficient_attention, (query, key, value, attn_bias, compute_log_sumexp, dropout_p, is_causal, scale), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_efficient_attention(query, key, value, attn_bias, compute_log_sumexp, dropout_p, is_causal, scale=scale)
 
 def _scaled_dot_product_efficient_attention_backward(grad_out_, query, key, value, attn_bias, out, logsumexp, philox_seed, philox_offset, dropout_p, grad_input_mask, is_causal=False, scale=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_efficient_attention_backward, (grad_out_, query, key, value, attn_bias, out, logsumexp, philox_seed, philox_offset, dropout_p, grad_input_mask, is_causal, scale), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_efficient_attention_backward(grad_out_, query, key, value, attn_bias, out, logsumexp, philox_seed, philox_offset, dropout_p, grad_input_mask, is_causal, scale=scale)
 
 def _scaled_dot_product_cudnn_attention(query, key, value, attn_bias, compute_log_sumexp, dropout_p=0.0, is_causal=False, return_debug_mask=False, scale=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_cudnn_attention, (query, key, value, attn_bias, compute_log_sumexp, dropout_p, is_causal, return_debug_mask, scale), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_cudnn_attention(query, key, value, attn_bias, compute_log_sumexp, dropout_p, is_causal, return_debug_mask, scale=scale)
 
 def _scaled_dot_product_cudnn_attention_backward(grad_out, query, key, value, out, logsumexp, philox_seed, philox_offset, attn_bias, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, scale=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_scaled_dot_product_cudnn_attention_backward, (grad_out, query, key, value, out, logsumexp, philox_seed, philox_offset, attn_bias, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, scale), {})
         if _captured is not None:
             return _captured
     return _C._scaled_dot_product_cudnn_attention_backward(grad_out, query, key, value, out, logsumexp, philox_seed, philox_offset, attn_bias, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, scale=scale)
 
 def _flash_attention_forward(query, key, value, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, return_debug_mask, scale=None, window_size_left=None, window_size_right=None, seqused_k=None, alibi_slopes=None, block_table=None, num_splits=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_flash_attention_forward, (query, key, value, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, return_debug_mask, scale, window_size_left, window_size_right, seqused_k, alibi_slopes, block_table, num_splits), {})
         if _captured is not None:
             return _captured
     return _C._flash_attention_forward(query, key, value, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, return_debug_mask, scale=scale, window_size_left=window_size_left, window_size_right=window_size_right, seqused_k=seqused_k, alibi_slopes=alibi_slopes, block_table=block_table, num_splits=num_splits)
 
 def _flash_attention_forward_no_dropout_inplace(out, query, key, value, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, return_debug_mask, scale=None, window_size_left=None, window_size_right=None, seqused_k=None, alibi_slopes=None, block_table=None, num_splits=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_flash_attention_forward_no_dropout_inplace, (out, query, key, value, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, return_debug_mask, scale, window_size_left, window_size_right, seqused_k, alibi_slopes, block_table, num_splits), {})
         if _captured is not None:
             return _captured
     return _C._flash_attention_forward_no_dropout_inplace(out, query, key, value, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, return_debug_mask, scale=scale, window_size_left=window_size_left, window_size_right=window_size_right, seqused_k=seqused_k, alibi_slopes=alibi_slopes, block_table=block_table, num_splits=num_splits)
 
 def _flash_attention_backward(grad_out, query, key, value, out, logsumexp, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, rng_state, unused, scale=None, window_size_left=None, window_size_right=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_flash_attention_backward, (grad_out, query, key, value, out, logsumexp, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, rng_state, unused, scale, window_size_left, window_size_right), {})
         if _captured is not None:
             return _captured
     return _C._flash_attention_backward(grad_out, query, key, value, out, logsumexp, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, rng_state, unused, scale=scale, window_size_left=window_size_left, window_size_right=window_size_right)
 
 def _efficient_attention_forward(query, key, value, bias, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, dropout_p, custom_mask_type, compute_log_sumexp=False, scale=None, seqlen_k=None, window_size=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_efficient_attention_forward, (query, key, value, bias, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, dropout_p, custom_mask_type, compute_log_sumexp, scale, seqlen_k, window_size), {})
         if _captured is not None:
             return _captured
     return _C._efficient_attention_forward(query, key, value, bias, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, dropout_p, custom_mask_type, compute_log_sumexp, scale=scale, seqlen_k=seqlen_k, window_size=window_size)
 
 def _efficient_attention_backward(grad_out_, query, key, value, bias, out, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, logsumexp, dropout_p, philox_seed, philox_offset, custom_mask_type, bias_requires_grad, scale=None, num_splits_key=None, window_size=None, shared_storage_dqdkdv=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_efficient_attention_backward, (grad_out_, query, key, value, bias, out, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, logsumexp, dropout_p, philox_seed, philox_offset, custom_mask_type, bias_requires_grad, scale, num_splits_key, window_size, shared_storage_dqdkdv), {})
         if _captured is not None:
             return _captured
     return _C._efficient_attention_backward(grad_out_, query, key, value, bias, out, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, logsumexp, dropout_p, philox_seed, philox_offset, custom_mask_type, bias_requires_grad, scale=scale, num_splits_key=num_splits_key, window_size=window_size, shared_storage_dqdkdv=shared_storage_dqdkdv)
 
 def _cudnn_attention_forward(query, key, value, attn_bias, cum_seq_q, cum_seq_k, max_q, max_k, compute_log_sumexp, dropout_p=0.0, is_causal=False, return_debug_mask=False, scale=None, seqused_k=None, block_table=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cudnn_attention_forward, (query, key, value, attn_bias, cum_seq_q, cum_seq_k, max_q, max_k, compute_log_sumexp, dropout_p, is_causal, return_debug_mask, scale, seqused_k, block_table), {})
         if _captured is not None:
             return _captured
     return _C._cudnn_attention_forward(query, key, value, attn_bias, cum_seq_q, cum_seq_k, max_q, max_k, compute_log_sumexp, dropout_p, is_causal, return_debug_mask, scale=scale, seqused_k=seqused_k, block_table=block_table)
 
 def _cudnn_attention_backward(grad_out, query, key, value, out, logsumexp, philox_seed, philox_offset, attn_bias, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, scale=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_cudnn_attention_backward, (grad_out, query, key, value, out, logsumexp, philox_seed, philox_offset, attn_bias, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, scale), {})
         if _captured is not None:
             return _captured
@@ -17079,19 +17080,19 @@ def _cudnn_attention_backward(grad_out, query, key, value, out, logsumexp, philo
 
 def _triton_scaled_dot_attention(q, k, v, dropout_p=0.0, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_triton_scaled_dot_attention, (q, k, v, dropout_p), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._triton_scaled_dot_attention(q=q, k=k, v=v, dropout_p=dropout_p, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_triton_scaled_dot_attention, (q, k, v, dropout_p), {})
         if _captured is not None:
             return _captured
     return _C._triton_scaled_dot_attention(q=q, k=k, v=v, dropout_p=dropout_p)
 
 def _fill_mem_eff_dropout_mask_(input, dropout_p, seed, offset):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_fill_mem_eff_dropout_mask_, (input, dropout_p, seed, offset), {})
         if _captured is not None:
             return _captured
@@ -17099,12 +17100,12 @@ def _fill_mem_eff_dropout_mask_(input, dropout_p, seed, offset):
 
 def _triton_multi_head_attention(query, key, value, embed_dim, num_head, qkv_weight, qkv_bias, proj_weight, proj_bias, mask=None, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_triton_multi_head_attention, (query, key, value, embed_dim, num_head, qkv_weight, qkv_bias, proj_weight, proj_bias, mask), {'out': out})
             if _captured is not None:
                 return _captured
         return _C._triton_multi_head_attention(query=query, key=key, value=value, embed_dim=embed_dim, num_head=num_head, qkv_weight=qkv_weight, qkv_bias=qkv_bias, proj_weight=proj_weight, proj_bias=proj_bias, mask=mask, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_triton_multi_head_attention, (query, key, value, embed_dim, num_head, qkv_weight, qkv_bias, proj_weight, proj_bias, mask), {})
         if _captured is not None:
             return _captured
@@ -17112,12 +17113,12 @@ def _triton_multi_head_attention(query, key, value, embed_dim, num_head, qkv_wei
 
 def special_airy_ai(x, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_airy_ai, (x,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_airy_ai(x=x, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_airy_ai, (x,), {})
         if _captured is not None:
             return _captured
@@ -17125,12 +17126,12 @@ def special_airy_ai(x, *, out=None):
 
 def special_bessel_j0(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_bessel_j0, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_bessel_j0(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_bessel_j0, (input,), {})
         if _captured is not None:
             return _captured
@@ -17138,12 +17139,12 @@ def special_bessel_j0(input, *, out=None):
 
 def special_bessel_j1(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_bessel_j1, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_bessel_j1(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_bessel_j1, (input,), {})
         if _captured is not None:
             return _captured
@@ -17151,12 +17152,12 @@ def special_bessel_j1(input, *, out=None):
 
 def special_bessel_y0(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_bessel_y0, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_bessel_y0(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_bessel_y0, (input,), {})
         if _captured is not None:
             return _captured
@@ -17164,12 +17165,12 @@ def special_bessel_y0(input, *, out=None):
 
 def special_bessel_y1(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_bessel_y1, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_bessel_y1(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_bessel_y1, (input,), {})
         if _captured is not None:
             return _captured
@@ -17177,12 +17178,12 @@ def special_bessel_y1(input, *, out=None):
 
 def special_chebyshev_polynomial_t(x, n, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_chebyshev_polynomial_t, (x, n), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_chebyshev_polynomial_t(x, n, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_chebyshev_polynomial_t, (x, n), {})
         if _captured is not None:
             return _captured
@@ -17190,12 +17191,12 @@ def special_chebyshev_polynomial_t(x, n, *, out=None):
 
 def special_chebyshev_polynomial_u(x, n, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_chebyshev_polynomial_u, (x, n), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_chebyshev_polynomial_u(x, n, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_chebyshev_polynomial_u, (x, n), {})
         if _captured is not None:
             return _captured
@@ -17203,12 +17204,12 @@ def special_chebyshev_polynomial_u(x, n, *, out=None):
 
 def special_chebyshev_polynomial_v(x, n, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_chebyshev_polynomial_v, (x, n), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_chebyshev_polynomial_v(x, n, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_chebyshev_polynomial_v, (x, n), {})
         if _captured is not None:
             return _captured
@@ -17216,12 +17217,12 @@ def special_chebyshev_polynomial_v(x, n, *, out=None):
 
 def special_chebyshev_polynomial_w(x, n, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_chebyshev_polynomial_w, (x, n), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_chebyshev_polynomial_w(x, n, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_chebyshev_polynomial_w, (x, n), {})
         if _captured is not None:
             return _captured
@@ -17229,12 +17230,12 @@ def special_chebyshev_polynomial_w(x, n, *, out=None):
 
 def special_hermite_polynomial_h(x, n, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_hermite_polynomial_h, (x, n), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_hermite_polynomial_h(x, n, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_hermite_polynomial_h, (x, n), {})
         if _captured is not None:
             return _captured
@@ -17242,12 +17243,12 @@ def special_hermite_polynomial_h(x, n, *, out=None):
 
 def special_hermite_polynomial_he(x, n, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_hermite_polynomial_he, (x, n), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_hermite_polynomial_he(x, n, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_hermite_polynomial_he, (x, n), {})
         if _captured is not None:
             return _captured
@@ -17255,12 +17256,12 @@ def special_hermite_polynomial_he(x, n, *, out=None):
 
 def special_laguerre_polynomial_l(x, n, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_laguerre_polynomial_l, (x, n), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_laguerre_polynomial_l(x, n, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_laguerre_polynomial_l, (x, n), {})
         if _captured is not None:
             return _captured
@@ -17268,12 +17269,12 @@ def special_laguerre_polynomial_l(x, n, *, out=None):
 
 def special_legendre_polynomial_p(x, n, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_legendre_polynomial_p, (x, n), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_legendre_polynomial_p(x, n, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_legendre_polynomial_p, (x, n), {})
         if _captured is not None:
             return _captured
@@ -17281,12 +17282,12 @@ def special_legendre_polynomial_p(x, n, *, out=None):
 
 def special_modified_bessel_i0(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_modified_bessel_i0, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_modified_bessel_i0(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_modified_bessel_i0, (input,), {})
         if _captured is not None:
             return _captured
@@ -17294,12 +17295,12 @@ def special_modified_bessel_i0(input, *, out=None):
 
 def special_modified_bessel_i1(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_modified_bessel_i1, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_modified_bessel_i1(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_modified_bessel_i1, (input,), {})
         if _captured is not None:
             return _captured
@@ -17307,12 +17308,12 @@ def special_modified_bessel_i1(input, *, out=None):
 
 def special_modified_bessel_k0(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_modified_bessel_k0, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_modified_bessel_k0(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_modified_bessel_k0, (input,), {})
         if _captured is not None:
             return _captured
@@ -17320,12 +17321,12 @@ def special_modified_bessel_k0(input, *, out=None):
 
 def special_modified_bessel_k1(input, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_modified_bessel_k1, (input,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_modified_bessel_k1(self=input, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_modified_bessel_k1, (input,), {})
         if _captured is not None:
             return _captured
@@ -17333,12 +17334,12 @@ def special_modified_bessel_k1(input, *, out=None):
 
 def special_scaled_modified_bessel_k0(x, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_scaled_modified_bessel_k0, (x,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_scaled_modified_bessel_k0(x=x, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_scaled_modified_bessel_k0, (x,), {})
         if _captured is not None:
             return _captured
@@ -17346,12 +17347,12 @@ def special_scaled_modified_bessel_k0(x, *, out=None):
 
 def special_scaled_modified_bessel_k1(x, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_scaled_modified_bessel_k1, (x,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_scaled_modified_bessel_k1(x=x, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_scaled_modified_bessel_k1, (x,), {})
         if _captured is not None:
             return _captured
@@ -17359,12 +17360,12 @@ def special_scaled_modified_bessel_k1(x, *, out=None):
 
 def special_shifted_chebyshev_polynomial_t(x, n, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_shifted_chebyshev_polynomial_t, (x, n), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_shifted_chebyshev_polynomial_t(x, n, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_shifted_chebyshev_polynomial_t, (x, n), {})
         if _captured is not None:
             return _captured
@@ -17372,12 +17373,12 @@ def special_shifted_chebyshev_polynomial_t(x, n, *, out=None):
 
 def special_shifted_chebyshev_polynomial_u(x, n, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_shifted_chebyshev_polynomial_u, (x, n), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_shifted_chebyshev_polynomial_u(x, n, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_shifted_chebyshev_polynomial_u, (x, n), {})
         if _captured is not None:
             return _captured
@@ -17385,12 +17386,12 @@ def special_shifted_chebyshev_polynomial_u(x, n, *, out=None):
 
 def special_shifted_chebyshev_polynomial_v(x, n, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_shifted_chebyshev_polynomial_v, (x, n), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_shifted_chebyshev_polynomial_v(x, n, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_shifted_chebyshev_polynomial_v, (x, n), {})
         if _captured is not None:
             return _captured
@@ -17398,12 +17399,12 @@ def special_shifted_chebyshev_polynomial_v(x, n, *, out=None):
 
 def special_shifted_chebyshev_polynomial_w(x, n, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_shifted_chebyshev_polynomial_w, (x, n), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_shifted_chebyshev_polynomial_w(x, n, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_shifted_chebyshev_polynomial_w, (x, n), {})
         if _captured is not None:
             return _captured
@@ -17411,12 +17412,12 @@ def special_shifted_chebyshev_polynomial_w(x, n, *, out=None):
 
 def special_spherical_bessel_j0(x, *, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(special_spherical_bessel_j0, (x,), {'out': out})
             if _captured is not None:
                 return _captured
         return _C.special_spherical_bessel_j0(x=x, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(special_spherical_bessel_j0, (x,), {})
         if _captured is not None:
             return _captured
@@ -17424,12 +17425,12 @@ def special_spherical_bessel_j0(x, *, out=None):
 
 def _foobar(input, arg1=True, arg2=True, *, arg3=True, out=None):
     if out is not None:
-        if _capturing():
+        if _graph_state._TRACE_DEPTH:
             _captured = _capture_call(_foobar, (input, arg1, arg2), {'arg3': arg3, 'out': out})
             if _captured is not None:
                 return _captured
         return _C._foobar(self=input, arg1=arg1, arg2=arg2, arg3=arg3, out=out)
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_foobar, (input, arg1, arg2), {'arg3': arg3})
         if _captured is not None:
             return _captured
@@ -17438,21 +17439,21 @@ def _foobar(input, arg1=True, arg2=True, *, arg3=True, out=None):
     return _C._foobar(self=input, arg1=arg1, arg2=arg2, arg3=arg3)
 
 def _propagate_xla_data(input, output):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_propagate_xla_data, (input, output), {})
         if _captured is not None:
             return _captured
     return _C._propagate_xla_data(input, output)
 
 def _quantized_weight_prepack(weight):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_weight_prepack, (weight,), {})
         if _captured is not None:
             return _captured
     return _C._quantized_weight_prepack(weight)
 
 def _quantized_packed_run(input, packed, offsets, scales, zero_points, bias, weight_sizes, output_scale, output_zero_point, stride=[], padding=[], dilation=[], groups=1, relu=False, output_float=False, activation=0, negative_slope=0, residual=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_packed_run, (input, packed, offsets, scales, zero_points, bias, weight_sizes, output_scale, output_zero_point, stride, padding, dilation, groups, relu, output_float, activation, negative_slope, residual), {})
         if _captured is not None:
             return _captured
@@ -17467,56 +17468,56 @@ def _quantized_packed_run(input, packed, offsets, scales, zero_points, bias, wei
     return _C._quantized_packed_run(input, packed, offsets, scales, zero_points, bias, weight_sizes, output_scale, output_zero_point, stride, padding, dilation, groups, relu, output_float, activation, negative_slope, residual)
 
 def quantized_batch_norm_relu(input, weight, bias, mean, var, eps, output_scale, output_zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_batch_norm_relu, (input, weight, bias, mean, var, eps, output_scale, output_zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_batch_norm_relu(input, weight, bias, mean, var, eps, output_scale, output_zero_point)
 
 def quantized_binary(a, b, scale, zero_point, operation, relu=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_binary, (a, b, scale, zero_point, operation, relu), {})
         if _captured is not None:
             return _captured
     return _C.quantized_binary(a, b, scale, zero_point, operation, relu)
 
 def quantized_scalar(input, value, operation, relu=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_scalar, (input, value, operation, relu), {})
         if _captured is not None:
             return _captured
     return _C.quantized_scalar(input, value, operation, relu)
 
 def quantized_scalar_out(input, value, operation, out, relu=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_scalar_out, (input, value, operation, out, relu), {})
         if _captured is not None:
             return _captured
     return _C.quantized_scalar_out(input, value, operation, out, relu)
 
 def quantized_softmax(input, dim, scale, zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_softmax, (input, dim, scale, zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_softmax(input, dim, scale, zero_point)
 
 def quantized_matmul(a, b, scale, zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_matmul, (a, b, scale, zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_matmul(a, b, scale, zero_point)
 
 def quantized_prelu(input, weight, scale, zero_point):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_prelu, (input, weight, scale, zero_point), {})
         if _captured is not None:
             return _captured
     return _C.quantized_prelu(input, weight, scale, zero_point)
 
 def quantized_avg_pool(input, kernel_size, stride=[], padding=[], ceil_mode=False, count_include_pad=True, divisor_override=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_avg_pool, (input, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override), {})
         if _captured is not None:
             return _captured
@@ -17529,7 +17530,7 @@ def quantized_avg_pool(input, kernel_size, stride=[], padding=[], ceil_mode=Fals
     return _C.quantized_avg_pool(input, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override)
 
 def quantized_adaptive_avg_pool(input, output_size):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_adaptive_avg_pool, (input, output_size), {})
         if _captured is not None:
             return _captured
@@ -17538,70 +17539,70 @@ def quantized_adaptive_avg_pool(input, output_size):
     return _C.quantized_adaptive_avg_pool(input, output_size)
 
 def quantized_dropout(input, scale, zero_point, p=0.5, training=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_dropout, (input, scale, zero_point, p, training), {})
         if _captured is not None:
             return _captured
     return _C.quantized_dropout(input, scale, zero_point, p, training)
 
 def _quantized_fp16_prepack(weight):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_fp16_prepack, (weight,), {})
         if _captured is not None:
             return _captured
     return _C._quantized_fp16_prepack(weight)
 
 def _quantized_fp16_linear(input, weight, bias=None, relu=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_fp16_linear, (input, weight, bias, relu), {})
         if _captured is not None:
             return _captured
     return _C._quantized_fp16_linear(input, weight, bias, relu)
 
 def quantized_unary(input, scale, zero_point, operation, a=0.0, b=1.0):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_unary, (input, scale, zero_point, operation, a, b), {})
         if _captured is not None:
             return _captured
     return _C.quantized_unary(input, scale, zero_point, operation, a, b)
 
 def _quantized_rowwise_pack(weight, bit_width=8, optimized_qparams=False, nbins=200, ratio=0.16, rowwise_min_max=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_rowwise_pack, (weight, bit_width, optimized_qparams, nbins, ratio, rowwise_min_max), {})
         if _captured is not None:
             return _captured
     return _C._quantized_rowwise_pack(weight, bit_width, optimized_qparams, nbins, ratio, rowwise_min_max)
 
 def _quantized_rowwise_unpack(weight, bit_width=8):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_rowwise_unpack, (weight, bit_width), {})
         if _captured is not None:
             return _captured
     return _C._quantized_rowwise_unpack(weight, bit_width)
 
 def _quantized_embedding_weight_pack(weight):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_embedding_weight_pack, (weight,), {})
         if _captured is not None:
             return _captured
     return _C._quantized_embedding_weight_pack(weight)
 
 def _quantized_embedding(weight, indices, bit_width=8):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_embedding, (weight, indices, bit_width), {})
         if _captured is not None:
             return _captured
     return _C._quantized_embedding(weight, indices, bit_width)
 
 def _quantized_embedding_bag(weight, indices, bit_width=8, offsets=None, per_sample_weights=None, compressed_indices_mapping=None, include_last_offset=False, pruned_weights=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_embedding_bag, (weight, indices, bit_width, offsets, per_sample_weights, compressed_indices_mapping, include_last_offset, pruned_weights), {})
         if _captured is not None:
             return _captured
     return _C._quantized_embedding_bag(weight, indices, bit_width, offsets, per_sample_weights, compressed_indices_mapping, include_last_offset, pruned_weights)
 
 def quantized_convolution(input, weight, bias, scale, zero_point, stride=[], padding=[], dilation=[], groups=1, transposed=False, output_padding=[], relu=False, output_float=False):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(quantized_convolution, (input, weight, bias, scale, zero_point, stride, padding, dilation, groups, transposed, output_padding, relu, output_float), {})
         if _captured is not None:
             return _captured
@@ -17616,56 +17617,56 @@ def quantized_convolution(input, weight, bias, scale, zero_point, stride=[], pad
     return _C.quantized_convolution(input, weight, bias, scale, zero_point, stride, padding, dilation, groups, transposed, output_padding, relu, output_float)
 
 def _quantized_recurrent_cell(input, hidden, cell, weight_ih, weight_hh, bias_ih, bias_hh, mode, reduce_range=True):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_recurrent_cell, (input, hidden, cell, weight_ih, weight_hh, bias_ih, bias_hh, mode, reduce_range), {})
         if _captured is not None:
             return _captured
     return _C._quantized_recurrent_cell(input, hidden, cell, weight_ih, weight_hh, bias_ih, bias_hh, mode, reduce_range)
 
 def _quantized_recurrent(input, hidden, cell, weights, biases, num_layers, dropout, training, bidirectional, batch_first, mode, reduce_range=True, batch_sizes=None):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_recurrent, (input, hidden, cell, weights, biases, num_layers, dropout, training, bidirectional, batch_first, mode, reduce_range, batch_sizes), {})
         if _captured is not None:
             return _captured
     return _C._quantized_recurrent(input, hidden, cell, weights, biases, num_layers, dropout, training, bidirectional, batch_first, mode, reduce_range, batch_sizes)
 
 def _quantized_int4_mm(input, weight, group_size, scale_and_zero):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_int4_mm, (input, weight, group_size, scale_and_zero), {})
         if _captured is not None:
             return _captured
     return _C._quantized_int4_mm(input, weight, group_size, scale_and_zero)
 
 def _quantized_wrapped_linear(input, input_scale, input_zero_point, weight, weight_scale, weight_zero_point, bias, output_scale, output_zero_point, out_channels):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_wrapped_linear, (input, input_scale, input_zero_point, weight, weight_scale, weight_zero_point, bias, output_scale, output_zero_point, out_channels), {})
         if _captured is not None:
             return _captured
     return _C._quantized_wrapped_linear(input, input_scale, input_zero_point, weight, weight_scale, weight_zero_point, bias, output_scale, output_zero_point, out_channels)
 
 def _quantized_wrapped_half_prepack(weight):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_wrapped_half_prepack, (weight,), {})
         if _captured is not None:
             return _captured
     return _C._quantized_wrapped_half_prepack(weight)
 
 def _quantized_wrapped_half_linear(input, weight, bias, out_channels):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_wrapped_half_linear, (input, weight, bias, out_channels), {})
         if _captured is not None:
             return _captured
     return _C._quantized_wrapped_half_linear(input, weight, bias, out_channels)
 
 def _quantized_recurrent_step(input_gates, hidden_gates, hidden, cell, mode):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantized_recurrent_step, (input_gates, hidden_gates, hidden, cell, mode), {})
         if _captured is not None:
             return _captured
     return _C._quantized_recurrent_step(input_gates, hidden_gates, hidden, cell, mode)
 
 def _quantum_apply_gate(state, mat, wires):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantum_apply_gate, (state, mat, wires), {})
         if _captured is not None:
             return _captured
@@ -17674,14 +17675,14 @@ def _quantum_apply_gate(state, mat, wires):
     return _C._quantum_apply_gate(state, mat, wires)
 
 def _quantum_state_probs(state):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantum_state_probs, (state,), {})
         if _captured is not None:
             return _captured
     return _C._quantum_state_probs(state)
 
 def _quantum_marginal_probs(state, wires):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantum_marginal_probs, (state, wires), {})
         if _captured is not None:
             return _captured
@@ -17690,7 +17691,7 @@ def _quantum_marginal_probs(state, wires):
     return _C._quantum_marginal_probs(state, wires)
 
 def _quantum_pauli_expectation(state, word):
-    if _capturing():
+    if _graph_state._TRACE_DEPTH:
         _captured = _capture_call(_quantum_pauli_expectation, (state, word), {})
         if _captured is not None:
             return _captured
