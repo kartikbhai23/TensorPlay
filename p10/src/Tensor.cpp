@@ -693,6 +693,8 @@ Scalar Tensor::item() const {
 
     if (isQuantizedType(dtype())) return dequantize().item();
 
+    if (device().is_cuda()) return ops::_local_scalar_dense(*this);
+
     if (device().type() != DeviceType::CPU) {
         return to(Device(DeviceType::CPU)).item();
     }
