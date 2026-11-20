@@ -1790,7 +1790,7 @@ static void f32_256_elementwise(const float* in, const float* b, float* out,
     for (; i + 8 <= n; i += 8) {
         const __m256 x = _mm256_loadu_ps(in + i);
         const __m256 m = _mm256_loadu_ps(b + i);
-        // The lane select mirrors the scalar form exactly -- a NaN bound or
+        // The lane select repeats the scalar form exactly -- a NaN bound or
         // a NaN input compares false and keeps the input lane.
         const __m256 mask = is_min ? _mm256_cmp_ps(m, x, _CMP_GT_OQ)
                                    : _mm256_cmp_ps(m, x, _CMP_LT_OQ);
@@ -2226,7 +2226,7 @@ Tensor& tanh_backward_out_cpu(const Tensor& grad_output, const Tensor& output,
                                   TanhGradPair{});
 }
 // One sweep of the logit gradient for contiguous float32 pairs.  The lane
-// formula mirrors the pair kernel: domain NaN outside [0, 1], the signed
+// formula repeats the pair kernel: domain NaN outside [0, 1], the signed
 // infinity at the closed ends, the reciprocal form in between.  The target
 // attribute is what keeps the lane loop; the translation unit compiles
 // without the ISA.
