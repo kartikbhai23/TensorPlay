@@ -1297,9 +1297,19 @@ static bool conv2d_onednn(const Tensor& input, const Tensor& weight, const Tenso
         
         // 3. Output
         memory dst_mem;
-        auto user_dst_md = output.is_contiguous(MemoryFormat::ChannelsLast)
-            ? memory::desc(dst_dims, dt, memory::format_tag::nhwc)
-            : memory::desc(dst_dims, dt, memory::format_tag::nchw);
+        // A pre-allocated blocked output (from the mkldnn_convolution path)
+        // keeps its descriptor so the result stays in the engine layout.
+        const bool output_was_blocked = output.unsafeGetTensorImpl()->has_onednn_md();
+        memory::desc user_dst_md;
+        if (output_was_blocked) {
+            auto stored_md = std::static_pointer_cast<memory::desc>(
+                output.unsafeGetTensorImpl()->get_onednn_md());
+            user_dst_md = *stored_md;
+        } else if (output.is_contiguous(MemoryFormat::ChannelsLast)) {
+            user_dst_md = memory::desc(dst_dims, dt, memory::format_tag::nhwc);
+        } else {
+            user_dst_md = memory::desc(dst_dims, dt, memory::format_tag::nchw);
+        }
 
         // If expected layout is different from NCHW, we need a temporary buffer
         bool need_reorder_dst = (expected_dst_md != user_dst_md);
@@ -1349,12 +1359,13 @@ static bool conv2d_onednn(const Tensor& input, const Tensor& weight, const Tenso
         }
         
         s.wait();
-        
-        // Clear OneDNN MD if any (ensure it's treated as NCHW)
-        if (output.unsafeGetTensorImpl()->has_onednn_md()) {
+
+        // Clear OneDNN MD when the output is in a user layout (NCHW/NHWC);
+        // a pre-allocated blocked output keeps its descriptor.
+        if (output.unsafeGetTensorImpl()->has_onednn_md() && !output_was_blocked) {
             output.unsafeGetTensorImpl()->set_onednn_md(nullptr);
         }
-        
+
         return true;
     } catch (dnnl::error& e) {
         return false;
@@ -1724,10 +1735,19 @@ static bool conv3d_onednn(const Tensor& input, const Tensor& weight, const Tenso
         }
 
         auto expected_dst_md = conv_pd.dst_desc();
-        auto user_dst_md = memory::desc(
-            dst_dims, dt,
-            dst_cl ? memory::format_tag::ndhwc
-                   : memory::format_tag::ncdhw);
+        // A pre-allocated blocked output keeps its descriptor.
+        const bool output_was_blocked = output.unsafeGetTensorImpl()->has_onednn_md();
+        memory::desc user_dst_md;
+        if (output_was_blocked) {
+            auto stored_md = std::static_pointer_cast<memory::desc>(
+                output.unsafeGetTensorImpl()->get_onednn_md());
+            user_dst_md = *stored_md;
+        } else {
+            user_dst_md = memory::desc(
+                dst_dims, dt,
+                dst_cl ? memory::format_tag::ndhwc
+                       : memory::format_tag::ncdhw);
+        }
         bool need_reorder_dst = (expected_dst_md != user_dst_md);
 
         memory dst_mem;
@@ -1867,11 +1887,11 @@ static bool conv3d_onednn(const Tensor& input, const Tensor& weight, const Tenso
         }
         
         s.wait();
-        
-        if (output.unsafeGetTensorImpl()->has_onednn_md()) {
+
+        if (output.unsafeGetTensorImpl()->has_onednn_md() && !output_was_blocked) {
             output.unsafeGetTensorImpl()->set_onednn_md(nullptr);
         }
-        
+
         return true;
     } catch (dnnl::error& e) {
         if (std::getenv("TP_DBG_CONV3D"))
@@ -6832,6 +6852,342 @@ Tensor conv_transpose1d_grad_bias_cpu(const Tensor& grad_output, const Tensor& i
     return conv_transpose2d_grad_bias_cpu(go_2d, in_2d, w_2d, s_2d, p_2d, op_2d, groups, d_2d);
 }
 
+// --- MKLDNN kernels: to_mkldnn, mkldnn_linear, mkldnn_convolution ---
+//
+// These wrap the oneDNN primitives exposed through the dispatcher.  The
+// blocked-layout metadata (dnnl::memory::desc) travels on the tensor via
+// TensorImpl::onednn_md so that consecutive mkldnn ops reuse the engine
+// layout without repeated reorders.
+
+#ifdef USE_ONEDNN
+
+// Map dimension count to the plain row-major format tag oneDNN expects for a
+// dense contiguous buffer.
+static dnnl::memory::format_tag plain_format_tag(int64_t ndims) {
+    switch (ndims) {
+        case 1: return dnnl::memory::format_tag::a;
+        case 2: return dnnl::memory::format_tag::ab;
+        case 3: return dnnl::memory::format_tag::abc;
+        case 4: return dnnl::memory::format_tag::abcd;
+        case 5: return dnnl::memory::format_tag::abcde;
+        case 6: return dnnl::memory::format_tag::abcdef;
+        default: return dnnl::memory::format_tag::undef;
+    }
+}
+
+// to_mkldnn: mark a dense contiguous tensor as oneDNN-managed.  The data
+// stays in its plain row-major layout; a plain memory descriptor is stored
+// so downstream mkldnn ops route through oneDNN primitives (which resolve
+// blocked layouts internally from the plain tag).
+static Tensor to_mkldnn_cpu(const Tensor& self, std::optional<DType> dtype) {
+    if (!OneDNNContext::is_enabled()) {
+        TP_THROW(RuntimeError, "to_mkldnn: oneDNN is not enabled");
+    }
+
+    DType out_dt = dtype.value_or(self.dtype());
+    if (out_dt != self.dtype()) {
+        TP_THROW(RuntimeError, "to_mkldnn: dtype cast is not supported; cast before calling to_mkldnn");
+    }
+
+    const dnnl::memory::data_type dt = onednn_conv_dt(self.dtype());
+    if (dt == dnnl::memory::data_type::undef) {
+        TP_THROW(RuntimeError, "to_mkldnn: unsupported dtype");
+    }
+
+    Tensor input = self.contiguous();
+    auto dims = input.sizes();
+
+    // Plain-format descriptor: oneDNN primitives resolve blocked layouts
+    // internally from this, so no reorder is needed here.
+    auto plain_md = dnnl::memory::desc(dims, dt, plain_format_tag(dims.size()));
+
+    // Copy data into a fresh contiguous buffer and tag it with the plain md.
+    Tensor output = Tensor::empty(dims, input.dtype(), input.device());
+    std::memcpy(output.data_ptr(), input.data_ptr(),
+                input.numel() * input.itemsize());
+
+    output.unsafeGetTensorImpl()->set_onednn_md(
+        std::make_shared<dnnl::memory::desc>(plain_md));
+
+    return output;
+}
+
+// mkldnn_linear: inner product on a blocked-layout input.
+// Computes y = x @ w^T + b where x is in oneDNN blocked layout (produced by
+// to_mkldnn), w may be dense or blocked, and the result stays blocked.
+static Tensor mkldnn_linear_cpu(const Tensor& self, const Tensor& weight,
+                                std::optional<Tensor> bias) {
+    if (!OneDNNContext::is_enabled()) {
+        TP_THROW(RuntimeError, "mkldnn_linear: oneDNN is not enabled");
+    }
+
+    if (!self.unsafeGetTensorImpl()->has_onednn_md()) {
+        TP_THROW(RuntimeError, "mkldnn_linear: input must be in mkldnn layout (call to_mkldnn first)");
+    }
+
+    const dnnl::memory::data_type dt = onednn_conv_dt(self.dtype());
+    if (dt == dnnl::memory::data_type::undef) {
+        TP_THROW(RuntimeError, "mkldnn_linear: unsupported dtype");
+    }
+
+    if (self.dim() != 2) {
+        TP_THROW(RuntimeError, "mkldnn_linear: input must be 2D");
+    }
+
+    int64_t M = self.size(0);
+    int64_t K = self.size(1);
+    int64_t N = weight.size(0);
+
+    try {
+        auto& eng = OneDNNContext::get_engine();
+        auto& s = OneDNNContext::get_stream();
+
+        auto src_md = *std::static_pointer_cast<dnnl::memory::desc>(
+            self.unsafeGetTensorImpl()->get_onednn_md());
+
+        // Weight descriptor: use the stored blocked md if present, otherwise
+        // describe the dense row-major buffer.
+        dnnl::memory::desc weights_md;
+        bool weight_blocked = weight.unsafeGetTensorImpl()->has_onednn_md();
+        if (weight_blocked) {
+            weights_md = *std::static_pointer_cast<dnnl::memory::desc>(
+                weight.unsafeGetTensorImpl()->get_onednn_md());
+        } else {
+            weights_md = dnnl::memory::desc(
+                {N, K}, dt, dnnl::memory::format_tag::ab);
+        }
+
+        bool has_bias = bias.has_value() && bias->defined() && bias->numel() > 0;
+        dnnl::memory::desc bias_md;
+        if (has_bias) {
+            bias_md = dnnl::memory::desc(
+                {bias->size(0)}, dnnl::memory::data_type::f32,
+                dnnl::memory::format_tag::x);
+        }
+
+        dnnl::memory::desc dst_md = dnnl::memory::desc(
+            {M, N}, dt, dnnl::memory::format_tag::any);
+
+        dnnl::inner_product_forward::primitive_desc pd;
+        if (has_bias) {
+            pd = dnnl::inner_product_forward::primitive_desc(
+                eng, dnnl::prop_kind::forward_inference,
+                src_md, weights_md, bias_md, dst_md);
+        } else {
+            pd = dnnl::inner_product_forward::primitive_desc(
+                eng, dnnl::prop_kind::forward_inference,
+                src_md, weights_md, dst_md);
+        }
+
+        auto expected_weights_md = pd.weights_desc();
+        auto expected_dst_md = pd.dst_desc();
+
+        // Reorder weight if its layout differs from what the primitive expects.
+        dnnl::memory weights_mem;
+        Storage reordered_weight_storage;
+        if (weights_md == expected_weights_md) {
+            weights_mem = dnnl::memory(weights_md, eng, weight.data_ptr());
+        } else {
+            auto src_mem = dnnl::memory(weights_md, eng, weight.data_ptr());
+            size_t req = expected_weights_md.get_size();
+            Allocator* allocator = getAllocator(weight.device().type());
+            reordered_weight_storage = Storage(req, allocator);
+            weights_mem = dnnl::memory(expected_weights_md, eng,
+                reordered_weight_storage.data());
+            dnnl::reorder(src_mem, weights_mem).execute(s, src_mem, weights_mem);
+        }
+
+        // Reorder bias if needed.
+        dnnl::memory bias_mem;
+        if (has_bias) {
+            auto expected_bias_md = pd.bias_desc();
+            if (bias_md != expected_bias_md) {
+                auto src_mem = dnnl::memory(bias_md, eng, bias->data_ptr());
+                bias_mem = dnnl::memory(expected_bias_md, eng);
+                dnnl::reorder(src_mem, bias_mem).execute(s, src_mem, bias_mem);
+            } else {
+                bias_mem = dnnl::memory(bias_md, eng, bias->data_ptr());
+            }
+        }
+
+        // Allocate output in the resolved blocked layout.
+        size_t req_size = expected_dst_md.get_size();
+        Allocator* allocator = getAllocator(self.device().type());
+        Storage dst_storage(req_size, allocator);
+
+        Tensor output(std::move(dst_storage), {M, N}, self.dtype());
+
+        dnnl::memory src_mem = dnnl::memory(src_md, eng, self.data_ptr());
+        dnnl::memory dst_mem = dnnl::memory(expected_dst_md, eng, output.data_ptr());
+
+        std::unordered_map<int, dnnl::memory> args;
+        args.insert({DNNL_ARG_SRC, src_mem});
+        args.insert({DNNL_ARG_WEIGHTS, weights_mem});
+        args.insert({DNNL_ARG_DST, dst_mem});
+        if (has_bias) {
+            args.insert({DNNL_ARG_BIAS, bias_mem});
+        }
+
+        dnnl::memory scratchpad;
+        if (pd.scratchpad_desc().get_size() > 0) {
+            scratchpad = dnnl::memory(pd.scratchpad_desc(), eng);
+            args.insert({DNNL_ARG_SCRATCHPAD, scratchpad});
+        }
+
+        dnnl::inner_product_forward(pd).execute(s, args);
+        s.wait();
+
+        output.unsafeGetTensorImpl()->set_onednn_md(
+            std::make_shared<dnnl::memory::desc>(expected_dst_md));
+
+        return output;
+    } catch (dnnl::error& e) {
+        TP_THROW(RuntimeError, std::string("mkldnn_linear: oneDNN error: ") + e.what());
+    }
+}
+
+// mkldnn_convolution: oneDNN convolution with blocked-layout propagation.
+// When the input is already blocked (from to_mkldnn), the output is allocated
+// in the engine's blocked layout and the descriptor is preserved.  Otherwise
+// the layout follows the standard channels-last heuristic.
+static Tensor mkldnn_convolution_cpu(const Tensor& self, const Tensor& weight,
+                                     std::optional<Tensor> bias,
+                                     const std::vector<int64_t>& padding,
+                                     const std::vector<int64_t>& stride,
+                                     const std::vector<int64_t>& dilation,
+                                     int64_t groups) {
+    if (!OneDNNContext::is_enabled()) {
+        TP_THROW(RuntimeError, "mkldnn_convolution: oneDNN is not enabled");
+    }
+
+    const dnnl::memory::data_type dt = onednn_conv_dt(self.dtype());
+    if (dt == dnnl::memory::data_type::undef || weight.dtype() != self.dtype()) {
+        TP_THROW(RuntimeError, "mkldnn_convolution: unsupported dtype or mixed dtypes");
+    }
+
+    const bool is_3d = self.dim() == 5;
+    const bool input_blocked = self.unsafeGetTensorImpl()->has_onednn_md();
+
+    int64_t spatial = is_3d ? 3 : 2;
+    auto pad = expand_param(padding, spatial, "padding");
+    auto st = expand_param(stride, spatial, "stride");
+    auto dil = expand_param(dilation, spatial, "dilation");
+
+    auto out_size = [](int64_t in, int64_t k, int64_t s, int64_t d,
+                       int64_t pl, int64_t pr) -> int64_t {
+        return (in + pl + pr - d * (k - 1) - 1) / s + 1;
+    };
+
+    Tensor bias_tensor;
+    if (bias.has_value()) bias_tensor = bias.value();
+
+    if (is_3d) {
+        if (self.dim() != 5 || weight.dim() != 5) {
+            TP_THROW(RuntimeError, "mkldnn_convolution: expected 5D input and weight for 3D conv");
+        }
+        int64_t N = self.size(0), C_in = self.size(1);
+        int64_t D_in = self.size(2), H_in = self.size(3), W_in = self.size(4);
+        int64_t C_out = weight.size(0);
+        int64_t kD = weight.size(2), kH = weight.size(3), kW = weight.size(4);
+        if (C_in % groups != 0 || C_out % groups != 0) {
+            TP_THROW(RuntimeError, "mkldnn_convolution: channels must be divisible by groups");
+        }
+
+        int64_t pD_f, pD_b, pH_t, pH_b, pW_l, pW_r;
+        if (pad.size() == 3) {
+            pD_f = pD_b = pad[0];
+            pH_t = pH_b = pad[1];
+            pW_l = pW_r = pad[2];
+        } else {
+            pD_f = pad[0]; pD_b = pad[1];
+            pH_t = pad[2]; pH_b = pad[3];
+            pW_l = pad[4]; pW_r = pad[5];
+        }
+
+        int64_t D_out = out_size(D_in, kD, st[0], dil[0], pD_f, pD_b);
+        int64_t H_out = out_size(H_in, kH, st[1], dil[1], pH_t, pH_b);
+        int64_t W_out = out_size(W_in, kW, st[2], dil[2], pW_l, pW_r);
+        std::vector<int64_t> out_dims = {N, C_out, D_out, H_out, W_out};
+
+        Tensor output;
+        if (input_blocked) {
+            // Allocate a plain contiguous output.  conv3d_onednn reorders
+            // the input from plain to blocked internally and reorders the
+            // result back to plain.  The plain md is preserved so downstream
+            // mkldnn ops know to route through oneDNN.
+            output = Tensor::empty(out_dims, self.dtype(), self.device());
+            auto plain_md = dnnl::memory::desc(
+                out_dims, dt, plain_format_tag(out_dims.size()));
+            output.unsafeGetTensorImpl()->set_onednn_md(
+                std::make_shared<dnnl::memory::desc>(plain_md));
+        } else {
+            output = Tensor::empty(out_dims, self.dtype(), self.device());
+        }
+
+        bool handled = conv3d_onednn(self, weight, bias_tensor, st,
+                                     pD_f, pD_b, pH_t, pH_b, pW_l, pW_r,
+                                     dil, groups, output);
+        if (!handled) {
+            TP_THROW(RuntimeError, "mkldnn_convolution: 3D oneDNN conv failed");
+        }
+        return output;
+    } else {
+        if (self.dim() != 4 || weight.dim() != 4) {
+            TP_THROW(RuntimeError, "mkldnn_convolution: expected 4D input and weight for 2D conv");
+        }
+        int64_t N = self.size(0), C_in = self.size(1);
+        int64_t H_in = self.size(2), W_in = self.size(3);
+        int64_t C_out = weight.size(0);
+        int64_t kH = weight.size(2), kW = weight.size(3);
+        if (C_in % groups != 0 || C_out % groups != 0) {
+            TP_THROW(RuntimeError, "mkldnn_convolution: channels must be divisible by groups");
+        }
+
+        int64_t pH_t, pH_b, pW_l, pW_r;
+        if (pad.size() == 2) {
+            pH_t = pH_b = pad[0];
+            pW_l = pW_r = pad[1];
+        } else {
+            pH_t = pad[0]; pH_b = pad[1];
+            pW_l = pad[2]; pW_r = pad[3];
+        }
+
+        int64_t H_out = out_size(H_in, kH, st[0], dil[0], pH_t, pH_b);
+        int64_t W_out = out_size(W_in, kW, st[1], dil[1], pW_l, pW_r);
+        std::vector<int64_t> out_dims = {N, C_out, H_out, W_out};
+
+        Tensor output;
+        if (input_blocked) {
+            // Allocate a plain contiguous output.  conv2d_onednn reorders
+            // the input from plain to blocked internally and reorders the
+            // result back to plain.  The plain md is preserved so downstream
+            // mkldnn ops know to route through oneDNN.
+            output = Tensor::empty(out_dims, self.dtype(), self.device());
+            auto plain_md = dnnl::memory::desc(
+                out_dims, dt, plain_format_tag(out_dims.size()));
+            output.unsafeGetTensorImpl()->set_onednn_md(
+                std::make_shared<dnnl::memory::desc>(plain_md));
+        } else {
+            bool use_cl = conv2d_use_channels_last(self, weight);
+            if (use_cl) {
+                output = empty_channels_last(out_dims, self.dtype(), self.device());
+            } else {
+                output = Tensor::empty(out_dims, self.dtype(), self.device());
+            }
+        }
+
+        bool handled = conv2d_onednn(self, weight, bias_tensor, st,
+                                     pH_t, pH_b, pW_l, pW_r,
+                                     dil, groups, output);
+        if (!handled) {
+            TP_THROW(RuntimeError, "mkldnn_convolution: 2D oneDNN conv failed");
+        }
+        return output;
+    }
+}
+
+#endif // USE_ONEDNN
+
 TENSORPLAY_LIBRARY_IMPL(CPU, ConvKernels) {
     m.impl("conv1d", conv1d_cpu);
     m.impl("conv2d", conv2d_cpu);
@@ -6869,6 +7225,12 @@ TENSORPLAY_LIBRARY_IMPL(CPU, ConvKernels) {
     m.impl("im2col_backward", im2col_backward_cpu);
     m.impl("col2im", col2im_cpu);
     m.impl("col2im_backward", col2im_backward_cpu);
+
+#ifdef USE_ONEDNN
+    m.impl("mkldnn_convolution", mkldnn_convolution_cpu);
+    m.impl("mkldnn_linear", mkldnn_linear_cpu);
+    m.impl("to_mkldnn", to_mkldnn_cpu);
+#endif
 }
 
 } // namespace cpu
