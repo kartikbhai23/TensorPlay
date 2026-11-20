@@ -2495,7 +2495,7 @@ static constexpr auto log_sigmoid_map = [](auto x) {
 };
 
 Tensor log_sigmoid_kernel_impl(const Tensor& self) {
-    return unary_float_op_kernel(self, log_sigmoid_map);
+    return unary_float_op_kernel(self, log_sigmoid_map, vecunary::VOp::LogSigmoid);
 }
 
 Tensor& log_sigmoid_out_cpu(const Tensor& self, Tensor& out) {

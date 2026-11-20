@@ -69,7 +69,7 @@ enum class VOp : int {
     // composite activations
     Sigmoid, GeluNone, GeluTanh, Silu, Mish, Selu,
     Elu, Softplus, Hardswish, Hardsigmoid, LeakyRelu,
-    Hardtanh, Relu6, Softshrink, Threshold, Hardshrink,
+    Hardtanh, Relu6, Softshrink, Threshold, Hardshrink, LogSigmoid,
 };
 
 // Runtime scalars for parameterised ops (elu, softplus, celu, leaky_relu,
@@ -224,6 +224,10 @@ inline T scalar_apply(VOp op, VParams prm, T x) {
         case VOp::I1: return special_math::modified_bessel_i1_forward(x);
         case VOp::Lgamma: return std::lgamma(x);
         case VOp::Sigmoid: return T(1) / (T(1) + std::exp(-x));
+        case VOp::LogSigmoid: {
+            T z = std::min(x, static_cast<T>(0));
+            return static_cast<T>(z - std::log1p(std::exp(-std::abs(x))));
+        }
         case VOp::GeluNone: {
             const T kAlpha = static_cast<T>(0.70710678118654752440); // M_SQRT1_2
             return kHalf * x * (T(1) + std::erf(x * kAlpha));
@@ -3472,6 +3476,13 @@ inline bool composed_f32(VOp op, VParams prm, const float* src, float* dst, int6
             run_f32(VOp::Log, {}, dst, dst, b, e);
             return true;
         }
+        case VOp::LogSigmoid: {
+            for (int64_t i = b; i < e; ++i) dst[i] = -std::abs(src[i]);
+            run_f32(VOp::Exp, {}, dst, dst, b, e);
+            run_f32(VOp::Log1p, {}, dst, dst, b, e);
+            for (int64_t i = b; i < e; ++i) dst[i] = std::min(src[i], 0.0f) - dst[i];
+            return true;
+        }
         case VOp::SphBesselJ0:
             if (src == dst) {
                 for (int64_t i = b; i < e; ++i) dst[i] = scalar_apply(op, prm, src[i]);
@@ -3498,6 +3509,13 @@ inline bool composed_f64(VOp op, VParams prm, const double* src, double* dst, in
                 dst[i] = p / (1.0 - p);
             }
             run_f64(VOp::Log, {}, dst, dst, b, e);
+            return true;
+        }
+        case VOp::LogSigmoid: {
+            for (int64_t i = b; i < e; ++i) dst[i] = -std::abs(src[i]);
+            run_f64(VOp::Exp, {}, dst, dst, b, e);
+            run_f64(VOp::Log1p, {}, dst, dst, b, e);
+            for (int64_t i = b; i < e; ++i) dst[i] = std::min(src[i], 0.0) - dst[i];
             return true;
         }
         case VOp::SphBesselJ0:
