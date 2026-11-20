@@ -67,13 +67,13 @@ inline void delete_vtensor_storage(void* ctx) {
 inline const StoragePtr* storage_ptr_handle(const Tensor& tensor) {
   const Storage& storage = tensor.impl()->storage();
   return static_cast<const StoragePtr*>(
-      storage.unsafeGetStorageImpl()->data_ptr.get_context());
+      storage.unsafeGetStorageImpl()->ptr().get_context());
 }
 
 inline StoragePtr* storage_ptr_handle(Tensor& tensor) {
   const Storage& storage = tensor.impl()->storage();
   return static_cast<StoragePtr*>(
-      storage.unsafeGetStorageImpl()->data_ptr.get_context());
+      storage.unsafeGetStorageImpl()->ptr().get_context());
 }
 
 } // namespace detail

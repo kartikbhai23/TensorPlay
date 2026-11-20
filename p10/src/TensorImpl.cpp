@@ -6,6 +6,20 @@
 
 namespace tensorplay {
 
+// Detach this tensor's storage from a block it still shares with another
+// storage: the first accessor takes a private copy, the other holder keeps the
+// original block, so neither side observes the other's writes.  Logical
+// contents are identical at this point, which is what makes the copy safe.
+//
+// Runs at most once per sharing, and the side that never touches the block
+// never copies (the last holder simply takes ownership back).
+void TensorImpl::cow_materialize() const {
+    if (!storage_.defined()) return;
+    StorageImpl* impl = storage_.unsafeGetStorageImpl().get();
+    if (impl == nullptr) return;
+    impl->detach_bytes();
+}
+
 const char* toString(MemoryFormat format) {
     switch (format) {
         case MemoryFormat::Contiguous: return "Contiguous";

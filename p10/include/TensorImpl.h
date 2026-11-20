@@ -59,7 +59,9 @@ private:
     // Opaque pointer to OneDNN memory descriptor (std::shared_ptr<dnnl::memory::desc>)
     // std::shared_ptr<void> onednn_md_;
     
-    Storage storage_;
+    // Rebinding from a const data-pointer access (the copy-on-write detach)
+    // is why the handle is mutable.
+    mutable Storage storage_;
 
     struct SharedState {
         std::shared_ptr<void> onednn_md;
@@ -428,6 +430,7 @@ public:
     template<typename T>
     T* data() const {
         if (!has_storage()) return nullptr;
+        cow_materialize_if_needed();
         void* base_ptr = storage_.data();
 #ifdef USE_CUDA
         if (device_.is_cuda()) cuda::recordStream(base_ptr, device_);
@@ -437,6 +440,7 @@ public:
     
     void* data() const {
         if (!has_storage()) return nullptr;
+        cow_materialize_if_needed();
         void* base_ptr = storage_.data();
 #ifdef USE_CUDA
         if (device_.is_cuda()) cuda::recordStream(base_ptr, device_);
@@ -444,6 +448,14 @@ public:
         size_t elem_size = elementSize(dtype_);
         return static_cast<char*>(base_ptr) + storage_offset_ * elem_size;
     }
+
+    // Copy-on-write detach.  The bytes are shared until the first access
+    // through a data pointer; that access is where the private copy is taken,
+    // so handing out a shared block stays free of any kernel.
+    void cow_materialize_if_needed() const {
+        if (storage_.defined() && storage_.is_shared()) cow_materialize();
+    }
+    void cow_materialize() const;
 
     void set_onednn_md(std::shared_ptr<void> md) {
         if (!shared_state_) shared_state_ = std::make_shared<SharedState>();

@@ -28,15 +28,25 @@ public:
         impl_ = make_intrusive<StorageImpl>(std::move(data_ptr), nbytes, allocator, false);
     }
 
+    // Storage from an existing buffer, keeping the source's resizability.
+    Storage(DataPtr&& data_ptr, size_t nbytes, Allocator* allocator, bool resizable) {
+        impl_ = make_intrusive<StorageImpl>(std::move(data_ptr), nbytes, allocator, resizable);
+    }
+
+    // Storage over bytes held jointly with another storage (copy on write).
+    Storage(std::shared_ptr<StorageImpl::SharedBytes> bytes) {
+        impl_ = make_intrusive<StorageImpl>(std::move(bytes));
+    }
+
     // Accessors
     void* data() const { return impl_ ? impl_->data() : nullptr; }
 
     template<typename T>
     T* data() const { return static_cast<T*>(data()); }
 
-    size_t nbytes() const { return impl_ ? impl_->nbytes : 0; }
+    size_t nbytes() const { return impl_ ? impl_->bytes() : 0; }
 
-    Device device() const { return impl_ ? impl_->data_ptr.device_ : Device(DeviceType::CPU); }
+    Device device() const { return impl_ ? impl_->device() : Device(DeviceType::CPU); }
 
     // Validity
     bool defined() const { return impl_ != nullptr; }
@@ -46,7 +56,7 @@ public:
     bool is_same(const Storage& other) const { return impl_ == other.impl_; }
 
     // Resize (only if resizable)
-    bool resizable() const { return impl_ && impl_->resizable; }
+    bool resizable() const { return impl_ && impl_->resizable_p(); }
 
     void set_nbytes(size_t new_nbytes) {
         if (!impl_) {
@@ -56,7 +66,18 @@ public:
         impl_->set_nbytes(new_nbytes);
     }
 
-    Allocator* allocator() const { return impl_ ? impl_->allocator : nullptr; }
+    Allocator* allocator() const { return impl_ ? impl_->allocator_of() : nullptr; }
+
+    // True while the bytes are still observed by another storage.  The first
+    // accessor of a shared block takes a private copy (StorageImpl::detach_bytes).
+    bool is_shared() const { return impl_ && impl_->is_shared(); }
+
+    // Second owner of the same bytes: neither side copies until one of them
+    // reaches the data, and each side then gets a private block on first use.
+    Storage share_bytes() const {
+        if (!impl_) return Storage();
+        return Storage(impl_->share_bytes());
+    }
 
     // Use count for debugging
     uint32_t use_count() const { return impl_.use_count(); }

@@ -684,9 +684,32 @@ bool has_same_storage_numel_native(const Tensor& base, const Tensor& other) {
 }
 
 Tensor lazy_clone_native(const Tensor& self) {
-    // Copy-on-write storage is not modeled: materialize an eager copy with the
-    // same sizes/strides. Values and metadata match; the storage is disjoint.
-    return ops::clone(self);
+    // A clone whose copy is deferred: the result observes the source's bytes
+    // until either side reaches them, and the first side to do so takes a
+    // private block (see StorageImpl::share_bytes / TensorImpl::cow_materialize).
+    // Values and metadata match; only the moment of the copy differs.
+    const TensorImpl* impl = self.unsafeGetTensorImpl().get();
+    if (impl == nullptr) {
+        TP_THROW(RuntimeError, "_lazy_clone: expected a defined tensor");
+    }
+    const Storage& storage = impl->storage();
+    if (!storage.defined() || storage.allocator() == nullptr ||
+        self.is_sparse() || self.is_batched()) {
+        // Memory this tensor does not own privately cannot be detached later,
+        // so the eager copy is the only answer.
+        return ops::clone(self);
+    }
+    Tensor shared(make_intrusive<TensorImpl>(
+        storage.share_bytes(),
+        static_cast<std::vector<int64_t>>(self.shape()),
+        self.strides(),
+        impl->dtype(),
+        impl->storage_offset()));
+    // The view keeps its own version counter: its writes never reach the
+    // source's bytes, so bumping the source's version would report an
+    // in-place modification that did not happen.
+    if (impl->has_quantizer()) shared.unsafeGetTensorImpl()->set_quantizer(impl->quantizer());
+    return shared;
 }
 
 Tensor normal_functional_native(const Tensor& self, double mean, double std,
