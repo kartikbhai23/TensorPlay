@@ -1481,7 +1481,48 @@ Tensor histogram_bin_counts(const Tensor& self, const Tensor& edges,
             Tensor w = weight.has_value()
                 ? weight->reshape({self.numel()}).contiguous()
                 : Tensor();
+            // Evenly spaced edges answer from a linear map instead of a
+            // binary walk per element (the same classification the
+            // interpolation mode gives linspace edges).
+            bool uniform = e.numel() > 1;
             if (self.dtype() == DType::Float32) {
+                const float* ep = e.data_ptr<float>();
+                for (int64_t i = 0; uniform && i + 1 < e.numel(); ++i)
+                    if (ep[i + 1] - ep[i] != ep[1] - ep[0]) uniform = false;
+            } else {
+                const double* ep = e.data_ptr<double>();
+                for (int64_t i = 0; uniform && i + 1 < e.numel(); ++i)
+                    if (ep[i + 1] - ep[i] != ep[1] - ep[0]) uniform = false;
+            }
+            if (uniform && self.dtype() == DType::Float32) {
+                const float* ep = e.data_ptr<float>();
+                const float* vp = v.contiguous().data_ptr<float>();
+                const float* wp = weight.has_value() ? w.data_ptr<float>() : nullptr;
+                float* hp = hist.data_ptr<float>();
+                const float lo = ep[0], hi = ep[nb];
+                const float scale = static_cast<float>(nb) / (hi - lo);
+                for (int64_t i = 0; i < self.numel(); ++i) {
+                    const float x = vp[i];
+                    if (!(x >= lo && x <= hi)) continue;
+                    int64_t bin = static_cast<int64_t>((x - lo) * scale);
+                    hp[std::min(std::max(bin, int64_t(0)), nb - 1)] +=
+                        wp ? wp[i] : 1.0f;
+                }
+            } else if (uniform && self.dtype() == DType::Float64) {
+                const double* ep = e.data_ptr<double>();
+                const double* vp = v.contiguous().data_ptr<double>();
+                const double* wp = weight.has_value() ? w.data_ptr<double>() : nullptr;
+                double* hp = hist.data_ptr<double>();
+                const double lo = ep[0], hi = ep[nb];
+                const double scale = static_cast<double>(nb) / (hi - lo);
+                for (int64_t i = 0; i < self.numel(); ++i) {
+                    const double x = vp[i];
+                    if (!(x >= lo && x <= hi)) continue;
+                    int64_t bin = static_cast<int64_t>((x - lo) * scale);
+                    hp[std::min(std::max(bin, int64_t(0)), nb - 1)] +=
+                        wp ? wp[i] : 1.0;
+                }
+            } else if (self.dtype() == DType::Float32) {
                 const float* ep = e.data_ptr<float>();
                 const float* vp = v.contiguous().data_ptr<float>();
                 const float* wp = weight.has_value() ? w.data_ptr<float>() : nullptr;
