@@ -46,7 +46,8 @@ void compute_linear_combination_kernel(
     char* input_data = static_cast<char*>(iter.data_ptr(1));
     char* coefficient_data = static_cast<char*>(iter.data_ptr(2));
 
-    auto loop = [=] __host__ __device__(int index) {
+    auto loop = [offset_calculator, output_data, input_data, coefficient_data,
+                 summations, input_stride, coefficient_stride] __host__ __device__(int index) {
         const auto offsets = offset_calculator.get(static_cast<uint32_t>(index));
         auto* output = reinterpret_cast<scalar_t*>(output_data + offsets[0]);
         const auto* input = reinterpret_cast<const scalar_t*>(input_data + offsets[1]);

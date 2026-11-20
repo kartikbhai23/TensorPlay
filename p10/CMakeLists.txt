@@ -299,6 +299,7 @@ if(USE_CUDA OR USE_ROCM OR USE_METAX)
         src/backend/cuda/UpsampleTrilinear3dKernels.cu
         src/backend/cuda/LinearAlgebraKernels.cu
         src/backend/cuda/LinalgKernels.cu
+        src/backend/cuda/FunctionOfAMatrixUtils.cu
         src/backend/cuda/LuUnpack.cu
         src/backend/cuda/IntMM.cu
         src/backend/cuda/LinalgSVD.cu
