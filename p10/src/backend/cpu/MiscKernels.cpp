@@ -845,7 +845,7 @@ Tensor cumulative_trapezoid_cpu(const Tensor& y, const std::optional<Tensor>& x_
     const int64_t d = trapz_dim(dim, y.dim());
     const int64_t n = y.size(d);
     if (n < 2) return y.narrow(d, 0, 0);
-    Tensor avg = y.narrow(d, 0, n - 1).add(y.narrow(d, 1, n - 1)).mul(0.5);
+    Tensor avg = y.narrow(d, 0, n - 1).add(y.narrow(d, 1, n - 1));
     if (x.defined()) {
         bool was_1d = x.dim() == 1;
         Tensor xb = was_1d && y.dim() > 1
@@ -856,9 +856,13 @@ Tensor cumulative_trapezoid_cpu(const Tensor& y, const std::optional<Tensor>& x_
                       static_cast<std::vector<int64_t>>(y.shape()));
               }()
             : x;
-        avg = avg.mul(xb.narrow(d, 1, n - 1).sub(xb.narrow(d, 0, n - 1)));
+        const Tensor spacing =
+            xb.narrow(d, 1, n - 1).sub(xb.narrow(d, 0, n - 1));
+        avg = avg.mul(spacing.mul(0.5));
     } else {
-        avg = avg.mul(dx);
+        // Half the spacing and the spacing itself are one factor: folding
+        // them into a single pass saves the second walk over the average.
+        avg = avg.mul(dx * 0.5);
     }
     return avg.cumsum(d);
 }
