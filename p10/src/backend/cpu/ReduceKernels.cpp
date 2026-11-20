@@ -588,15 +588,32 @@ std::tuple<Tensor, Tensor> var_mean_cpu(const Tensor& self,
 
 Tensor nanmedian_cpu(const Tensor& self) {
     const bool floating = isFloatingType(self.dtype());
-    Tensor flat = self.to(floating ? DType::Float64 : DType::Int64)
-                      .reshape({self.numel()});
     const DType out_dtype = floating ? self.dtype() : DType::Int64;
+    Tensor flat = self.reshape({self.numel()});
     Scalar picked;
-    if (floating) {
-        std::vector<double> values;
+    // Filter and select in the operand's own width: widening to double
+    // doubles the memory traffic and the comparisons for nothing.
+    if (floating && self.dtype() == DType::Float32) {
+        std::vector<float> values;
         values.reserve(flat.numel());
-        const double* data = flat.data_ptr<double>();
+        const float* data = flat.contiguous().data_ptr<float>();
         for (int64_t i = 0; i < flat.numel(); ++i) {
+            if (!(data[i] != data[i])) values.push_back(data[i]);
+        }
+        if (values.empty()) {
+            return Tensor::zeros({}, out_dtype, self.device())
+                .fill_(Scalar(std::numeric_limits<float>::quiet_NaN()));
+        }
+        const auto middle =
+            values.begin() + static_cast<std::ptrdiff_t>((values.size() - 1) / 2);
+        std::nth_element(values.begin(), middle, values.end());
+        picked = Scalar(*middle);
+    } else if (floating) {
+        Tensor wide = self.to(DType::Float64).reshape({self.numel()});
+        std::vector<double> values;
+        values.reserve(wide.numel());
+        const double* data = wide.data_ptr<double>();
+        for (int64_t i = 0; i < wide.numel(); ++i) {
             if (!(data[i] != data[i])) values.push_back(data[i]);
         }
         if (values.empty()) {
