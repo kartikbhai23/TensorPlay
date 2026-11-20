@@ -121,6 +121,14 @@ class TestCUDAVarMeanCorrection(unittest.TestCase):
                     np.testing.assert_equal(scalar.item(), moment)
                     np.testing.assert_equal(tuple(t.item() for t in pair), (moment, mean))
 
+    def test_global_pair_loads_include_the_tail(self):
+        data = np.linspace(-2.0, 3.0, 4095, dtype=np.float32)
+        x = tp.tensor(data, device="cuda").reshape(3, 1365)
+        var, mean = F.var_mean(x, dim=(0, 1), keepdim=True)
+        self.assertEqual(tuple(var.shape), (1, 1))
+        np.testing.assert_allclose(var.item(), data.var(ddof=1), rtol=1e-6)
+        np.testing.assert_allclose(mean.item(), data.mean(), rtol=1e-6)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

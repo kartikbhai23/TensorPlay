@@ -18,6 +18,73 @@ std::tuple<Tensor, Tensor> std_mean_dim_kernel(
 
 namespace {
 
+using FloatMoment = WelfordData<float, int32_t>;
+using FloatMomentOps = WelfordOps<float, float, int32_t>;
+
+__global__ void welford_full_float_kernel(
+        const float* input, int count, FloatMomentOps ops,
+        float* moment, float* mean) {
+    constexpr int warp_size = reduction::kWarpSize;
+    __shared__ FloatMoment warp_moments[reduction::kMaxReduceThreads / warp_size];
+    const int lane = threadIdx.x % warp_size;
+    const int warp = threadIdx.x / warp_size;
+    const int pairs = count / 2;
+    const auto* values = reinterpret_cast<const float2*>(input);
+    FloatMoment even{};
+    FloatMoment odd{};
+    for (int i = threadIdx.x; i < pairs; i += blockDim.x) {
+        const float2 val = values[i];
+        even = ops.reduce(even, val.x, 2 * i);
+        odd = ops.reduce(odd, val.y, 2 * i + 1);
+    }
+    if (threadIdx.x == 0 && count % 2 != 0) {
+        even = ops.reduce(even, input[count - 1], count - 1);
+    }
+    FloatMoment value = ops.combine(even, odd);
+    for (int offset = warp_size / 2; offset > 0; offset /= 2) {
+        value = ops.combine(value, reduction::reduce_warp_shuffle_down(value, 0xffffffffu, offset));
+    }
+    if (blockDim.x > warp_size) {
+        if (lane == 0) warp_moments[warp] = value;
+        __syncthreads();
+        if (warp != 0) return;
+        value = lane < blockDim.x / warp_size ? warp_moments[lane] : FloatMoment{};
+        for (int offset = warp_size / 2; offset > 0; offset /= 2) {
+            value = ops.combine(value, reduction::reduce_warp_shuffle_down(value, 0xffffffffu, offset));
+        }
+    }
+    if (threadIdx.x == 0) {
+        *moment = ops.project(value);
+        if (mean != nullptr) *mean = ops.project_second(value);
+    }
+}
+
+bool use_single_block_moments(const Tensor& input, const ReductionSpec& spec) {
+    // Keep small dense reductions in one block to avoid staging partial results.
+    constexpr int max_elements = 16 * reduction::kMaxReduceThreads;
+    return input.dtype() == DType::Float32 && input.numel() > 0 &&
+           spec.reduced_numel == input.numel() && input.numel() <= max_elements &&
+           input.is_contiguous() &&
+           reinterpret_cast<uintptr_t>(input.data_ptr<float>()) % alignof(float2) == 0;
+}
+
+Tensor welford_full_float(
+        const Tensor& input, const ReductionSpec& spec, bool keepdim,
+        int64_t correction, bool take_sqrt, Tensor* mean = nullptr) {
+    const auto shape = reduction_output_shape(input, spec, keepdim);
+    Tensor moment = Tensor::empty(shape, DType::Float32, input.device());
+    if (mean != nullptr) *mean = Tensor::empty(shape, DType::Float32, input.device());
+    const int count = static_cast<int>(input.numel());
+    const int threads = std::clamp(
+        reduction::reduction_last_pow2(count / 2),
+        reduction::kWarpSize, reduction::kMaxReduceThreads);
+    welford_full_float_kernel<<<1, threads, 0, getCurrentCUDAStream().stream()>>>(
+        input.data_ptr<float>(), count, FloatMomentOps{static_cast<float>(correction), take_sqrt},
+        moment.data_ptr<float>(), mean == nullptr ? nullptr : mean->data_ptr<float>());
+    checkCuda(cudaGetLastError(), "CUDA moment reduction launch");
+    return moment;
+}
+
 template <typename T, typename OutT = T>
 Tensor mean_same_dtype(
         const Tensor& input, const ReductionSpec& spec, bool keepdim, DType dtype) {
@@ -282,6 +349,9 @@ Tensor var_dim_kernel(const Tensor& self, const std::vector<int64_t>& dim, int64
                var_dim_kernel(imag, dim, correction, keepdim);
     }
     const ReductionSpec spec = make_reduction_spec(self, dim);
+    if (use_single_block_moments(self, spec)) {
+        return welford_full_float(self, spec, keepdim, correction, false);
+    }
     // Full-reduction float fast path: the two-pass pair runs at sum speed,
     // well ahead of the serial Welford chain on ordinary sizes.
     if (can_use_two_pass_variance(self, dim, correction, keepdim)) {
@@ -301,6 +371,11 @@ std::tuple<Tensor, Tensor> var_mean_dim_kernel(
                 mean_dim_kernel(self, dim, keepdim, DType::Undefined)};
     }
     const ReductionSpec spec = make_reduction_spec(self, dim);
+    if (use_single_block_moments(self, spec)) {
+        Tensor mean;
+        Tensor var = welford_full_float(self, spec, keepdim, correction, false, &mean);
+        return {var, mean};
+    }
     // Full-reduction float fast path: the two-pass pair, with the mean the
     // first pass already produced returned as the second output.
     if (can_use_two_pass_variance(self, dim, correction, keepdim)) {
@@ -320,6 +395,11 @@ std::tuple<Tensor, Tensor> std_mean_dim_kernel(
                 mean_dim_kernel(self, dim, keepdim, DType::Undefined)};
     }
     const ReductionSpec spec = make_reduction_spec(self, dim);
+    if (use_single_block_moments(self, spec)) {
+        Tensor mean;
+        Tensor std = welford_full_float(self, spec, keepdim, correction, true, &mean);
+        return {std, mean};
+    }
     TP_DISPATCH_FLOAT_REDUCTION(welford_var_mean_dispatch, self.dtype(), self, spec,
                                 keepdim, correction, true);
 }
@@ -334,11 +414,14 @@ Tensor std_dim_kernel(const Tensor& self, const std::vector<int64_t>& dim, int64
     if (isComplexType(self.dtype())) {
         return var_dim_kernel(self, dim, correction, keepdim).sqrt();
     }
+    const ReductionSpec spec = make_reduction_spec(self, dim);
+    if (use_single_block_moments(self, spec)) {
+        return welford_full_float(self, spec, keepdim, correction, true);
+    }
     // Same two-pass fast path as var, with the sqrt folded into the caller.
     if (can_use_two_pass_variance(self, dim, correction, keepdim)) {
         return var_two_pass(self, correction).sqrt();
     }
-    const ReductionSpec spec = make_reduction_spec(self, dim);
     TP_DISPATCH_FLOAT_REDUCTION(welford_dispatch, self.dtype(), self, spec,
                                 keepdim, correction, true);
 }
