@@ -16,6 +16,7 @@
 #include "TypePromotion.h"
 #include "CUDARuntime.h"
 #include "CUDALoops.cuh"
+#include "PackedPointwise.cuh"
 #include "SpecialMath.h"
 #include <cuda_runtime.h>
 
@@ -849,6 +850,22 @@ template <typename Op>
 void binary_same_into(const Tensor& ac, const Tensor& bc, const Tensor& out,
                       Op op, const char* name) {
     if (out.numel() == 0) return;
+    if (out.dtype() == ac.dtype() && out.dtype() == bc.dtype() &&
+        packed_pointwise_destination(ac, bc, out)) {
+#define TP_BIN_PACKED(ctype, name_) \
+        case DType::name_: \
+            launch_packed_binary(ac, bc, out, \
+                [op] __host__ __device__(ctype lhs, ctype rhs) -> ctype { \
+                    return op(lhs, rhs); \
+                }); \
+            CUDA_CHECK(cudaGetLastError()); \
+            return;
+        switch (out.dtype()) {
+            TENSORPLAY_FORALL_SCALAR_TYPES(TP_BIN_PACKED)
+            default: break;
+        }
+#undef TP_BIN_PACKED
+    }
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(true)
         .add_output(out)
@@ -907,6 +924,22 @@ Tensor binary_bool_cuda(const Tensor& a_in, const Tensor& b_in, Pred pred, const
     Tensor bc = b_in.to(dt).expand(out_shape);
     Tensor out = Tensor::empty(out_shape, DType::Bool, a_in.device());
     if (out.numel() == 0) return out;
+    if (dt == ac.dtype() && dt == bc.dtype() &&
+        packed_pointwise_destination(ac, bc, out)) {
+#define TP_BBIN_PACKED(ctype, name_) \
+        case DType::name_: \
+            launch_packed_binary(ac, bc, out, \
+                [pred] __host__ __device__(ctype lhs, ctype rhs) -> bool { \
+                    return pred(lhs, rhs); \
+                }); \
+            CUDA_CHECK(cudaGetLastError()); \
+            return out;
+        switch (dt) {
+            TENSORPLAY_FORALL_SCALAR_TYPES(TP_BBIN_PACKED)
+            default: break;
+        }
+#undef TP_BBIN_PACKED
+    }
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(false)
         .add_output(out)
@@ -932,6 +965,21 @@ template <typename Pred>
 Tensor bool_unary_cuda(const Tensor& self, Pred pred, const char* name) {
     Tensor out = Tensor::empty(shape_of(self), DType::Bool, self.device());
     if (self.numel() == 0) return out;
+    if (packed_pointwise_destination(self, out)) {
+#define TP_BU_PACKED(ctype, name_) \
+        case DType::name_: \
+            launch_packed_unary(self, out, \
+                [pred] __host__ __device__(ctype value) -> bool { \
+                    return pred(value); \
+                }); \
+            CUDA_CHECK(cudaGetLastError()); \
+            return out;
+        switch (self.dtype()) {
+            TENSORPLAY_FORALL_SCALAR_TYPES(TP_BU_PACKED)
+            default: break;
+        }
+#undef TP_BU_PACKED
+    }
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(false)
         .add_output(out)
@@ -961,6 +1009,38 @@ Tensor logical_binary_cuda(const Tensor& a_in, const Tensor& b_in, Pred pred,
     Tensor bc = b_in.to(dt).expand(out_shape);
     Tensor out = Tensor::empty(out_shape, DType::Bool, a_in.device());
     if (out.numel() == 0) return out;
+    if (dt == ac.dtype() && dt == bc.dtype() &&
+        packed_pointwise_destination(ac, bc, out)) {
+#define TP_LOGICAL_BIN_PACKED(ctype, name_) \
+        case DType::name_: \
+            launch_packed_binary(ac, bc, out, \
+                [pred] __host__ __device__(ctype lhs, ctype rhs) -> bool { \
+                    return pred(logical_truth_cuda(lhs), logical_truth_cuda(rhs)); \
+                }); \
+            CUDA_CHECK(cudaGetLastError()); \
+            return out;
+        switch (dt) {
+            TENSORPLAY_FORALL_SCALAR_TYPES(TP_LOGICAL_BIN_PACKED)
+            case DType::ComplexFloat:
+                launch_packed_binary(ac, bc, out,
+                    [pred] __host__ __device__(tensorplay::complex<float> lhs,
+                                               tensorplay::complex<float> rhs) -> bool {
+                        return pred(logical_truth_cuda(lhs), logical_truth_cuda(rhs));
+                    });
+                CUDA_CHECK(cudaGetLastError());
+                return out;
+            case DType::ComplexDouble:
+                launch_packed_binary(ac, bc, out,
+                    [pred] __host__ __device__(tensorplay::complex<double> lhs,
+                                               tensorplay::complex<double> rhs) -> bool {
+                        return pred(logical_truth_cuda(lhs), logical_truth_cuda(rhs));
+                    });
+                CUDA_CHECK(cudaGetLastError());
+                return out;
+            default: break;
+        }
+#undef TP_LOGICAL_BIN_PACKED
+    }
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(false)
         .add_output(out)
@@ -1001,6 +1081,36 @@ Tensor logical_binary_cuda(const Tensor& a_in, const Tensor& b_in, Pred pred,
 template <typename Pred>
 void logical_unary_into(const Tensor& self, Tensor& out, Pred pred, const char* name) {
     if (out.numel() == 0) return;
+    if (packed_pointwise_destination(self, out)) {
+#define TP_LOGICAL_PACKED(ctype, name_) \
+        case DType::name_: \
+            launch_packed_unary(self, out, \
+                [pred] __host__ __device__(ctype value) -> bool { \
+                    return pred(logical_truth_cuda(value)); \
+                }); \
+            CUDA_CHECK(cudaGetLastError()); \
+            return;
+        switch (self.dtype()) {
+            TENSORPLAY_FORALL_SCALAR_TYPES(TP_LOGICAL_PACKED)
+            case DType::ComplexFloat:
+                launch_packed_unary(self, out,
+                    [pred] __host__ __device__(tensorplay::complex<float> value) -> bool {
+                        return pred(logical_truth_cuda(value));
+                    });
+                CUDA_CHECK(cudaGetLastError());
+                return;
+            case DType::ComplexDouble:
+                launch_packed_unary(self, out,
+                    [pred] __host__ __device__(tensorplay::complex<double> value) -> bool {
+                        return pred(logical_truth_cuda(value));
+                    });
+                CUDA_CHECK(cudaGetLastError());
+                return;
+            default:
+                break;
+        }
+#undef TP_LOGICAL_PACKED
+    }
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(false)
         .add_output(out)
@@ -1060,6 +1170,21 @@ Tensor& logical_unary_out(const Tensor& self, Tensor& out, Pred pred, const char
 template <typename F>
 void dtype_unary_into(const Tensor& self, Tensor& out, F f, const char* name) {
     if (self.numel() == 0) return;
+    if (self.dtype() == out.dtype() && packed_pointwise_destination(self, out)) {
+#define TP_DU_PACKED(ctype, name_) \
+        case DType::name_: \
+            launch_packed_unary(self, out, \
+                [f] __host__ __device__(ctype value) -> ctype { \
+                    return f(value); \
+                }); \
+            CUDA_CHECK(cudaGetLastError()); \
+            return;
+        switch (self.dtype()) {
+            TENSORPLAY_FORALL_SCALAR_TYPES(TP_DU_PACKED)
+            default: break;
+        }
+#undef TP_DU_PACKED
+    }
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(true)
         .add_output(out)
@@ -1164,6 +1289,28 @@ void float_math_into(const Tensor& self, Tensor& out, F f) {
     DType in = self.dtype();
     DType compute_dt = (in == DType::Float64) ? DType::Float64 : DType::Float32;
     if (out.dtype() != compute_dt) {
+        if (packed_pointwise_destination(self, out)) {
+            if (out.dtype() == DType::Float16) {
+                launch_packed_unary(self, out, [f] __host__ __device__(Half x) -> Half {
+                    if constexpr (has_runf<F>::value)
+                        return static_cast<Half>(f.runf(static_cast<float>(x)));
+                    else
+                        return static_cast<Half>(f(static_cast<float>(x)));
+                });
+                CUDA_CHECK(cudaGetLastError());
+                return;
+            }
+            if (out.dtype() == DType::BFloat16) {
+                launch_packed_unary(self, out, [f] __host__ __device__(BFloat16 x) -> BFloat16 {
+                    if constexpr (has_runf<F>::value)
+                        return static_cast<BFloat16>(f.runf(static_cast<float>(x)));
+                    else
+                        return static_cast<BFloat16>(f(static_cast<float>(x)));
+                });
+                CUDA_CHECK(cudaGetLastError());
+                return;
+            }
+        }
         TensorIterator iter = TensorIteratorConfig()
             .check_all_same_dtype(true)
             .add_output(out)
@@ -1188,6 +1335,26 @@ void float_math_into(const Tensor& self, Tensor& out, F f) {
         return;
     }
     Tensor w = (in == compute_dt) ? self : self.to(compute_dt);
+    if (w.dtype() == out.dtype() && packed_pointwise_destination(w, out)) {
+        if (compute_dt == DType::Float64) {
+            launch_packed_unary(w, out, [f] __host__ __device__(double x) -> double {
+                return f(x);
+            });
+            CUDA_CHECK(cudaGetLastError());
+            return;
+        }
+        if constexpr (has_runf<F>::value) {
+            launch_packed_unary(w, out, [f] __host__ __device__(float x) -> float {
+                return f.runf(x);
+            });
+        } else {
+            launch_packed_unary(w, out, [f] __host__ __device__(float x) -> float {
+                return static_cast<float>(f(static_cast<double>(x)));
+            });
+        }
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(true)
         .add_output(out)

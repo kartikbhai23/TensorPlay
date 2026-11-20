@@ -28,6 +28,20 @@ Tensor maximum_minimum_cuda_impl(const Tensor& self, const Tensor& other) {
     if (result.numel() == 0) return result;
     Tensor a = self.dtype() == common_dtype ? self : self.to(common_dtype);
     Tensor b = other.dtype() == common_dtype ? other : other.to(common_dtype);
+    if (packed_pointwise_destination(a, b, result)) {
+        #define MAXMIN_PACKED(ctype, name) \
+            case DType::name: \
+                launch_packed_binary(a, b, result, \
+                    [] __host__ __device__(ctype lhs, ctype rhs) -> ctype { \
+                        return maximum_minimum_elem<Maximum>(lhs, rhs); \
+                    }); \
+                return result;
+        switch (common_dtype) {
+            TENSORPLAY_FORALL_SCALAR_TYPES(MAXMIN_PACKED)
+            default: break;
+        }
+        #undef MAXMIN_PACKED
+    }
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(true)
         .add_output(result)
@@ -109,6 +123,20 @@ Tensor fmaxfmin_cuda_impl(const Tensor& self, const Tensor& other) {
     if (result.numel() == 0) return result;
     Tensor a = self.dtype() == common_dtype ? self : self.to(common_dtype);
     Tensor b = other.dtype() == common_dtype ? other : other.to(common_dtype);
+    if (packed_pointwise_destination(a, b, result)) {
+        #define FMAXMIN_PACKED(ctype, name) \
+            case DType::name: \
+                launch_packed_binary(a, b, result, \
+                    [] __host__ __device__(ctype lhs, ctype rhs) -> ctype { \
+                        return fmaxfmin_elem<Maximum>(lhs, rhs); \
+                    }); \
+                return result;
+        switch (common_dtype) {
+            TENSORPLAY_FORALL_SCALAR_TYPES(FMAXMIN_PACKED)
+            default: break;
+        }
+        #undef FMAXMIN_PACKED
+    }
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(true)
         .add_output(result)

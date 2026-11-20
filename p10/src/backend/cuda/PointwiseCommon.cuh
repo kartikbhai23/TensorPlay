@@ -12,6 +12,7 @@
 #include "CUDABroadcast.cuh"
 #include "ElementwiseStrided.cuh"
 #include "CUDALoops.cuh"
+#include "PackedPointwise.cuh"
 #include "GPUPrimitives.cuh"
 #include "GradMode.h"
 #include <cuda_runtime.h>
@@ -85,6 +86,21 @@ void complex_angle_loop(const Tensor& input, const Tensor& output) {
 template<typename Functor>
 void unary_op_kernel_into(const Tensor& self, const Tensor& result, Functor functor) {
     if (self.numel() == 0) return;
+    if (self.dtype() == result.dtype() &&
+        packed_pointwise_destination(self, result)) {
+        #define OP_CASE(ctype, name) \
+        case DType::name: \
+            launch_packed_unary(self, result, \
+                [functor] __host__ __device__(ctype x) -> ctype { \
+                    return functor(x); \
+                }); \
+            return;
+        switch (self.dtype()) {
+            TENSORPLAY_FORALL_SCALAR_TYPES(OP_CASE)
+            default: break;
+        }
+        #undef OP_CASE
+    }
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(true)
         .add_output(result)
@@ -222,6 +238,36 @@ template<typename Functor>
 void unary_float_op_kernel_into(const Tensor& self, const Tensor& result, Functor functor) {
     if (self.numel() == 0) return;
     const DType out_dtype = result.dtype();
+    if (out_dtype == self.dtype() && packed_pointwise_destination(self, result)) {
+        switch (out_dtype) {
+            case DType::Float16:
+                launch_packed_unary(self, result,
+                    [functor] __host__ __device__(Half x) -> Half {
+                        return static_cast<Half>(functor(static_cast<float>(x)));
+                    });
+                return;
+            case DType::BFloat16:
+                launch_packed_unary(self, result,
+                    [functor] __host__ __device__(BFloat16 x) -> BFloat16 {
+                        return static_cast<BFloat16>(functor(static_cast<float>(x)));
+                    });
+                return;
+            case DType::Float32:
+                launch_packed_unary(self, result,
+                    [functor] __host__ __device__(float x) -> float {
+                        return functor(x);
+                    });
+                return;
+            case DType::Float64:
+                launch_packed_unary(self, result,
+                    [functor] __host__ __device__(double x) -> double {
+                        return functor(x);
+                    });
+                return;
+            default:
+                break;
+        }
+    }
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(self.dtype() == out_dtype)
         .add_output(result)
@@ -375,7 +421,8 @@ template <typename T>
 static inline __host__ __device__ std::enable_if_t<!std::is_integral_v<T>, T>
 ldexp_element(T x, T exponent) {
     // The scale factor is formed in the operand's own width: widening it only
-    // slows the exponent evaluation down to the double rate.
+    // slows the exponent evaluation down to the double rate.  A float exponent
+    // means x * 2^e with the exponent kept as a float.
     if constexpr (std::is_same_v<T, double>) {
         return x * ::exp2(exponent);
     } else {
