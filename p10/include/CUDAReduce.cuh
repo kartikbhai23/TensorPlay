@@ -2161,6 +2161,36 @@ struct NormOps {
     }
 };
 
+// Power-sum variants of the norm reductions: same accumulation, but the
+// project keeps the raw sum(|x|^p) instead of taking the p-th root.
+template <typename AccT, typename OutputT>
+struct NormTwoPowsumOps {
+    __device__ AccT reduce(AccT acc, AccT value, int64_t) const {
+        return acc + value * value;
+    }
+    template <typename ScalarT>
+    __device__ AccT reduce(AccT acc, ScalarT value, int64_t) const {
+        const AccT converted = static_cast<AccT>(value);
+        return acc + converted * converted;
+    }
+    __device__ AccT combine(AccT a, AccT b) const { return a + b; }
+    __device__ OutputT project(AccT value) const {
+        return static_cast<OutputT>(value);
+    }
+};
+
+template <typename ScalarT, typename AccT, typename OutputT>
+struct NormPowsumOps {
+    AccT norm;
+    __device__ AccT reduce(AccT acc, ScalarT value, int64_t) const {
+        return acc + norm_pow(norm_abs<ScalarT, AccT>(value), norm);
+    }
+    __device__ AccT combine(AccT a, AccT b) const { return a + b; }
+    __device__ OutputT project(AccT value) const {
+        return static_cast<OutputT>(value);
+    }
+};
+
 template <typename AccT, typename OutputT>
 struct NormTwoOps {
     __device__ AccT reduce(AccT acc, AccT value, int64_t) const {

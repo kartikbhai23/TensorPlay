@@ -26,6 +26,8 @@ using reduction::AbsMaxOps;
 using reduction::AbsMinOps;
 using reduction::ExtremumOps;
 using reduction::MeanOps;
+using reduction::NormTwoPowsumOps;
+using reduction::NormPowsumOps;
 using reduction::MinMaxOps;
 using reduction::MinMaxPair;
 using reduction::MinMaxPairOps;

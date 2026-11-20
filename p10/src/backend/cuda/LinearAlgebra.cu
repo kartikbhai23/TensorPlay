@@ -4,6 +4,7 @@
 #include "Dispatcher.h"
 #include "Exception.h"
 #include "TypePromotion.h"
+#include "ReduceEngine.cuh"
 #include "tensorplay/ops/TPXOpsGenerated.h"
 
 #include <algorithm>
@@ -16,6 +17,8 @@
 #include <vector>
 
 namespace tensorplay::cuda {
+
+using namespace reduce_family;
 
 namespace ops = tensorplay::tpx::ops;
 
@@ -337,6 +340,33 @@ Tensor linalg_vector_norm_impl(
     return result;
 }
 
+// Engine-path power sum: one fused kernel pass replaces the abs, pow and
+// sum kernel chain, for full and dim reductions alike.  ord==2 skips the
+// powf entirely by squaring straight into the accumulator.
+template <typename T, typename IndexT>
+Tensor powsum_same_dtype(const Tensor& input, const ReductionSpec& spec,
+                         double ord, bool keepdim, DType out_dtype) {
+    using AccT = same_dtype_acc_t<T>;
+    if (ord == 2.0) {
+        return run_reduction_typed<T, AccT, T, NormTwoPowsumOps<AccT, T>, 4>(
+            input, spec, keepdim, out_dtype, NormTwoPowsumOps<AccT, T>{},
+            AccT(0));
+    }
+    return run_reduction_typed<T, AccT, T, NormPowsumOps<T, AccT, T>, 4>(
+        input, spec, keepdim, out_dtype, NormPowsumOps<T, AccT, T>{static_cast<AccT>(ord)},
+        AccT(0));
+}
+
+template <typename T>
+Tensor powsum_dispatch(const Tensor& input, const ReductionSpec& spec,
+                       double ord, bool keepdim, DType out_dtype) {
+    if (spec.reduced_numel <=
+        static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+        return powsum_same_dtype<T, int32_t>(input, spec, ord, keepdim, out_dtype);
+    }
+    return powsum_same_dtype<T, int64_t>(input, spec, ord, keepdim, out_dtype);
+}
+
 Tensor linalg_powsum_impl(
     const Tensor& self, const Scalar& ord,
     const std::optional<std::vector<int64_t>>& dims, bool keepdim,
@@ -350,22 +380,12 @@ Tensor linalg_powsum_impl(
     Tensor working = self;
     if (working.dtype() != compute_dtype) working = working.to(compute_dtype);
     const DType result_dtype = toRealValueType(compute_dtype);
-    Tensor powers = ops::pow(ops::abs(working), ord);
-    Tensor result;
-    if (!dims.has_value() || dims->empty()) {
-        if (keepdim) {
-            result = ops::sum(powers, all_dimensions(working.dim()), true,
-                              result_dtype);
-        } else {
-            result = ops::sum(powers, result_dtype);
-        }
-    } else {
-        const std::vector<int64_t> normalized =
-            normalize_norm_dims(*dims, working.dim());
-        result = ops::sum(powers, normalized, keepdim, result_dtype);
-    }
-    if (result.dtype() != result_dtype) result = result.to(result_dtype);
-    return result;
+    const ReductionSpec spec = make_reduction_spec(
+        working,
+        dims.has_value() ? normalize_norm_dims(*dims, working.dim())
+                         : std::vector<int64_t>{});
+    TP_DISPATCH_FLOAT_REDUCTION(powsum_dispatch, compute_dtype, working, spec,
+                                ord.toDouble(), keepdim, result_dtype);
 }
 
 Tensor linalg_matrix_norm_impl(
