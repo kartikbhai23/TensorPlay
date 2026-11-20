@@ -283,6 +283,11 @@ Tensor ihfftn_impl(const Tensor& self, const OptDims& s, const OptDims& dim,
     const Tensor input = promote_fft(self, /*require_complex=*/false);
     const Tensor x = resize_fft_input(input, desc.dims, desc.shape);
     const int64_t norm = norm_from_string(norm_str, /*forward=*/false);
+    if (x.device().type() == DeviceType::CUDA && desc.dims.size() > 1) {
+        // Conjugating the full forward spectrum is equivalent to conjugating
+        // the last-axis spectrum before inverse transforms on the other axes.
+        return ops::conj(ops::_fft_r2c(x, desc.dims, norm, /*onesided=*/true));
+    }
     Tensor tmp = ops::conj(ops::_fft_r2c(x, {desc.dims.back()}, norm, /*onesided=*/true));
     if (desc.dims.size() == 1) return tmp;
     return ops::_fft_c2c(tmp, leading(desc.dims), norm, /*forward=*/false);
