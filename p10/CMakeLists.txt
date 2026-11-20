@@ -1378,10 +1378,14 @@ install(TARGETS p10
 # The FFT translation units embed pocketfft, whose vector lanes are chosen
 # at compile time from the architecture macros: with AVX2 each lane holds
 # eight floats instead of four, roughly doubling the transform throughput.
+# Repeated calls on the same length reuse the transform plan instead of
+# rebuilding twiddle tables for every invocation.
 # The runtime dispatch of other kernels is untouched; these files only.
 set_source_files_properties(
     src/backend/cpu/SpectralKernels.cpp
     src/backend/cpu/SpectralInteropKernels.cpp
     src/backend/cpu/Spectral2DKernels.cpp
-    PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma"
+    PROPERTIES
+        COMPILE_OPTIONS "-mavx2;-mfma"
+        COMPILE_DEFINITIONS "POCKETFFT_CACHE_SIZE=16"
 )

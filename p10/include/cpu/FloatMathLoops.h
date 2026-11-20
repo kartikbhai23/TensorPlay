@@ -41,6 +41,13 @@ __attribute__((target("avx2,fma")))
 inline void float_loop_f32_avx2(const float* s, float* d, int64_t b, int64_t e, F f) {
     for (int64_t i = b; i < e; ++i) d[i] = static_cast<float>(f(s[i]));
 }
+
+template <typename F>
+__attribute__((target("avx2,fma")))
+inline void binary_loop_f32_avx2(const float* a, const float* b, float* d,
+                                 int64_t lo, int64_t hi, F f) {
+    for (int64_t i = lo; i < hi; ++i) d[i] = static_cast<float>(f(a[i], b[i]));
+}
 #endif
 
 template <typename F>  // F: double -> double
@@ -227,9 +234,21 @@ inline Tensor binary_float_kernel(const Tensor& a_in, const Tensor& b_in, F f,
         const float* ap = ac.data_ptr<float>();
         const float* bp = bc.data_ptr<float>();
         float* dp = out.data_ptr<float>();
-        parallel::parallel_for(0, n, parallel::GRAIN_SIZE, [&](int64_t begin, int64_t end) {
-            for (int64_t i = begin; i < end; ++i) dp[i] = static_cast<float>(f(ap[i], bp[i]));
-        });
+        bool wide = false;
+#ifdef TP_FLOAT_LOOP_AVX2
+        wide = vecunary::avx2_available() && vecunary::fma_available();
+#endif
+        if (wide) {
+#ifdef TP_FLOAT_LOOP_AVX2
+            parallel::parallel_for(0, n, parallel::GRAIN_SIZE, [&](int64_t begin, int64_t end) {
+                binary_loop_f32_avx2(ap, bp, dp, begin, end, f);
+            });
+#endif
+        } else {
+            parallel::parallel_for(0, n, parallel::GRAIN_SIZE, [&](int64_t begin, int64_t end) {
+                for (int64_t i = begin; i < end; ++i) dp[i] = static_cast<float>(f(ap[i], bp[i]));
+            });
+        }
     }
     return (dt == compute_dt) ? out : out.to(dt);
 }

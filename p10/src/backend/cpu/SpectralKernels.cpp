@@ -9,6 +9,7 @@
 #include "Exception.h"
 #include "Scalar.h"
 #include "Complex.h"
+#include "Parallel.h"
 #include "pocketfft_hdronly.h"
 
 #include <vector>
@@ -144,7 +145,7 @@ Tensor core_c2c(const Tensor& contig, int64_t dim, int64_t out_len,
     pocketfft::c2c<T>(pshape, sin_, sout, axes, forward,
                       pocketfft_complex_input<T>(src.data_ptr()),
                       pocketfft_complex_output<T>(out.data_ptr()), fct,
-                      /*nthreads=*/1);
+                      tensorplay::parallel::get_num_threads());
     return out;
 }
 
@@ -166,7 +167,8 @@ Tensor core_r2c(const Tensor& contig, int64_t dim, fft_norm_mode mode, bool ones
     if (onesided) {
         pocketfft::r2c<T>(pshape, sin_, sout, size_t(dim), /*forward=*/true,
                           static_cast<const T*>(contig.data_ptr()),
-                          pocketfft_complex_output<T>(out.data_ptr()), fct, 1);
+                          pocketfft_complex_output<T>(out.data_ptr()), fct,
+                          tensorplay::parallel::get_num_threads());
     } else {
         // twosided real transform: promote to complex and run c2c
         std::vector<int64_t> csizes = sizes;
@@ -177,7 +179,8 @@ Tensor core_r2c(const Tensor& contig, int64_t dim, fft_norm_mode mode, bool ones
         for (int64_t i = 0; i < total; ++i) cp[i] = C(rp[i], T(0));
         pocketfft::c2c<T>(pshape, sin_, contig_byte_strides(out_sizes, sizeof(C)),
                           axes, true, pocketfft_complex_input<T>(csrc.data_ptr()),
-                          pocketfft_complex_output<T>(out.data_ptr()), fct, 1);
+                          pocketfft_complex_output<T>(out.data_ptr()), fct,
+                          tensorplay::parallel::get_num_threads());
     }
     return out;
 }
@@ -203,7 +206,8 @@ Tensor core_c2r(const Tensor& contig, int64_t dim, int64_t out_len, fft_norm_mod
     const T fct = norm_factor<T>(mode, out_len);
     pocketfft::c2r<T>(pshape_out, sin_, sout, size_t(dim), /*forward=*/false,
                       pocketfft_complex_input<T>(src.data_ptr()),
-                      static_cast<T*>(out.data_ptr()), fct, 1);
+                      static_cast<T*>(out.data_ptr()), fct,
+                      tensorplay::parallel::get_num_threads());
     return out;
 }
 
