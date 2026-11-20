@@ -18,6 +18,7 @@
 #include "Dispatcher.h"
 #include "Exception.h"
 
+#include <immintrin.h>
 #include <optional>
 #include <vector>
 
@@ -35,6 +36,42 @@ int64_t grad_wrap_dim(int64_t dim, int64_t ndim) {
     return dim < 0 ? dim + ndim : dim;
 }
 
+// The one-dimensional uniform gradient answers from contiguous storage in a
+// single pass: central differences in the interior, one-sided at the ends.
+// AVX2 tier, eight lanes per step.
+__attribute__((target("avx2,fma"), noinline))
+void gradient_uniform_walk_f32(const float* x, float* out, int64_t n, float h) {
+    if (n < 3) return;
+    out[0] = (x[1] - x[0]) / h;
+    const float two_h = 2.0f * h;
+    int64_t i = 1;
+    for (; i + 8 <= n - 1; i += 8) {
+        _mm256_storeu_ps(out + i,
+                         _mm256_mul_ps(_mm256_sub_ps(_mm256_loadu_ps(x + i + 1),
+                                                     _mm256_loadu_ps(x + i - 1)),
+                                       _mm256_set1_ps(1.0f / two_h)));
+    }
+    for (; i < n - 1; ++i) out[i] = (x[i + 1] - x[i - 1]) / two_h;
+    out[n - 1] = (x[n - 1] - x[n - 2]) / h;
+}
+
+__attribute__((target("avx2,fma"), noinline))
+void gradient_uniform_walk_f64(const double* x, double* out, int64_t n,
+                               double h) {
+    if (n < 3) return;
+    out[0] = (x[1] - x[0]) / h;
+    const double two_h = 2.0 * h;
+    int64_t i = 1;
+    for (; i + 4 <= n - 1; i += 4) {
+        _mm256_storeu_pd(out + i,
+                         _mm256_mul_pd(_mm256_sub_pd(_mm256_loadu_pd(x + i + 1),
+                                                     _mm256_loadu_pd(x + i - 1)),
+                                       _mm256_set1_pd(1.0 / two_h)));
+    }
+    for (; i < n - 1; ++i) out[i] = (x[i + 1] - x[i - 1]) / two_h;
+    out[n - 1] = (x[n - 1] - x[n - 2]) / h;
+}
+
 // Reshape a 1-D weight vector so its only non-unit axis sits at `d`
 // (broadcast-ready against slices of a tensor with `ndim` axes).
 Tensor weight_along(const Tensor& w1d, int64_t d, int64_t ndim) {
@@ -50,6 +87,22 @@ Tensor gradient_uniform_axis(const Tensor& src, int64_t d, double hd,
     const int64_t n = src.size(d);
     if (n <= edge_order) {
         TP_THROW(RuntimeError, "gradient expected each dimension size to be at least edge_order+1");
+    }
+    // One-dimensional float operands answer in a single walk: the
+    // slice-combine form below spends nine dispatches and several
+    // temporaries on what one loop over the contiguous storage does.
+    if (src.dim() == 1 && src.is_contiguous()
+            && (src.dtype() == DType::Float32 || src.dtype() == DType::Float64)) {
+        Tensor out = Tensor::empty({n}, src.dtype(), src.device());
+        if (src.dtype() == DType::Float32) {
+            gradient_uniform_walk_f32(src.data_ptr<float>(),
+                                      out.data_ptr<float>(), n,
+                                      static_cast<float>(hd));
+        } else {
+            gradient_uniform_walk_f64(src.data_ptr<double>(),
+                                      out.data_ptr<double>(), n, hd);
+        }
+        return out;
     }
     const Scalar h(hd), two_h(2.0 * hd);
     const auto seg = [&](int64_t start) { return src.narrow(d, start, 1); };
