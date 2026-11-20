@@ -30,6 +30,26 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from .._core.registry import check_backend_kwargs
 
 
+_TP_MODULE: Any = None
+
+
+def _tp() -> Any:
+    """The tensorplay module, imported once and cached.
+
+    The replay hot path probes tensor types and the ambient grad switch on
+    every call; importing the module inline there would repeat a ``sys.modules``
+    lookup and attribute traversal per call, so the reference is held at
+    module level instead.
+    """
+
+    global _TP_MODULE
+    if _TP_MODULE is None:
+        import tensorplay
+
+        _TP_MODULE = tensorplay
+    return _TP_MODULE
+
+
 class CudaGraphError(RuntimeError):
     """Raised for capture/replay contract violations."""
 
@@ -685,17 +705,13 @@ def format_default_skip_message(reason: str) -> str:
 
 
 def _is_tensor(value: Any) -> bool:
-    import tensorplay
-
-    return isinstance(value, tensorplay.Tensor)
+    return isinstance(value, _tp().Tensor)
 
 
 def _grad_enabled() -> bool:
     """Whether the ambient switch records history for this call."""
 
-    import tensorplay
-
-    return bool(tensorplay.is_grad_enabled())
+    return bool(_tp().is_grad_enabled())
 
 
 def _storage_key(value: Any) -> Any:
@@ -1291,10 +1307,32 @@ class CudagraphCompiledCallable:
         # call that is recording must run the artifact instead, or the caller
         # would silently receive tensors with no history.
         self._needs_eager_when_grad = False
+        # Whether the compiled region is driven by an autograd function that
+        # supplies the history a replay cannot write.  This is a property of
+        # the compiled artifact, not of any single call, so it is read once
+        # here rather than probed on the C++ dispatcher's attribute path on
+        # every replay.
+        self._replays_under_autograd_cached = bool(
+            getattr(self._compiled, "_tensorplay_replays_under_autograd", False)
+        )
         # Resolution of the last call's arguments: their identities and
         # versions, and the layout key resolved from them.  See _layout_matches.
         self._layout_memo: Optional[Tuple[Tuple, Tuple]] = None
         self._layout_key_cache: Optional[str] = None
+        # The module write epoch the layout memo was taken under.  A region
+        # reads every parameter it was captured against, so the memo's version
+        # counters only need re-reading when the module tree they belong to
+        # has actually moved -- an in-place edit is read from storage at
+        # replay time and does not change what the recording describes.
+        self._layout_epoch: int = -1
+        #: The argument tuple the layout memo was taken over.  When the
+        #: caller reuses the same tuple object -- which _AotForward does on
+        #: steady-state calls -- this answers by identity, skipping the
+        #: scan of every argument's address.
+        self._layout_args: Any = None
+        from tensorplay.nn.modules.module import _module_write_epoch_now
+
+        self._epoch_fn = _module_write_epoch_now
         # Whether every argument of the recorded call is a tensor, and whether
         # any of them carries a version counter that an in-place write moves.
         # Both belong to the recorded call and are asked once, because the memo
@@ -1307,6 +1345,12 @@ class CudagraphCompiledCallable:
         # there.  See _promote_moved_inputs.
         self._staged: frozenset = frozenset()
         self._promotions = 0
+        # A native steady-state entry built once after capture and bound to
+        # the outer C dispatcher.  Rebuilt only when the argument count
+        # changes, so the trampoline's fingerprint and the recording stay
+        # paired without rebuilding on every call.
+        self._fast_call: Any = None
+        self._fast_nargs: int = -1
         self.__name__ = getattr(compiled, "__name__", "cudagraph_compiled")
 
     def _replays_under_autograd(self) -> bool:
@@ -1319,14 +1363,12 @@ class CudagraphCompiledCallable:
         the artifact itself for those calls.
         """
 
-        return bool(
-            getattr(self._compiled, "_tensorplay_replays_under_autograd", False)
-        )
+        return self._replays_under_autograd_cached
 
     def _records_autograd(self, args: Sequence[Any]) -> bool:
         """Whether this call is recording history a replay cannot supply."""
 
-        if self._replays_under_autograd():
+        if self._replays_under_autograd_cached:
             return False
         if not any(_is_tensor(value) and value.requires_grad for value in args):
             return False
@@ -1342,7 +1384,33 @@ class CudagraphCompiledCallable:
                 return self._capture(args)
             if self._state == "live":
                 return self._replay(args)
+            return self._compiled(*args, **kwargs)
+
+    def _replay_steady(self, args: Tuple[Any, ...]) -> Any:
+        """Replay a call whose arguments are known to match the recording.
+
+        The caller has already certified that the arguments are the same
+        objects the last call used -- the state tuple and the caller's
+        arguments are both unchanged -- so the layout check that
+        ``_replay`` makes is a scan of addresses that cannot differ.  The
+        replay goes straight to the graph with verification off, which is
+        the same state ``_replay`` reaches after its own check passes.
+        """
+
+        if self._trees:
+            return self._replay(args)
+        try:
+            outputs = self._manager.replay(self._key, *args, verify=False)
+        except CudaGraphInputDrift:
+            return self._replay(args)
+        except (CudaGraphError, RuntimeError, TypeError) as exc:
+            self._state = "fallback"
+            log.warning(
+                "cudagraph replay failed; running the artifact directly: %s", exc
+            )
             return self._compiled(*args)
+        self._drifts = 0
+        return self._shape_outputs(outputs)
 
     def _layout_key(self, args: Tuple[Any, ...]) -> str:
         """The node key for one argument layout.
@@ -1363,9 +1431,43 @@ class CudagraphCompiledCallable:
         counters is only made for arguments that carry them: a framework whose
         tensors do not expose one has already said, once, that an identity
         match is the whole of what can be certified.
+
+        When the objects are identical and the module write epoch has not
+        moved, the version counters are still the ones the memo holds: a
+        rebound attribute, a replaced child or a registered parameter all
+        raise the epoch, and an in-place edit leaves the objects themselves
+        untouched -- the recording reads from their storage, so the replay
+        sees the edited value without the memo needing to say so.
+
+        When the caller reuses the same argument tuple object and the epoch
+        has not moved, the memo answers by identity -- one comparison instead
+        of a scan of every argument's address.
         """
 
+        epoch = self._epoch_fn()
+        if self._layout_epoch == epoch and self._layout_args is args:
+            return self._all_tensor_args
         ids = tuple(map(id, args))
+        memo = self._layout_memo
+        if memo is not None and memo[0] == ids:
+            if self._ignores_versions or not self._versioned_args:
+                self._layout_epoch = epoch
+                self._layout_args = args
+                return self._all_tensor_args
+            mutated = self._mutated
+            versions = tuple(
+                None if index in mutated else getattr(value, "_version", None)
+                for index, value in enumerate(args)
+            )
+            if memo[1] == versions:
+                self._layout_epoch = epoch
+                self._layout_args = args
+                return self._all_tensor_args
+            self._layout_memo = (ids, versions)
+            self._layout_epoch = epoch
+            self._layout_args = args
+            self._layout_key_cache = None
+            return False
         mutated = self._mutated
         if self._ignores_versions or not self._versioned_args:
             versions = None
@@ -1374,10 +1476,9 @@ class CudagraphCompiledCallable:
                 None if index in mutated else getattr(value, "_version", None)
                 for index, value in enumerate(args)
             )
-        memo = self._layout_memo
-        if memo is not None and memo[0] == ids and memo[1] == versions:
-            return self._all_tensor_args
         self._layout_memo = (ids, versions)
+        self._layout_epoch = epoch
+        self._layout_args = args
         self._layout_key_cache = None
         return False
 
@@ -1601,21 +1702,32 @@ class CudagraphCompiledCallable:
         """A native steady-state entry over the recording, or None."""
 
         try:
-            import tensorplay
-
-            installer = tensorplay._C._stax.install_call_trampoline
+            installer = _tp()._C._stax.install_call_trampoline
         except Exception:  # noqa: BLE001 - trampoline is an optional accelerator
             return None
 
+        tp_tensor = _tp().Tensor
+
         def replay_flat(values: List[Any]) -> List[Any]:
-            return self._replay_flat(values)
+            outputs = self._replay_flat(values)
+            # The C trampoline bypasses _shape_outputs, which is what
+            # normally clones each output so it survives the next replay.
+            # Replicate that here so the caller's tensor is never aliased to
+            # the graph-private buffer the next replay overwrites.
+            return [
+                value.clone()
+                if _looks_tensor(value)
+                and (self._visible is None or index in self._visible)
+                else value
+                for index, value in enumerate(outputs)
+            ]
 
         try:
             return installer(
                 self,
                 replay_flat,
                 [],
-                tensorplay.Tensor,
+                tp_tensor,
                 nargs,
                 1 if self._single_output else 2,
                 False,
@@ -1624,6 +1736,26 @@ class CudagraphCompiledCallable:
             )
         except Exception:  # noqa: BLE001 - trampoline is an optional accelerator
             return None
+
+    def _steady_state_entry(self, nargs: int) -> Any:
+        """A native steady-state entry for the outer C dispatcher.
+
+        Called once per resolved call by the compiler frontend, which binds
+        the result to the dispatcher so subsequent calls enter the recording
+        through the C trampoline's fingerprint instead of the full Python
+        replay path.  The entry is built once and cached: it describes this
+        recording's argument count and output structure, neither of which
+        changes while the region stays live.
+        """
+
+        if self._state != "live" or self._trees:
+            return None
+        if self._needs_eager_when_grad and _grad_enabled():
+            return None
+        if self._fast_call is None or self._fast_nargs != nargs:
+            self._fast_call = self._build_fast_call(None, nargs)
+            self._fast_nargs = nargs
+        return self._fast_call
 
     def _replay_entry(self, *, head: Sequence[Any], nargs: int) -> Any:
         """A steady-state entry for a caller that holds only its own arguments.

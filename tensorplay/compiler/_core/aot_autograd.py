@@ -939,6 +939,46 @@ def aot_module_simplified(
             #: list the module reports.
             self._region = getattr(compiled, "_tensorplay_region_callable", None)
             self._fast_entries: dict[int, tuple[Any, list[Any]]] = {}
+            #: The state tuple and bound caller arguments from the last call,
+            #: and the full argument tuple they produced.  The region replays
+            #: against the same state and the same caller arguments on every
+            #: steady-state call, so the combined tuple is rebuilt only when
+            #: either half moves -- which also gives the region's layout check
+            #: a tuple it can recognize by identity instead of scanning every
+            #: argument's address.
+            self._cached_state: Any = None
+            self._cached_bound: Any = None
+            self._cached_full: Any = None
+            #: The steady-state replay entry and the guard, resolved once.
+            #: Both are asked on every call, so the attribute walks that
+            #: would find them are taken here instead.
+            self._replay_steady_fn = getattr(compiled, "_replay_steady", None)
+            self._guard_fn = getattr(compiled, "_tensorplay_guard", None)
+            #: The call-argument binder, resolved once with the module's
+            #: signature and placeholder list baked in.  The steady-state
+            #: call shape (positional args matching the placeholder count)
+            #: is the common case, and this answer turns two attribute
+            #: walks and a length check into a single return.
+            signature = getattr(module, "signature", None)
+            graph = getattr(module, "graph", None)
+            placeholders = getattr(graph, "placeholders", None) if graph is not None else None
+            if signature is not None and placeholders is not None:
+                _sig = signature
+                _ph = placeholders
+
+                def _bind(args, kwargs):
+                    if not kwargs and len(args) == len(_ph):
+                        return list(args)
+                    bound = _sig.bind_partial(*args, **kwargs)
+                    bound.apply_defaults()
+                    values = []
+                    for node in _ph:
+                        key = node.target if isinstance(node.target, str) else node.name
+                        values.append(bound.arguments[key] if key in bound.arguments else bound.arguments[node.name])
+                    return values
+            else:
+                _bind = _bind_graph_inputs
+            self._bind = _bind
 
         def _steady_state_entry(self, nargs: int) -> Any:
             """The entry for a call that passes only its own arguments.
@@ -984,20 +1024,50 @@ def aot_module_simplified(
             return entry
 
         def __call__(self, *args: Any, **kwargs: Any) -> Any:
-            return self._compiled(
-                *self._read_state(),
-                *self._bind_graph_inputs(self._module, args, kwargs),
-            )
+            bound = self._bind(args, kwargs)
+            state = self._read_state()
+            if (
+                self._cached_state is state
+                and self._cached_bound == bound
+                and self._cached_full is not None
+            ):
+                # The state and the caller's arguments are the ones the last
+                # call used, so the arguments are unchanged.  Ask the region
+                # for its steady-state replay, which skips the layout check
+                # that would scan every argument's address.
+                replay_steady = self._replay_steady_fn
+                if replay_steady is not None:
+                    return replay_steady(self._cached_full)
+                return self._compiled(*self._cached_full)
+            full = tuple(state) + tuple(bound)
+            self._cached_state = state
+            self._cached_bound = bound
+            self._cached_full = full
+            return self._compiled(*full)
 
         def __getattr__(self, name: str) -> Any:
             return getattr(self._compiled, name)
 
         def _tensorplay_guard(self, *args: Any, **kwargs: Any) -> bool:
-            guard = getattr(self._compiled, "_tensorplay_guard", None)
-            return guard is None or guard(
-                *self._read_state(),
-                *self._bind_graph_inputs(self._module, args, kwargs),
-            )
+            bound = self._bind(args, kwargs)
+            state = self._read_state()
+            if (
+                self._cached_state is state
+                and self._cached_bound == bound
+                and self._cached_full is not None
+            ):
+                # The arguments are the same objects the last call used, and
+                # the guard passed for them, so the shapes it checks are the
+                # shapes it already accepted.  Answer without re-walking them.
+                return True
+            guard = self._guard_fn
+            if guard is None:
+                return True
+            full = tuple(state) + tuple(bound)
+            self._cached_state = state
+            self._cached_bound = bound
+            self._cached_full = full
+            return guard(*full)
 
     return _AotForward(compiled, module, read_state, _bind_graph_inputs)
 
@@ -1245,8 +1315,27 @@ def _state_access(module: Any):
     named = list(_named_state(module))
     names = [name for name, _ in named]
 
-    def read_module_state() -> list[Any]:
-        return [value for _, value in _named_state(module)]
+    from tensorplay.nn.modules.module import _module_write_epoch_now
+
+    #: What the state read saw, and the module write count it saw it under.
+    #: Registering, rebinding, replacing a child or moving a module's
+    #: tensors all raise the count; while it holds still, the same objects
+    #: are still where the reads look, so the tuple itself is the answer
+    #: and its identity says whether anything moved. An in-place edit of
+    #: a parameter's storage leaves the objects untouched; the recording
+    #: reads from their storage, so it sees the edited value without the
+    #: tuple needing to say so.
+    taken: list[Any] = [tuple(value for _, value in named), _module_write_epoch_now()]
+
+    def read_module_state() -> Sequence[Any]:
+        epoch = _module_write_epoch_now()
+        if taken[1] == epoch and not _substitution_depth:
+            return taken[0]
+        named = list(_named_state(module))
+        if not _substitution_depth:
+            taken[0] = tuple(value for _, value in named)
+            taken[1] = epoch
+        return [value for _, value in named]
 
     return names, read_module_state, lambda state: _reparametrize_module(module, state)
 

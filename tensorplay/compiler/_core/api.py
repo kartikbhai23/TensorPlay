@@ -587,6 +587,14 @@ def compile(
     last_call_fp: Any = None
     last_quick_parts: tuple[Any, ...] | None = None
     last_module_state: Any = None
+    last_module_epoch: int = -1
+    last_grad_state: tuple = ()
+    #: The certificate plan the last call resolved, and the module write
+    #: epoch it was taken under.  The plan only moves when the state the
+    #: capture reads moves, so while the epoch holds still the answer from
+    #: the last call stands and the plan is not rebuilt.
+    last_certificate_plan: Any = None
+    last_certificate_epoch: int = -1
     #: The entry the native certificate was last installed on, the places it
     #: names, and the ambient mode it was taken under.  Held so the install
     #: (a pass over every site) only happens when one of them moved.
@@ -678,10 +686,23 @@ def compile(
         nonlocal last_quick_key, last_compiled_fn
         nonlocal guard_param_names, gate_evaluator
         nonlocal last_call_fp, last_quick_parts, last_module_state
+        nonlocal last_module_epoch
+        nonlocal last_grad_state
+        nonlocal last_certificate_plan, last_certificate_epoch
         nonlocal compile_attempts, specialization_dynamic, dynamic_generalized
         if _capture_disabled.get():
             return model(*args, **kwargs)
-        module_state = _module_state_component(model)
+        # The module write epoch says whether anything structural on the
+        # module can have moved.  While it holds still, the state component
+        # is the one the last call read, so asking for it again would only
+        # re-check the sites a module write cannot explain.
+        epoch = _module_write_epoch()
+        state_changed = last_module_epoch != epoch
+        if state_changed:
+            module_state = _module_state_component(model)
+            last_module_epoch = epoch
+        else:
+            module_state = last_module_state
         if module_state != last_module_state:
             # Input identity does not certify gates that read module state.
             last_call_fp = None
@@ -728,24 +749,28 @@ def compile(
             )
             last_call_fp = call_fp
         grad_state = _grad_state_component()
-        quick_key = (
-            input_signature, shape_component, data_component, grad_state, module_state
+        # Fast path: the fingerprint matches, the module state has not
+        # moved, and the grad mode is unchanged, so the compiled function
+        # is the one the last call used.  Set the flag and skip the key
+        # tuple; the lock still runs but the lookup answers immediately.
+        fast_reuse = (
+            matched
+            and not state_changed
+            and last_quick_parts is not None
+            and last_compiled_fn is not None
+            and grad_state == last_grad_state
         )
-        with lock:
-            if cache_enabled and cache and last_compiled_fn is not None and quick_key == last_quick_key:
-                compiled_fn = last_compiled_fn
-            else:
-                key = (
-                    _input_signature(args, kwargs, dynamic=specialization_dynamic),
-                    _guard_component(args, kwargs, _value_signature),
-                    data_component,
-                    grad_state,
-                    module_state,
-                )
-                compiled_fn = cache.get(key) if cache_enabled else None
-            if compiled_fn is not None:
-                check = getattr(compiled_fn, "_tensorplay_guard", None)
-                if check is not None and not check(*args, **kwargs):
+        last_grad_state = grad_state
+        if fast_reuse:
+            compiled_fn = last_compiled_fn
+        else:
+            quick_key = (
+                input_signature, shape_component, data_component, grad_state, module_state
+            )
+            with lock:
+                if cache_enabled and cache and last_compiled_fn is not None and quick_key == last_quick_key:
+                    compiled_fn = last_compiled_fn
+                else:
                     key = (
                         _input_signature(args, kwargs, dynamic=specialization_dynamic),
                         _guard_component(args, kwargs, _value_signature),
@@ -753,74 +778,136 @@ def compile(
                         grad_state,
                         module_state,
                     )
-                    compiled_fn = next((
-                        variant for variant in backend_variants.get(key, ())
-                        if variant is not compiled_fn and getattr(variant, "_tensorplay_guard")(*args, **kwargs)
-                    ), None)
-            if not cache:
-                backend_variants.clear()
-            store_compiled = cache_enabled
-            if compiled_fn is None:
-                variant_count = len(cache) + sum(
-                    max(0, len(variants) - 1) for variants in backend_variants.values()
-                )
-                if variant_count >= specialization_limit:
-                    if fullgraph or compiler_config.fail_on_recompile_limit_hit:
+                    compiled_fn = cache.get(key) if cache_enabled else None
+                if compiled_fn is not None:
+                    check = getattr(compiled_fn, "_tensorplay_guard", None)
+                    # The caller's arguments are the same objects the last call
+                    # used (fingerprint match) and the module state has not
+                    # moved, so the guard's shape check would pass.  Skip it
+                    # rather than walking the arguments again.
+                    if check is not None and not (matched and not state_changed):
+                        if not check(*args, **kwargs):
+                            key = (
+                                _input_signature(args, kwargs, dynamic=specialization_dynamic),
+                                _guard_component(args, kwargs, _value_signature),
+                                data_component,
+                                grad_state,
+                                module_state,
+                            )
+                            compiled_fn = next((
+                                variant for variant in backend_variants.get(key, ())
+                                if variant is not compiled_fn and getattr(variant, "_tensorplay_guard")(*args, **kwargs)
+                            ), None)
+                if not cache:
+                    backend_variants.clear()
+                store_compiled = cache_enabled
+                if compiled_fn is None:
+                    variant_count = len(cache) + sum(
+                        max(0, len(variants) - 1) for variants in backend_variants.values()
+                    )
+                    if variant_count >= specialization_limit:
+                        if fullgraph or compiler_config.fail_on_recompile_limit_hit:
+                            raise RuntimeError(
+                                "TensorPlay compile specialization limit reached in "
+                                f"{_region_label(model, name)}"
+                            )
+                        store_compiled = False
+                    # Explain the miss against every stored specialization before
+                    # recompiling, retaining each guard mismatch.
+                    reasons: list[Any] = []
+                    for chain in guard_chains.values():
+                        reasons.extend(chain.explain(args, kwargs))
+                    if reasons:
+                        optimized._tensorplay_last_recompile_reasons = tuple(reasons)
+                        if _log_recompiles(compiler_config.verbose):
+                            import warnings
+
+                            warnings.warn(
+                                "recompiling "
+                                f"{_region_label(model, name)}: "
+                                + format_recompile_reasons(reasons),
+                                stacklevel=2,
+                            )
+                    if (
+                        automatic_dynamic
+                        and not dynamic_generalized
+                        and any(
+                            _shape_wobble(chain, args, kwargs)
+                            for chain in guard_chains.values()
+                        )
+                    ):
+                        # The concrete policy just failed because a size moved.
+                        # From here the region is captured with every extent that
+                        # is not 0 or 1 symbolic, which serves the sizes already
+                        # seen and the ones that would have followed each of
+                        # them as separate specializations.
+                        dynamic_generalized = True
+                        specialization_dynamic = True
+                        backend_kwargs["dynamic"] = True
+                        optimized._tensorplay_dynamic = True  # type: ignore[attr-defined]
+                        if cache_enabled:
+                            cache.clear()
+                            guard_chains.clear()
+                            backend_variants.clear()
+                        last_compiled_fn = None
+                        last_call_fp = None
+                        last_quick_parts = None
+                        input_signature = _quick_input_signature(
+                            args, kwargs, dynamic=specialization_dynamic
+                        )
+                        quick_key = (
+                            input_signature,
+                            shape_component,
+                            data_component,
+                            grad_state,
+                            module_state,
+                        )
+                        key = (
+                            _input_signature(args, kwargs, dynamic=specialization_dynamic),
+                            _guard_component(args, kwargs, _value_signature),
+                            data_component,
+                            grad_state,
+                            module_state,
+                        )
+                    if compile_attempts >= accumulated_limit:
                         raise RuntimeError(
-                            "TensorPlay compile specialization limit reached in "
+                            "TensorPlay accumulated recompilation limit reached in "
                             f"{_region_label(model, name)}"
                         )
-                    store_compiled = False
-                # Explain the miss against every stored specialization before
-                # recompiling, retaining each guard mismatch.
-                reasons: list[Any] = []
-                for chain in guard_chains.values():
-                    reasons.extend(chain.explain(args, kwargs))
-                if reasons:
-                    optimized._tensorplay_last_recompile_reasons = tuple(reasons)
-                    if _log_recompiles(compiler_config.verbose):
-                        import warnings
-
-                        warnings.warn(
-                            "recompiling "
-                            f"{_region_label(model, name)}: "
-                            + format_recompile_reasons(reasons),
-                            stacklevel=2,
-                        )
-                if (
-                    automatic_dynamic
-                    and not dynamic_generalized
-                    and any(
-                        _shape_wobble(chain, args, kwargs)
-                        for chain in guard_chains.values()
+                    compile_attempts += 1
+                    compiled_fn, captured_gm = _compile_region(
+                        model,
+                        compiler_fn,
+                        args,
+                        kwargs,
+                        backend_kwargs=backend_kwargs,
+                        shape_spec=shape_spec,
+                        region_key=make_region_key(
+                            target_cache,
+                            model if _is_module_like(model) else None,
+                            key if shape_spec is None else (key, shape_policy_signature(shape_spec)),
+                        ),
                     )
-                ):
-                    # The concrete policy just failed because a size moved.
-                    # From here the region is captured with every extent that
-                    # is not 0 or 1 symbolic, which serves the sizes already
-                    # seen and the ones that would have followed each of
-                    # them as separate specializations.
-                    dynamic_generalized = True
-                    specialization_dynamic = True
-                    backend_kwargs["dynamic"] = True
-                    optimized._tensorplay_dynamic = True  # type: ignore[attr-defined]
-                    if cache_enabled:
-                        cache.clear()
-                        guard_chains.clear()
-                        backend_variants.clear()
-                    last_compiled_fn = None
-                    last_call_fp = None
-                    last_quick_parts = None
-                    input_signature = _quick_input_signature(
-                        args, kwargs, dynamic=specialization_dynamic
-                    )
-                    quick_key = (
-                        input_signature,
-                        shape_component,
-                        data_component,
-                        grad_state,
-                        module_state,
-                    )
+                    # Keys gain a guard component once capture reveals metadata
+                    # reads or control-flow gates; invalidate so entries are stored
+                    # uniformly.
+                    promoted = _extract_shape_guard_params(captured_gm)
+                    replay = captured_gm.meta.get("guard_replay")
+                    if promoted - set(guard_param_names) or (
+                        replay is not None and gate_evaluator is None
+                    ):
+                        guard_param_names = tuple(sorted({*guard_param_names, *promoted}))
+                        if replay is not None:
+                            gate_target = model.forward if _is_module_like(model) else model
+                            gate_evaluator = _make_gate_evaluator(replay, gate_target)
+                        if cache_enabled:
+                            cache.clear()
+                            guard_chains.clear()
+                        last_compiled_fn = None
+                        last_call_fp = None
+                        last_quick_parts = None
+                        if gate_evaluator is not None:
+                            data_component = gate_evaluator(args, kwargs)
                     key = (
                         _input_signature(args, kwargs, dynamic=specialization_dynamic),
                         _guard_component(args, kwargs, _value_signature),
@@ -828,75 +915,43 @@ def compile(
                         grad_state,
                         module_state,
                     )
-                if compile_attempts >= accumulated_limit:
-                    raise RuntimeError(
-                        "TensorPlay accumulated recompilation limit reached in "
-                        f"{_region_label(model, name)}"
-                    )
-                compile_attempts += 1
-                compiled_fn, captured_gm = _compile_region(
-                    model,
-                    compiler_fn,
-                    args,
-                    kwargs,
-                    backend_kwargs=backend_kwargs,
-                    shape_spec=shape_spec,
-                    region_key=make_region_key(
-                        target_cache,
-                        model if _is_module_like(model) else None,
-                        key if shape_spec is None else (key, shape_policy_signature(shape_spec)),
-                    ),
-                )
-                # Keys gain a guard component once capture reveals metadata
-                # reads or control-flow gates; invalidate so entries are stored
-                # uniformly.
-                promoted = _extract_shape_guard_params(captured_gm)
-                replay = captured_gm.meta.get("guard_replay")
-                if promoted - set(guard_param_names) or (
-                    replay is not None and gate_evaluator is None
-                ):
-                    guard_param_names = tuple(sorted({*guard_param_names, *promoted}))
-                    if replay is not None:
-                        gate_target = model.forward if _is_module_like(model) else model
-                        gate_evaluator = _make_gate_evaluator(replay, gate_target)
-                    if cache_enabled:
-                        cache.clear()
-                        guard_chains.clear()
-                    last_compiled_fn = None
-                    last_call_fp = None
-                    last_quick_parts = None
-                    if gate_evaluator is not None:
-                        data_component = gate_evaluator(args, kwargs)
-                key = (
-                    _input_signature(args, kwargs, dynamic=specialization_dynamic),
-                    _guard_component(args, kwargs, _value_signature),
-                    data_component,
-                    grad_state,
-                    module_state,
-                )
-                if store_compiled:
-                    cache[key] = compiled_fn
-                    if getattr(compiled_fn, "_tensorplay_guard", None) is not None:
-                        backend_variants.setdefault(key, []).append(compiled_fn)
-                    guard_chains[key] = build_guard_chain(
-                        key,
-                        args=args,
-                        kwargs=kwargs,
-                        dynamic=specialization_dynamic,
-                        target=model.forward if _is_module_like(model) else model,
-                        gate_evaluator=gate_evaluator,
-                        module_evaluator=lambda: _module_state_component(model),
-                    )
-            last_quick_key = quick_key
-            last_compiled_fn = compiled_fn
+                    if store_compiled:
+                        cache[key] = compiled_fn
+                        if getattr(compiled_fn, "_tensorplay_guard", None) is not None:
+                            backend_variants.setdefault(key, []).append(compiled_fn)
+                        guard_chains[key] = build_guard_chain(
+                            key,
+                            args=args,
+                            kwargs=kwargs,
+                            dynamic=specialization_dynamic,
+                            target=model.forward if _is_module_like(model) else model,
+                            gate_evaluator=gate_evaluator,
+                            module_evaluator=lambda: _module_state_component(model),
+                        )
+                last_quick_key = quick_key
+                last_compiled_fn = compiled_fn
         if not kwargs:
             make_entry = getattr(compiled_fn, "_steady_state_entry", None)
-            fast = make_entry(len(args)) if make_entry is not None else None
-            if fast is None:
-                fast = getattr(compiled_fn, "_fast_call", None)
-            if fast is not None:
-                _bind_dispatcher_fast(fast, len(args), module_state)
-                return compiled_fn(*args)
+            if make_entry is not None:
+                # The steady-state entry builds a C trampoline the dispatcher
+                # can only use when a state certificate describes the places
+                # the recording reads. Without one the trampoline is built
+                # and immediately cleared by the binder, which is pure
+                # overhead -- check for a certificate first and skip the
+                # entry flow when there is none.  The plan only moves when
+                # the module state moves, so while the write epoch holds
+                # still the answer from the last call stands and the plan
+                # is not rebuilt.
+                if last_certificate_epoch != epoch:
+                    last_certificate_plan = _state_certificate_plan(model)
+                    last_certificate_epoch = epoch
+                if last_certificate_plan is not None:
+                    fast = make_entry(len(args))
+                    if fast is None:
+                        fast = getattr(compiled_fn, "_fast_call", None)
+                    if fast is not None:
+                        _bind_dispatcher_fast(fast, len(args), module_state)
+                        return compiled_fn(*args)
         return compiled_fn(*args, **kwargs)
 
     from tensorplay._C import _stax as _stax_native

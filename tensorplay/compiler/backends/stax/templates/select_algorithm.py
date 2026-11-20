@@ -1860,8 +1860,15 @@ class TritonTemplateKernel(TritonKernel):
                 *self.extra_template_env_fns,
             ]
         }
+        # How wide the body indexes is a property of the launch rather than of
+        # the configuration the body was chosen with, so it is not among the
+        # configuration's names.  A body that narrows an index says so through
+        # this name, and it is supplied here so that a body written for it
+        # renders rather than failing on it.
+        render_args = dict(kwargs)
+        render_args.setdefault("index_dtype", self.index_dtype)
         return PartialRender(
-            template.render(**template_env, **kwargs),
+            template.render(**template_env, **render_args),
             self.render_hooks,
         )
 
