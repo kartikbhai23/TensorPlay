@@ -531,6 +531,32 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             ]
             continue
 
+        if name == 'float_power' and 'function' in f.variants:
+            # The real path answers through pow in the operand's own width
+            # and widens: pow carries the gradient, the widening carries the
+            # double precision the float_power contract promises.  Complex
+            # operands keep the native form.
+            seen.add(name)
+            lines += [
+                'def float_power(input, exponent, *, out=None):',
+                '    if out is not None:',
+                '        if _capturing():',
+                "            _captured = _capture_call(float_power, (input, exponent), {'out': out})",
+                '            if _captured is not None:',
+                '                return _captured',
+                '        return _C.float_power(input, exponent, out=out)',
+                '    if _capturing():',
+                '        _captured = _capture_call(float_power, (input, exponent), {})',
+                '        if _captured is not None:',
+                '            return _captured',
+                '    if is_complex(input) or (isinstance(exponent, tensorplay.Tensor) and is_complex(exponent)):',
+                '        return _C.float_power(input, exponent)',
+                '    result = _C.pow(input, exponent)',
+                '    return result.to(tensorplay.float64)',
+                '',
+            ]
+            continue
+
         # ---- division carrying an optional rounding mode --------------------
         # div/divide pair their plain overloads with mode-taking ones.
         # Forwarding the mode unconditionally would push every plain division

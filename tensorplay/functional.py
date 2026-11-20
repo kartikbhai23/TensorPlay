@@ -9735,7 +9735,10 @@ def float_power(input, exponent, *, out=None):
         _captured = _capture_call(float_power, (input, exponent), {})
         if _captured is not None:
             return _captured
-    return _C.float_power(input, exponent)
+    if is_complex(input) or (isinstance(exponent, tensorplay.Tensor) and is_complex(exponent)):
+        return _C.float_power(input, exponent)
+    result = _C.pow(input, exponent)
+    return result.to(tensorplay.float64)
 
 def mvlgamma(input, p, *, out=None):
     if out is not None:
