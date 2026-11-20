@@ -76,6 +76,20 @@ class TestReduction(TestCase):
         self.assertEqual(x.sum().item(), 10.0)
         self.assertEqual(x.mean().item(), 2.5)
 
+    def test_variance_family_accepts_positional_unbiased(self, device):
+        x = tp.tensor([1.0, 3.0], dtype=tp.float32, device=device)
+        for name, expected in (
+            ("var", 1.0), ("std", 1.0),
+            ("var_mean", (1.0, 2.0)), ("std_mean", (1.0, 2.0)),
+        ):
+            fn = getattr(tp, name)
+            result = fn(x, False)
+            if isinstance(result, tuple):
+                result = tuple(t.item() for t in result)
+            else:
+                result = result.item()
+            self.assertEqual(result, expected)
+
     def test_tensor_equality_via_assert_equal(self, device):
         x = tp.arange(0, 6, device=device).reshape((2, 3))
         expected = tp.tensor([[0, 1, 2], [3, 4, 5]], dtype=tp.int64, device=device)

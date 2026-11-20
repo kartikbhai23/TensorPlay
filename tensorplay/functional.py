@@ -2965,6 +2965,8 @@ def any(input, dim=None, keepdim=False):
     return _C.any(input, dim, keepdim)
 
 def var(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
+    if isinstance(dim, bool) and unbiased is None and correction is None:
+        dim, unbiased = None, dim
     if _capturing():
         _captured = _capture_call(var, (input, dim, unbiased, keepdim), {"correction": correction})
         if _captured is not None:
@@ -2978,6 +2980,8 @@ def var(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     return _C.var(input, list(dim), correction, keepdim)
 
 def std(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
+    if isinstance(dim, bool) and unbiased is None and correction is None:
+        dim, unbiased = None, dim
     if _capturing():
         _captured = _capture_call(std, (input, dim, unbiased, keepdim), {"correction": correction})
         if _captured is not None:
@@ -6028,6 +6032,8 @@ def nansum(input, dim=[], keepdim=False, *, out=None):
     return _C.nansum(self=input, dim=dim, keepdim=keepdim)
 
 def std_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
+    if isinstance(dim, bool) and unbiased is None and correction is None:
+        dim, unbiased = None, dim
     if _capturing():
         _captured = _capture_call(std_mean, (input, dim, unbiased, keepdim), {"correction": correction})
         if _captured is not None:
@@ -6041,6 +6047,8 @@ def std_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
     return _C.std_mean(input, dim, correction=correction, keepdim=keepdim)
 
 def var_mean(input, dim=None, unbiased=None, keepdim=False, *, correction=None):
+    if isinstance(dim, bool) and unbiased is None and correction is None:
+        dim, unbiased = None, dim
     if _capturing():
         _captured = _capture_call(var_mean, (input, dim, unbiased, keepdim), {"correction": correction})
         if _captured is not None:
@@ -9671,7 +9679,18 @@ def gru_cell(input, hx, w_ih, w_hh, b_ih=None, b_hh=None):
             return _captured
     return _C.gru_cell(input, hx, w_ih, w_hh, b_ih, b_hh)
 
+_CDIST_COMPUTE_MODES = {
+    "use_mm_for_euclid_dist_if_necessary": None,
+    "use_mm_for_euclid_dist": 1,
+    "donot_use_mm_for_euclid_dist": 2,
+}
+
+
 def cdist(x1, x2, p=2, compute_mode=None):
+    if isinstance(compute_mode, str):
+        if compute_mode not in _CDIST_COMPUTE_MODES:
+            raise ValueError(f"{compute_mode!r} is not a valid value for compute_mode")
+        compute_mode = _CDIST_COMPUTE_MODES[compute_mode]
     if _capturing():
         _captured = _capture_call(cdist, (x1, x2, p, compute_mode), {})
         if _captured is not None:

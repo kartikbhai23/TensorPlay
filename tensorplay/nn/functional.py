@@ -3311,8 +3311,13 @@ def pairwise_distance(x1: Tensor, x2: Tensor, p: float = 2.0, eps: float = 1e-6,
 def pdist(input: Tensor, p: float = 2.0) -> Tensor:
     r"""Computes the pairwise distance between rows of :attr:`input`.
 
-    Returns the flattened upper triangle of the ``N x N`` distance matrix —
+    Returns the flattened upper triangle of the ``N x N`` distance matrix.
     """
+    if input.device.type in ("cpu", "cuda", "meta") and input.dtype in (
+        DType.float32,
+        DType.float64,
+    ):
+        return tensorplay.pdist(input, p)
     if input.dim() != 2:
         raise RuntimeError(f"pdist expects a 2D input, got {input.dim()}D")
     n = input.size(0)
