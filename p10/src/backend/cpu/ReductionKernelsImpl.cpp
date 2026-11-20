@@ -4653,10 +4653,124 @@ double max_f64_chunk_avx512(const double* x, int64_t b, int64_t e,
     return best;
 }
 
+__attribute__((target("avx2")))
+float max_f32_chunk_avx2(const float* x, int64_t b, int64_t e, bool* has_nan) {
+    __m256 a0 = _mm256_set1_ps(-std::numeric_limits<float>::infinity());
+    __m256 a1 = a0;
+    int nan_mask = 0;
+    int64_t i = b;
+    for (; i + 16 <= e; i += 16) {
+        const __m256 v0 = _mm256_loadu_ps(x + i);
+        const __m256 v1 = _mm256_loadu_ps(x + i + 8);
+        nan_mask |= _mm256_movemask_ps(_mm256_cmp_ps(v0, v0, _CMP_UNORD_Q));
+        nan_mask |= _mm256_movemask_ps(_mm256_cmp_ps(v1, v1, _CMP_UNORD_Q));
+        // NaN lanes keep the accumulator: an Inf can never beat a seen max.
+        a0 = _mm256_max_ps(a0, _mm256_blendv_ps(
+            _mm256_set1_ps(-std::numeric_limits<float>::infinity()), v0,
+            _mm256_cmp_ps(v0, v0, _CMP_ORD_Q)));
+        a1 = _mm256_max_ps(a1, _mm256_blendv_ps(
+            _mm256_set1_ps(-std::numeric_limits<float>::infinity()), v1,
+            _mm256_cmp_ps(v1, v1, _CMP_ORD_Q)));
+    }
+    alignas(32) float lanes[8];
+    _mm256_storeu_ps(lanes, _mm256_max_ps(a0, a1));
+    float best = lanes[0];
+    for (int j = 1; j < 8; ++j) {
+        if (lanes[j] > best) best = lanes[j];
+    }
+    for (; i < e; ++i) {
+        if (std::isnan(x[i])) {
+            nan_mask = 1;
+        } else if (x[i] > best) {
+            best = x[i];
+        }
+    }
+    *has_nan = nan_mask != 0;
+    return best;
+}
+
+__attribute__((target("avx2")))
+double max_f64_chunk_avx2(const double* x, int64_t b, int64_t e, bool* has_nan) {
+    __m256d a0 = _mm256_set1_pd(-std::numeric_limits<double>::infinity());
+    __m256d a1 = a0;
+    int64_t nan_mask = 0;
+    int64_t i = b;
+    for (; i + 8 <= e; i += 8) {
+        const __m256d v0 = _mm256_loadu_pd(x + i);
+        nan_mask |= _mm256_movemask_pd(_mm256_cmp_pd(v0, v0, _CMP_UNORD_Q));
+        a0 = _mm256_max_pd(a0, _mm256_blendv_pd(
+            _mm256_set1_pd(-std::numeric_limits<double>::infinity()), v0,
+            _mm256_cmp_pd(v0, v0, _CMP_ORD_Q)));
+    }
+    alignas(32) double lanes[4];
+    _mm256_storeu_pd(lanes, _mm256_max_pd(a0, a1));
+    double best = lanes[0];
+    for (int j = 1; j < 4; ++j) {
+        if (lanes[j] > best) best = lanes[j];
+    }
+    for (; i < e; ++i) {
+        if (std::isnan(x[i])) {
+            nan_mask = 1;
+        } else if (x[i] > best) {
+            best = x[i];
+        }
+    }
+    *has_nan = nan_mask != 0;
+    return best;
+}
+
+// The AVX2 tier of the max reduction: same shape and NaN semantics as the
+// AVX512 one, for hosts whose lanes stop at 256 bits.  Small sizes answer
+// serially — the partials plumbing costs more than the walk itself.
+static bool try_max_real_avx2(const void* xv, int64_t n, DType dt,
+                              double* out, bool* has_nan) {
+    if (!reduce_avx2_available() || n < 512) return false;
+    constexpr int64_t kGrain = 32768;
+    const int64_t nslots = (n + kGrain - 1) / kGrain;
+    if (dt == DType::Float32) {
+        const float* x = static_cast<const float*>(xv);
+        std::vector<float> part(nslots, -std::numeric_limits<float>::infinity());
+        std::vector<uint8_t> nan(nslots, 0);
+        tensorplay::parallel::parallel_for(0, n, kGrain, [&](int64_t b, int64_t e) {
+            bool local_nan = false;
+            part[b / kGrain] = max_f32_chunk_avx2(x, b, e, &local_nan);
+            nan[b / kGrain] = static_cast<uint8_t>(local_nan);
+        });
+        float best = part[0];
+        bool any_nan = nan[0] != 0;
+        for (int64_t k = 1; k < nslots; ++k) {
+            any_nan = any_nan || nan[k] != 0;
+            if (part[k] > best) best = part[k];
+        }
+        *out = static_cast<double>(best);
+        *has_nan = any_nan;
+        return true;
+    }
+    if (dt == DType::Float64) {
+        const double* x = static_cast<const double*>(xv);
+        std::vector<double> part(nslots, -std::numeric_limits<double>::infinity());
+        std::vector<uint8_t> nan(nslots, 0);
+        tensorplay::parallel::parallel_for(0, n, kGrain, [&](int64_t b, int64_t e) {
+            bool local_nan = false;
+            part[b / kGrain] = max_f64_chunk_avx2(x, b, e, &local_nan);
+            nan[b / kGrain] = static_cast<uint8_t>(local_nan);
+        });
+        double best = part[0];
+        bool any_nan = nan[0] != 0;
+        for (int64_t k = 1; k < nslots; ++k) {
+            any_nan = any_nan || nan[k] != 0;
+            if (part[k] > best) best = part[k];
+        }
+        *out = best;
+        *has_nan = any_nan;
+        return true;
+    }
+    return false;
+}
+
 static bool try_max_real_avx512(const void* xv, int64_t n, DType dt,
                                 double* out, bool* has_nan) {
-    if (!reduce_avx512_available() || n < 4096) return false;
-    constexpr int64_t kGrain = 32768;
+    if (!reduce_avx512_available() || n < 4096) return false;    constexpr int64_t kGrain = 32768;
     const int64_t nslots = (n + kGrain - 1) / kGrain;
     if (dt == DType::Float32) {
         const float* x = static_cast<const float*>(xv);
@@ -8926,7 +9040,9 @@ Tensor max_kernel_impl(const Tensor& self) {
         double value = 0.0;
         bool has_nan = false;
         if (try_max_real_avx512(input.data_ptr(), input.numel(), input.dtype(),
-                                &value, &has_nan)) {
+                                &value, &has_nan) ||
+            try_max_real_avx2(input.data_ptr(), input.numel(), input.dtype(),
+                              &value, &has_nan)) {
             if (has_nan) {
                 out.fill_(input.dtype() == DType::Float32
                     ? Scalar(std::numeric_limits<float>::quiet_NaN())
