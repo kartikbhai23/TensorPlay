@@ -1949,6 +1949,18 @@
   self: pow_backward_self(grad, self, exponent)
   exponent: pow_backward_exponent(grad, self, exponent, result)
 
+# float_power shares pow's derivatives: the widening detour computes the
+# value in double and narrows the gradients back to the operand's width.
+- name: float_power.Tensor_Tensor(Tensor self, Tensor exponent) -> Tensor
+  self: pow_backward_self(grad, self, exponent)
+  exponent: pow_backward_exponent(grad, self, exponent, result)
+
+- name: float_power.Tensor_Scalar(Tensor self, Scalar exponent) -> Tensor
+  self: pow_backward(grad, self, exponent)
+
+- name: float_power.Scalar(Scalar self, Tensor exponent) -> Tensor
+  exponent: pow_backward_exponent(grad, self, exponent, result)
+
 # A number raised to a tensor: only the exponent carries a gradient.
 - name: pow.Scalar(Scalar self, Tensor exponent) -> Tensor
   exponent: pow_backward_exponent(grad, self, exponent, result)

@@ -610,7 +610,7 @@ def divide(input, other, rounding_mode=None, *, out=None):
     if not isinstance(input, tensorplay.Tensor):
         input = _as_left_operand(input, other)
     if rounding_mode is None:
-        return input.div(other)
+        return input.divide(other=other)
     return _C.divide(input, other, rounding_mode=rounding_mode)
 
 def true_divide(input, other, *, out=None):
@@ -668,7 +668,7 @@ def multiply(input, other, *, out=None):
             return _captured
     if not isinstance(input, tensorplay.Tensor):
         input = _as_left_operand(input, other)
-    return input.mul(other)
+    return input.multiply(other=other)
 
 def subtract(input, other, alpha=1, *, out=None):
     if out is not None:
@@ -687,7 +687,7 @@ def subtract(input, other, alpha=1, *, out=None):
             return _captured
     if not isinstance(input, tensorplay.Tensor):
         input = _as_left_operand(input, other)
-    return input.sub(other, alpha=alpha)
+    return input.subtract(other=other, alpha=alpha)
 
 def remainder(input, other, *, out=None):
     if out is not None:
@@ -9775,7 +9775,13 @@ def float_power(input, exponent, *, out=None):
         _captured = _capture_call(float_power, (input, exponent), {})
         if _captured is not None:
             return _captured
-    return _C.float_power(input, exponent)
+    if is_complex(input) or (isinstance(exponent, tensorplay.Tensor) and is_complex(exponent)):
+        return _C.float_power(input, exponent)
+    # The real path answers through pow in the operand's own width and
+    # widens: pow carries the gradient, the widening carries the double
+    # precision the float_power contract promises.
+    result = _C.pow(input, exponent)
+    return result.to(tensorplay.float64)
 
 def mvlgamma(input, p, *, out=None):
     if out is not None:
