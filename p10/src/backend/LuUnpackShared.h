@@ -45,6 +45,12 @@ inline LuShape validate(const Tensor& LU, const Tensor& pivots,
         TP_CHECK(pivots.dim() == LU.dim() - 1 && pivots.size(-1) == k,
                  "lu_unpack: LU_pivots does not match the shape LU_data "
                  "implies; expected a trailing extent of ", k);
+        for (int64_t axis = 0; axis < LU.dim() - 2; ++axis) {
+            TP_CHECK(pivots.size(axis) == LU.size(axis),
+                     "lu_unpack: LU_pivots and LU_data must have the same batch shape");
+        }
+        TP_CHECK(pivots.device() == LU.device(),
+                 "lu_unpack: LU_pivots and LU_data must be on the same device");
     }
     return {m, n, k};
 }

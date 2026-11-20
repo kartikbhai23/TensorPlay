@@ -239,6 +239,35 @@ def test_cuda_factorizations_return_column_major_planes():
     np.testing.assert_array_equal(a.cpu().numpy(), before)
 
 
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+@pytest.mark.parametrize("shape", [(2, 3, 3), (2, 2, 4), (2, 4, 2)])
+def test_cuda_lu_unpack_preserves_batches_and_optional_outputs(shape):
+    batch, m, n = shape
+    k = min(m, n)
+    lu = tp.arange(batch * m * n, dtype=tp.float32).reshape(shape)
+    pivots = tp.tensor([[m] * k, [i + 1 for i in range(k)]], dtype=tp.int32)
+    expected = tp.lu_unpack(lu, pivots)
+    for packed in (lu.cuda(), lu.transpose(-2, -1).contiguous().cuda().transpose(-2, -1)):
+        for data, perm in ((True, True), (True, False), (False, True), (False, False)):
+            got = tp.lu_unpack(packed, pivots.cuda(), unpack_data=data, unpack_pivots=perm)
+            for value, reference, requested in zip(got, expected, (perm, data, data)):
+                if requested:
+                    np.testing.assert_array_equal(value.cpu().numpy(), reference.numpy())
+                else:
+                    assert value.shape == (0,)
+        with pytest.raises(RuntimeError, match="batch shape"):
+            tp.lu_unpack(packed, pivots.cuda()[:1])
+
+
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+def test_cuda_lu_unpack_keeps_identity_for_zero_columns():
+    lu = tp.empty((2, 3, 0), device="cuda")
+    pivots = tp.empty((2, 0), dtype=tp.int32, device="cuda")
+    p, l, u = tp.lu_unpack(lu, pivots)
+    np.testing.assert_array_equal(p.cpu().numpy(), np.broadcast_to(np.eye(3), (2, 3, 3)))
+    assert l.shape == (2, 3, 0) and u.shape == (2, 0, 0)
+
+
 def test_empty_square_solves_report_success():
     a = tp.zeros(0, 0)
 
