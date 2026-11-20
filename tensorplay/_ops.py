@@ -68,7 +68,7 @@ _NEEDS_DTYPE_ALIGN_OPS = {
     "_scaled_dot_product_attention_forward",
 }
 
-def _align_eager_dtypes(opname: str, args: tuple[Any, ...]) -> tuple[Any, ...]:
+def _align_eager_dtypes(args: tuple[Any, ...]) -> tuple[Any, ...]:
     """Give every tensor operand of a call one element type.
 
     The compiled backward can hand the dispatch a half-precision gradient
@@ -77,10 +77,6 @@ def _align_eager_dtypes(opname: str, args: tuple[Any, ...]) -> tuple[Any, ...]:
     promoted to the widest one among them before the call goes out.
     """
 
-    if opname == "to" or opname in _MIXED_DTYPE_OPS:
-        return args
-    if opname not in _NEEDS_DTYPE_ALIGN_OPS:
-        return args
     tensors = [a for a in args if isinstance(a, tensorplay.Tensor)]
     if len(tensors) < 2:
         return args
@@ -137,6 +133,7 @@ class OpOverload:
         "_overloadpacket",
         "_overloadname",
         "_opname",
+        "_align_dtypes",
         "_key",
         "_tags",
         "__weakref__",
@@ -148,6 +145,11 @@ class OpOverload:
         self._overloadpacket = packet
         self._overloadname = schema.overload_name or "default"
         self._opname = schema.name
+        self._align_dtypes = (
+            schema.name in _NEEDS_DTYPE_ALIGN_OPS
+            and schema.name not in _MIXED_DTYPE_OPS
+            and schema.name != "to"
+        )
         self._key = key
         self._tags = tags
         self.__name__ = f"{schema.name}.{self._overloadname}"
@@ -169,7 +171,8 @@ class OpOverload:
             captured = _capture_call(self, args, kwargs)
             if captured is not None:
                 return captured
-        args = _align_eager_dtypes(self._opname, args)
+        if self._align_dtypes:
+            args = _align_eager_dtypes(args)
         mode = _symbolic_call_mode.get()
         if mode is not None:
             return mode.call_with_symbolic_args(self, args, kwargs)
@@ -228,10 +231,13 @@ class OpOverloadPacket:
         self.__name__ = name
         self.__qualname__ = name
         self.__module__ = f"tensorplay.ops.{namespace}"
+        self._resolver = getattr(_C, name, None)
         self._overloads: dict[str, OpOverload] = {}
+        self._single_overload: OpOverload | None = None
 
     def _add(self, overload: OpOverload) -> None:
         self._overloads[overload._overloadname] = overload
+        self._single_overload = overload if len(self._overloads) == 1 else None
 
     def overloads(self) -> list[str]:
         return list(self._overloads)
@@ -245,11 +251,19 @@ class OpOverloadPacket:
             raise AttributeError(f"'{self._qualified_op_name}' has no overload named '{name}'") from None
 
     def __call__(self, /, *args: Any, **kwargs: Any) -> Any:
-        resolver = getattr(_C, self._opname, None)
+        resolver = self._resolver
         if resolver is not None:
             return resolver(*args, **kwargs)
-        # No public binding: the single declared overload, or the first
-        # whose arguments bind.
+        overload = self._single_overload
+        if overload is not None:
+            try:
+                return overload(*args, **kwargs)
+            except TypeError as exc:
+                raise TypeError(
+                    f"no overload of {self._qualified_op_name} accepts these arguments:\n  "
+                    f"{overload}: {exc}"
+                ) from None
+        # With multiple overloads, use the first whose arguments bind.
         errors: list[str] = []
         for overload in self._overloads.values():
             try:
