@@ -471,8 +471,14 @@ Tensor& comparison_out_kernel(const Tensor& self, const Tensor& other,
     const DType common_dtype = promoteTypes(self.dtype(), other.dtype());
     const std::vector<int64_t> out_shape =
         broadcast_shapes(self.sizes(), other.sizes());
+    // The pass walks the destination as a flat array, so it only serves a
+    // packed destination; a strided one is written element by element by the
+    // allocating form's copy instead.  An operand that overlaps the
+    // destination is refused for the same reason: only a window read at the
+    // width it is stored may be overwritten in place.
     if (plain && (kEquality || !isComplexType(common_dtype)) &&
-        destination_takes(out, self.device(), DType::Bool, out_shape)) {
+        destination_takes_flat(out, self.device(), DType::Bool, out_shape,
+                               self, other)) {
         comparison_pass<kEquality, C>(out, self, other, common_dtype, op);
         return out;
     }
