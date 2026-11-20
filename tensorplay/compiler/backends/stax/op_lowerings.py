@@ -3492,7 +3492,7 @@ def lower_native_layer_norm(x, normalized_shape, weight, bias, eps):
     per-row mean and reciprocal standard deviation as further results."""
 
     size = _static_ints(x.get_size())
-    if size is None or len(normalized_shape) > len(size) or 0 in size:
+    if size is None or not normalized_shape or len(normalized_shape) > len(size) or 0 in size:
         return _fallback_layer_norm(x, normalized_shape, weight, bias, eps)
     view = _RowView(size, len(normalized_shape))
     device = x.get_device()
@@ -3570,7 +3570,8 @@ def lower_native_layer_norm(x, normalized_shape, weight, bias, eps):
         return ops.to_dtype(v, in_dtype)
 
     out = Pointwise.create(device=device, dtype=in_dtype, inner_fn=out_fn, ranges=size)
-    return out, mean, rstd
+    stats_shape = view.outer + [1] * len(view.inner)
+    return out, reshape(mean, stats_shape), reshape(rstd, stats_shape)
 
 
 @register("layer_norm.default", "layer_norm")
@@ -3601,8 +3602,8 @@ def lower_native_layer_norm_backward(
     acc = _accumulation_dtype(in_dtype)
     g_l = grad_out.make_loader()
     x_l = x.make_loader()
-    mean_l = mean.make_loader()
-    rstd_l = rstd.make_loader()
+    mean_l = reshape(mean, [view.rows]).make_loader()
+    rstd_l = reshape(rstd, [view.rows]).make_loader()
     w_l = weight.make_loader() if _given(weight) else None
 
     def x_hat(full, row):

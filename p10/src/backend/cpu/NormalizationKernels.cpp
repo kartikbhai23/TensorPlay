@@ -1008,7 +1008,7 @@ static std::tuple<Tensor, Tensor, Tensor> layer_norm_backward_cpu_typed(
     for (auto s : normalized_shape) inner_size *= s;
     int64_t outer_size = inner_size == 0 ? 0 : input.numel() / inner_size;
 
-    if (mean_opt || rstd_opt) {
+    if ((mean_opt || rstd_opt) && inner_size != 0) {
         if (!mean_opt || !rstd_opt || !mean_opt->defined() ||
             !rstd_opt->defined() || mean_opt->numel() != outer_size ||
             rstd_opt->numel() != outer_size) {
@@ -1276,16 +1276,21 @@ std::tuple<Tensor, Tensor, Tensor> native_layer_norm_cpu(
         const std::optional<Tensor>& bias_in, double eps) {
     const std::optional<Tensor> weight_opt = dense_affine(weight_in);
     const std::optional<Tensor> bias_opt = dense_affine(bias_in);
-    int64_t inner_size = 1;
     if (normalized_shape.empty())
         TP_THROW(RuntimeError, "native_layer_norm: normalized_shape must not be empty");
-    for (int64_t size : normalized_shape) inner_size *= size;
-    const int64_t outer_size = inner_size == 0 ? 0 : input.numel() / inner_size;
+    auto stats_shape = static_cast<std::vector<int64_t>>(input.shape());
+    if (normalized_shape.size() > stats_shape.size())
+        TP_THROW(RuntimeError, "layer_norm: normalized_shape dim larger than input dim");
+    std::fill(stats_shape.end() - normalized_shape.size(), stats_shape.end(), 1);
     const DType stats_dtype = normalization_stats_dtype(input.dtype());
-    Tensor mean = Tensor::empty({outer_size}, stats_dtype, input.device());
-    Tensor rstd = Tensor::empty({outer_size}, stats_dtype, input.device());
+    Tensor mean = Tensor::empty(stats_shape, stats_dtype, input.device());
+    Tensor rstd = Tensor::empty(stats_shape, stats_dtype, input.device());
     Tensor out = layer_norm_cpu_impl(input, normalized_shape, weight_opt, bias_opt,
                                      eps, &mean, &rstd);
+    if (mean.numel() != 0 && out.numel() == 0) {
+        mean.fill_(0);
+        rstd.fill_(std::numeric_limits<double>::quiet_NaN());
+    }
     return std::make_tuple(out, mean, rstd);
 }
 

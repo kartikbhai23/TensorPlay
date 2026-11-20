@@ -443,8 +443,8 @@ def test_layer_norm_shapes():
     out = tp.nn.functional.layer_norm(_meta(2, 3), (3,))
     assert tuple(out.shape) == (2, 3)
     mean, rstd = tp._C.native_layer_norm(_meta(2, 3), (3,), None, None, 1e-5)[1:]
-    assert tuple(mean.shape) == (2,)
-    assert tuple(rstd.shape) == (2,)
+    assert tuple(mean.shape) == (2, 1)
+    assert tuple(rstd.shape) == (2, 1)
     with pytest.raises(Exception):
         tp.nn.functional.layer_norm(_meta(2, 3), (4,))
 

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -1263,6 +1264,8 @@ std::tuple<Tensor, Tensor, Tensor> native_layer_norm_cuda(
         double eps) {
     const int64_t norm_ndim = static_cast<int64_t>(normalized_shape.size());
     const int64_t input_ndim = input.dim();
+    if (norm_ndim == 0)
+        TP_THROW(RuntimeError, "native_layer_norm: normalized_shape must not be empty");
     if (norm_ndim > input_ndim)
         TP_THROW(RuntimeError, "layer_norm: normalized_shape dim larger than input dim");
 
@@ -1273,8 +1276,6 @@ std::tuple<Tensor, Tensor, Tensor> native_layer_norm_cuda(
             TP_THROW(RuntimeError, "layer_norm: Input shape mismatch with normalized_shape");
         N *= normalized_shape[i];
     }
-    const int64_t M = input.numel() / (N == 0 ? 1 : N);
-
     const bool has_weight = weight_opt.has_value() && weight_opt->defined();
     const bool has_bias = bias_opt.has_value() && bias_opt->defined();
     // The affine terms are read one per normalized element: a shape of any
@@ -1288,12 +1289,18 @@ std::tuple<Tensor, Tensor, Tensor> native_layer_norm_cuda(
     Tensor weight = has_weight ? weight_opt->contiguous() : Tensor();
     Tensor bias = has_bias ? bias_opt->contiguous() : Tensor();
 
-    Tensor out = Tensor::empty(static_cast<std::vector<int64_t>>(in_contig.shape()),
-                               in_contig.dtype(), in_contig.device());
+    auto stats_shape = static_cast<std::vector<int64_t>>(in_contig.shape());
+    Tensor out = Tensor::empty(stats_shape, in_contig.dtype(), in_contig.device());
+    std::fill(stats_shape.begin() + outer_dims, stats_shape.end(), 1);
     const DType stats_dt = layer_norm::ln_stats_dtype(in_contig.dtype());
-    Tensor mean = Tensor::empty(std::vector<int64_t>{M}, stats_dt, in_contig.device());
-    Tensor rstd = Tensor::empty(std::vector<int64_t>{M}, stats_dt, in_contig.device());
-    if (in_contig.numel() == 0 || M == 0 || N == 0) {
+    Tensor mean = Tensor::empty(stats_shape, stats_dt, in_contig.device());
+    Tensor rstd = Tensor::empty(stats_shape, stats_dt, in_contig.device());
+    const int64_t M = mean.numel();
+    if (M == 0 || N == 0) {
+        if (M != 0) {
+            mean.fill_(0);
+            rstd.fill_(std::numeric_limits<double>::quiet_NaN());
+        }
         return std::make_tuple(out, mean, rstd);
     }
 
@@ -1439,7 +1446,7 @@ std::tuple<Tensor, Tensor, Tensor> native_layer_norm_backward_cuda(
         N *= normalized_shape[i];
     }
     const int64_t M = input.numel() / (N == 0 ? 1 : N);
-    if (mean.numel() != M || rstd.numel() != M)
+    if (N != 0 && (mean.numel() != M || rstd.numel() != M))
         TP_THROW(RuntimeError, "native_layer_norm_backward: saved moments do not match the row count");
 
     const bool need_dx = output_mask.empty() || output_mask[0];
@@ -1470,8 +1477,11 @@ std::tuple<Tensor, Tensor, Tensor> native_layer_norm_backward_cuda(
         grad_bias = Tensor::empty(static_cast<std::vector<int64_t>>(like.shape()),
                                   like.dtype(), like.device());
     }
-    if (in_contig.numel() == 0 || M == 0 || N == 0)
+    if (M == 0 || N == 0) {
+        if (need_dw && grad_weight.numel() != 0) grad_weight.fill_(0);
+        if (need_db && grad_bias.numel() != 0) grad_bias.fill_(0);
         return std::make_tuple(grad_input, grad_weight, grad_bias);
+    }
 
     switch (in_contig.dtype()) {
 #define LN_BACKWARD_STATS_CASE(ctype, name, acc_t)                            \

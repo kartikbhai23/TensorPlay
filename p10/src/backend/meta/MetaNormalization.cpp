@@ -12,6 +12,7 @@
 #include "DType.h"
 #include "TypeProperties.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -46,12 +47,10 @@ std::tuple<Tensor, Tensor, Tensor> native_layer_norm_kernel(
         TP_THROW(RuntimeError, "layer_norm: normalized_shape dim larger than input dim");
     }
     const int64_t outer_dims = input_ndim - norm_ndim;
-    int64_t inner_size = 1;
     for (int64_t i = 0; i < norm_ndim; ++i) {
         if (input.size(outer_dims + i) != normalized_shape[static_cast<size_t>(i)]) {
             TP_THROW(RuntimeError, "layer_norm: Input shape mismatch with normalized_shape");
         }
-        inner_size *= normalized_shape[static_cast<size_t>(i)];
     }
     for (const auto* affine : {&weight, &bias}) {
         if (affine->has_value() && (*affine)->defined() &&
@@ -62,11 +61,12 @@ std::tuple<Tensor, Tensor, Tensor> native_layer_norm_kernel(
                          : "layer_norm: bias shape mismatch with normalized_shape");
         }
     }
-    const int64_t outer_size = inner_size == 0 ? 0 : input.numel() / inner_size;
+    auto stats_shape = shape_of(input);
+    std::fill(stats_shape.begin() + outer_dims, stats_shape.end(), 1);
     const DType stats_dtype = norm_stat_dtype(input.dtype());
     return {empty_meta(shape_of(input), input.dtype(), input.device()),
-            empty_meta({outer_size}, stats_dtype, input.device()),
-            empty_meta({outer_size}, stats_dtype, input.device())};
+            empty_meta(stats_shape, stats_dtype, input.device()),
+            empty_meta(stats_shape, stats_dtype, input.device())};
 }
 
 // The public spelling returns only the normalized output; the per-row

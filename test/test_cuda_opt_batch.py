@@ -42,6 +42,23 @@ class TestLayerNormCUDA(unittest.TestCase):
         self.assertTrue(_allclose(out.cpu(), ref, rtol=tol[0], atol=tol[1]),
                         f"layer_norm forward mismatch for {shape}/{norm_shape}/{dtype}")
 
+    def test_native_stats_keep_normalized_dimensions(self):
+        for device in ("cpu", "cuda"):
+            x = tp.arange(12, dtype=tp.float32, device=device).reshape(2, 2, 3)
+            _, mean, rstd = tp._C.native_layer_norm(x, (2, 3), None, None, 1e-5)
+            self.assertEqual(mean.shape, (2, 1, 1))
+            self.assertEqual(rstd.shape, mean.shape)
+            self.assertEqual(mean.tolist(), [[[2.5]], [[8.5]]])
+
+            x = tp.empty((2, 0), device=device)
+            _, mean, rstd = tp._C.native_layer_norm(x, (0,), None, None, 1e-5)
+            self.assertEqual(mean.tolist(), [[0.0], [0.0]])
+            self.assertTrue(tp.isnan(rstd).all().item())
+            dx, _, _ = tp._C.native_layer_norm_backward(
+                x, x, (0,), mean, rstd, None, None, (True, False, False)
+            )
+            self.assertEqual(dx.shape, x.shape)
+
     def test_forward_shapes(self):
         for shape, norm in self.SHAPES:
             self._check(shape, norm, tp.float32)

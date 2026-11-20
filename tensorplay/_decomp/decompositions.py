@@ -2510,6 +2510,8 @@ def native_layer_norm(input, normalized_shape, weight, bias, eps):
     a_acc = input.to(dtype=compute)
     biased_var, mean = ops.var_mean.default(a_acc, dims, unbiased=False, keepdim=True)
     rstd = tp.rsqrt(biased_var + eps)
+    if 0 in normalized_shape:
+        mean = tp.zeros_like(mean)
     out = (a_acc - mean) * rstd
 
     if weight is None and bias is not None:
@@ -2522,7 +2524,7 @@ def native_layer_norm(input, normalized_shape, weight, bias, eps):
     out = out.to(dtype=input.dtype)
     # The row statistics keep the computation precision the walk ran in; only
     # the normalized output drops back to the stored precision.
-    return out, ops.reshape.default(mean, [-1]), ops.reshape.default(rstd, [-1])
+    return out, mean, rstd
 
 
 @register_decomposition(ops.native_batch_norm_backward.default)
