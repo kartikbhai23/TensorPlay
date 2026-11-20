@@ -1013,8 +1013,11 @@ Tensor positive_cpu(const Tensor& self) {
         TP_THROW(NotImplementedError,
                  "positive(): the unary plus operator is not defined for bool");
     }
-    return self.as_strided(static_cast<std::vector<int64_t>>(self.shape()),
-                           static_cast<std::vector<int64_t>>(self.strides()));
+    // A metadata copy of the impl already shares storage and the version
+    // counter, which is the whole of an identity view; going through the
+    // strided-view entry point would re-derive sizes and strides that are
+    // unchanged.
+    return Tensor(make_intrusive<TensorImpl>(*self.unsafeGetTensorImpl()));
 }
 
 // ===========================================================================
