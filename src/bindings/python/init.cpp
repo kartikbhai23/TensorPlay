@@ -413,6 +413,69 @@ PyObject* set_printoptions_fastcall(PyObject*, PyObject* const* args,
 
 }  // namespace
 
+namespace {
+
+// An operator packet names an operator; the call itself is served by the
+// operator's generated entry, which already parses every overload.  A packet
+// call therefore forwards its arguments to that entry without re-entering
+// Python, and only a packet with no bound entry falls back to the Python body
+// (kept on the packet as ``__call_py__``).
+PyTypeObject* g_packet_type = nullptr;
+PyObject* g_packet_entry_name = nullptr;
+PyObject* g_packet_body_name = nullptr;
+
+PyObject* op_packet_call(PyObject* packet, PyObject* /*defining_class*/,
+                         PyObject* const* args, Py_ssize_t nargs,
+                         PyObject* kwnames) {
+    if (packet == nullptr || g_packet_type == nullptr ||
+        !PyObject_TypeCheck(packet, g_packet_type)) {
+        PyErr_SetString(PyExc_TypeError,
+                        "an operator packet call needs the packet as its "
+                        "receiver");
+        return nullptr;
+    }
+    PyObject* entry = g_packet_entry_name != nullptr
+        ? PyObject_GetAttr(packet, g_packet_entry_name)
+        : nullptr;
+    if (entry != nullptr && entry != Py_None) {
+        PyObject* result = PyObject_Vectorcall(
+            entry, args, static_cast<size_t>(nargs), kwnames);
+        Py_DECREF(entry);
+        return result;
+    }
+    Py_XDECREF(entry);
+    if (PyErr_Occurred() != nullptr) PyErr_Clear();
+    PyObject* body = g_packet_body_name != nullptr
+        ? PyObject_GetAttr(packet, g_packet_body_name)
+        : nullptr;
+    if (body == nullptr) return nullptr;
+    // The Python body takes the packet as its first argument, so the call is
+    // rebuilt with the packet in front of the positional arguments; the
+    // keyword values stay where the vectorcall layout expects them.
+    const Py_ssize_t nkw = kwnames != nullptr ? PyTuple_GET_SIZE(kwnames) : 0;
+    const Py_ssize_t total = nargs + nkw;
+    PyObject* result = nullptr;
+    if (total < 8) {
+        PyObject* stack[9];
+        stack[0] = packet;
+        for (Py_ssize_t i = 0; i < total; ++i) stack[i + 1] = args[i];
+        result = PyObject_Vectorcall(body, stack,
+                                     static_cast<size_t>(nargs) + 1, kwnames);
+    } else {
+        std::vector<PyObject*> heap(static_cast<size_t>(total) + 1);
+        heap[0] = packet;
+        for (Py_ssize_t i = 0; i < total; ++i) {
+            heap[static_cast<size_t>(i) + 1] = args[i];
+        }
+        result = PyObject_Vectorcall(body, heap.data(),
+                                     static_cast<size_t>(nargs) + 1, kwnames);
+    }
+    Py_DECREF(body);
+    return result;
+}
+
+}  // namespace
+
 PYBIND11_MODULE(_C, m) {
     init_monitor(m);
     m.doc() = "The C extension module of tensorplay";
@@ -495,6 +558,21 @@ PYBIND11_MODULE(_C, m) {
 
     // Operator overload objects call exactly one overload through its
     // hook-free generated entry.
+    m.def("_install_packet_call", [](py::object packet_type) {
+        Py_INCREF(packet_type.ptr());
+        g_packet_type = reinterpret_cast<PyTypeObject*>(packet_type.ptr());
+        g_packet_entry_name = PyUnicode_InternFromString("_resolver");
+        g_packet_body_name = PyUnicode_InternFromString("__call_py__");
+        static PyMethodDef definition = {
+            "_op_packet_call",
+            (PyCFunction)(void (*)(void))&op_packet_call,
+            METH_METHOD | METH_FASTCALL | METH_KEYWORDS, nullptr};
+        // A method descriptor delivers the packet as the receiver of its own
+        // call mark; a plain function attribute would not, and the forward
+        // needs the packet to find the operator entry.
+        return py::reinterpret_steal<py::object>(
+            PyDescr_NewMethod(g_packet_type, &definition));
+    });
     m.def("_call_overload", [](const std::string& name, py::tuple args, py::dict kwargs) -> py::object {
         static const auto table = [] {
             std::unordered_map<std::string, const tensorplay::python_c::GeneratedOverloadCall*> map;

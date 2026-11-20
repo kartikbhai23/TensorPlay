@@ -250,7 +250,7 @@ class OpOverloadPacket:
         except KeyError:
             raise AttributeError(f"'{self._qualified_op_name}' has no overload named '{name}'") from None
 
-    def __call__(self, /, *args: Any, **kwargs: Any) -> Any:
+    def __call_py__(self, /, *args: Any, **kwargs: Any) -> Any:
         resolver = self._resolver
         if resolver is not None:
             return resolver(*args, **kwargs)
@@ -280,6 +280,12 @@ class OpOverloadPacket:
 
     def __reduce__(self) -> Any:
         return (_packet_for, (self._opname,))
+
+
+# A packet call is the operator's own entry: that entry parses the arguments,
+# so the call is forwarded to it from C and the packet stays out of the call
+# path.  The Python body still serves packets with no bound entry.
+OpOverloadPacket.__call__ = _C._install_packet_call(OpOverloadPacket)
 
 
 _packets: dict[str, OpOverloadPacket] | None = None
