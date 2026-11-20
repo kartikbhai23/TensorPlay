@@ -1472,6 +1472,51 @@ Tensor histogram_bin_counts(const Tensor& self, const Tensor& edges,
     // elementwise kernels over unallocated memory.  density still applies
     if (self.numel() > 0) {
         Tensor v = self.reshape({self.numel()});
+        // CPU fast path: one walk — each element finds its bin by upper
+        // bound over the edges and counts in place, so the per-element
+        // dispatch round trips of searchsorted/index_add disappear.
+        if (self.device().is_cpu()
+                && (self.dtype() == DType::Float32 || self.dtype() == DType::Float64)) {
+            Tensor e = edges.to(self.dtype()).contiguous();
+            Tensor w = weight.has_value()
+                ? weight->reshape({self.numel()}).contiguous()
+                : Tensor();
+            if (self.dtype() == DType::Float32) {
+                const float* ep = e.data_ptr<float>();
+                const float* vp = v.contiguous().data_ptr<float>();
+                const float* wp = weight.has_value() ? w.data_ptr<float>() : nullptr;
+                float* hp = hist.data_ptr<float>();
+                const float lo = ep[0], hi = ep[nb];
+                for (int64_t i = 0; i < self.numel(); ++i) {
+                    const float x = vp[i];
+                    if (!(x >= lo && x <= hi)) continue;
+                    int64_t a = 0, b = nb + 1;
+                    while (a < b) {
+                        const int64_t mid = (a + b) / 2;
+                        if (ep[mid] > x) b = mid; else a = mid + 1;
+                    }
+                    hp[std::min(std::max(a - 1, int64_t(0)), nb - 1)] +=
+                        wp ? wp[i] : 1.0f;
+                }
+            } else {
+                const double* ep = e.data_ptr<double>();
+                const double* vp = v.contiguous().data_ptr<double>();
+                const double* wp = weight.has_value() ? w.data_ptr<double>() : nullptr;
+                double* hp = hist.data_ptr<double>();
+                const double lo = ep[0], hi = ep[nb];
+                for (int64_t i = 0; i < self.numel(); ++i) {
+                    const double x = vp[i];
+                    if (!(x >= lo && x <= hi)) continue;
+                    int64_t a = 0, b = nb + 1;
+                    while (a < b) {
+                        const int64_t mid = (a + b) / 2;
+                        if (ep[mid] > x) b = mid; else a = mid + 1;
+                    }
+                    hp[std::min(std::max(a - 1, int64_t(0)), nb - 1)] +=
+                        wp ? wp[i] : 1.0;
+                }
+            }
+        } else {
         // In-range compares against the edge tensor in the input dtype (NaN
         // fails both comparisons, so it is skipped by
         // `elt >= lo && elt <= hi` skip).
@@ -1487,6 +1532,7 @@ Tensor histogram_bin_counts(const Tensor& self, const Tensor& edges,
         // Skipped elements contribute zero weight.
         w = w.mul(in_range.to(self.dtype()));
         hist = hist.index_add(0, idx, w);
+        }
     }
     if (density) {
         hist = hist.div(hist.sum());
