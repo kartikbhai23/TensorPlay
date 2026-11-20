@@ -51,8 +51,14 @@ Tensor real_cpu(const Tensor& self) {
     // A real tensor is its own real part: the answer is a view over the same
     // storage, with no element pass.
     if (!is_cplx(self.dtype())) {
-        return self.as_strided(static_cast<std::vector<int64_t>>(self.shape()),
-                               static_cast<std::vector<int64_t>>(self.strides()));
+        // An identity alias: build the view impl directly instead of paying
+        // a dispatcher hop through as_strided.  The impl is fresh, so
+        // autograd wrappers above still tag their own grad_fn.
+        return Tensor(make_intrusive<TensorImpl>(
+            self.unsafeGetTensorImpl()->storage(),
+            static_cast<std::vector<int64_t>>(self.shape()),
+            static_cast<std::vector<int64_t>>(self.strides()),
+            self.dtype(), self.storage_offset()));
     }
     Tensor out = Tensor::empty(shape_of(self), toRealValueType(self.dtype()), self.device());
     Tensor sc = self.contiguous();
@@ -131,8 +137,14 @@ Tensor conj_cpu(const Tensor& self) {
     // Returning `self` itself would hand the same impl back to autograd
     // wrappers, which then re-tag the input's grad_fn and corrupt graphs.
     if (!is_cplx(self.dtype())) {
-        return self.as_strided(static_cast<std::vector<int64_t>>(self.shape()),
-                               static_cast<std::vector<int64_t>>(self.strides()));
+        // An identity alias: build the view impl directly instead of paying
+        // a dispatcher hop through as_strided.  The impl is fresh, so
+        // autograd wrappers above still tag their own grad_fn.
+        return Tensor(make_intrusive<TensorImpl>(
+            self.unsafeGetTensorImpl()->storage(),
+            static_cast<std::vector<int64_t>>(self.shape()),
+            static_cast<std::vector<int64_t>>(self.strides()),
+            self.dtype(), self.storage_offset()));
     }
     Tensor out = detail::contiguous_clone(self);
     int64_t n = out.numel();
