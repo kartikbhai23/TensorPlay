@@ -695,25 +695,36 @@ static void fmod_f32_sweep(const float* sp, const float* yp, float* dp,
                            int64_t n) {
     int64_t i = 0;
     for (; i + 8 <= n; i += 8) {
-        // f32 inputs are exact in f64, so the quotient, product and
-        // subtraction there keep the remainder accurate to f32 rounding.
-        const __m256d x0 = _mm256_cvtps_pd(_mm_loadu_ps(sp + i));
-        const __m256d x1 = _mm256_cvtps_pd(_mm_loadu_ps(sp + i + 4));
-        const __m256d y0 = _mm256_cvtps_pd(_mm_loadu_ps(yp + i));
-        const __m256d y1 = _mm256_cvtps_pd(_mm_loadu_ps(yp + i + 4));
-        const __m256d q0 = _mm256_round_pd(_mm256_div_pd(x0, y0),
-                                           _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
-        const __m256d q1 = _mm256_round_pd(_mm256_div_pd(x1, y1),
-                                           _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
-        const __m256d r0 = _mm256_fnmadd_pd(q0, y0, x0);
-        const __m256d r1 = _mm256_fnmadd_pd(q1, y1, x1);
-        const __m128 r0f = _mm256_cvtpd_ps(r0);
-        const __m128 r1f = _mm256_cvtpd_ps(r1);
-        _mm_storeu_ps(dp + i, r0f);
-        _mm_storeu_ps(dp + i + 4, r1f);
+        // The f32 quotient feeds an exact fused fix-up in the same width:
+        // a double-precision detour here doubles the divisions and adds
+        // two conversions for nothing.
+        const __m256 x = _mm256_loadu_ps(sp + i);
+        const __m256 y = _mm256_loadu_ps(yp + i);
+        const __m256 q = _mm256_round_ps(_mm256_div_ps(x, y),
+                                         _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
+        _mm256_storeu_ps(dp + i, _mm256_fnmadd_ps(q, y, x));
     }
     for (; i < n; ++i) {
         dp[i] = sp[i] - __builtin_truncf(sp[i] / yp[i]) * yp[i];
+    }
+}
+
+// The scalar-divisor form of the sweep: a size-1 divisor tensor falls out of
+// the pair requirement above into a per-element libm fmod, so the constant
+// divisor rides in a register and the lane walk answers directly.
+__attribute__((target("avx2,fma"), noinline))
+static void fmod_f32_sweep_scalar(const float* sp, float y, float* dp,
+                                  int64_t n) {
+    int64_t i = 0;
+    const __m256 vy = _mm256_set1_ps(y);
+    for (; i + 8 <= n; i += 8) {
+        const __m256 x = _mm256_loadu_ps(sp + i);
+        const __m256 q = _mm256_round_ps(_mm256_div_ps(x, vy),
+                                         _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
+        _mm256_storeu_ps(dp + i, _mm256_fnmadd_ps(q, vy, x));
+    }
+    for (; i < n; ++i) {
+        dp[i] = sp[i] - __builtin_truncf(sp[i] / y) * y;
     }
 }
 
@@ -721,12 +732,23 @@ Tensor fmod_tensor_cpu(const Tensor& self, const Tensor& other) {
     // Contiguous float pairs answer in one lane-division sweep; the pair
     // kernel falls back to libm fmod per element.
     if (self.dtype() == DType::Float32 && self.is_contiguous() &&
-        other.is_contiguous() && self.numel() == other.numel()) {
+        other.is_contiguous()) {
         Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
                                       self.dtype(), self.device());
-        fmod_f32_sweep(self.data_ptr<float>(), other.data_ptr<float>(),
-                       result.data_ptr<float>(), self.numel());
-        return result;
+        if (other.numel() == 1) {
+            // The scalar-divisor form: a size-1 divisor otherwise drops into
+            // the per-element libm fallback.
+            fmod_f32_sweep_scalar(self.data_ptr<float>(), other.data_ptr<float>()[0],
+                                  result.data_ptr<float>(), self.numel());
+            return result;
+        }
+        if (self.numel() == other.numel()) {
+            Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
+                                          self.dtype(), self.device());
+            fmod_f32_sweep(self.data_ptr<float>(), other.data_ptr<float>(),
+                           result.data_ptr<float>(), self.numel());
+            return result;
+        }
     }
     // C fmod: sign follows the dividend
     return fmod_like_pair_kernel<vecbinary::BOp::Fmod>(self, other,
