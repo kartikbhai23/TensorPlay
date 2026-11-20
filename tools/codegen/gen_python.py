@@ -488,6 +488,26 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             continue
 
         # ---- overload families routed straight to the extension -------------
+        if name == 'nonzero' and 'function' in f.variants:
+            seen.add(name)
+            lines += [
+                'def nonzero(input, *, out=None, as_tuple=False):',
+                '    if as_tuple:',
+                '        if out is not None:',
+                '            raise RuntimeError("nonzero does not support out when as_tuple is True")',
+                '        if _capturing():',
+                "            _captured = _capture_call(nonzero, (input,), {'as_tuple': True})",
+                '            if _captured is not None:',
+                '                return _captured',
+                '        return tuple(_C.nonzero_numpy(input))',
+                '    if out is not None:',
+                *_out_capture_lines(name, ['input'], indent='        '),
+                '        return _C.nonzero(input, out=out)',
+            ]
+            _capture_line(lines, name, ['input'])
+            lines += ['    return _C.nonzero(input)', '']
+            continue
+
         if name == 'where' and 'function' in f.variants:
             seen.add(name)
             lines += [

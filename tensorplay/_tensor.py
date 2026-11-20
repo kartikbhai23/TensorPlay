@@ -394,9 +394,9 @@ def count_nonzero(self, dim=None):
 Tensor.count_nonzero = count_nonzero
 
 
-def nonzero(self):
+def nonzero(self, *, as_tuple=False):
     from . import functional
-    return functional.nonzero(self)
+    return functional.nonzero(self, as_tuple=as_tuple)
 
 
 Tensor.nonzero = nonzero

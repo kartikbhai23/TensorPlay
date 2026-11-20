@@ -4169,18 +4169,26 @@ def index_add(input, dim, index, source, *, out=None):
             return _captured
     return _C.index_add(self=input, dim=dim, index=index, source=source)
 
-def nonzero(input, *, out=None):
+def nonzero(input, *, out=None, as_tuple=False):
+    if as_tuple:
+        if out is not None:
+            raise RuntimeError("nonzero does not support out when as_tuple is True")
+        if _capturing():
+            _captured = _capture_call(nonzero, (input,), {'as_tuple': True})
+            if _captured is not None:
+                return _captured
+        return tuple(_C.nonzero_numpy(input))
     if out is not None:
         if _capturing():
             _captured = _capture_call(nonzero, (input,), {'out': out})
             if _captured is not None:
                 return _captured
-        return _C.nonzero(self=input, out=out)
+        return _C.nonzero(input, out=out)
     if _capturing():
         _captured = _capture_call(nonzero, (input,), {})
         if _captured is not None:
             return _captured
-    return _C.nonzero(self=input)
+    return _C.nonzero(input)
 
 def unique(input, sorted=True, return_inverse=False, return_counts=False, dim=None):
     if dim is not None:

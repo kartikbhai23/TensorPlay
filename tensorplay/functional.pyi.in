@@ -168,6 +168,10 @@ def mm(input: TensorBase, mat2: TensorBase) -> TensorBase: ...
 
 __all__ += ["mm"]
 
+def nonzero(input: TensorBase, *, out: TensorBase | None = None, as_tuple: _bool = False) -> TensorBase | tuple[TensorBase, ...]: ...
+
+__all__ += ["nonzero"]
+
 def mul(input: TensorBase, other: TensorBase | Number | _complex) -> TensorBase: ...
 
 __all__ += ["mul"]
