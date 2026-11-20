@@ -480,7 +480,7 @@ class TestOpCoverage(TestCase):
 
     @pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
     def test_cuda_nonzero_static_truncates_and_pads_in_input_order(self):
-        for rows in (20, 2000, 50000):
+        for rows in (20, 2000, 350000):
             x = (tp.arange(rows * 3, device="cuda").reshape((3, rows)).T % 211) == 0
             coords = [[row, col] for row in range(rows) for col in range(3)
                       if (col * rows + row) % 211 == 0]

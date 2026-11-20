@@ -13,6 +13,7 @@ namespace {
 
 constexpr int kNonzeroThreads = 256;
 constexpr int kNonzeroItems = 16;
+constexpr int kInlineNonzeroScanTiles = 256;
 constexpr int64_t kNonzeroTileSize = kNonzeroThreads * kNonzeroItems;
 constexpr int kNonzeroMaxRank = 64;
 
@@ -48,13 +49,18 @@ __global__ void write_nonzero_tiles(
             matches = tile_offsets[tiles - 1] + tile_counts[tiles - 1];
             if (has_input_tile) base_row = tile_offsets[blockIdx.x];
         } else {
-            // A warp can compute both prefixes directly when there are at
-            // most 32 tiles, saving a separate offset scan and its scratch.
+            // A warp can compute both prefixes from a small count array,
+            // saving a separate offset scan and its scratch.
             __shared__ int64_t prefixes[2];
             const int lane = threadIdx.x;
             if (lane < 32) {
-                int64_t total = lane < tiles ? tile_counts[lane] : 0;
-                int64_t before = lane < blockIdx.x ? total : 0;
+                int64_t total = 0;
+                int64_t before = 0;
+                for (int tile = lane; tile < tiles; tile += 32) {
+                    const int64_t tile_count = tile_counts[tile];
+                    total += tile_count;
+                    if (static_cast<unsigned>(tile) < blockIdx.x) before += tile_count;
+                }
                 for (int distance = 16; distance > 0; distance /= 2) {
                     total += __shfl_down_sync(0xffffffffu, total, distance);
                     before += __shfl_down_sync(0xffffffffu, before, distance);
@@ -134,7 +140,7 @@ void nonzero_static_typed(const Tensor& input, const NonzeroShape& shape,
     count_nonzero_tiles<T><<<tile_grid, kNonzeroThreads, 0, stream>>>(values, count, counts_ptr);
     checkCuda(cudaGetLastError(), "nonzero_static tile counts");
 
-    if (tiles > 32) {
+    if (tiles > kInlineNonzeroScanTiles) {
         offsets = Tensor::empty({tiles}, DType::Int64, out.device());
         offsets_ptr = offsets.data_ptr<int64_t>();
         size_t scratch_bytes = 0;
