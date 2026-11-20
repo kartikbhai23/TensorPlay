@@ -2940,7 +2940,22 @@ def ir_node_to_tensor(x, replace_symbols_with_hints: bool = False):
     size = convert_shape_to_symint(size)
     stride = convert_shape_to_symint(stride)
     with V.graph.sizevars.shape_env.suppress_guards():
-        return tp.empty_strided(size=size, stride=stride, dtype=dtype, device=device).zero_()
+        result = tp.empty_strided(size=size, stride=stride, dtype=dtype, device=device).zero_()
+    # A node that carries oneDNN layout metadata describes a tensor the
+    # engine manages; the measurement tensor has to be tagged the same way
+    # so a kernel called on it sees the layout it will run with.  The metadata
+    # may sit on the node itself or on a node it wraps, since a buffer that
+    # realizes a value builds a new node around the one that produced it.
+    onednn_md = None
+    _node: IRNode = x
+    while True:
+        onednn_md = _node.annotations.get("onednn_md")
+        if onednn_md is not None or not isinstance(_node, MutableBox):
+            break
+        _node = _node.data
+    if onednn_md is not None:
+        result._set_onednn_md(onednn_md)
+    return result
 
 
 def is_storage_and_layout(x: "IRNode") -> bool:
@@ -6717,6 +6732,12 @@ class ExternKernel(InputsKernel):
             traceback=x.get_traceback(),
         )
         pw.realize()
+        # A value that carries oneDNN layout metadata describes a tensor the
+        # engine manages; the copy has to carry it too, so a kernel called on
+        # the copy sees the layout it will run with.
+        onednn_md = x.annotations.get("onednn_md")
+        if onednn_md is not None:
+            pw.annotations["onednn_md"] = onednn_md
         return pw
 
     @classmethod
@@ -10638,6 +10659,11 @@ class FallbackKernel(ExternKernelAlloc):
             kwargs=new_kwargs,
             unbacked_bindings=unbacked_bindings,
         )
+        # A result whose measurement tensor carries oneDNN layout metadata
+        # describes a tensor the engine manages; the metadata is kept on the
+        # node so downstream kernels that need the layout find it.
+        if isinstance(example_output, tp.Tensor) and example_output._has_onednn_md():
+            packed.annotations["onednn_md"] = example_output._get_onednn_md()
         if isinstance(example_output, tp.Tensor):
             return packed
 

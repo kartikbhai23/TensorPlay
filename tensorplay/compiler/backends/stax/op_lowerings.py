@@ -11190,6 +11190,19 @@ def _lower_glu(x: Any, dim: Any = -1) -> Any:
 _fallback_mkldnn_rnn_layer = fallback_handler(tp_ops.mkldnn_rnn_layer.default)
 LOWERINGS["mkldnn_rnn_layer.default"] = _fallback_mkldnn_rnn_layer
 
+# The mkldnn ops route through the CPU kernels registered in the dispatcher.
+# The fallback handler hands the whole call to the framework, which dispatches
+# to the C++ oneDNN kernels; the blocked-layout metadata on the tensors
+# travels with them so consecutive mkldnn calls reuse the engine layout.
+_fallback_to_mkldnn = fallback_handler(tp_ops.to_mkldnn.default)
+LOWERINGS["to_mkldnn.default"] = _fallback_to_mkldnn
+
+_fallback_mkldnn_linear = fallback_handler(tp_ops.mkldnn_linear.default)
+LOWERINGS["mkldnn_linear.default"] = _fallback_mkldnn_linear
+
+_fallback_mkldnn_convolution = fallback_handler(tp_ops.mkldnn_convolution.default)
+LOWERINGS["mkldnn_convolution.default"] = _fallback_mkldnn_convolution
+
 _fallback_native_dropout = fallback_handler(tp_ops.native_dropout.default)
 LOWERINGS["native_dropout.default"] = _fallback_native_dropout
 

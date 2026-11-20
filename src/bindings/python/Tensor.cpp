@@ -2435,6 +2435,33 @@ void init_tensor(py::module_& m) {
         .def_property_readonly("_version", [](const Tensor& self) {
             return self.unsafeGetTensorImpl()->version();
         })
+        .def("_has_onednn_md", [](const Tensor& self) {
+            return self.unsafeGetTensorImpl()->has_onednn_md();
+        })
+        .def("_get_onednn_md", [](const Tensor& self) -> py::object {
+            auto md = self.unsafeGetTensorImpl()->get_onednn_md();
+            if (!md) return py::none();
+            auto* holder = new std::shared_ptr<void>(md);
+            return py::capsule(
+                holder, "onednn_md",
+                [](PyObject* obj) {
+                    auto* sp = PyCapsule_GetPointer(obj, "onednn_md");
+                    delete static_cast<std::shared_ptr<void>*>(sp);
+                });
+        })
+        .def("_set_onednn_md", [](Tensor& self, py::object md_obj) {
+            if (md_obj.is_none()) {
+                self.unsafeGetTensorImpl()->set_onednn_md(nullptr);
+                return;
+            }
+            PyObject* cap = md_obj.ptr();
+            if (!PyCapsule_CheckExact(cap)) {
+                throw py::type_error("expected a capsule holding onednn_md");
+            }
+            auto* sp = static_cast<std::shared_ptr<void>*>(
+                PyCapsule_GetPointer(cap, "onednn_md"));
+            self.unsafeGetTensorImpl()->set_onednn_md(*sp);
+        }, "md"_a)
         .def_property_readonly("is_leaf", [](const Tensor& self) { return tensorplay::tpx::impl::is_leaf(self); })
         .def_property_readonly("retains_grad", &Tensor::retains_grad)
         .def_property_readonly("grad_fn", [](const Tensor& self) { return tensorplay::tpx::impl::grad_fn(self); })
