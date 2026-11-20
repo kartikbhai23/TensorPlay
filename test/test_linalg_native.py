@@ -220,6 +220,25 @@ def test_empty_factorization_reports_success(shape):
     np.testing.assert_allclose(P.numpy(), rP.numpy())
 
 
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+def test_cuda_factorizations_return_column_major_planes():
+    data = spd(4)
+    a = tp.tensor(data, device="cuda")
+    before = a.cpu().numpy().copy()
+    lu, pivots, info = tp.linalg.lu_factor_ex(a)
+    assert lu.stride() == (1, 4)
+    assert info.item() == 0
+    p, l, u = tp.lu_unpack(lu, pivots)
+    np.testing.assert_allclose((p @ l @ u).cpu().numpy(), before, atol=1e-12)
+    for upper in (False, True):
+        factor, info = tp.linalg.cholesky_ex(a, upper=upper)
+        assert factor.stride() == (1, 4)
+        assert info.item() == 0
+        reconstructed = factor.T @ factor if upper else factor @ factor.T
+        np.testing.assert_allclose(reconstructed.cpu().numpy(), before, atol=1e-12)
+    np.testing.assert_array_equal(a.cpu().numpy(), before)
+
+
 def test_empty_square_solves_report_success():
     a = tp.zeros(0, 0)
 

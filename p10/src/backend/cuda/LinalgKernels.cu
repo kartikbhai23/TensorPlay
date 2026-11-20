@@ -478,14 +478,18 @@ std::tuple<Tensor, Tensor, Tensor> lu_factor_ex_cuda_impl(const Tensor& A,
     Tensor LU = clone_batched_column_major(A);
     const auto batch = batch_shape_of(A);
     const int64_t k = std::min(A.size(-2), A.size(-1));
-    Tensor pivots = Tensor::zeros(cat_batch(batch, {k}), DType::Int32, A.device());
-    Tensor info = Tensor::zeros(batch, DType::Int32, A.device());
+    Tensor pivots = Tensor::empty(cat_batch(batch, {k}), DType::Int32, A.device());
+    Tensor info = Tensor::empty(batch, DType::Int32, A.device());
+    if (A.numel() == 0) {
+        info.zero_();
+        return {LU, pivots, info};
+    }
     run_real(A.dtype(), [&](auto tag) {
         using T = std::remove_pointer_t<decltype(tag)>;
         apply_getrf<T>(LU, pivots, info);
     });
     if (check_errors) check_infos(info, "linalg.lu_factor_ex", A.dim() == 2);
-    return {LU.contiguous(), pivots.contiguous(), info.contiguous()};
+    return {LU, pivots, info};
 }
 
 std::tuple<Tensor, Tensor, Tensor> linalg_lu_factor_ex_kernel_cuda(const Tensor& A,
@@ -939,13 +943,17 @@ std::tuple<Tensor, Tensor> linalg_cholesky_ex_kernel_cuda(const Tensor& A, bool 
     square_check_inputs(A, "linalg.cholesky_ex");
     Tensor L = clone_batched_column_major(A);
     const auto batch = batch_shape_of(A);
-    Tensor info = Tensor::zeros(batch, DType::Int32, A.device());
+    Tensor info = Tensor::empty(batch, DType::Int32, A.device());
+    if (A.numel() == 0) {
+        info.zero_();
+        return {L, info};
+    }
     run_real(A.dtype(), [&](auto tag) {
         using T = std::remove_pointer_t<decltype(tag)>;
         apply_potrf<T>(L, info, upper ? 'U' : 'L');
     });
     if (check_errors) check_infos(info, "linalg.cholesky_ex", A.dim() == 2);
-    return {L.contiguous(), info.contiguous()};
+    return {L, info};
 }
 
 // -------------------------------------------------------------- lu_solve ---
@@ -1759,6 +1767,8 @@ std::tuple<Tensor, Tensor, Tensor> linalg_lu_kernel_cuda(const Tensor& A, bool p
     check_is_matrix(A, "linalg.lu");
     auto [LU, pivots, info] = lu_factor_ex_cuda_impl(A, false);
     (void)info;
+    // The square unpack kernel reads a row-major plane.
+    if (A.dim() == 2 && A.size(-2) == A.size(-1)) LU = LU.contiguous();
     return ops::lu_unpack(LU, pivots, true, true);
 }
 
