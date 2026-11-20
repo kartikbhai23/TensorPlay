@@ -238,16 +238,14 @@ inline Tensor binary_float_kernel(const Tensor& a_in, const Tensor& b_in, F f,
             const double* ap = ac.data_ptr<double>();
             const double bv = bc.data_ptr<double>()[0];
             double* dp = out.data_ptr<double>();
-            parallel::parallel_for(0, n, parallel::GRAIN_SIZE, [&](int64_t begin, int64_t end) {
-                for (int64_t i = begin; i < end; ++i) dp[i] = f(ap[i], bv);
-            });
+            // Direct walk: the parallel wrapper's grain check and lambda
+            // indirection cost more than the loop itself at this size.
+            for (int64_t i = 0; i < n; ++i) dp[i] = f(ap[i], bv);
         } else {
             const float* ap = ac.data_ptr<float>();
             const float bv = bc.data_ptr<float>()[0];
             float* dp = out.data_ptr<float>();
-            parallel::parallel_for(0, n, parallel::GRAIN_SIZE, [&](int64_t begin, int64_t end) {
-                for (int64_t i = begin; i < end; ++i) dp[i] = f(ap[i], bv);
-            });
+            for (int64_t i = 0; i < n; ++i) dp[i] = f(ap[i], bv);
         }
         return out;
     }
