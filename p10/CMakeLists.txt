@@ -124,6 +124,7 @@ set(P10_SOURCES
     src/backend/cpu/SpectralKernels.cpp
     src/backend/cpu/SpectralInteropKernels.cpp
     src/backend/cpu/Spectral2DKernels.cpp
+    src/backend/cpu/SpectralMklKernels.cpp
     src/backend/cpu/InplaceCompletionKernels.cpp
     src/backend/cpu/SymScalarKernels.cpp
     # Backend-neutral composite kernels, one file per operator category
@@ -1388,4 +1389,11 @@ set_source_files_properties(
     PROPERTIES
         COMPILE_OPTIONS "-mavx2;-mfma"
         COMPILE_DEFINITIONS "POCKETFFT_CACHE_SIZE=16"
+)
+
+# Special-function loops call libm per element.  Dropping the errno side
+# effects lets the compiler keep those calls from serializing the hot loop.
+set_source_files_properties(
+    src/backend/cpu/SpecialKernels.cpp
+    PROPERTIES COMPILE_OPTIONS "-fno-math-errno;-fno-trapping-math"
 )

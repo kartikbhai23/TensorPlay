@@ -22,6 +22,15 @@
 namespace tensorplay {
 namespace cpu {
 
+#if defined(USE_MKL)
+Tensor _fft_c2c_cpu(const Tensor& self, const std::vector<int64_t>& dim,
+                    int64_t normalization, bool forward);
+Tensor _fft_r2c_cpu(const Tensor& self, const std::vector<int64_t>& dim,
+                    int64_t normalization, bool onesided);
+Tensor _fft_c2r_cpu(const Tensor& self, const std::vector<int64_t>& dim,
+                    int64_t normalization, int64_t last_dim_size);
+#endif
+
 namespace {
 
 template <typename T>
@@ -246,9 +255,14 @@ Tensor fft_fft_cpu(const Tensor& self, int64_t n, int64_t dim, const std::string
     TP_CHECK(n == -1 || n >= 1, "Invalid number of data points (", n, ") specified");
     TP_CHECK(n_eff >= 1, "Invalid number of data points (", n_eff, ") specified");
     const auto mode = norm_from_string(norm, /*forward=*/true);
+#if defined(USE_MKL)
+    if (n_eff != N) x_in = resize_input_dim(x_in, dim, n_eff);
+    return _fft_c2c_cpu(x_in, {dim}, static_cast<int64_t>(mode), /*forward=*/true);
+#else
     if (x_in.dtype() == DType::ComplexFloat)
         return core_c2c<float>(x_in, dim, n_eff, mode, true);
     return core_c2c<double>(x_in, dim, n_eff, mode, true);
+#endif
 }
 
 Tensor fft_ifft_cpu(const Tensor& self, int64_t n, int64_t dim, const std::string& norm) {
@@ -260,9 +274,14 @@ Tensor fft_ifft_cpu(const Tensor& self, int64_t n, int64_t dim, const std::strin
     TP_CHECK(n == -1 || n >= 1, "Invalid number of data points (", n, ") specified");
     TP_CHECK(n_eff >= 1, "Invalid number of data points (", n_eff, ") specified");
     const auto mode = norm_from_string(norm, false);
+#if defined(USE_MKL)
+    if (n_eff != N) x_in = resize_input_dim(x_in, dim, n_eff);
+    return _fft_c2c_cpu(x_in, {dim}, static_cast<int64_t>(mode), /*forward=*/false);
+#else
     if (x_in.dtype() == DType::ComplexFloat)
         return core_c2c<float>(x_in, dim, n_eff, mode, false);
     return core_c2c<double>(x_in, dim, n_eff, mode, false);
+#endif
 }
 
 Tensor fft_rfft_cpu(const Tensor& self, int64_t n, int64_t dim, const std::string& norm) {
@@ -276,9 +295,13 @@ Tensor fft_rfft_cpu(const Tensor& self, int64_t n, int64_t dim, const std::strin
     TP_CHECK(n_eff >= 1, "Invalid number of data points (", n_eff, ") specified");
     if (n > 0 && n != N) x = resize_input_dim(x, dim, n);
     const auto mode = norm_from_string(norm, true);
+#if defined(USE_MKL)
+    return _fft_r2c_cpu(x, {dim}, static_cast<int64_t>(mode), /*onesided=*/true);
+#else
     if (x.dtype() == DType::Float32)
         return core_r2c<float>(x, dim, mode, /*onesided=*/true);
     return core_r2c<double>(x, dim, mode, true);
+#endif
 }
 
 Tensor fft_irfft_cpu(const Tensor& self, int64_t n, int64_t dim, const std::string& norm) {
@@ -291,9 +314,16 @@ Tensor fft_irfft_cpu(const Tensor& self, int64_t n, int64_t dim, const std::stri
     TP_CHECK(n == -1 || n >= 1, "Invalid number of data points (", n, ") specified");
     TP_CHECK(n_eff >= 1, "Invalid number of data points (", n_eff, ") specified");
     const auto mode = norm_from_string(norm, false);
+#if defined(USE_MKL)
+    // A shorter spectrum means the absent high-frequency bins are zero.
+    const int64_t half_bins = n_eff / 2 + 1;
+    if (sizes_of(x)[dim] < half_bins) x = resize_input_dim(x, dim, half_bins);
+    return _fft_c2r_cpu(x, {dim}, static_cast<int64_t>(mode), n_eff);
+#else
     if (x.dtype() == DType::ComplexFloat)
         return core_c2r<float>(x, dim, n_eff, mode);
     return core_c2r<double>(x, dim, n_eff, mode);
+#endif
 }
 
 // ---------------------------------------------------------------------------

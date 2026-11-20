@@ -138,6 +138,7 @@ void check_complex_input(const Tensor& self) {
 
 }  // namespace
 
+#if !defined(USE_MKL)
 Tensor _fft_c2c_cpu(const Tensor& self, const std::vector<int64_t>& dim,
                     int64_t normalization, bool forward) {
     check_complex_input(self);
@@ -243,14 +244,17 @@ Tensor& _fft_c2c_out_cpu(const Tensor& self, const std::vector<int64_t>& dim,
                          int64_t normalization, bool forward, Tensor& out) {
     return write_out(out, _fft_c2c_cpu(self, dim, normalization, forward));
 }
+#endif  // !USE_MKL
 
 TENSORPLAY_LIBRARY_IMPL(CPU, SpectralInteropKernels) {
+#if !defined(USE_MKL)
     m.impl("_fft_r2c", _fft_r2c_cpu);
     m.impl("_fft_r2c.out", _fft_r2c_out_cpu);
     m.impl("_fft_c2r", _fft_c2r_cpu);
     m.impl("_fft_c2r.out", _fft_c2r_out_cpu);
     m.impl("_fft_c2c", _fft_c2c_cpu);
     m.impl("_fft_c2c.out", _fft_c2c_out_cpu);
+#endif
 }
 
 }  // namespace cpu

@@ -17,6 +17,15 @@
 namespace tensorplay {
 namespace cpu {
 
+#if defined(USE_MKL)
+Tensor _fft_c2c_cpu(const Tensor& self, const std::vector<int64_t>& dim,
+                    int64_t normalization, bool forward);
+Tensor _fft_r2c_cpu(const Tensor& self, const std::vector<int64_t>& dim,
+                    int64_t normalization, bool onesided);
+Tensor _fft_c2r_cpu(const Tensor& self, const std::vector<int64_t>& dim,
+                    int64_t normalization, int64_t last_dim_size);
+#endif
+
 namespace {
 
 template <typename T>
@@ -285,11 +294,16 @@ Tensor fft2_c2c_impl(const Tensor& self, const FFT2Args& args,
     Tensor input = promote_complex(self);
     auto [moved, inverse] = move_fft_dims_last(input, args.first_dim, args.last_dim);
     Tensor resized = resize_fft_plane(moved, args.first_size, args.last_size);
+#if defined(USE_MKL)
+    const std::vector<int64_t> dims{resized.dim() - 2, resized.dim() - 1};
+    Tensor output = _fft_c2c_cpu(resized, dims, static_cast<int64_t>(norm), forward);
+#else
     const pocketfft::shape_t axes{
         static_cast<size_t>(resized.dim() - 2),
         static_cast<size_t>(resized.dim() - 1)};
     Tensor output = c2c_plane<T>(resized, forward, norm,
                                  args.first_size * args.last_size, axes);
+#endif
     return finish_fft_layout(std::move(output), inverse);
 }
 
@@ -302,10 +316,15 @@ Tensor fft2_r2c_impl(const Tensor& self, const FFT2Args& args,
     auto [moved, inverse] = move_fft_dims_last(self.contiguous(),
                                                args.first_dim, args.last_dim);
     Tensor resized = resize_fft_plane(moved, args.first_size, args.last_size);
+#if defined(USE_MKL)
+    const std::vector<int64_t> dims{resized.dim() - 2, resized.dim() - 1};
+    Tensor output = _fft_r2c_cpu(resized, dims, static_cast<int64_t>(norm), /*onesided=*/true);
+#else
     const int64_t transform_size = args.first_size * args.last_size;
     Tensor spectrum = r2c_plane<T>(resized, norm, transform_size);
     const pocketfft::shape_t axes{static_cast<size_t>(spectrum.dim() - 2)};
     Tensor output = c2c_plane<T>(spectrum, true, FFTNorm::none, 1, axes);
+#endif
     return finish_fft_layout(std::move(output), inverse);
 }
 
@@ -316,10 +335,15 @@ Tensor fft2_c2r_impl(const Tensor& self, const FFT2Args& args,
     auto [moved, inverse] = move_fft_dims_last(self.contiguous(),
                                                args.first_dim, args.last_dim);
     Tensor resized = resize_fft_plane(moved, args.first_size, args.last_size / 2 + 1);
+#if defined(USE_MKL)
+    const std::vector<int64_t> dims{resized.dim() - 2, resized.dim() - 1};
+    Tensor output = _fft_c2r_cpu(resized, dims, static_cast<int64_t>(norm), args.last_size);
+#else
     const int64_t transform_size = args.first_size * args.last_size;
     const pocketfft::shape_t axes{static_cast<size_t>(resized.dim() - 2)};
     Tensor transformed = c2c_plane<T>(resized, false, FFTNorm::none, 1, axes);
     Tensor output = c2r_plane<T>(transformed, args.last_size, norm, transform_size);
+#endif
     return finish_fft_layout(std::move(output), inverse);
 }
 

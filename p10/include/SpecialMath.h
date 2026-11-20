@@ -29,6 +29,30 @@
 #endif
 #endif
 
+// The global C math names always take doubles; on the CPU the std overloads
+// keep float work in float.  CUDA device code calls the global names.
+#if defined(__CUDACC__)
+#define TP_HOST_LOG ::log
+#define TP_HOST_EXP ::exp
+#define TP_HOST_SQRT ::sqrt
+#define TP_HOST_FABS ::fabs
+#define TP_HOST_POW ::pow
+#define TP_HOST_LGAMMA ::lgamma
+#define TP_HOST_EXPM1 ::expm1
+#define TP_HOST_LOG1P ::log1p
+#define TP_HOST_ERFC ::erfc
+#else
+#define TP_HOST_LOG std::log
+#define TP_HOST_EXP std::exp
+#define TP_HOST_SQRT std::sqrt
+#define TP_HOST_FABS std::fabs
+#define TP_HOST_POW std::pow
+#define TP_HOST_LGAMMA std::lgamma
+#define TP_HOST_EXPM1 std::expm1
+#define TP_HOST_LOG1P std::log1p
+#define TP_HOST_ERFC std::erfc
+#endif
+
 namespace tensorplay {
 namespace special_math {
 
@@ -727,9 +751,9 @@ TP_HOST_DEVICE static scalar_t lanczos_sum_expg_scaled(scalar_t x) {
 
 template <typename scalar_t>
 TP_HOST_DEVICE static scalar_t _igam_helper_fac(scalar_t a, scalar_t x) {
-  // compute x^a * ::exp(-a) / gamma(a)
-  // corrected from (15) and (16) in [igam2] by replacing ::exp(x - a) with
-  // ::exp(a - x).
+  // compute x^a * TP_HOST_EXP(-a) / gamma(a)
+  // corrected from (15) and (16) in [igam2] by replacing TP_HOST_EXP(x - a) with
+  // TP_HOST_EXP(a - x).
 
   scalar_t ax, fac, res, num, numfac;
   constexpr scalar_t MAXLOG = std::is_same_v<scalar_t,double> ?
@@ -737,24 +761,24 @@ TP_HOST_DEVICE static scalar_t _igam_helper_fac(scalar_t a, scalar_t x) {
   constexpr scalar_t EXP1 = 2.718281828459045;
   constexpr scalar_t lanczos_g = 6.024680040776729583740234375;
 
-  if (::fabs(a - x) > 0.4 * ::fabs(a)) {
-    ax = a * ::log(x) - x - ::lgamma(a);
+  if (TP_HOST_FABS(a - x) > 0.4 * TP_HOST_FABS(a)) {
+    ax = a * TP_HOST_LOG(x) - x - TP_HOST_LGAMMA(a);
     if (ax < -MAXLOG) {
       return 0.0;
     }
-    return ::exp(ax);
+    return TP_HOST_EXP(ax);
   }
 
   fac = a + lanczos_g - 0.5;
-  res = ::sqrt(fac / EXP1) / lanczos_sum_expg_scaled(a);
+  res = TP_HOST_SQRT(fac / EXP1) / lanczos_sum_expg_scaled(a);
 
   if ((a < 200) && (x < 200)) {
-    res *= ::exp(a - x) * ::pow(x / fac, a);
+    res *= TP_HOST_EXP(a - x) * TP_HOST_POW(x / fac, a);
   }
   else {
     num = x - a - lanczos_g + 0.5;
     numfac = num / fac;
-    res *= ::exp(a * (::log1p(numfac) - numfac) + x * (0.5 - lanczos_g) / fac);
+    res *= TP_HOST_EXP(a * (TP_HOST_LOG1P(numfac) - numfac) + x * (0.5 - lanczos_g) / fac);
   }
   return res;
 }
@@ -807,14 +831,14 @@ TP_HOST_DEVICE static scalar_t _igamc_helper_series(scalar_t a, scalar_t x) {
     fac *= -x / n;
     term = fac / (a + n);
     sum += term;
-    if (::fabs(term) <= MACHEP * ::fabs(sum)) {
+    if (TP_HOST_FABS(term) <= MACHEP * TP_HOST_FABS(sum)) {
         break;
     }
   }
 
-  logx = ::log(x);
-  term = -::expm1(a * logx - ::lgamma(1+a));
-  return term - ::exp(a * logx - ::lgamma(a)) * sum;
+  logx = TP_HOST_LOG(x);
+  term = -TP_HOST_EXPM1(a * logx - TP_HOST_LGAMMA(1+a));
+  return term - TP_HOST_EXP(a * logx - TP_HOST_LGAMMA(a)) * sum;
 }
 
 template <typename scalar_t>
@@ -1067,15 +1091,15 @@ TP_HOST_DEVICE static scalar_t _igam_helper_asymptotic_series(scalar_t a, scalar
   }
 
   if (lambda > 1) {
-    eta = ::sqrt(-2 * (::log1p(sigma) - sigma));
+    eta = TP_HOST_SQRT(-2 * (TP_HOST_LOG1P(sigma) - sigma));
   }
   else if (lambda < 1) {
-    eta = -::sqrt(-2 * (::log1p(sigma) - sigma));
+    eta = -TP_HOST_SQRT(-2 * (TP_HOST_LOG1P(sigma) - sigma));
   }
   else {
     eta = 0;
   }
-  res = 0.5 * ::erfc(sgn * eta * ::sqrt(a / 2));
+  res = 0.5 * TP_HOST_ERFC(sgn * eta * TP_HOST_SQRT(a / 2));
 
   for (k = 0; k < 25; k++) {
     ck = d[k][0];
@@ -1086,23 +1110,23 @@ TP_HOST_DEVICE static scalar_t _igam_helper_asymptotic_series(scalar_t a, scalar
       }
       ckterm = d[k][n]*etapow[n];
       ck += ckterm;
-      if (::fabs(ckterm) < MACHEP * ::fabs(ck)) {
+      if (TP_HOST_FABS(ckterm) < MACHEP * TP_HOST_FABS(ck)) {
         break;
       }
     }
     term = ck * afac;
-    absterm = ::fabs(term);
+    absterm = TP_HOST_FABS(term);
     if (absterm > absoldterm) {
       break;
     }
     sum += term;
-    if (absterm < MACHEP * ::fabs(sum)) {
+    if (absterm < MACHEP * TP_HOST_FABS(sum)) {
       break;
     }
     absoldterm = absterm;
     afac /= a;
   }
-  res += sgn * ::exp(-0.5 * a * eta * eta) * sum / ::sqrt(2 * (3.14159274101257324f) * a);
+  res += sgn * TP_HOST_EXP(-0.5 * a * eta * eta) * sum / TP_HOST_SQRT(2 * (3.14159274101257324f) * a);
 
   return res;
 }
@@ -1145,7 +1169,7 @@ TP_HOST_DEVICE static scalar_t _igamc_helper_continued_fraction(scalar_t a, scal
     qk = qkm1 * z - qkm2 * yc;
     if (qk != 0) {
       r = pk / qk;
-      t = ::fabs((ans - r) / r);
+      t = TP_HOST_FABS((ans - r) / r);
       ans = r;
     }
     else {
@@ -1155,7 +1179,7 @@ TP_HOST_DEVICE static scalar_t _igamc_helper_continued_fraction(scalar_t a, scal
     pkm1 = pk;
     qkm2 = qkm1;
     qkm1 = qk;
-    if (::fabs(pk) > BIG) {
+    if (TP_HOST_FABS(pk) > BIG) {
       pkm2 *= BIGINV;
       pkm1 *= BIGINV;
       qkm2 *= BIGINV;
@@ -1214,11 +1238,11 @@ TP_HOST_DEVICE_NOINLINE scalar_t calc_igammac(scalar_t a, scalar_t x) {
     return 0.0;
   }
 
-  absxma_a = ::fabs(x - a) / a;
+  absxma_a = TP_HOST_FABS(x - a) / a;
   if ((a > SMALL) && (a < LARGE) && (absxma_a < SMALLRATIO)) {
      return _igam_helper_asymptotic_series(a, x, 0);
   }
-  else if ((a > LARGE) && (absxma_a < LARGERATIO / ::sqrt(a))) {
+  else if ((a > LARGE) && (absxma_a < LARGERATIO / TP_HOST_SQRT(a))) {
      return _igam_helper_asymptotic_series(a, x, 0);
   }
 
@@ -1231,7 +1255,7 @@ TP_HOST_DEVICE_NOINLINE scalar_t calc_igammac(scalar_t a, scalar_t x) {
     }
   }
   else if (x <= 0.5) {
-    if (-0.4 / ::log(x) < a) {
+    if (-0.4 / TP_HOST_LOG(x) < a) {
       return 1.0 - _igam_helper_series(a, x);
     }
     else {
@@ -1295,11 +1319,11 @@ TP_HOST_DEVICE_NOINLINE scalar_t calc_igamma(scalar_t a, scalar_t x) {
   }
 
   /* Asymptotic regime where a ~ x. See [igam2] */
-  absxma_a = ::fabs(x - a) / a;
+  absxma_a = TP_HOST_FABS(x - a) / a;
   if ((a > SMALL) && (a < LARGE) && (absxma_a < SMALLRATIO)) {
     return _igam_helper_asymptotic_series(a, x, 1);
   }
-  else if ((a > LARGE) && (absxma_a < LARGERATIO / ::sqrt(a))) {
+  else if ((a > LARGE) && (absxma_a < LARGERATIO / TP_HOST_SQRT(a))) {
     return _igam_helper_asymptotic_series(a, x, 1);
   }
 
