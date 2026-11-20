@@ -715,13 +715,17 @@ inline ReduceConfig make_reduce_config(const TensorIterator& iter) {
     const int max_height =
         std::max(1, max_threads / std::max(1, config.block_width));
     int desired_height = std::min(dim1_pow2, max_height);
-    // Global-reduce prediction: a single-output (dim1 == 1) reduction large
-    // enough to trigger the multi-CTA branch below runs with a taller block —
-    // 8 warps share one CTA's completion-counter slot and staging partial,
-    // cutting same-address atomic traffic and the last-CTA fold length 8x
-    // The 16384-element floor guarantees the warp-split below actually
-    // engages (input_mult[1] != 0), keeping output_mult clean for the gate.
-    if (reduction_on_fastest_dimension && dim1 == 1 && config.num_inputs >= 16384) {
+    // Global-reduce prediction: a single-output (dim1 == 1) reduction runs with a
+    // taller block — 8 warps share one CTA's completion-counter slot and
+    // staging partial, cutting same-address atomic traffic and the last-CTA
+    // fold length 8x.  The floor is the point where the warp split below still
+    // engages for the widest row (each lane then carries 16+ values), so that
+    // the tall block never falls back to splitting an output that there is
+    // only one of.
+    const int64_t warp_split_floor =
+        static_cast<int64_t>(kWarpSize) * 8 * 16;
+    if (reduction_on_fastest_dimension && dim1 == 1 &&
+        config.num_inputs >= warp_split_floor) {
         desired_height = std::min(8, max_height);
     }
     config.block_height = std::max(1, std::min(desired_height, max_height));
