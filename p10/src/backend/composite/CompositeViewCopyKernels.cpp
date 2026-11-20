@@ -201,8 +201,11 @@ Tensor mH_native(const Tensor& self) {
              "tensor.mH is only supported on matrices or batches of matrices. "
              "Got 1-D tensor.");
     reject_active_transform(self, "mH");
+    if (!isComplexType(self.dtype())) {
+        return ndim == 0 ? self : ops::transpose(self, -2, -1);
+    }
     if (ndim == 0) {
-        return ops::is_complex(self) ? ops::conj(self) : self;
+        return ops::conj(self);
     }
     return ops::transpose(ops::conj(self), -2, -1);
 }
@@ -213,7 +216,7 @@ Tensor matrix_H_native(const Tensor& self) {
              "matrix_H is only supported on matrices (2-D tensors) but got a ",
              ndim, "-D tensor; for batches of matrices use mH");
     if (ndim == 0) {
-        return ops::is_complex(self) ? ops::conj(self) : self;
+        return isComplexType(self.dtype()) ? ops::conj(self) : self;
     }
     return mH_native(self);
 }
