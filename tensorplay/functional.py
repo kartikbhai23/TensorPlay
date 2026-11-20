@@ -1976,8 +1976,6 @@ def trapezoid(y, x=None, dx=1, dim=-1):
         _captured = _capture_call(trapezoid, (y, x, dx, dim), {})
         if _captured is not None:
             return _captured
-    if not isinstance(dx, (tensorplay.Scalar, tensorplay.Tensor)):
-        dx = tensorplay.Scalar(dx)
     return _C.trapezoid(y, x, dx=dx, dim=dim)
 
 def cumulative_trapezoid(y, x=None, dx=1, dim=-1):
@@ -1985,8 +1983,6 @@ def cumulative_trapezoid(y, x=None, dx=1, dim=-1):
         _captured = _capture_call(cumulative_trapezoid, (y, x, dx, dim), {})
         if _captured is not None:
             return _captured
-    if not isinstance(dx, (tensorplay.Scalar, tensorplay.Tensor)):
-        dx = tensorplay.Scalar(dx)
     return _C.cumulative_trapezoid(y, x, dx=dx, dim=dim)
 
 def _trapezoid_backward(grad_output, x, ysizes, dx, dim):
