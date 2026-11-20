@@ -11204,6 +11204,18 @@ LOWERINGS["mkldnn_linear.default"] = _fallback_mkldnn_linear
 _fallback_mkldnn_convolution = fallback_handler(tp_ops.mkldnn_convolution.default)
 LOWERINGS["mkldnn_convolution.default"] = _fallback_mkldnn_convolution
 
+_fallback_to_mkldnn_backward = fallback_handler(tp_ops.to_mkldnn_backward.default)
+LOWERINGS["to_mkldnn_backward.default"] = _fallback_to_mkldnn_backward
+
+_fallback_mkldnn_linear_backward_input = fallback_handler(tp_ops.mkldnn_linear_backward_input.default)
+LOWERINGS["mkldnn_linear_backward_input.default"] = _fallback_mkldnn_linear_backward_input
+
+_fallback_mkldnn_linear_backward_weights = fallback_handler(tp_ops.mkldnn_linear_backward_weights.default)
+LOWERINGS["mkldnn_linear_backward_weights.default"] = _fallback_mkldnn_linear_backward_weights
+
+_fallback_mkldnn_linear_backward = fallback_handler(tp_ops.mkldnn_linear_backward.default)
+LOWERINGS["mkldnn_linear_backward.default"] = _fallback_mkldnn_linear_backward
+
 _fallback_native_dropout = fallback_handler(tp_ops.native_dropout.default)
 LOWERINGS["native_dropout.default"] = _fallback_native_dropout
 

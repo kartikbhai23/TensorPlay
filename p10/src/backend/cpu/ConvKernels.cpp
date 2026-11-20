@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <string>
 #include <sstream>
+#include <tuple>
 #include <chrono>
 #include <cstdlib>
 
@@ -7186,6 +7187,388 @@ static Tensor mkldnn_convolution_cpu(const Tensor& self, const Tensor& weight,
     }
 }
 
+// Convert a tensor carrying an onednn_md to a dense tensor with the requested
+// dtype.  A plain descriptor already lays the data out contiguously, so the
+// copy can be a memcpy; a blocked descriptor is reordered.  The returned
+// tensor carries no descriptor.
+static Tensor onednn_to_dense(const Tensor& t,
+                              std::optional<DType> dst_dtype = std::nullopt) {
+    const DType want = dst_dtype.value_or(t.dtype());
+
+    if (!t.unsafeGetTensorImpl()->has_onednn_md()) {
+        return t.dtype() == want ? t.contiguous() : t.to(want).contiguous();
+    }
+
+    const dnnl::memory::data_type want_dt = onednn_conv_dt(want);
+    if (want_dt == dnnl::memory::data_type::undef) {
+        TP_THROW(RuntimeError, "onednn_to_dense: unsupported destination dtype");
+    }
+
+    auto t_md = *std::static_pointer_cast<dnnl::memory::desc>(
+        t.unsafeGetTensorImpl()->get_onednn_md());
+    auto dims = t.sizes();
+    auto plain_md = dnnl::memory::desc(dims, want_dt, plain_format_tag(dims.size()));
+
+    if (t.dtype() == want && t_md == plain_md) {
+        Tensor output = Tensor::empty(dims, want, t.device());
+        std::memcpy(output.data_ptr(), t.data_ptr(),
+                    t.numel() * t.itemsize());
+        return output;
+    }
+
+    auto& eng = OneDNNContext::get_engine();
+    auto& s = OneDNNContext::get_stream();
+
+    dnnl::memory src_mem = dnnl::memory(t_md, eng, t.data_ptr());
+    size_t req_size = plain_md.get_size();
+    Allocator* allocator = getAllocator(t.device().type());
+    Storage dst_storage(req_size, allocator);
+    dnnl::memory dst_mem = dnnl::memory(plain_md, eng, dst_storage.data());
+
+    dnnl::reorder(src_mem, dst_mem).execute(s, src_mem, dst_mem);
+    s.wait();
+
+    return Tensor(std::move(dst_storage), dims, want);
+}
+
+// Bring an inner-product operand to rank 2 without changing its values.
+// A rank-2 operand is returned as is, keeping any descriptor it carries.  A
+// higher-rank operand is reordered to a dense buffer and reshaped to
+// {rows, cols}; the result has no descriptor and is read as a plain 2D buffer.
+static Tensor linear_operand_as_2d(const Tensor& t) {
+    if (t.dim() == 2) {
+        return t;
+    }
+    if (t.dim() < 2) {
+        TP_THROW(RuntimeError,
+                 "mkldnn linear backward: operand must have at least 2 dimensions");
+    }
+    const int64_t cols = t.size(t.dim() - 1);
+    const int64_t rows = t.numel() / cols;
+    return onednn_to_dense(t).reshape({rows, cols});
+}
+
+// Describe a rank-2 inner-product operand for a oneDNN primitive.  An operand
+// that carries a descriptor keeps it; a plain buffer is described row-major.
+static dnnl::memory::desc linear_operand_md(const Tensor& t) {
+    if (t.unsafeGetTensorImpl()->has_onednn_md()) {
+        return *std::static_pointer_cast<dnnl::memory::desc>(
+            t.unsafeGetTensorImpl()->get_onednn_md());
+    }
+    const dnnl::memory::data_type dt = onednn_conv_dt(t.dtype());
+    if (dt == dnnl::memory::data_type::undef) {
+        TP_THROW(RuntimeError, "mkldnn linear backward: unsupported operand dtype");
+    }
+    return dnnl::memory::desc({t.size(0), t.size(1)}, dt,
+                              dnnl::memory::format_tag::ab);
+}
+
+// to_mkldnn_backward: convert an mkldnn-layout gradient to a dense tensor with
+// the dtype of the reference input.  The input must itself be dense.
+static Tensor to_mkldnn_backward_cpu(const Tensor& grad, const Tensor& input) {
+    if (!OneDNNContext::is_enabled()) {
+        TP_THROW(RuntimeError, "to_mkldnn_backward: oneDNN is not enabled");
+    }
+    if (input.unsafeGetTensorImpl()->has_onednn_md()) {
+        TP_THROW(RuntimeError, "to_mkldnn_backward: input must be a dense tensor");
+    }
+    return onednn_to_dense(grad, input.dtype());
+}
+
+// mkldnn_linear_backward_input: compute the gradient w.r.t. the input of an
+// inner product.  grad_output must be in mkldnn layout; weight is a dense CPU
+// float32 tensor.  The result stays in mkldnn layout.
+static Tensor mkldnn_linear_backward_input_cpu(
+    const std::vector<int64_t>& input_size,
+    const Tensor& grad_output,
+    const Tensor& weight) {
+    if (!OneDNNContext::is_enabled()) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_input: oneDNN is not enabled");
+    }
+
+    if (!grad_output.unsafeGetTensorImpl()->has_onednn_md()) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_input: grad_output must be in mkldnn layout");
+    }
+    if (!weight.device().is_cpu() || weight.dtype() != DType::Float32) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_input: weight must be a dense CPU float32 tensor");
+    }
+    if (weight.dim() != 2) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_input: weight must be 2D");
+    }
+    if (input_size.size() < 2) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_input: input_size must have at least 2 dimensions");
+    }
+
+    const dnnl::memory::data_type dt = onednn_conv_dt(grad_output.dtype());
+    if (dt == dnnl::memory::data_type::undef) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_input: unsupported grad_output dtype");
+    }
+
+    // One inner product over a flattened batch: a rank above 2 flattens to
+    // {rows, out_features} first.
+    Tensor grad_2d = linear_operand_as_2d(grad_output);
+    const int64_t rows = grad_2d.size(0);
+    const int64_t N = grad_2d.size(1);
+    const int64_t K = weight.size(1);
+    if (weight.size(0) != N) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_input: grad_output width does not match weight");
+    }
+
+    try {
+        auto& eng = OneDNNContext::get_engine();
+        auto& s = OneDNNContext::get_stream();
+
+        auto grad_md = linear_operand_md(grad_2d);
+
+        dnnl::memory::desc weights_md = dnnl::memory::desc(
+            {N, K}, dnnl::memory::data_type::f32, dnnl::memory::format_tag::ab);
+
+        dnnl::memory::desc diff_src_md = dnnl::memory::desc(
+            {rows, K}, dt, dnnl::memory::format_tag::any);
+
+        dnnl::inner_product_forward::primitive_desc hint_pd(
+            eng, dnnl::prop_kind::forward_inference,
+            diff_src_md, weights_md, grad_md);
+
+        dnnl::inner_product_backward_data::primitive_desc bwd_pd(
+            eng, diff_src_md, weights_md, grad_md, hint_pd);
+
+        auto expected_diff_src_md = bwd_pd.diff_src_desc();
+        auto expected_weights_md = bwd_pd.weights_desc();
+
+        dnnl::memory weights_mem;
+        Storage reordered_weight_storage;
+        if (weights_md == expected_weights_md) {
+            weights_mem = dnnl::memory(weights_md, eng, weight.data_ptr());
+        } else {
+            auto src_mem = dnnl::memory(weights_md, eng, weight.data_ptr());
+            size_t req = expected_weights_md.get_size();
+            Allocator* allocator = getAllocator(weight.device().type());
+            reordered_weight_storage = Storage(req, allocator);
+            weights_mem = dnnl::memory(expected_weights_md, eng,
+                reordered_weight_storage.data());
+            dnnl::reorder(src_mem, weights_mem).execute(s, src_mem, weights_mem);
+        }
+
+        size_t req_size = expected_diff_src_md.get_size();
+        Allocator* allocator = getAllocator(grad_output.device().type());
+        Storage diff_src_storage(req_size, allocator);
+
+        Tensor grad_input(std::move(diff_src_storage), {rows, K},
+                          grad_output.dtype());
+
+        dnnl::memory grad_output_mem = dnnl::memory(grad_md, eng, grad_2d.data_ptr());
+        dnnl::memory diff_src_mem = dnnl::memory(expected_diff_src_md, eng, grad_input.data_ptr());
+
+        std::unordered_map<int, dnnl::memory> args;
+        args.insert({DNNL_ARG_DIFF_SRC, diff_src_mem});
+        args.insert({DNNL_ARG_WEIGHTS, weights_mem});
+        args.insert({DNNL_ARG_DIFF_DST, grad_output_mem});
+
+        dnnl::memory scratchpad;
+        if (bwd_pd.scratchpad_desc().get_size() > 0) {
+            scratchpad = dnnl::memory(bwd_pd.scratchpad_desc(), eng);
+            args.insert({DNNL_ARG_SCRATCHPAD, scratchpad});
+        }
+
+        dnnl::inner_product_backward_data(bwd_pd).execute(s, args);
+        s.wait();
+
+        grad_input.unsafeGetTensorImpl()->set_onednn_md(
+            std::make_shared<dnnl::memory::desc>(expected_diff_src_md));
+
+        if (input_size.size() > 2) {
+            // The gradient batch was flattened; put it back into the input's
+            // shape and keep a layout descriptor on the result.
+            Tensor dense = onednn_to_dense(grad_input);
+            dense = dense.reshape(input_size);
+            dense.unsafeGetTensorImpl()->set_onednn_md(
+                std::make_shared<dnnl::memory::desc>(
+                    input_size, dt, plain_format_tag(input_size.size())));
+            return dense;
+        }
+
+        return grad_input;
+    } catch (dnnl::error& e) {
+        TP_THROW(RuntimeError, std::string("mkldnn_linear_backward_input: oneDNN error: ") + e.what());
+    }
+}
+
+// mkldnn_linear_backward_weights: compute the gradients w.r.t. the weight and
+// bias of an inner product.  grad_output and input must be in mkldnn layout;
+// weight is a dense CPU float32 tensor.  The gradients come back dense.
+static std::tuple<Tensor, Tensor> mkldnn_linear_backward_weights_cpu(
+    const Tensor& grad_output,
+    const Tensor& input,
+    const Tensor& weight,
+    bool bias_defined) {
+    if (!OneDNNContext::is_enabled()) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_weights: oneDNN is not enabled");
+    }
+
+    if (!grad_output.unsafeGetTensorImpl()->has_onednn_md()) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_weights: grad_output must be in mkldnn layout");
+    }
+    if (!input.unsafeGetTensorImpl()->has_onednn_md()) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_weights: input must be in mkldnn layout");
+    }
+    if (!weight.device().is_cpu() || weight.dtype() != DType::Float32) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_weights: weight must be a dense CPU float32 tensor");
+    }
+    if (weight.dim() != 2) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_weights: weight must be 2D");
+    }
+
+    const dnnl::memory::data_type dt = onednn_conv_dt(grad_output.dtype());
+    if (dt == dnnl::memory::data_type::undef) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_weights: unsupported grad_output dtype");
+    }
+    if (input.dtype() != grad_output.dtype()) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_weights: input and grad_output dtypes differ");
+    }
+
+    // Rank above 2 flattens to {rows, features} for a single inner product.
+    Tensor grad_2d = linear_operand_as_2d(grad_output);
+    Tensor input_2d = linear_operand_as_2d(input);
+
+    const int64_t M = input_2d.size(0);
+    const int64_t K = input_2d.size(1);
+    const int64_t N = grad_2d.size(1);
+    if (grad_2d.size(0) != M || weight.size(0) != N || weight.size(1) != K) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward_weights: operand shapes are inconsistent");
+    }
+
+    try {
+        auto& eng = OneDNNContext::get_engine();
+        auto& s = OneDNNContext::get_stream();
+
+        auto grad_md = linear_operand_md(grad_2d);
+        auto input_md = linear_operand_md(input_2d);
+
+        dnnl::memory::desc weights_md = dnnl::memory::desc(
+            {N, K}, dnnl::memory::data_type::f32, dnnl::memory::format_tag::ab);
+
+        dnnl::memory::desc diff_weights_md = dnnl::memory::desc(
+            {N, K}, dt, dnnl::memory::format_tag::any);
+
+        dnnl::memory::desc diff_bias_md;
+        if (bias_defined) {
+            diff_bias_md = dnnl::memory::desc(
+                {N}, dt, dnnl::memory::format_tag::x);
+        }
+
+        dnnl::inner_product_forward::primitive_desc hint_pd(
+            eng, dnnl::prop_kind::forward_inference,
+            input_md, weights_md, grad_md);
+
+        dnnl::inner_product_backward_weights::primitive_desc bwd_pd;
+        if (bias_defined) {
+            bwd_pd = dnnl::inner_product_backward_weights::primitive_desc(
+                eng, input_md, diff_weights_md, diff_bias_md,
+                grad_md, hint_pd);
+        } else {
+            bwd_pd = dnnl::inner_product_backward_weights::primitive_desc(
+                eng, input_md, diff_weights_md,
+                grad_md, hint_pd);
+        }
+
+        auto expected_diff_weights_md = bwd_pd.diff_weights_desc();
+        auto expected_diff_bias_md = bwd_pd.diff_bias_desc();
+
+        Allocator* allocator = getAllocator(grad_output.device().type());
+
+        size_t w_req = expected_diff_weights_md.get_size();
+        Storage grad_w_storage(w_req, allocator);
+        Tensor grad_weight(std::move(grad_w_storage), {N, K}, grad_output.dtype());
+        grad_weight.unsafeGetTensorImpl()->set_onednn_md(
+            std::make_shared<dnnl::memory::desc>(expected_diff_weights_md));
+
+        Tensor grad_bias;
+        Storage grad_b_storage;
+        if (bias_defined) {
+            size_t b_req = expected_diff_bias_md.get_size();
+            grad_b_storage = Storage(b_req, allocator);
+            grad_bias = Tensor(std::move(grad_b_storage), {N}, grad_output.dtype());
+            grad_bias.unsafeGetTensorImpl()->set_onednn_md(
+                std::make_shared<dnnl::memory::desc>(expected_diff_bias_md));
+        }
+
+        dnnl::memory input_mem = dnnl::memory(input_md, eng, input_2d.data_ptr());
+        dnnl::memory grad_output_mem = dnnl::memory(grad_md, eng, grad_2d.data_ptr());
+        dnnl::memory grad_w_mem = dnnl::memory(expected_diff_weights_md, eng, grad_weight.data_ptr());
+
+        std::unordered_map<int, dnnl::memory> args;
+        args.insert({DNNL_ARG_SRC, input_mem});
+        args.insert({DNNL_ARG_DIFF_WEIGHTS, grad_w_mem});
+        args.insert({DNNL_ARG_DIFF_DST, grad_output_mem});
+
+        dnnl::memory grad_b_mem;
+        if (bias_defined) {
+            grad_b_mem = dnnl::memory(expected_diff_bias_md, eng, grad_bias.data_ptr());
+            args.insert({DNNL_ARG_DIFF_BIAS, grad_b_mem});
+        }
+
+        dnnl::memory scratchpad;
+        if (bwd_pd.scratchpad_desc().get_size() > 0) {
+            scratchpad = dnnl::memory(bwd_pd.scratchpad_desc(), eng);
+            args.insert({DNNL_ARG_SCRATCHPAD, scratchpad});
+        }
+
+        dnnl::inner_product_backward_weights(bwd_pd).execute(s, args);
+        s.wait();
+
+        Tensor dense_grad_w = onednn_to_dense(grad_weight);
+        // With no bias the primitive leaves the bias gradient empty; report
+        // it as a defined zero-dimensional tensor.
+        Tensor dense_grad_b = bias_defined
+            ? onednn_to_dense(grad_bias)
+            : Tensor::empty(std::vector<int64_t>{}, grad_output.dtype(),
+                            grad_output.device());
+
+        return std::tuple<Tensor, Tensor>{std::move(dense_grad_w), std::move(dense_grad_b)};
+    } catch (dnnl::error& e) {
+        TP_THROW(RuntimeError, std::string("mkldnn_linear_backward_weights: oneDNN error: ") + e.what());
+    }
+}
+
+// mkldnn_linear_backward: combined backward for an inner product.  Dispatches
+// to the input and weights backward kernels based on the output mask.
+static std::tuple<Tensor, Tensor, Tensor> mkldnn_linear_backward_cpu(
+    const Tensor& self,
+    const Tensor& grad_output,
+    const Tensor& weight,
+    const std::vector<bool>& output_mask) {
+    if (!OneDNNContext::is_enabled()) {
+        TP_THROW(RuntimeError, "mkldnn_linear_backward: oneDNN is not enabled");
+    }
+
+    TP_CHECK(output_mask.size() == 3,
+             "mkldnn_linear_backward: output_mask must have 3 entries, got ",
+             output_mask.size());
+
+    Tensor grad_input;
+    Tensor grad_weight;
+    Tensor grad_bias;
+
+    bool want_input = output_mask[0];
+    bool want_weights = output_mask[1] || output_mask[2];
+    bool bias_defined = output_mask[2];
+
+    if (want_input) {
+        grad_input = mkldnn_linear_backward_input_cpu(
+            self.sizes(), grad_output, weight);
+    }
+
+    if (want_weights) {
+        auto weights_result = mkldnn_linear_backward_weights_cpu(
+            grad_output, self, weight, bias_defined);
+        std::tie(grad_weight, grad_bias) = weights_result;
+    }
+
+    return std::tuple<Tensor, Tensor, Tensor>{
+        std::move(grad_input), std::move(grad_weight), std::move(grad_bias)};
+}
+
 #endif // USE_ONEDNN
 
 TENSORPLAY_LIBRARY_IMPL(CPU, ConvKernels) {
@@ -7230,6 +7613,10 @@ TENSORPLAY_LIBRARY_IMPL(CPU, ConvKernels) {
     m.impl("mkldnn_convolution", mkldnn_convolution_cpu);
     m.impl("mkldnn_linear", mkldnn_linear_cpu);
     m.impl("to_mkldnn", to_mkldnn_cpu);
+    m.impl("to_mkldnn_backward", to_mkldnn_backward_cpu);
+    m.impl("mkldnn_linear_backward_input", mkldnn_linear_backward_input_cpu);
+    m.impl("mkldnn_linear_backward_weights", mkldnn_linear_backward_weights_cpu);
+    m.impl("mkldnn_linear_backward", mkldnn_linear_backward_cpu);
 #endif
 }
 
