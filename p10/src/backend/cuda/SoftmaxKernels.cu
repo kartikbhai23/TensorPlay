@@ -132,15 +132,6 @@ Tensor cudnn_softmax(const Tensor& self, int64_t dim, bool log) {
     return result;
 }
 
-Tensor softmax_kernel_cudnn(const Tensor& self, int64_t dim, DType dtype) {
-    // Ignoring dtype arg for now (assuming input dtype)
-    return cudnn_softmax(self, dim, false);
-}
-
-Tensor log_softmax_kernel_cudnn(const Tensor& self, int64_t dim, DType dtype) {
-    return cudnn_softmax(self, dim, true);
-}
-
 #endif  // USE_CUDNN
 
 // --- Native softmax ---
@@ -1502,16 +1493,6 @@ Tensor softmax_native_impl(const Tensor& self, int64_t dim, bool log_mode) {
   return result;
 }
 
-Tensor softmax_kernel_native(const Tensor& self, int64_t dim, DType dtype) {
-  (void)dtype;
-  return softmax_native_impl(self, dim, false);
-}
-
-Tensor log_softmax_kernel_native(const Tensor& self, int64_t dim, DType dtype) {
-  (void)dtype;
-  return softmax_native_impl(self, dim, true);
-}
-
 // The half_to_float out-variant: reduced-precision input, fp32 result.  The
 // accumulator is float throughout and every store lands in the wider output
 // directly, so no intermediate rounding through the input dtype occurs.
@@ -1542,6 +1523,29 @@ void softmax_half_to_float_native(const Tensor& self, Tensor& out,
 }
 
 namespace {
+
+Tensor softmax_with_dtype(const Tensor& self, int64_t dim, DType dtype, bool log_mode) {
+  if (self.dtype() == DType::Float16 && dtype == DType::Float32 && self.dim() > 0) {
+    Tensor out = Tensor::empty(
+        static_cast<std::vector<int64_t>>(self.shape()), dtype, self.device());
+    softmax_half_to_float_native(self, out, dim, log_mode);
+    return out;
+  }
+  const Tensor input = dtype == DType::Undefined || dtype == self.dtype() ? self : self.to(dtype);
+#if defined(USE_CUDNN) && !defined(USE_ROCM)
+  return cudnn_softmax(input, dim, log_mode);
+#else
+  return softmax_native_impl(input, dim, log_mode);
+#endif
+}
+
+Tensor softmax_kernel_cuda(const Tensor& self, int64_t dim, DType dtype) {
+  return softmax_with_dtype(self, dim, dtype, false);
+}
+
+Tensor log_softmax_kernel_cuda(const Tensor& self, int64_t dim, DType dtype) {
+  return softmax_with_dtype(self, dim, dtype, true);
+}
 
 // One block per (outer, inner) row, matching the forward layout.  The row
 // reduction streams twice: once for the shared factor, once for the write.
@@ -1795,10 +1799,8 @@ bool try_softmax_bwd_wide(scalar_t* grad_in, const scalar_t* grad,
   return true;
 }
 
-// grad_output drives the result dtype; reduced-width inputs accumulate and
-// compute in float.  grad_output may carry float32 for a half input (the
-// half_to_float forward path), in which case the result casts back to the
-// input dtype.
+// Mixed-width backward computes in the output width and casts back to the
+// input width after the reduction.
 Tensor softmax_backward_native_impl(const Tensor& grad_output,
                                     const Tensor& output, int64_t dim,
                                     DType input_dtype, bool log_mode) {
@@ -1810,27 +1812,20 @@ Tensor softmax_backward_native_impl(const Tensor& grad_output,
     TP_THROW(IndexError,
              "dim must be non-negative and less than input dimensions");
   }
-  DType result_dtype = g.dtype();
-  if (result_dtype != input_dtype && result_dtype == DType::Float32 &&
-      input_dtype == DType::Float16) {
-    result_dtype = DType::Float16;
-  }
+  const DType result_dtype = input_dtype == DType::Undefined ? g.dtype() : input_dtype;
   if (!isFloatingType(result_dtype)) {
     TP_THROW(TypeError, "unsupported dtype for softmax backward");
   }
 
-  Tensor result =
-      Tensor::empty(static_cast<std::vector<int64_t>>(g.shape()), result_dtype,
-                    g.device());
+  const auto shape = static_cast<std::vector<int64_t>>(grad_output.shape());
+  Tensor result = Tensor::empty(shape, result_dtype, g.device());
   if (g.numel() == 0) return result;
 
   Tensor gc = g.contiguous();
   Tensor oc = o.contiguous().to(gc.dtype());
   Tensor result_work = result_dtype == gc.dtype()
                            ? result
-                           : Tensor::empty(
-                                 static_cast<std::vector<int64_t>>(g.shape()),
-                                 gc.dtype(), g.device());
+                           : Tensor::empty(shape, gc.dtype(), g.device());
 
   int64_t outer = 1;
   for (int64_t i = 0; i < d; ++i) outer *= gc.size(i);
@@ -2307,16 +2302,8 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, SoftmaxKernels) {
     m.impl("_softmax_backward_data.out", _softmax_backward_data_out_cuda);
     m.impl("_log_softmax_backward_data", _log_softmax_backward_data_cuda);
     m.impl("_log_softmax_backward_data.out", _log_softmax_backward_data_out_cuda);
-#if defined(USE_CUDNN) && !defined(USE_ROCM)
-    m.impl("softmax", softmax_kernel_cudnn);
-    m.impl("log_softmax", log_softmax_kernel_cudnn);
-#elif defined(USE_CUDNN) && defined(USE_ROCM)
-    m.impl("softmax", softmax_kernel_native);
-    m.impl("log_softmax", log_softmax_kernel_native);
-#else
-    m.impl("softmax", softmax_kernel_native);
-    m.impl("log_softmax", log_softmax_kernel_native);
-#endif
+    m.impl("softmax", softmax_kernel_cuda);
+    m.impl("log_softmax", log_softmax_kernel_cuda);
 }
 
 } // namespace cuda

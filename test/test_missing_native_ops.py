@@ -161,6 +161,47 @@ def test_cuda_matrix_exp_of_shifted_nilpotent(upper):
     _allclose(tp.linalg.matrix_exp(a), [multiplier, upper * multiplier, 0.0, multiplier])
 
 
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+def test_cuda_linear_combination_validates_its_coefficients():
+    input = tp.tensor([[1.0, 2.0], [3.0, 4.0]], device="cuda")
+    combine = tp._C._compute_linear_combination
+    assert combine(input, tp.tensor([[2.0, -1.0]], device="cuda")).tolist() == [[-1.0, 0.0]]
+    with pytest.raises(RuntimeError, match="coefficient count"):
+        combine(input, tp.ones((1, 3), device="cuda"))
+    with pytest.raises(TypeError, match="incompatible dtypes"):
+        combine(input, tp.ones((1, 2), dtype=tp.float64, device="cuda"))
+
+
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+@pytest.mark.parametrize("name", ["softmax", "log_softmax"])
+@pytest.mark.parametrize("input_dtype, output_dtype", [
+    (tp.float16, tp.float32),
+    (tp.float32, tp.float64),
+])
+def test_cuda_softmax_honors_explicit_dtype(name, input_dtype, output_dtype):
+    x = tp.tensor([[0.0, 1.0]], dtype=input_dtype, device="cuda", requires_grad=True)
+    y = getattr(tp, name)(x, dim=-1, dtype=output_dtype)
+    assert y.dtype == output_dtype
+    p = 1.0 / (1.0 + math.exp(-1.0))
+    if name == "softmax":
+        _allclose(y, [1.0 - p, p])
+        derivative = (1.0 - p) * p
+    else:
+        _allclose(y, [math.log1p(-p), math.log(p)])
+        derivative = 1.0 - p
+    y[0, 1].backward()
+    assert x.grad.dtype == input_dtype
+    _allclose(x.grad, [-derivative, derivative], tol=5e-4)
+
+    scalar = tp.tensor(1.0, dtype=input_dtype, device="cuda", requires_grad=True)
+    scalar_result = getattr(tp, name)(scalar, dim=0, dtype=output_dtype)
+    assert scalar_result.dtype == output_dtype
+    scalar_result.backward()
+    assert scalar.grad.shape == ()
+    assert scalar.grad.dtype == input_dtype
+    assert scalar.grad.item() == 0.0
+
+
 def test_matrix_exp_inverse_property():
     a = tp.tensor([[0.3, 1.2], [-0.7, 0.4]])
     product = tp.matmul(tp.matrix_exp(a), tp.matrix_exp(tp.neg(a)))

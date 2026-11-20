@@ -104,8 +104,22 @@ void compute_linear_combination_dispatch(
 
 Tensor& compute_linear_combination_out_cuda(
         const Tensor& input, const Tensor& coefficients, Tensor& output) {
+    TP_CHECK(input.dim() > 0 && coefficients.dim() == 2,
+             "_compute_linear_combination expects an input axis and a coefficient matrix");
     const int64_t output_first_dim_size = coefficients.size(0);
     const int64_t input_first_dim_size = coefficients.size(1);
+    TP_CHECK(input.size(0) == input_first_dim_size,
+             "_compute_linear_combination coefficient count must match the input axis");
+    TP_CHECK_TYPE(coefficients.dtype() == toRealValueType(input.dtype()) &&
+                      output.dtype() == input.dtype(),
+                  "_compute_linear_combination received incompatible dtypes");
+    TP_CHECK(output.dim() == input.dim() && output.size(0) == output_first_dim_size,
+             "_compute_linear_combination received an incompatible output shape");
+    for (int64_t axis = 1; axis < input.dim(); ++axis) {
+        TP_CHECK(output.size(axis) == input.size(axis),
+                 "_compute_linear_combination received an incompatible output shape");
+    }
+    if (output.numel() == 0 || input_first_dim_size == 0) return output;
 
     Tensor output_broadcast = output.unsqueeze(1);
     std::vector<int64_t> output_sizes =
