@@ -428,6 +428,13 @@ def _triple(x):
     return tuple(x)
 
 
+def _adaptive_max_pool_output_size(input: Tensor, size):
+    return [
+        input.size(axis - len(size)) if value is None else value
+        for axis, value in enumerate(size)
+    ]
+
+
 def _conv_padding_mode(input, padding, stride, dilation, weight, ndim):
     """A padding spelled as a word instead of a count of cells.
 
@@ -693,14 +700,15 @@ def adaptive_avg_pool2d(input, output_size):
             return captured
     return _C.adaptive_avg_pool2d(input, output_size)
 
-def adaptive_max_pool2d(input, output_size):
+def adaptive_max_pool2d(input, output_size, return_indices=False):
     if _capturing():
-        captured = _capture_call(adaptive_max_pool2d, (input, output_size), {})
+        options = {"return_indices": True} if return_indices else {}
+        captured = _capture_call(adaptive_max_pool2d, (input, output_size), options)
         if captured is not None:
             return captured
-    output_size = list(_pair(output_size))
-    # Route through the (values, indices) op so autograd saves indices and the
-    return _C.adaptive_max_pool2d_with_indices(input, output_size)[0]
+    output_size = _adaptive_max_pool_output_size(input, _pair(output_size))
+    result = _C.adaptive_max_pool2d_with_indices(input, output_size)
+    return result if return_indices else result[0]
 
 # Normalization functions
 
@@ -1807,13 +1815,10 @@ def adaptive_avg_pool1d(input: Tensor, output_size) -> Tensor:
     return out.squeeze(0) if unbatched else out
 
 
-def adaptive_max_pool1d(input: Tensor, output_size):
-    r"""adaptive_max_pool1d(input, output_size) -> Tensor"""
-    unbatched = input.dim() == 2
-    x = input.unsqueeze(0) if unbatched else input
-    size = _single(output_size)[0]
-    out = adaptive_max_pool2d(x.unsqueeze(3), (size, 1)).squeeze(3)
-    return out.squeeze(0) if unbatched else out
+def adaptive_max_pool1d(input: Tensor, output_size, return_indices=False):
+    r"""adaptive_max_pool1d(input, output_size, return_indices=False)"""
+    result = adaptive_max_pool1d_with_indices(input, output_size)
+    return result if return_indices else result[0]
 
 
 def lp_pool2d(
@@ -4509,13 +4514,7 @@ def adaptive_max_pool2d_with_indices(input: Tensor, output_size, return_indices:
 
     See :class:`~tensorplay.nn.AdaptiveMaxPool2d` for details.
     """
-    output_size = list(_pair(output_size))
-    unbatched = input.dim() == 3
-    x = input.unsqueeze(0) if unbatched else input
-    values, indices = _C.adaptive_max_pool2d_with_indices(x, output_size)
-    if unbatched:
-        return values.squeeze(0), indices.squeeze(0)
-    return values, indices
+    return adaptive_max_pool2d(input, output_size, return_indices=True)
 
 
 def adaptive_max_pool1d_with_indices(input: Tensor, output_size, return_indices: bool = True):
@@ -4543,11 +4542,9 @@ def adaptive_max_pool3d(input: Tensor, output_size, return_indices: bool = False
 
     See :class:`~tensorplay.nn.AdaptiveMaxPool3d` for details.
     """
-    od, oh, ow = _triple(output_size)
-    values, indices = _C.adaptive_max_pool3d(input, [od, oh, ow])
-    if return_indices:
-        return values, indices
-    return values
+    output_size = _adaptive_max_pool_output_size(input, _triple(output_size))
+    result = _C.adaptive_max_pool3d(input, output_size)
+    return result if return_indices else result[0]
 
 
 def adaptive_max_pool3d_with_indices(input: Tensor, output_size, return_indices: bool = True):
@@ -4556,13 +4553,7 @@ def adaptive_max_pool3d_with_indices(input: Tensor, output_size, return_indices:
 
     See :class:`~tensorplay.nn.AdaptiveMaxPool3d` for details.
     """
-    od, oh, ow = _triple(output_size)
-    unbatched = input.dim() == 4
-    x = input.unsqueeze(0) if unbatched else input
-    values, indices = _C.adaptive_max_pool3d(x, [od, oh, ow])
-    if unbatched:
-        return values.squeeze(0), indices.squeeze(0)
-    return values, indices
+    return adaptive_max_pool3d(input, output_size, return_indices=True)
 
 
 # -----------------------------------------------------------------------------

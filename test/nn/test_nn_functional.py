@@ -327,6 +327,34 @@ def test_adaptive_pools_3d_and_max_with_indices():
     np.testing.assert_array_equal(to_numpy(i2), ti2.numpy())
 
 
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param("cuda", marks=pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")),
+])
+@pytest.mark.parametrize("rank, shape, size", [
+    (1, (2, 9), 4),
+    (2, (2, 4, 5), (None, 3)),
+    (3, (2, 3, 4, 5), (None, 2, 3)),
+])
+def test_adaptive_max_pool_public_indices_preserve_unspecified_axes(rank, shape, size, device):
+    data = _no_ties(shape, seed=rank).astype(np.float32)
+    x = _mk(data, device).requires_grad_(True)
+    ref = _th(data, device, requires_grad=True)
+    op = getattr(F, f"adaptive_max_pool{rank}d")
+    ref_op = getattr(torch.nn.functional, f"adaptive_max_pool{rank}d")
+    values, indices = op(x, size, True)
+    expected, expected_indices = ref_op(ref, size, True)
+    assert_reference_close(values, expected.detach().cpu().numpy())
+    np.testing.assert_array_equal(to_numpy(indices), expected_indices.cpu().numpy())
+    module = getattr(tp.nn, f"AdaptiveMaxPool{rank}d")(size, return_indices=True)
+    module_values, module_indices = module(x)
+    assert_reference_close(module_values, expected.detach().cpu().numpy())
+    np.testing.assert_array_equal(to_numpy(module_indices), expected_indices.cpu().numpy())
+    values.sum().backward()
+    expected.sum().backward()
+    assert_reference_close(x.grad, ref.grad.cpu().numpy())
+
+
 def test_fractional_max_pool_deterministic_samples():
     """With explicit _random_samples both implementations are deterministic
     and must agree bit-for-bit on windows (generated intervals)."""
