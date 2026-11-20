@@ -41,6 +41,11 @@ struct P10_API StorageImpl : public IntrusivePtrTarget {
     // const accessors, which is how the first accessor takes a private copy.
     mutable std::shared_ptr<SharedBytes> shared;
 
+    // Set while the logical values are the negation of the stored bytes, which
+    // is how a negated view carries its sign without touching the data.  A
+    // tensor's own views share this storage, so they inherit the sign.
+    mutable bool negated = false;
+
     StorageImpl(size_t size, Allocator* allocator, bool resizable = true)
         : nbytes(size), allocator(allocator), resizable(resizable) {
         if (allocator) {
@@ -90,6 +95,20 @@ struct P10_API StorageImpl : public IntrusivePtrTarget {
     // True while another storage still observes the same bytes.
     bool is_shared() const { return shared != nullptr && shared.use_count() > 1; }
 
+    // Sign carried by the bytes: while set, reading a value must apply a
+    // negation, and the flag is cleared once the bytes hold the final values.
+    bool is_negated() const { return negated; }
+
+    void mark_negated() { negated = true; }
+
+    // Clear the pending sign, reporting whether it was there.  Only the party
+    // that owns the bytes outright may do this, since it then negates them.
+    bool take_negation() const {
+        const bool had = negated;
+        negated = false;
+        return had;
+    }
+
     // Hand the bytes to a second owner: both storages reference one holder
     // from here on, and the first of them to touch the bytes takes a private
     // copy.  The block itself is not copied here.
@@ -122,10 +141,8 @@ struct P10_API StorageImpl : public IntrusivePtrTarget {
         const size_t bytes = shared->nbytes;
         Allocator* alloc = shared->allocator;
         if (alloc == nullptr || bytes == 0) {
-            // Memory the storage does not own cannot be re-owned privately.
-            // Sharing stays; callers that need isolation avoid sharing such
-            // storages in the first place.
-            shared.reset();
+            // Memory the storage does not own cannot be re-owned privately, so
+            // the sharing stays; the block is still read through the holder.
             return;
         }
         const Device device = shared->device();

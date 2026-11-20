@@ -449,11 +449,15 @@ public:
         return static_cast<char*>(base_ptr) + storage_offset_ * elem_size;
     }
 
-    // Copy-on-write detach.  The bytes are shared until the first access
-    // through a data pointer; that access is where the private copy is taken,
-    // so handing out a shared block stays free of any kernel.
+    // Deferred state carried by the bytes.  Both forms are resolved on the
+    // first access through a data pointer: a block another storage still
+    // observes becomes private, and a pending sign is applied to those private
+    // bytes.  Handing out the bytes therefore costs no kernel; a tensor that is
+    // never reached never pays.
     void cow_materialize_if_needed() const {
-        if (storage_.defined() && storage_.is_shared()) cow_materialize();
+        if (storage_.defined() && (storage_.is_shared() || storage_.is_negated())) {
+            cow_materialize();
+        }
     }
     void cow_materialize() const;
 

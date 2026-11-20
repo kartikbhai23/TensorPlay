@@ -66,7 +66,10 @@ DType result_type_scalar_scalar_native(const Scalar& scalar1,
 
 bool is_conj_native(const Tensor& /*self*/) { return false; }
 
-bool is_neg_native(const Tensor& /*self*/) { return false; }
+bool is_neg_native(const Tensor& self) {
+    const TensorImpl* impl = self.unsafeGetTensorImpl().get();
+    return impl != nullptr && impl->storage().is_negated();
+}
 
 bool is_distributed_native(const Tensor& /*self*/) { return false; }
 

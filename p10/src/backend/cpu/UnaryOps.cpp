@@ -31,7 +31,15 @@ Tensor arctanh_native_cpu(const Tensor& self) { return ops::atanh(self); }
 Tensor& arctanh__native_cpu(Tensor& self) { return ops::atanh_(self); }
 
 Tensor resolve_conj_native_cpu(const Tensor& self) { return self; }
-Tensor resolve_neg_native_cpu(const Tensor& self) { return self; }
+
+// Clearing the deferred sign means making the bytes hold the values they
+// already stand for: the tensor then carries no sign and no longer needs its
+// own copy, so the values are unchanged and the tensor itself answers.
+Tensor resolve_neg_native_cpu(const Tensor& self) {
+    const TensorImpl* impl = self.unsafeGetTensorImpl().get();
+    if (impl != nullptr && impl->storage().is_negated()) impl->cow_materialize();
+    return self;
+}
 
 // The out variants of these aliases hand the destination to the same pass the
 // short name runs, so a destination is judged -- and taken -- exactly as it

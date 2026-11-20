@@ -3,21 +3,31 @@
 #include "Exception.h"
 #include "Storage.h"
 #include "Tensor.h"
+#include "tensorplay/TensorRedispatchGenerated.h"
 
 namespace tensorplay {
 
-// Detach this tensor's storage from a block it still shares with another
-// storage: the first accessor takes a private copy, the other holder keeps the
-// original block, so neither side observes the other's writes.  Logical
-// contents are identical at this point, which is what makes the copy safe.
+// Resolve the deferred state carried by this tensor's bytes: take a private
+// block while another storage still observes it, then apply a pending sign to
+// those private bytes.  Logical contents are identical before and after, which
+// is what makes both steps safe to run on first access.
 //
-// Runs at most once per sharing, and the side that never touches the block
-// never copies (the last holder simply takes ownership back).
+// Runs at most once per deferral, and a tensor that is never reached pays
+// nothing: the last holder simply takes the block back instead of copying.
 void TensorImpl::cow_materialize() const {
     if (!storage_.defined()) return;
     StorageImpl* impl = storage_.unsafeGetStorageImpl().get();
     if (impl == nullptr) return;
     impl->detach_bytes();
+    if (!impl->take_negation()) return;
+    // The bytes now hold the values as stored, and this tensor's logical values
+    // are their negation; fold the sign into the bytes so that every later
+    // reader (kernels, exports, views) sees the final values directly.  The
+    // negation runs on a metadata copy that shares this tensor's storage, and
+    // through the out entry point so that no mutation is reported to the
+    // version counter: the caller never asked for an in-place update.
+    Tensor mirror(make_intrusive<TensorImpl>(*const_cast<TensorImpl*>(this)));
+    detail::redispatch_neg_out_function(mirror, mirror);
 }
 
 const char* toString(MemoryFormat format) {

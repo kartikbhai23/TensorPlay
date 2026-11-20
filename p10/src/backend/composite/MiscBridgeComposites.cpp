@@ -5,6 +5,8 @@
 #include "Tensor.h"
 #include "Scalar.h"
 #include "Exception.h"
+#include "GradMode.h"
+#include "InferenceMode.h"
 #include "tensorplay/ops/TPXOpsGenerated.h"
 #include "tensorplay/ops/TensorRedispatchGenerated.h"
 #include "OutWrite.h"
@@ -131,7 +133,36 @@ Tensor _conj_view(const Tensor& self) {
 }
 
 Tensor _neg_view(const Tensor& self) {
-    return ops::neg(self);
+    // A negated view carries its sign as metadata: the bytes stay untouched and
+    // the sign is folded in when the values are first reached.  Handing the
+    // bytes to a second owner launches no kernel and allocates nothing, so
+    // building the view is free; the first access to either side then pays at
+    // most one copy plus one negation, and a view dropped before anyone reaches
+    // it pays nothing at all.
+    const TensorImpl* impl = self.unsafeGetTensorImpl().get();
+    if (impl == nullptr || self.is_sparse() || self.is_batched()) {
+        return ops::neg(self);
+    }
+    const Storage& storage = impl->storage();
+    // Four cases keep the eager kernel: bytes the storage does not own (they
+    // cannot be copied privately later), a sign that is already deferred (two
+    // negations cancel, which the eager kernel expresses directly), a backend
+    // that publishes raw storage handles instead of data pointers, and an input
+    // that is differentiable in this mode, whose backward pass needs a node.
+    if (!storage.defined() || storage.allocator() == nullptr ||
+        storage.is_negated() || impl->has_quantizer() ||
+        !(self.device().is_cpu() || self.device().is_cuda()) ||
+        (self.requires_grad() && GradMode::is_enabled() && !InferenceMode::is_enabled())) {
+        return ops::neg(self);
+    }
+    Storage deferred = storage.share_bytes();
+    deferred.mark_negated();
+    return Tensor(make_intrusive<TensorImpl>(
+        std::move(deferred),
+        static_cast<std::vector<int64_t>>(self.shape()),
+        self.strides(),
+        impl->dtype(),
+        impl->storage_offset()));
 }
 
 Tensor _conj_physical_impl(const Tensor& self) {

@@ -72,6 +72,13 @@ public:
     // accessor of a shared block takes a private copy (StorageImpl::detach_bytes).
     bool is_shared() const { return impl_ && impl_->is_shared(); }
 
+    // Sign carried by the bytes, for views that negate without touching data.
+    bool is_negated() const { return impl_ && impl_->is_negated(); }
+
+    void mark_negated() {
+        if (impl_) impl_->mark_negated();
+    }
+
     // Second owner of the same bytes: neither side copies until one of them
     // reaches the data, and each side then gets a private block on first use.
     Storage share_bytes() const {
