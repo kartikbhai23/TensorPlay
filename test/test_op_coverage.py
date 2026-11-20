@@ -473,6 +473,29 @@ class TestOpCoverage(TestCase):
         self.assertEqual(tp.nonzero_static(tp.tensor([0, 1, 0, 2]), size=3).tolist(),
                          [[1], [3], [-1]])
 
+    def test_nonzero_static_known_shape(self):
+        self.assertEqual(tuple(tp.nonzero_static(tp.tensor(1), size=3).shape), (3, 0))
+        self.assertEqual(tuple(tp.nonzero_static(tp.empty((9, 2), device="meta"), size=7).shape),
+                         (7, 2))
+
+    @pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+    def test_cuda_nonzero_static_truncates_and_pads_in_input_order(self):
+        for rows in (20, 2000, 50000):
+            x = (tp.arange(rows * 3, device="cuda").reshape((3, rows)).T % 211) == 0
+            coords = [[row, col] for row in range(rows) for col in range(3)
+                      if (col * rows + row) % 211 == 0]
+            for size in (0, 2, len(coords) + 3):
+                expected = (coords + [[-7, -7]] * size)[:size]
+                result = tp.nonzero_static(x, size=size, fill_value=-7)
+                self.assertEqual(result.tolist(), expected)
+            out = tp.empty((2, len(coords) + 3), dtype=tp.int64, device="cuda").T
+            tp.nonzero_static(x, size=out.size(0), fill_value=-7, out=out)
+            self.assertEqual(out.tolist(), coords + [[-7, -7]] * 3)
+        empty = tp.empty((0, 4), device="cuda")
+        self.assertEqual(tp.nonzero_static(empty, size=2).tolist(), [[-1, -1], [-1, -1]])
+        scalar = tp.tensor(1, device="cuda")
+        self.assertEqual(tuple(tp.nonzero_static(scalar, size=3).shape), (3, 0))
+
     # ---------------------------------------------------------------- linalg
     def test_cholesky(self):
         self.assertEqual(tp.cholesky(tp.tensor([[4.0, 2.0], [2.0, 3.0]])).tolist(),

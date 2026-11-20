@@ -69,21 +69,20 @@ Tensor put_native(const Tensor& self, const Tensor& index,
 // from the leading matches and padded (or truncated) with fill_value rows.
 Tensor nonzero_static_native(const Tensor& self, int64_t size,
                              int64_t fill_value) {
-    if (self.dim() == 0) {
+    if (size < 0) {
         TP_THROW(RuntimeError,
-                 "nonzero_static(): not supported with 0-d tensors");
+                 "nonzero_static(): size must be non-negative, got ", size);
+    }
+    const int64_t rank = self.dim();
+    if (size == 0 || rank == 0 || self.device().type() == DeviceType::Meta) {
+        return Tensor::empty({size, rank}, DType::Int64, self.device());
     }
     Tensor nz = ops::nonzero(self);
-    const int64_t n = size;
-    if (n < 0) {
-        TP_THROW(RuntimeError,
-                 "nonzero_static(): size must be non-negative, got ", n);
-    }
     const int64_t k = nz.size(0);
-    if (k >= n) {
-        return ops::narrow(nz, 0, 0, n);
+    if (k >= size) {
+        return ops::narrow(nz, 0, 0, size);
     }
-    const Tensor tail = ops::full({n - k, self.dim()}, Scalar(fill_value),
+    const Tensor tail = ops::full({size - k, rank}, Scalar(fill_value),
                                   DType::Int64, self.device());
     return ops::cat({nz, tail}, 0);
 }
