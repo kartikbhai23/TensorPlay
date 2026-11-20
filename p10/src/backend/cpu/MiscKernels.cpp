@@ -1624,6 +1624,87 @@ std::tuple<Tensor, Tensor> histogram_bin_ct_kernel(
     }
     histogram_check_weight(self, weight);
     auto outer = histogram_outer_edges_1d(self, range);
+    // CPU float fast path: the min/max walk, the edge fill and the counting
+    // answer in one kernel — aminmax, linspace and zeros each cost their own
+    // dispatch round trip, which dominates small-bins calls.
+    if (self.device().is_cpu()
+            && (self.dtype() == DType::Float32 || self.dtype() == DType::Float64)) {
+        Tensor v = self.reshape({self.numel()}).contiguous();
+        Tensor bin_edges = Tensor::empty({bins + 1}, self.dtype(), self.device());
+        Tensor hist = Tensor::zeros({bins}, self.dtype(), self.device());
+        Tensor w = weight.has_value()
+            ? weight->reshape({self.numel()}).contiguous()
+            : Tensor();
+        const int64_t n = self.numel();
+        if (self.dtype() == DType::Float32) {
+            const float* vp = v.data_ptr<float>();
+            float* ep = bin_edges.data_ptr<float>();
+            float lo = std::numeric_limits<float>::infinity();
+            float hi = -std::numeric_limits<float>::infinity();
+            if (!range) {
+                for (int64_t i = 0; i < n; ++i) {
+                    const float x = vp[i];
+                    if (x < lo) lo = x;
+                    if (x > hi) hi = x;
+                }
+            } else {
+                lo = static_cast<float>(outer.first);
+                hi = static_cast<float>(outer.second);
+            }
+            if (!(n > 0) || !(hi > lo)) {
+                lo = static_cast<float>(outer.first) - 0.5f;
+                hi = static_cast<float>(outer.second) + 0.5f;
+            }
+            for (int64_t i = 0; i <= bins; ++i)
+                ep[i] = lo + (hi - lo) * static_cast<float>(i) / static_cast<float>(bins);
+            float* hp = hist.data_ptr<float>();
+            const float* wp = weight.has_value() ? w.data_ptr<float>() : nullptr;
+            const float scale = static_cast<float>(bins) / (hi - lo);
+            for (int64_t i = 0; i < n; ++i) {
+                const float x = vp[i];
+                if (!(x >= lo && x <= hi)) continue;
+                int64_t bin = static_cast<int64_t>((x - lo) * scale);
+                hp[std::min(std::max(bin, int64_t(0)), bins - 1)] +=
+                    wp ? wp[i] : 1.0f;
+            }
+        } else {
+            const double* vp = v.data_ptr<double>();
+            double* ep = bin_edges.data_ptr<double>();
+            double lo = std::numeric_limits<double>::infinity();
+            double hi = -std::numeric_limits<double>::infinity();
+            if (!range) {
+                for (int64_t i = 0; i < n; ++i) {
+                    const double x = vp[i];
+                    if (x < lo) lo = x;
+                    if (x > hi) hi = x;
+                }
+            } else {
+                lo = outer.first;
+                hi = outer.second;
+            }
+            if (!(n > 0) || !(hi > lo)) {
+                lo = outer.first - 0.5;
+                hi = outer.second + 0.5;
+            }
+            for (int64_t i = 0; i <= bins; ++i)
+                ep[i] = lo + (hi - lo) * static_cast<double>(i) / static_cast<double>(bins);
+            double* hp = hist.data_ptr<double>();
+            const double* wp = weight.has_value() ? w.data_ptr<double>() : nullptr;
+            const double scale = static_cast<double>(bins) / (hi - lo);
+            for (int64_t i = 0; i < n; ++i) {
+                const double x = vp[i];
+                if (!(x >= lo && x <= hi)) continue;
+                int64_t bin = static_cast<int64_t>((x - lo) * scale);
+                hp[std::min(std::max(bin, int64_t(0)), bins - 1)] +=
+                    wp ? wp[i] : 1.0;
+            }
+        }
+        if (density) {
+            hist = hist.div(hist.sum());
+            hist = hist.div(bin_edges.narrow(0, 1, bins).sub(bin_edges.narrow(0, 0, bins)));
+        }
+        return {std::move(hist), std::move(bin_edges)};
+    }
     Tensor bin_edges = Tensor::linspace(Scalar(outer.first),
                                         Scalar(outer.second), bins + 1,
                                         self.dtype(), self.device());
