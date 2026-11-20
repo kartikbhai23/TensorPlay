@@ -178,6 +178,26 @@ def test_multilabel_margin_loss():
     assert xi.grad is not None and float(np.abs(to_numpy(xi.grad)).sum()) > 0
 
 
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16", "float32", "float64"])
+@pytest.mark.parametrize("reduction", ["none", "sum", "mean"])
+def test_multilabel_margin_loss_cuda(dtype, reduction):
+    values = [[1.0, -0.5, 0.25, 2.0], [-0.25, 1.0, -1.0, 0.25]]
+    labels = [[0, 2, -1, -1], [3, -1, -1, -1]]
+    for x_values, y_values in ((values[0], labels[0]), (values, labels)):
+        x = tp.tensor(x_values, dtype=getattr(tp, dtype), device="cuda", requires_grad=True)
+        y = tp.tensor(y_values, dtype=tp.int64, device="cuda")
+        rx = torch.tensor(x_values, dtype=getattr(torch, dtype), device="cuda", requires_grad=True)
+        ry = torch.tensor(y_values, dtype=torch.int64, device="cuda")
+        got = F.multilabel_margin_loss(x, y, reduction=reduction)
+        want = torch.nn.functional.multilabel_margin_loss(rx, ry, reduction=reduction)
+        assert got.dtype == x.dtype
+        assert_reference_close(got.float(), want.detach().float().cpu().numpy())
+        got.sum().backward()
+        want.sum().backward()
+        assert_reference_close(x.grad.float(), rx.grad.float().cpu().numpy())
+
+
 def test_ctc_loss_matches_torch():
     rng = np.random.RandomState(8)
     T, N, C, S = 20, 4, 7, 5

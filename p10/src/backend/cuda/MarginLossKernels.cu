@@ -183,17 +183,17 @@ __global__ void multi_margin_bwd_kernel(double* __restrict__ gradInput, const do
     for (int i = threadIdx.x; i < dim; i += blockDim.x) gradInput_k[i] *= *gradOutput_k;
 }
 
-__global__ void multilabel_fwd_kernel(double* __restrict__ output, const double* __restrict__ input,
-                                      const int64_t* __restrict__ target, double* __restrict__ is_target,
+template <typename T, typename Acc>
+__global__ void multilabel_fwd_kernel(T* __restrict__ output, const T* __restrict__ input,
+                                      const int64_t* __restrict__ target, T* __restrict__ is_target,
                                       int nframe, int dim, bool sizeAverage) {
-    __shared__ double smem[kMarginThreads];
+    __shared__ Acc smem[kMarginThreads];
     const int k = blockIdx.x;
-    const double* input_k = input + static_cast<size_t>(k) * dim;
+    const T* input_k = input + static_cast<size_t>(k) * dim;
     const int64_t* target_k = target + static_cast<size_t>(k) * dim;
-    double* output_k = output + k;
-    double* is_target_k = is_target + static_cast<size_t>(k) * dim;
+    T* is_target_k = is_target + static_cast<size_t>(k) * dim;
 
-    for (int d = threadIdx.x; d < dim; d += blockDim.x) is_target_k[d] = 0;
+    for (int d = threadIdx.x; d < dim; d += blockDim.x) is_target_k[d] = T(0);
     __syncthreads();
 
     if (threadIdx.x == 0) {
@@ -201,19 +201,20 @@ __global__ void multilabel_fwd_kernel(double* __restrict__ output, const double*
             const int64_t idx = target_k[dt];
             if (idx < 0) break;
             assert(idx < dim);
-            is_target_k[idx] = 1;
+            is_target_k[idx] = T(1);
         }
     }
     __syncthreads();
 
-    double sum = 0;
+    Acc sum = 0;
     for (int dt = 0; dt < dim; ++dt) {
         const int64_t idx = target_k[dt];
         if (idx < 0) break;
-        const double input_target = input_k[idx];
+        const Acc input_target = static_cast<Acc>(input_k[idx]);
         for (int d = threadIdx.x; d < dim; d += blockDim.x) {
-            if (is_target_k[d] == 0) {
-                const double z = 1 - input_target + input_k[d];
+            if (is_target_k[d] == T(0)) {
+                const Acc z = static_cast<Acc>(
+                    T(Acc(1) - input_target + static_cast<Acc>(input_k[d])));
                 if (z > 0) sum += z;
             }
         }
@@ -222,9 +223,9 @@ __global__ void multilabel_fwd_kernel(double* __restrict__ output, const double*
     smem[threadIdx.x] = sum;
     __syncthreads();
     if (threadIdx.x == 0) {
-        double total = 0;
+        Acc total = 0;
         for (int i = 0; i < blockDim.x; ++i) total += smem[i];
-        *output_k = sizeAverage ? total / dim / nframe : total / dim;
+        output[k] = T(sizeAverage ? total / dim / nframe : total / dim);
     }
 }
 
@@ -472,59 +473,38 @@ std::tuple<Tensor, Tensor> multilabel_margin_loss_forward_cuda(const Tensor& inp
 
     const DType dt = input.dtype();
     const Device dev = input.device();
-    Tensor is_target = Tensor::zeros(target.shape(), DType::Float64, dev);
-    const bool scalar_out = reduction != kReductionNone || target.dim() <= 1;
+    Tensor is_target = Tensor::empty(target.shape(), dt, dev);
+    const bool scalar_out = reduction != kReductionNone || input.dim() <= 1;
     if (input.numel() == 0) {
         Tensor output = scalar_out
-            ? Tensor::full({}, Scalar(0.0), dt == DType::Float64 ? DType::Float64 : DType::Float32, dev)
+            ? Tensor::full({}, Scalar(0.0), dt, dev)
             : Tensor::empty({nframe}, dt, dev);
-        return std::make_tuple(output, is_target.to(dt));
+        return std::make_tuple(output, is_target);
     }
 
-    const Tensor input_f64 = input.contiguous().to(DType::Float64);
+    const Tensor input_c = input.contiguous();
     const Tensor target_i64 = as_long_contiguous(target);
-    auto stream = getCurrentCUDAStream().stream();
-
-    const bool sizeAverage = reduction == kReductionMean;
-    if (input.dim() <= 1) {
-        Tensor tmp = Tensor::empty({1}, DType::Float64, dev);
-        dim3 blocks(1);
-        dim3 threads(kMarginThreads);
-        multilabel_fwd_kernel<<<blocks, threads, 0, stream>>>(
-            tmp.data_ptr<double>(), input_f64.data_ptr<double>(),
-            target_i64.data_ptr<int64_t>(), is_target.data_ptr<double>(),
-            1, static_cast<int>(dim), sizeAverage);
-        CUDA_CHECK(cudaGetLastError());
-        const DType loss_dt = dt == DType::Float64 ? DType::Float64 : DType::Float32;
-        return std::make_tuple(
-            rows_total<double>(tmp, DType::Float64, dev).to(loss_dt),
-            is_target.to(dt));
+    const auto stream = getCurrentCUDAStream().stream();
+    const bool single = scalar_out && nframe == 1;
+    Tensor output = Tensor::empty(single ? std::vector<int64_t>{}
+                                         : std::vector<int64_t>{nframe}, dt, dev);
+    const auto blocks = static_cast<unsigned>(nframe);
+    auto launch = [&]<typename T, typename Acc>() {
+        multilabel_fwd_kernel<T, Acc><<<blocks, kMarginThreads, 0, stream>>>(
+            output.data_ptr<T>(), input_c.const_data_ptr<T>(),
+            target_i64.const_data_ptr<int64_t>(), is_target.data_ptr<T>(),
+            static_cast<int>(nframe), static_cast<int>(dim), reduction == kReductionMean);
+    };
+    switch (dt) {
+        case DType::Float32: launch.template operator()<float, float>(); break;
+        case DType::Float64: launch.template operator()<double, double>(); break;
+        case DType::Float16: launch.template operator()<Half, float>(); break;
+        case DType::BFloat16: launch.template operator()<BFloat16, float>(); break;
+        default: TP_THROW(NotImplementedError, "multilabel_margin_loss: unsupported input dtype");
     }
-
-    if (scalar_out) {
-        Tensor tmp = Tensor::empty({nframe}, DType::Float64, dev);
-        dim3 blocks(static_cast<unsigned>(nframe));
-        dim3 threads(kMarginThreads);
-        multilabel_fwd_kernel<<<blocks, threads, 0, stream>>>(
-            tmp.data_ptr<double>(), input_f64.data_ptr<double>(),
-            target_i64.data_ptr<int64_t>(), is_target.data_ptr<double>(),
-            static_cast<int>(nframe), static_cast<int>(dim), sizeAverage);
-        CUDA_CHECK(cudaGetLastError());
-        const DType loss_dt = dt == DType::Float64 ? DType::Float64 : DType::Float32;
-        return std::make_tuple(
-            rows_total<double>(tmp, DType::Float64, dev).to(loss_dt),
-            is_target.to(dt));
-    }
-
-    Tensor output = Tensor::empty({nframe}, DType::Float64, dev);
-    dim3 blocks(static_cast<unsigned>(nframe));
-    dim3 threads(kMarginThreads);
-    multilabel_fwd_kernel<<<blocks, threads, 0, stream>>>(
-        output.data_ptr<double>(), input_f64.data_ptr<double>(),
-        target_i64.data_ptr<int64_t>(), is_target.data_ptr<double>(),
-        static_cast<int>(nframe), static_cast<int>(dim), false);
     CUDA_CHECK(cudaGetLastError());
-    return std::make_tuple(output.to(dt), is_target.to(dt));
+    if (scalar_out && !single) output = output.sum();
+    return std::make_tuple(output, is_target);
 }
 
 Tensor multilabel_margin_loss_backward_cuda(const Tensor& grad_output, const Tensor& input,
