@@ -1196,12 +1196,22 @@ int tpx_py_probe_match(PyObject* const* args, Py_ssize_t nargs,
     // is settled by trying it.  Likewise a candidate whose required keyword-only
     // parameter is missing cannot serve the call: the count of filled positional
     // slots says nothing about a name the call did not deliver.
+    //
+    // A tensor argument asks for a tensor parameter.  Tensor objects also
+    // satisfy the integral and floating predicates through their index hook, so
+    // a scalar parameter would otherwise claim one, and a call that passes two
+    // tensors would be routed into the scalar form and rejected there before
+    // the tensor form is reached.
+    auto matches_kind = [](PyObject* obj, unsigned char kind) {
+        if (is_tensor_object(obj)) return (kind & ~TPK_OPTIONAL) == TPK_TENSOR;
+        return tpx_py_obj_matches_kind(obj, kind);
+    };
     if (kwnames == nullptr) {
         if (nargs > arity) return -1;
         // A required keyword-only parameter cannot be delivered positionally.
         if (required_kw_mask != 0) return -1;
         for (Py_ssize_t i = 0; i < nargs; ++i) {
-            if (!tpx_py_obj_matches_kind(args[i], kinds[i])) return 0;
+            if (!matches_kind(args[i], kinds[i])) return 0;
         }
         return static_cast<int>(nargs);
     }
@@ -1224,13 +1234,13 @@ int tpx_py_probe_match(PyObject* const* args, Py_ssize_t nargs,
         if (slot < 64) delivered_kw_mask |= 1ull << slot;
         if (slot < arity) {
             PyObject* value = args[nargs + i];
-            if (!tpx_py_obj_matches_kind(value, kinds[slot])) return 0;
+            if (!matches_kind(value, kinds[slot])) return 0;
             ++supplied;
         }
     }
     if ((delivered_kw_mask & required_kw_mask) != required_kw_mask) return -1;
     for (Py_ssize_t i = 0; i < nargs; ++i) {
-        if (!tpx_py_obj_matches_kind(args[i], kinds[i])) return 0;
+        if (!matches_kind(args[i], kinds[i])) return 0;
     }
     return supplied;
 }
