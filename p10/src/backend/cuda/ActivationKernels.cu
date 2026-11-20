@@ -236,6 +236,71 @@ Tensor native_activation_dispatch(const Tensor& self, bool is_sigmoid) {
     Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
                                   self.dtype(), self.device());
     if (self.numel() == 0) return result;
+    // A packed operand and a destination carrying the same extent need no
+    // iteration space; the driver indexes the two buffers directly.
+    if (packed_pointwise_destination(self, result)) {
+        switch (self.dtype()) {
+            case DType::Float32:
+                if (is_sigmoid) {
+                    launch_packed_unary(self, result,
+                        [] __host__ __device__ (float value) -> float {
+                            return 1.0f / (1.0f + ::expf(-value));
+                        });
+                } else {
+                    launch_packed_unary(self, result,
+                        [] __host__ __device__ (float value) -> float {
+                            return ::tanhf(value);
+                        });
+                }
+                return result;
+            case DType::Float64:
+                if (is_sigmoid) {
+                    launch_packed_unary(self, result,
+                        [] __host__ __device__ (double value) -> double {
+                            return 1.0 / (1.0 + ::exp(-value));
+                        });
+                } else {
+                    launch_packed_unary(self, result,
+                        [] __host__ __device__ (double value) -> double {
+                            return ::tanh(value);
+                        });
+                }
+                return result;
+            case DType::Float16:
+                if (is_sigmoid) {
+                    launch_packed_unary(self, result,
+                        [] __host__ __device__ (Half value) -> Half {
+                            const float acc = static_cast<float>(value);
+                            return static_cast<Half>(1.0f / (1.0f + ::expf(-acc)));
+                        });
+                } else {
+                    launch_packed_unary(self, result,
+                        [] __host__ __device__ (Half value) -> Half {
+                            return static_cast<Half>(
+                                ::tanhf(static_cast<float>(value)));
+                        });
+                }
+                return result;
+            case DType::BFloat16:
+                if (is_sigmoid) {
+                    launch_packed_unary(self, result,
+                        [] __host__ __device__ (BFloat16 value) -> BFloat16 {
+                            const float acc = static_cast<float>(value);
+                            return static_cast<BFloat16>(
+                                1.0f / (1.0f + ::expf(-acc)));
+                        });
+                } else {
+                    launch_packed_unary(self, result,
+                        [] __host__ __device__ (BFloat16 value) -> BFloat16 {
+                            return static_cast<BFloat16>(
+                                ::tanhf(static_cast<float>(value)));
+                        });
+                }
+                return result;
+            default:
+                break;
+        }
+    }
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(true)
         .add_output(result)
