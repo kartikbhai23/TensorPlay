@@ -1,4 +1,4 @@
-#include "ReduceEngine.cuh"
+#include "ReduceArgSmall.cuh"
 
 #include <optional>
 
@@ -17,6 +17,9 @@ Tensor argmin_same_dtype(
     // Same packed-u64 fast path as argmax, with the key inverted for the
     // min direction (identical winners — value asc / first occurrence).
     if constexpr (std::is_same_v<ValueT, float>) {
+        if (use_small_arg_reduce(input, spec)) {
+            return small_arg_reduce<T, reduction::PackedArgMinOps>(input, spec, keepdim, ~0ull);
+        }
         if (spec.reduced_numel <= ((int64_t{1} << 31) - 1)) {
             return run_reduction_typed<T, unsigned long long, int64_t>(
                 input, spec, keepdim, DType::Int64,

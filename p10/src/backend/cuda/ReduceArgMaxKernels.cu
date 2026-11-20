@@ -1,4 +1,4 @@
-#include "ReduceEngine.cuh"
+#include "ReduceArgSmall.cuh"
 
 #include <optional>
 
@@ -20,6 +20,9 @@ Tensor argmax_same_dtype(
     // fits int32 run the packed-u64 max form (identical winners — value
     // desc / first occurrence); everything else keeps the ArgPair tree.
     if constexpr (std::is_same_v<ValueT, float>) {
+        if (use_small_arg_reduce(input, spec)) {
+            return small_arg_reduce<T, reduction::PackedArgMaxOps>(input, spec, keepdim, 0ull);
+        }
         if (spec.reduced_numel <= ((int64_t{1} << 31) - 1)) {
             return run_reduction_typed<T, unsigned long long, int64_t>(
                 input, spec, keepdim, DType::Int64,
