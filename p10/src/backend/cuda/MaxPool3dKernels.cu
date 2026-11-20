@@ -6,6 +6,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -77,35 +78,40 @@ Tensor& write_pooling_out(const char* op, Tensor value, Tensor& out) {
     return out;
 }
 
-template <typename T, typename M>
+// The index width is the launch's choice: the four divisions that decode an
+// output position are the expensive part of this kernel, and a 32-bit divide
+// costs a fraction of the 64-bit one.  The wide form keeps inputs whose
+// position arithmetic does not fit in 32 bits.
+template <typename T, typename M, typename DimT>
 __global__ void max_pool3d_wi_fwd_kernel(
-    int64_t total, int64_t D_in, int64_t H_in, int64_t W_in,
-    int64_t D_out, int64_t H_out, int64_t W_out,
-    int64_t kD, int64_t kH, int64_t kW, int64_t sD, int64_t sH, int64_t sW,
-    int64_t pD, int64_t pH, int64_t pW, int64_t dD, int64_t dH, int64_t dW,
+    DimT total, DimT D_in, DimT H_in, DimT W_in,
+    DimT D_out, DimT H_out, DimT W_out,
+    DimT kD, DimT kH, DimT kW, DimT sD, DimT sH, DimT sW,
+    DimT pD, DimT pH, DimT pW, DimT dD, DimT dH, DimT dW,
     const T* __restrict__ input, T* __restrict__ output,
     int64_t* __restrict__ indices) {
-    int64_t i = blockIdx.x * (int64_t)blockDim.x + threadIdx.x;
-    const int64_t stride = (int64_t)blockDim.x * gridDim.x;
-    const int64_t out_spatial = D_out * H_out * W_out;
-    for (; i < total; i += stride) {
-        const int64_t w = i % W_out;
-        const int64_t h = (i / W_out) % H_out;
-        const int64_t d = (i / (W_out * H_out)) % D_out;
-        const int64_t nc = i / out_spatial;
-        const T* vol = input + nc * D_in * H_in * W_in;
+    DimT i = blockIdx.x * DimT(blockDim.x) + threadIdx.x;
+    const DimT span = DimT(blockDim.x) * DimT(gridDim.x);
+    const DimT out_spatial = D_out * H_out * W_out;
+    for (; i < total; i += span) {
+        const DimT w = i % W_out;
+        const DimT h = (i / W_out) % H_out;
+        const DimT d = (i / (W_out * H_out)) % D_out;
+        const DimT nc = i / out_spatial;
+        const T* vol = input + static_cast<int64_t>(nc) * D_in * H_in * W_in;
         M max_val = -std::numeric_limits<M>::infinity();
         int64_t max_idx = -1;
-        for (int64_t kd = 0; kd < kD; ++kd) {
-            const int64_t di = d * sD - pD + kd * dD;
+        for (DimT kd = 0; kd < kD; ++kd) {
+            const DimT di = d * sD - pD + kd * dD;
             if (di < 0 || di >= D_in) continue;
-            for (int64_t kh = 0; kh < kH; ++kh) {
-                const int64_t hi = h * sH - pH + kh * dH;
+            for (DimT kh = 0; kh < kH; ++kh) {
+                const DimT hi = h * sH - pH + kh * dH;
                 if (hi < 0 || hi >= H_in) continue;
-                for (int64_t kw = 0; kw < kW; ++kw) {
-                    const int64_t wi = w * sW - pW + kw * dW;
+                for (DimT kw = 0; kw < kW; ++kw) {
+                    const DimT wi = w * sW - pW + kw * dW;
                     if (wi < 0 || wi >= W_in) continue;
-                    const int64_t idx = (di * H_in + hi) * W_in + wi;
+                    const int64_t idx =
+                        (static_cast<int64_t>(di) * H_in + hi) * W_in + wi;
                     const M val = static_cast<M>(vol[idx]);
                     if ((val > max_val) || ::isnan(val)) {
                         max_val = val;
@@ -117,6 +123,48 @@ __global__ void max_pool3d_wi_fwd_kernel(
         output[i] = static_cast<T>(max_val);
         indices[i] = max_idx;
     }
+}
+
+// Dispatches one launch of the forward kernel at the narrowest index width
+// that holds every position this input can address.
+template <typename DimT>
+void launch_max_pool3d_wi_fwd(
+    DType dtype, int64_t blocks, int threads, cudaStream_t stream,
+    int64_t total, int64_t D_in, int64_t H_in, int64_t W_in,
+    int64_t D_out, int64_t H_out, int64_t W_out,
+    int64_t kD, int64_t kH, int64_t kW, int64_t sD, int64_t sH, int64_t sW,
+    int64_t pD, int64_t pH, int64_t pW, int64_t dD, int64_t dH, int64_t dW,
+    const void* input, void* output, int64_t* indices) {
+#define TP_POOL3D_FWD_CASE(ctype, name)                                       \
+    case DType::name: {                                                       \
+        using M = typename PoolMath<ctype>::type;                             \
+        max_pool3d_wi_fwd_kernel<ctype, M, DimT>                              \
+            <<<static_cast<unsigned>(blocks), threads, 0, stream>>>(          \
+                static_cast<DimT>(total), static_cast<DimT>(D_in),            \
+                static_cast<DimT>(H_in), static_cast<DimT>(W_in),             \
+                static_cast<DimT>(D_out), static_cast<DimT>(H_out),           \
+                static_cast<DimT>(W_out), static_cast<DimT>(kD),              \
+                static_cast<DimT>(kH), static_cast<DimT>(kW),                 \
+                static_cast<DimT>(sD), static_cast<DimT>(sH),                 \
+                static_cast<DimT>(sW), static_cast<DimT>(pD),                 \
+                static_cast<DimT>(pH), static_cast<DimT>(pW),                 \
+                static_cast<DimT>(dD), static_cast<DimT>(dH),                 \
+                static_cast<DimT>(dW),                                        \
+                static_cast<const ctype*>(input),                             \
+                static_cast<ctype*>(output), indices);                        \
+        break;                                                                \
+    }
+    switch (dtype) {
+        TP_POOL3D_FWD_CASE(float, Float32)
+        TP_POOL3D_FWD_CASE(double, Float64)
+        TP_POOL3D_FWD_CASE(tensorplay::Half, Float16)
+        TP_POOL3D_FWD_CASE(tensorplay::BFloat16, BFloat16)
+        default:
+            TP_THROW(NotImplementedError,
+                     "max_pool3d_with_indices CUDA supports "
+                     "Float32/Float64/Float16/BFloat16 only");
+    }
+#undef TP_POOL3D_FWD_CASE
 }
 
 template <typename T>
@@ -147,18 +195,20 @@ std::tuple<Tensor, Tensor> max_pool3d_with_indices_cuda(
     const Tensor& input, const std::vector<int64_t>& kernel_size,
     const std::vector<int64_t>& stride, const std::vector<int64_t>& padding,
     const std::vector<int64_t>& dilation, bool ceil_mode) {
-    if (input.dim() == 4) {
-        auto result = max_pool3d_with_indices_cuda(
-            input.unsqueeze(0), kernel_size, stride, padding, dilation, ceil_mode);
-        return std::make_tuple(std::get<0>(result).squeeze(0),
-                               std::get<1>(result).squeeze(0));
+    // A batch-less input has the same memory and the same per-channel walk as
+    // its one-batch form, so it is answered directly: keeping the leading
+    // dimension out of the shape saves building, wrapping and dropping it.
+    if (input.dim() != 4 && input.dim() != 5) {
+        TP_THROW(RuntimeError,
+                 "max_pool3d_with_indices: Expected 4D or 5D input");
     }
-    if (input.dim() != 5) {
-        TP_THROW(RuntimeError, "max_pool3d_with_indices: Expected 5D input");
-    }
+    const bool batchless = input.dim() == 4;
     const Tensor input_c = input.contiguous();
-    const int64_t N = input_c.size(0), C = input_c.size(1);
-    const int64_t D_in = input_c.size(2), H_in = input_c.size(3), W_in = input_c.size(4);
+    const int64_t N = batchless ? 1 : input_c.size(0);
+    const int64_t C = input_c.size(batchless ? 0 : 1);
+    const int64_t D_in = input_c.size(batchless ? 1 : 2);
+    const int64_t H_in = input_c.size(batchless ? 2 : 3);
+    const int64_t W_in = input_c.size(batchless ? 3 : 4);
 
     const auto ks = pool_expand_param(kernel_size, "max_pool3d kernel_size", 3, 1);
     const auto st = pool_expand_param(
@@ -177,43 +227,35 @@ std::tuple<Tensor, Tensor> max_pool3d_with_indices_cuda(
         TP_THROW(RuntimeError, "max_pool3d: Calculated output size is too small");
     }
 
-    Tensor out = Tensor::empty(
-        {N, C, D_out, H_out, W_out}, input.dtype(), input.device());
-    Tensor indices = Tensor::empty(
-        {N, C, D_out, H_out, W_out}, DType::Int64, input.device());
+    const std::vector<int64_t> out_shape = batchless
+        ? std::vector<int64_t>{C, D_out, H_out, W_out}
+        : std::vector<int64_t>{N, C, D_out, H_out, W_out};
+    Tensor out = Tensor::empty(out_shape, input.dtype(), input.device());
+    Tensor indices = Tensor::empty(out_shape, DType::Int64, input.device());
     const int64_t total = N * C * D_out * H_out * W_out;
     const int threads = 256;
     const int64_t blocks = pool_grid_blocks(total, threads);
     const auto stream = getCurrentCUDAStream().stream();
 
-    switch (input.dtype()) {
-        POOL_CUDA_DISPATCH(float, Float32,
-            max_pool3d_wi_fwd_kernel<float, M><<<blocks, threads, 0, stream>>>(
-                total, D_in, H_in, W_in, D_out, H_out, W_out,
-                kD, kH, kW, sD, sH, sW, pD, pH, pW, dD, dH, dW,
-                input_c.data_ptr<float>(), out.data_ptr<float>(),
-                indices.data_ptr<int64_t>()))
-        POOL_CUDA_DISPATCH(double, Float64,
-            max_pool3d_wi_fwd_kernel<double, M><<<blocks, threads, 0, stream>>>(
-                total, D_in, H_in, W_in, D_out, H_out, W_out,
-                kD, kH, kW, sD, sH, sW, pD, pH, pW, dD, dH, dW,
-                input_c.data_ptr<double>(), out.data_ptr<double>(),
-                indices.data_ptr<int64_t>()))
-        POOL_CUDA_DISPATCH(tensorplay::Half, Float16,
-            (max_pool3d_wi_fwd_kernel<tensorplay::Half, M><<<blocks, threads, 0, stream>>>(
-                total, D_in, H_in, W_in, D_out, H_out, W_out,
-                kD, kH, kW, sD, sH, sW, pD, pH, pW, dD, dH, dW,
-                input_c.data_ptr<tensorplay::Half>(), out.data_ptr<tensorplay::Half>(),
-                indices.data_ptr<int64_t>())))
-        POOL_CUDA_DISPATCH(tensorplay::BFloat16, BFloat16,
-            (max_pool3d_wi_fwd_kernel<tensorplay::BFloat16, M><<<blocks, threads, 0, stream>>>(
-                total, D_in, H_in, W_in, D_out, H_out, W_out,
-                kD, kH, kW, sD, sH, sW, pD, pH, pW, dD, dH, dW,
-                input_c.data_ptr<tensorplay::BFloat16>(),
-                out.data_ptr<tensorplay::BFloat16>(), indices.data_ptr<int64_t>())))
-        default:
-            TP_THROW(NotImplementedError,
-                     "max_pool3d_with_indices CUDA supports Float32/Float64/Float16/BFloat16 only");
+    // Every position addressable by this launch fits in 32 bits unless one of
+    // the extents or the output count says otherwise.
+    const int64_t widest = std::max(
+        {total, D_in, H_in, W_in, D_out, H_out, W_out,
+         D_in * H_in * W_in, N * C * D_in * H_in * W_in});
+    if (widest <= std::numeric_limits<int32_t>::max()) {
+        launch_max_pool3d_wi_fwd<int32_t>(
+            input.dtype(), blocks, threads, stream, total,
+            D_in, H_in, W_in, D_out, H_out, W_out,
+            kD, kH, kW, sD, sH, sW, pD, pH, pW, dD, dH, dW,
+            input_c.const_data_ptr(), out.data_ptr(),
+            indices.data_ptr<int64_t>());
+    } else {
+        launch_max_pool3d_wi_fwd<int64_t>(
+            input.dtype(), blocks, threads, stream, total,
+            D_in, H_in, W_in, D_out, H_out, W_out,
+            kD, kH, kW, sD, sH, sW, pD, pH, pW, dD, dH, dW,
+            input_c.const_data_ptr(), out.data_ptr(),
+            indices.data_ptr<int64_t>());
     }
     return std::make_tuple(out, indices);
 }
