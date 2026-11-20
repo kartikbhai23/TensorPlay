@@ -85,6 +85,106 @@ Tensor welford_full_float(
     return moment;
 }
 
+// One block per output slice for a reduction over the trailing run of a
+// contiguous tensor.  Each slice is a plain run of values that a single block
+// folds with the same accumulator the whole-tensor block uses, so the result
+// lands in one launch instead of staging partial sums through a second pass.
+//
+// The row index picks the slice; the block's threads walk it in steps of the
+// block width, then fold the per-warp accumulators the usual way.
+__global__ void welford_rows_float_kernel(
+        const float* input, int slice, FloatMomentOps ops,
+        float* moment, float* mean) {
+    constexpr int warp_size = reduction::kWarpSize;
+    __shared__ FloatMoment warp_moments[reduction::kMaxReduceThreads / warp_size];
+    const float* values = input + static_cast<int64_t>(blockIdx.x) * slice;
+    const int lane = threadIdx.x % warp_size;
+    const int warp = threadIdx.x / warp_size;
+    FloatMoment value{};
+    for (int i = threadIdx.x; i < slice; i += blockDim.x) {
+        value = ops.reduce(value, values[i], i);
+    }
+    for (int offset = warp_size / 2; offset > 0; offset /= 2) {
+        value = ops.combine(value, reduction::reduce_warp_shuffle_down(value, 0xffffffffu, offset));
+    }
+    if (blockDim.x > warp_size) {
+        if (lane == 0) warp_moments[warp] = value;
+        __syncthreads();
+        if (warp != 0) return;
+        value = lane < static_cast<int>(blockDim.x / warp_size) ? warp_moments[lane] : FloatMoment{};
+        for (int offset = warp_size / 2; offset > 0; offset /= 2) {
+            value = ops.combine(value, reduction::reduce_warp_shuffle_down(value, 0xffffffffu, offset));
+        }
+    }
+    if (threadIdx.x == 0) {
+        const int64_t row = blockIdx.x;
+        moment[row] = ops.project(value);
+        if (mean != nullptr) mean[row] = ops.project_second(value);
+    }
+}
+
+// Shape of the trailing-run case: every slice is one unbroken run, and the
+// rows are laid out one after another.
+struct RowMomentPlan {
+    int64_t rows = 0;
+    int64_t slice = 0;
+    bool usable = false;
+};
+
+bool plan_row_moments(const Tensor& input, const ReductionSpec& spec,
+                      RowMomentPlan& plan) {
+    constexpr int64_t max_slice = 16 * reduction::kMaxReduceThreads;
+    constexpr int64_t max_rows = 1 << 20;
+    plan = RowMomentPlan{};
+    if (input.dtype() != DType::Float32 || input.numel() <= 0 ||
+        !input.is_contiguous() || spec.reduced_numel <= 0) {
+        return false;
+    }
+    const auto shape = static_cast<std::vector<int64_t>>(input.shape());
+    // The reduced dimensions must be the last ones, so that walking the input
+    // in order walks slice after slice.
+    size_t first_reduced = shape.size();
+    for (size_t dim = 0; dim < shape.size(); ++dim) {
+        if (spec.mask[dim]) {
+            if (first_reduced == shape.size()) first_reduced = dim;
+        } else if (first_reduced != shape.size()) {
+            return false;
+        }
+    }
+    if (first_reduced == shape.size()) return false;
+    int64_t slice = 1, rows = 1;
+    for (size_t dim = 0; dim < shape.size(); ++dim) {
+        (dim < first_reduced ? rows : slice) *= shape[dim];
+    }
+    if (slice <= 0 || slice > max_slice || rows <= 0 || rows > max_rows) return false;
+    plan.rows = rows;
+    plan.slice = slice;
+    plan.usable = true;
+    return true;
+}
+
+Tensor welford_rows_float(
+        const Tensor& input, const ReductionSpec& spec, const RowMomentPlan& plan,
+        bool keepdim, int64_t correction, bool take_sqrt, Tensor* mean = nullptr) {
+    Tensor moment = Tensor::empty(reduction_output_shape(input, spec, keepdim),
+                                  DType::Float32, input.device());
+    if (mean != nullptr) {
+        *mean = Tensor::empty(reduction_output_shape(input, spec, keepdim),
+                              DType::Float32, input.device());
+    }
+    const int slice = static_cast<int>(plan.slice);
+    const int threads = std::clamp(
+        reduction::reduction_last_pow2(slice / 2),
+        reduction::kWarpSize, reduction::kMaxReduceThreads);
+    welford_rows_float_kernel<<<static_cast<unsigned>(plan.rows), threads, 0,
+                                getCurrentCUDAStream().stream()>>>(
+        input.data_ptr<float>(), slice,
+        FloatMomentOps{static_cast<float>(correction), take_sqrt},
+        moment.data_ptr<float>(), mean == nullptr ? nullptr : mean->data_ptr<float>());
+    checkCuda(cudaGetLastError(), "CUDA moment row reduction launch");
+    return moment;
+}
+
 template <typename T, typename OutT = T>
 Tensor mean_same_dtype(
         const Tensor& input, const ReductionSpec& spec, bool keepdim, DType dtype) {
@@ -352,6 +452,10 @@ Tensor var_dim_kernel(const Tensor& self, const std::vector<int64_t>& dim, int64
     if (use_single_block_moments(self, spec)) {
         return welford_full_float(self, spec, keepdim, correction, false);
     }
+    RowMomentPlan rows;
+    if (plan_row_moments(self, spec, rows)) {
+        return welford_rows_float(self, spec, rows, keepdim, correction, false);
+    }
     // Full-reduction float fast path: the two-pass pair runs at sum speed,
     // well ahead of the serial Welford chain on ordinary sizes.
     if (can_use_two_pass_variance(self, dim, correction, keepdim)) {
@@ -374,6 +478,12 @@ std::tuple<Tensor, Tensor> var_mean_dim_kernel(
     if (use_single_block_moments(self, spec)) {
         Tensor mean;
         Tensor var = welford_full_float(self, spec, keepdim, correction, false, &mean);
+        return {var, mean};
+    }
+    RowMomentPlan rows;
+    if (plan_row_moments(self, spec, rows)) {
+        Tensor mean;
+        Tensor var = welford_rows_float(self, spec, rows, keepdim, correction, false, &mean);
         return {var, mean};
     }
     // Full-reduction float fast path: the two-pass pair, with the mean the
@@ -400,6 +510,12 @@ std::tuple<Tensor, Tensor> std_mean_dim_kernel(
         Tensor std = welford_full_float(self, spec, keepdim, correction, true, &mean);
         return {std, mean};
     }
+    RowMomentPlan rows;
+    if (plan_row_moments(self, spec, rows)) {
+        Tensor mean;
+        Tensor std = welford_rows_float(self, spec, rows, keepdim, correction, true, &mean);
+        return {std, mean};
+    }
     TP_DISPATCH_FLOAT_REDUCTION(welford_var_mean_dispatch, self.dtype(), self, spec,
                                 keepdim, correction, true);
 }
@@ -417,6 +533,10 @@ Tensor std_dim_kernel(const Tensor& self, const std::vector<int64_t>& dim, int64
     const ReductionSpec spec = make_reduction_spec(self, dim);
     if (use_single_block_moments(self, spec)) {
         return welford_full_float(self, spec, keepdim, correction, true);
+    }
+    RowMomentPlan rows;
+    if (plan_row_moments(self, spec, rows)) {
+        return welford_rows_float(self, spec, rows, keepdim, correction, true);
     }
     // Same two-pass fast path as var, with the sqrt folded into the caller.
     if (can_use_two_pass_variance(self, dim, correction, keepdim)) {
