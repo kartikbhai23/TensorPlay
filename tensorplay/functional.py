@@ -610,7 +610,7 @@ def divide(input, other, rounding_mode=None, *, out=None):
     if not isinstance(input, tensorplay.Tensor):
         input = _as_left_operand(input, other)
     if rounding_mode is None:
-        return input.divide(other=other)
+        return input.div(other=other)
     return _C.divide(input, other, rounding_mode=rounding_mode)
 
 def true_divide(input, other, *, out=None):
@@ -630,7 +630,7 @@ def true_divide(input, other, *, out=None):
             return _captured
     if not isinstance(input, tensorplay.Tensor):
         input = _as_left_operand(input, other)
-    return input.true_divide(other=other)
+    return input.div(other=other)
 
 def floor_divide(input, other, *, out=None):
     if out is not None:
