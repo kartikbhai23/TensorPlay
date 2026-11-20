@@ -647,6 +647,38 @@ bool tpsa_equal(const Tensor& self, const Tensor& other) {
         const Tensor eq = quantized::strip_quantizer(self).eq(quantized::strip_quantizer(other));
         return eq.all().item().to<bool>();
     }
+    // Single short-circuit walk over the storage: the eq+all detour
+    // allocates a boolean tensor and reduces it for what one comparison
+    // pass answers.  NaN pairs compare false, matching the eq semantics.
+    // Already-contiguous operands skip the copy dispatcher entirely.  The
+    // walk reads the buffer on the host, so it only applies to CPU operands;
+    // any other device goes through the dispatcher below.
+    if (self.device().is_cpu()) {
+        const Tensor sc = self.is_contiguous() ? self : self.contiguous();
+        const Tensor oc = other.is_contiguous() ? other : other.contiguous();
+        const int64_t n = sc.numel();
+        #define TP_EQUAL_CASE(ctype, name) \
+        case DType::name: { \
+            const ctype* a = sc.data_ptr<ctype>(); \
+            const ctype* b = oc.data_ptr<ctype>(); \
+            for (int64_t i = 0; i < n; ++i) { \
+                if (a[i] != b[i]) return false; \
+            } \
+            return true; \
+        }
+        switch (sc.dtype()) {
+            TP_EQUAL_CASE(float, Float32)
+            TP_EQUAL_CASE(double, Float64)
+            TP_EQUAL_CASE(int64_t, Int64)
+            TP_EQUAL_CASE(int32_t, Int32)
+            TP_EQUAL_CASE(int16_t, Int16)
+            TP_EQUAL_CASE(int8_t, Int8)
+            TP_EQUAL_CASE(uint8_t, UInt8)
+            TP_EQUAL_CASE(bool, Bool)
+            default: break;
+        }
+        #undef TP_EQUAL_CASE
+    }
     const Tensor eq = self.eq(other);
     if (eq.numel() == 0) return true;
     const Tensor all = eq.all();
