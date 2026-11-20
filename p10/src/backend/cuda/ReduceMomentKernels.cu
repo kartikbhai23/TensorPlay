@@ -143,13 +143,14 @@ Tensor nanmean_cuda(const Tensor& self, std::optional<int64_t> dim_opt, bool kee
         // global reduction over every dimension
         for (int64_t i = 0; i < x.dim(); ++i) dims.push_back(i);
     }
-    Tensor total = nansum_cuda2(x, dims, keepdim);
-    Tensor valid = ops::isnan(x).logical_not();
-    Tensor count = sum_dim_kernel(valid.to(DType::Float32), dims, keepdim, DType::Float32);
-    Tensor quot = total.div(count);
-    Tensor zero = count.eq(Scalar(0.0f));
-    Tensor result = quot.masked_fill(zero, Scalar(std::numeric_limits<double>::quiet_NaN()));
-    return result.to(acc_dt != DType::Undefined ? acc_dt : total.dtype());
+    // Two reductions and one divide: a finite-element count and a NaN-
+    // skipping sum.  An all-NaN slice yields 0/0 = NaN, so no explicit
+    // zero-count mask is needed.
+    Tensor factor =
+        ops::isnan(x).logical_not().sum(dims, keepdim, DType::Float32);
+    Tensor result =
+        nansum_cuda2(x, dims, keepdim).div(factor);
+    return result.to(acc_dt != DType::Undefined ? acc_dt : result.dtype());
 }
 
 } // namespace
