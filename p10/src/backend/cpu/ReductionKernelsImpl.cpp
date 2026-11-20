@@ -2299,10 +2299,94 @@ double product_f64_chunk_avx512(const double* x, int64_t b, int64_t e) {
     return product;
 }
 
+__attribute__((target("avx2,fma")
+))
+float product_f32_chunk_avx2(const float* x, int64_t b, int64_t e) {
+    __m256 a0 = _mm256_set1_ps(1.0f), a1 = a0;
+    int64_t i = b;
+    for (; i + 16 <= e; i += 16) {
+        a0 = _mm256_mul_ps(a0, _mm256_loadu_ps(x + i));
+        a1 = _mm256_mul_ps(a1, _mm256_loadu_ps(x + i + 8));
+    }
+    __m256 acc = _mm256_mul_ps(a0, a1);
+    alignas(32) float lanes[8];
+    _mm256_storeu_ps(lanes, acc);
+    float product = lanes[0];
+    for (int j = 1; j < 8; ++j) product *= lanes[j];
+    for (; i < e; ++i) product *= x[i];
+    return product;
+}
+
+__attribute__((target("avx2,fma"
+)))
+double product_f64_chunk_avx2(const double* x, int64_t b, int64_t e) {
+    __m256d a0 = _mm256_set1_pd(1.0), a1 = a0;
+    int64_t i = b;
+    for (; i + 8 <= e; i += 8) {
+        a0 = _mm256_mul_pd(a0, _mm256_loadu_pd(x + i));
+        a1 = _mm256_mul_pd(a1, _mm256_loadu_pd(x + i + 4));
+    }
+    __m256d acc = _mm256_mul_pd(a0, a1);
+    alignas(32) double lanes[4];
+    _mm256_storeu_pd(lanes, acc);
+    double product = lanes[0];
+    for (int j = 1; j < 4; ++j) product *= lanes[j];
+    for (; i < e; ++i) product *= x[i];
+    return product;
+}
+
+inline bool reduce_avx2_available() {
+    static const bool ok = __builtin_cpu_supports("avx2") != 0;
+    return ok;
+}
+
+// The AVX2 tier of the product reduction: same shape as the AVX512 one,
+// for hosts whose lanes stop at 256 bits.  Small sizes answer serially —
+// the partials plumbing costs more than the walk itself.
+static bool try_product_real_avx2(const void* xv, int64_t n, DType dt,
+                                  double* out) {
+    if (!reduce_avx2_available() || n < 512) return false;
+    constexpr int64_t kGrain = 32768;
+    if (dt == DType::Float32) {
+        const float* x = static_cast<const float*>(xv);
+        float product;
+        if (n < kGrain) {
+            product = product_f32_chunk_avx2(x, 0, n);
+        } else {
+            const int64_t nslots = (n + kGrain - 1) / kGrain;
+            std::vector<float> partials(nslots, 1.0f);
+            tensorplay::parallel::parallel_for(0, n, kGrain, [&](int64_t b, int64_t e) {
+                partials[b / kGrain] = product_f32_chunk_avx2(x, b, e);
+            });
+            product = 1.0f;
+            for (int64_t k = 0; k < nslots; ++k) product *= partials[k];
+        }
+        *out = static_cast<double>(product);
+        return true;
+    }
+    if (dt == DType::Float64) {
+        const double* x = static_cast<const double*>(xv);
+        double product;
+        if (n < kGrain) {
+            product = product_f64_chunk_avx2(x, 0, n);
+        } else {
+            const int64_t nslots = (n + kGrain - 1) / kGrain;
+            std::vector<double> partials(nslots, 1.0);
+            tensorplay::parallel::parallel_for(0, n, kGrain, [&](int64_t b, int64_t e) {
+                partials[b / kGrain] = product_f64_chunk_avx2(x, b, e);
+            });
+            product = 1.0;
+            for (int64_t k = 0; k < nslots; ++k) product *= partials[k];
+        }
+        *out = product;
+        return true;
+    }
+    return false;
+}
+
 static bool try_product_real_avx512(const void* xv, int64_t n, DType dt,
                                     double* out) {
-    if (!reduce_avx512_available() || n < 4096) return false;
-    constexpr int64_t kGrain = 32768;
+    if (!reduce_avx512_available() || n < 4096) return false;    constexpr int64_t kGrain = 32768;
     if (dt == DType::Float32) {
         const float* x = static_cast<const float*>(xv);
         const int64_t nslots = (n + kGrain - 1) / kGrain;
@@ -9223,6 +9307,15 @@ Tensor prod_kernel_impl(const Tensor& self, DType dtype) {
         double product = 1.0;
         if (try_product_real_avx512(self_contig.data_ptr(), self_contig.numel(),
                                     self_contig.dtype(), &product)) {
+            if (self_contig.dtype() == DType::Float32) {
+                out.fill_(Scalar(static_cast<float>(product)));
+            } else {
+                out.fill_(Scalar(product));
+            }
+            return out;
+        }
+        if (try_product_real_avx2(self_contig.data_ptr(), self_contig.numel(),
+                                  self_contig.dtype(), &product)) {
             if (self_contig.dtype() == DType::Float32) {
                 out.fill_(Scalar(static_cast<float>(product)));
             } else {
