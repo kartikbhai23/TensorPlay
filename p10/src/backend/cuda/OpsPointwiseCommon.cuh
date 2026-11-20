@@ -1243,44 +1243,31 @@ Tensor& float_math_out(const Tensor& self, Tensor& out, F f, const char* name) {
 // narrow inside the single launch.
 template <typename F>
 void binary_float_into(const Tensor& a_in, const Tensor& b_in, const Tensor& out,
-                       DType dt, const std::vector<int64_t>& out_shape, F f) {
+                       DType dt, F f) {
     if (out.numel() == 0) return;
-    const DType compute_dt = (dt == DType::Float64) ? DType::Float64 : DType::Float32;
-    if (dt != compute_dt) {
-        Tensor ac = a_in.expand(out_shape);
-        Tensor bc = b_in.expand(out_shape);
-        TensorIterator iter = TensorIteratorConfig()
-            .check_all_same_dtype(true)
-            .add_output(out)
-            .add_const_input(ac)
-            .add_const_input(bc)
-            .build();
-        if (dt == DType::Float16) {
-            gpu_kernel(iter, [f] __host__ __device__(Half x, Half y) -> Half {
-                if constexpr (has_runf2<F>::value)
-                    return static_cast<Half>(f.runf(static_cast<float>(x), static_cast<float>(y)));
-                else
-                    return static_cast<Half>(f(static_cast<float>(x), static_cast<float>(y)));
-            });
-        } else {
-            gpu_kernel(iter, [f] __host__ __device__(BFloat16 x, BFloat16 y) -> BFloat16 {
-                if constexpr (has_runf2<F>::value)
-                    return static_cast<BFloat16>(f.runf(static_cast<float>(x), static_cast<float>(y)));
-                else
-                    return static_cast<BFloat16>(f(static_cast<float>(x), static_cast<float>(y)));
-            });
-        }
-        return;
-    }
-    Tensor ac = a_in.to(compute_dt).expand(out_shape);
-    Tensor bc = b_in.to(compute_dt).expand(out_shape);
+    const Tensor ac = a_in.dtype() == dt ? a_in : a_in.to(dt);
+    const Tensor bc = b_in.dtype() == dt ? b_in : b_in.to(dt);
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(true)
         .add_output(out)
         .add_const_input(ac)
         .add_const_input(bc)
         .build();
-    if (compute_dt == DType::Float64) {
+    if (dt == DType::Float16) {
+        gpu_kernel(iter, [f] __host__ __device__(Half x, Half y) -> Half {
+            if constexpr (has_runf2<F>::value)
+                return static_cast<Half>(f.runf(static_cast<float>(x), static_cast<float>(y)));
+            else
+                return static_cast<Half>(f(static_cast<float>(x), static_cast<float>(y)));
+        });
+    } else if (dt == DType::BFloat16) {
+        gpu_kernel(iter, [f] __host__ __device__(BFloat16 x, BFloat16 y) -> BFloat16 {
+            if constexpr (has_runf2<F>::value)
+                return static_cast<BFloat16>(f.runf(static_cast<float>(x), static_cast<float>(y)));
+            else
+                return static_cast<BFloat16>(f(static_cast<float>(x), static_cast<float>(y)));
+        });
+    } else if (dt == DType::Float64) {
         gpu_kernel(iter, [f] __host__ __device__(double x, double y) -> double {
             return f(x, y);
         });
@@ -1303,7 +1290,7 @@ Tensor binary_float_cuda(const Tensor& a_in, const Tensor& b_in, F f, const char
     const std::vector<int64_t> out_shape = broadcast_shapes(
         shape_of(a_in), shape_of(b_in));
     Tensor out = Tensor::empty(out_shape, dt, a_in.device());
-    binary_float_into(a_in, b_in, out, dt, out_shape, f);
+    binary_float_into(a_in, b_in, out, dt, f);
     CUDA_CHECK(cudaGetLastError());
     return out;
 }
@@ -1320,7 +1307,7 @@ Tensor& binary_float_cuda_out(const Tensor& a_in, const Tensor& b_in, Tensor& ou
         shape_of(a_in), shape_of(b_in));
     if (destination_takes(out, a_in.device(), dt, out_shape) &&
         read_while_write_is_safe(a_in, out) && read_while_write_is_safe(b_in, out)) {
-        binary_float_into(a_in, b_in, out, dt, out_shape, f);
+        binary_float_into(a_in, b_in, out, dt, f);
         CUDA_CHECK(cudaGetLastError());
         return out;
     }
