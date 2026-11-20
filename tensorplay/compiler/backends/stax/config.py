@@ -81,6 +81,22 @@ layout_optimization = True
 # where a measurement says it pays and the shape of the region would not say so.
 force_layout_optimization = os.environ.get("TP_FORCE_LAYOUT_OPT", "0") == "1"
 
+# Whether an inference region's parameters are turned into constants before it
+# is lowered.  A weight that is read and never written does not have to be an
+# argument: writing it into the region lets the operations that only involve
+# it -- a normalization folded into the convolution before it, a transposed
+# copy of a packed weight -- be computed once here instead of on every call.
+# The region still takes the same arguments, so enabling this changes what is
+# computed and not how the compiled callable is called.
+freezing = os.environ.get("TP_STAX_FREEZING", "0") == "1"
+
+# Whether freezing also replaces the parameters of the eager modules with
+# placeholders, so the original weights are freed once they are constant.
+# Not offered: this build has no representation of a discarded parameter that
+# a later read is guaranteed to notice, and a read that silently answered a
+# stale value would be worse than the memory it saved.  Setting this refuses.
+freezing_discard_parameters = False
+
 # Whether a reduced-precision, ungrouped two-dimensional convolution on the GPU
 # is handed its operands channels last even where the region's layouts are not
 # chosen as a whole.  The library runs such a call channels last either way and
@@ -360,6 +376,19 @@ class _CppConfig:
     #: Whether the tiling of a loop nest is chosen by measuring candidates or by
     #: the first one that fits.
     enable_tiling_heuristics = False
+
+    #: Whether a frozen linear weight is rewritten into the packed form its
+    #: matmul kernel reads.  Not offered: the packed forms this build declares
+    #: have no CPU kernel, so a packed weight would reach a call that cannot
+    #: run.  Setting it refuses rather than silently leaving the weight dense.
+    weight_prepack = False
+
+    #: Whether successive matrix products sharing an input are joined into one
+    #: product against the concatenated weights.  Only the freezing pass reads
+    #: this; a region that is not being frozen has no weighted constants to
+    #: join.  Off by default because the joined product changes the shape one
+    #: kernel sees, which is a trade each program should choose.
+    enable_concat_linear = False
 
     #: Whether a log line is written when a kernel is emitted.
     inject_log = False

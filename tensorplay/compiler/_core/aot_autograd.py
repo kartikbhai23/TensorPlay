@@ -558,6 +558,13 @@ def aot_function(
             fw_module = _functionalize(fw_module, _trace_inputs(primals))
             if not keep_inference_input_mutations:
                 fw_module, input_updates = _detach_input_updates(fw_module)
+        # A caller that built this region from a module knows how many of the
+        # leading arguments are the module's state rather than its inputs.
+        # Freezing turns those into constants; the count travels on the graph
+        # so the compiler does not have to guess which arguments are weights.
+        state_count = getattr(fn, "_tensorplay_state_input_count", 0)
+        if state_count:
+            fw_module._tensorplay_state_input_count = state_count
         compiled_fw = inference_compiler(fw_module, primals)
         from .api import _release_recorded_values
 
@@ -882,6 +889,12 @@ def aot_module_simplified(
             return call_module(*flat)
         with substitute(dict(zip(names, flat[:count]))):
             return call_module(*flat[count:])
+
+    # The first ``count`` arguments of the traced program are the module's
+    # state.  A backend that wants to freeze inference weights needs to tell
+    # them apart from the caller's inputs, and this is the only place that
+    # knows the split.
+    flat_fn._tensorplay_state_input_count = count  # type: ignore[attr-defined]
 
     example = list(read_state()) + list(example_inputs)
     compiled = aot_function(

@@ -14,6 +14,8 @@ import warnings
 
 from typing import Any
 
+import tensorplay as tp
+
 from ....graph import GraphModule
 from ..._core.registry import check_backend_kwargs
 from . import config
@@ -46,6 +48,7 @@ _STAX_OPTIONS = (
     "stax.cuda_codegen",
     "stax.triton",
     "stax.cudagraphs",
+    "stax.freezing",
     "stax.max_autotune",
     "stax.coordinate_descent_tuning",
 )
@@ -124,6 +127,7 @@ def stax(
     coordinate_descent_tuning = resolved.get(
         "stax.coordinate_descent_tuning", False
     )
+    freezing = resolved.get("stax.freezing", False)
     # ``use_fusion``, ``max_autotune`` and ``coordinate_descent_tuning`` act by
     # the settings patched below: the rewrites and search tiers read those
     # while the region is lowered.  Passing them on as arguments as well would
@@ -142,6 +146,8 @@ def stax(
     # they are set for exactly that long and the rest of the run keeps what it
     # had.  Leaving them unset here would accept the option and ignore it.
     settings: dict[str, Any] = {}
+    if freezing:
+        settings["freezing"] = True
     if max_autotune:
         settings["max_autotune"] = True
     if coordinate_descent_tuning:
@@ -301,9 +307,17 @@ def _lower_stax_region(
         decompose_auto_functionalized(graph_module.graph)
         graph_module.recompile()
 
-    # The operations are settled and functional by now, so the rewrites that
-    # make a region cheaper -- recognising a fused attention, gathering the
-    # producers of one kind into one call -- can be applied to it.
+    # An inference region reads its weights and never writes them.  Making
+    # them constants here lets the rewrites below -- and the constant folding
+    # before them -- work on values instead of on arguments.  Freezing is a
+    # question about the region's use, not about the module's training flag:
+    # weights of an evaluation module keep ``requires_grad`` set even though
+    # nothing in this call will differentiate through them.
+    if config.freezing and not is_backward and not tp.is_grad_enabled():
+        from .freezing import freeze
+
+        freeze(graph_module, example_inputs)
+
     input_device = None
     for value in example_inputs:
         device = getattr(value, "device", None)
