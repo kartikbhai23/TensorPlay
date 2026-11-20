@@ -587,7 +587,6 @@ def compile(
     last_call_fp: Any = None
     last_quick_parts: tuple[Any, ...] | None = None
     last_module_state: Any = None
-    last_module_epoch: int = -1
     last_grad_state: tuple = ()
     #: The certificate plan the last call resolved, and the module write
     #: epoch it was taken under.  The plan only moves when the state the
@@ -686,24 +685,20 @@ def compile(
         nonlocal last_quick_key, last_compiled_fn
         nonlocal guard_param_names, gate_evaluator
         nonlocal last_call_fp, last_quick_parts, last_module_state
-        nonlocal last_module_epoch
         nonlocal last_grad_state
         nonlocal last_certificate_plan, last_certificate_epoch
         nonlocal compile_attempts, specialization_dynamic, dynamic_generalized
         if _capture_disabled.get():
             return model(*args, **kwargs)
         # The module write epoch says whether anything structural on the
-        # module can have moved.  While it holds still, the state component
-        # is the one the last call read, so asking for it again would only
-        # re-check the sites a module write cannot explain.
+        # module can have moved, but globals and closure cells can be rebound
+        # without a module write, so the component is read every call: its own
+        # epoch check keeps the module half cheap while the constant half is
+        # re-read.
         epoch = _module_write_epoch()
-        state_changed = last_module_epoch != epoch
+        module_state = _module_state_component(model)
+        state_changed = module_state != last_module_state
         if state_changed:
-            module_state = _module_state_component(model)
-            last_module_epoch = epoch
-        else:
-            module_state = last_module_state
-        if module_state != last_module_state:
             # Input identity does not certify gates that read module state.
             last_call_fp = None
             last_quick_parts = None
@@ -932,26 +927,29 @@ def compile(
                 last_compiled_fn = compiled_fn
         if not kwargs:
             make_entry = getattr(compiled_fn, "_steady_state_entry", None)
+            # The steady-state entry builds a C trampoline the dispatcher
+            # can only use when a state certificate describes the places
+            # the recording reads. Without one the trampoline is built
+            # and immediately cleared by the binder, which is pure
+            # overhead -- check for a certificate first and skip the
+            # entry flow when there is none.  The plan only moves when
+            # the module state moves, so while the write epoch holds
+            # still the answer from the last call stands and the plan
+            # is not rebuilt.
+            fast = None
             if make_entry is not None:
-                # The steady-state entry builds a C trampoline the dispatcher
-                # can only use when a state certificate describes the places
-                # the recording reads. Without one the trampoline is built
-                # and immediately cleared by the binder, which is pure
-                # overhead -- check for a certificate first and skip the
-                # entry flow when there is none.  The plan only moves when
-                # the module state moves, so while the write epoch holds
-                # still the answer from the last call stands and the plan
-                # is not rebuilt.
                 if last_certificate_epoch != epoch:
                     last_certificate_plan = _state_certificate_plan(model)
                     last_certificate_epoch = epoch
                 if last_certificate_plan is not None:
                     fast = make_entry(len(args))
-                    if fast is None:
-                        fast = getattr(compiled_fn, "_fast_call", None)
-                    if fast is not None:
-                        _bind_dispatcher_fast(fast, len(args), module_state)
-                        return compiled_fn(*args)
+            if fast is None:
+                # An artifact without a trampoline can still publish a plain
+                # Python fast entry; the binder wraps it with the state check.
+                fast = getattr(compiled_fn, "_fast_call", None)
+            if fast is not None:
+                _bind_dispatcher_fast(fast, len(args), module_state)
+                return compiled_fn(*args)
         return compiled_fn(*args, **kwargs)
 
     from tensorplay._C import _stax as _stax_native
