@@ -602,46 +602,17 @@ __global__ void dirichlet_grad_impl(int64_t numel, const scalar_t* x,
     out[idx] = dirichlet_grad_one(x[idx], alpha[idx], total[idx]);
 }
 
-// Dirichlet sampling: independent standard gammas per category normalized by
-// their row sum.
-template <typename scalar_t, typename acc_t>
-__global__ void dirichlet_normalize_impl(int64_t rows, int64_t cols,
-                                        scalar_t* data) {
-    const int64_t row =
-        static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (row >= rows) return;
-    acc_t sum = 0;
-    for (int64_t j = 0; j < cols; ++j) {
-        sum += static_cast<acc_t>(data[row * cols + j]);
-    }
-    if (sum > 0) {
-        for (int64_t j = 0; j < cols; ++j) {
-            data[row * cols + j] = static_cast<scalar_t>(
-                static_cast<acc_t>(data[row * cols + j]) / sum);
-        }
-    }
-}
-
-// Two-stage normalization for the float32 path: every element gets its own
-// thread instead of one thread walking its whole row twice.
-__global__ void dirichlet_row_sum_kernel(int64_t total, int64_t cols,
-                                         const float* __restrict__ data,
-                                         float* __restrict__ sums) {
+template <typename scalar_t>
+__global__ void dirichlet_normalize_kernel(
+        int64_t total, int64_t cols, scalar_t* data, const scalar_t* sums) {
+    using acc_t = std::conditional_t<std::is_same_v<scalar_t, double>, double, float>;
+    const acc_t lower = static_cast<acc_t>(std::numeric_limits<scalar_t>::min());
+    const acc_t upper = acc_t(1) - static_cast<acc_t>(std::numeric_limits<scalar_t>::epsilon());
     int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     for (; idx < total;
          idx += static_cast<int64_t>(gridDim.x) * blockDim.x) {
-        atomicAdd(sums + idx / cols, data[idx]);
-    }
-}
-
-__global__ void dirichlet_divide_kernel(int64_t total, int64_t cols,
-                                        float* __restrict__ data,
-                                        const float* __restrict__ sums) {
-    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    for (; idx < total;
-         idx += static_cast<int64_t>(gridDim.x) * blockDim.x) {
-        const float s = sums[idx / cols];
-        if (s > 0) data[idx] = data[idx] / s;
+        const acc_t value = static_cast<acc_t>(data[idx]) / static_cast<acc_t>(sums[idx / cols]);
+        data[idx] = static_cast<scalar_t>(value < lower ? lower : (value > upper ? upper : value));
     }
 }
 
@@ -835,56 +806,31 @@ Tensor sample_dirichlet_kernel_cuda(const Tensor& self,
                                     std::optional<Generator> generator) {
     // Independent gammas per category, then a row-wise normalization.
     Tensor gamma = standard_gamma_kernel_cuda(self, std::move(generator));
-    const int64_t ndim = gamma.dim();
-    TP_CHECK(ndim >= 1, "sample_dirichlet expects at least 1 dimension");
-    if (gamma.numel() == 0 || gamma.size(-1) == 0) {
-        return gamma;
-    }
-    Tensor flat = gamma.reshape(
-        {gamma.numel() / gamma.size(-1), gamma.size(-1)}).contiguous();
-    const int64_t rows = flat.size(0);
-    const int64_t cols = flat.size(1);
+    const int64_t total = gamma.numel();
+    if (total == 0) return gamma;
+    const int64_t cols = gamma.dim() == 0 ? 1 : gamma.size(-1);
+    const Tensor sums = cols == 1 ? gamma : gamma.sum(std::vector<int64_t>{-1}, true, gamma.dtype());
     const int threads = 256;
-    const int blocks = static_cast<int>((rows + threads - 1) / threads);
-    if (gamma.dtype() == DType::Float32) {
-        // Two-stage normalization: every element gets its own thread, so a
-        // 64-row sample uses thousands of resident threads instead of one
-        // per row serially walking its data twice.
-        Tensor sums = Tensor::empty({rows}, DType::Float32, self.device());
-        cudaMemsetAsync(sums.data_ptr(), 0, sizeof(float) * rows,
-                        getCurrentCUDAStream().stream());
-        const int64_t total = rows * cols;
-        const int elem_threads = 64;
-        const int elem_blocks = static_cast<int>(
-            (total + elem_threads - 1) / elem_threads);
-        dirichlet_row_sum_kernel<<<elem_blocks, elem_threads, 0,
-                                   getCurrentCUDAStream().stream()>>>(
-            total, cols, flat.data_ptr<float>(), sums.data_ptr<float>());
-        dirichlet_divide_kernel<<<elem_blocks, elem_threads, 0,
-                                  getCurrentCUDAStream().stream()>>>(
-            total, cols, flat.data_ptr<float>(), sums.data_ptr<float>());
-    } else if (gamma.dtype() == DType::Float64) {
-        dirichlet_normalize_impl<double, double>
-            <<<blocks, threads, 0, getCurrentCUDAStream().stream()>>>(
-                rows, cols, flat.data_ptr<double>());
-    } else if (gamma.dtype() == DType::Float16) {
-        dirichlet_normalize_impl<Half, float>
-            <<<blocks, threads, 0, getCurrentCUDAStream().stream()>>>(
-                rows, cols, flat.data_ptr<Half>());
-    } else if (gamma.dtype() == DType::BFloat16) {
-        dirichlet_normalize_impl<BFloat16, float>
-            <<<blocks, threads, 0, getCurrentCUDAStream().stream()>>>(
-                rows, cols, flat.data_ptr<BFloat16>());
-    } else {
-        TP_THROW(NotImplementedError,
-                 "sample_dirichlet only supports floating dtypes on CUDA");
+    const int blocks = static_cast<int>((total + threads - 1) / threads);
+    const auto stream = getCurrentCUDAStream().stream();
+    auto normalize = [&](auto example) {
+        using T = decltype(example);
+        dirichlet_normalize_kernel<T><<<blocks, threads, 0, stream>>>(
+            total, cols, gamma.data_ptr<T>(), sums.data_ptr<T>());
+    };
+    switch (gamma.dtype()) {
+        case DType::Float32: normalize(float{}); break;
+        case DType::Float64: normalize(double{}); break;
+        case DType::Float16: normalize(Half{}); break;
+        case DType::BFloat16: normalize(BFloat16{}); break;
+        default: TP_THROW(NotImplementedError, "sample_dirichlet only supports floating dtypes on CUDA");
     }
     cudaError_t error = cudaGetLastError();
     if (error != cudaSuccess) {
         TP_THROW(RuntimeError, std::string("CUDA sample_dirichlet Error: ") +
                   cudaGetErrorString(error));
     }
-    return flat.reshape(static_cast<std::vector<int64_t>>(gamma.shape()));
+    return gamma;
 }
 
 Tensor dirichlet_grad_kernel_cuda(const Tensor& x, const Tensor& alpha,

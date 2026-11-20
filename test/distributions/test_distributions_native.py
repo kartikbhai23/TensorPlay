@@ -251,6 +251,17 @@ class StandardGamma(unittest.TestCase):
 
 
 class Dirichlet(unittest.TestCase):
+    @unittest.skipUnless(tp.cuda.is_available(), "CUDA unavailable")
+    def test_cuda_single_category_is_clamped(self):
+        for dtype in (tp.float16, tp.bfloat16, tp.float32, tp.float64):
+            upper = 1.0 - tp.finfo(dtype).eps
+            for shape in ((), (2, 1)):
+                with self.subTest(dtype=dtype, shape=shape):
+                    sample = tp._sample_dirichlet(tp.ones(shape, dtype=dtype, device="cuda"))
+                    self.assertEqual(sample.dtype, dtype)
+                    self.assertEqual(tuple(sample.shape), shape)
+                    self.assertEqual(sample.reshape(-1).tolist(), [upper] * sample.numel())
+
     def test_rows_sum_to_one(self):
         a = tp.tensor([[1.0, 2.0, 3.0], [0.5, 0.5, 0.0]])
         r = tp._sample_dirichlet(a)
