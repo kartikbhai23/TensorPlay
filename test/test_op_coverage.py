@@ -243,6 +243,14 @@ class TestOpCoverage(TestCase):
         self.assertEqual(tp.flipud(tp.tensor([[1.0, 2.0], [3.0, 4.0]])).tolist(),
                          [[3.0, 4.0], [1.0, 2.0]])
 
+    def test_fliplr_reverses_the_second_axis(self):
+        x = tp.tensor([[[1, 2], [3, 4], [5, 6]]])
+        self.assertEqual(tp.fliplr(x).tolist(), [[[5, 6], [3, 4], [1, 2]]])
+        with self.assertRaisesRegex(RuntimeError, "Input must be >= 2-d"):
+            tp.fliplr(tp.ones(2))
+        with self.assertRaisesRegex(RuntimeError, "Input must be >= 1-d"):
+            tp.flipud(tp.tensor(0))
+
     def test_tril_triu(self):
         ones = tp.ones(2, 2)
         self.assertEqual(tp.tril(ones, 1).tolist(), [[1.0, 1.0], [1.0, 1.0]])
@@ -354,6 +362,16 @@ class TestOpCoverage(TestCase):
         self.assertEqual(tp.tensor([1.0, 2.0]).repeat(2).tolist(), [1.0, 2.0, 1.0, 2.0])
         self.assertEqual(tp.tensor([1.0, 2.0]).repeat_interleave(2).tolist(),
                          [1.0, 1.0, 2.0, 2.0])
+
+    @pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+    def test_cuda_repeat_and_tile_scalar_without_dimensions(self):
+        x = tp.tensor(3.0, device="cuda")
+        for fn in (tp.repeat, tp.tile):
+            result = fn(x, ())
+            self.assertEqual(result.shape, ())
+            self.assertEqual(result.item(), 3.0)
+            result.fill_(7.0)
+            self.assertEqual(x.item(), 3.0)
 
     def test_resize_(self):
         t = tp.tensor([1.0, 2.0])

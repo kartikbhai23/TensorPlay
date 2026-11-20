@@ -214,6 +214,10 @@ Tensor repeat_cuda(const Tensor& self, const std::vector<int64_t>& repeats) {
     Tensor out = make_repeat_output(self, target);
     const int64_t total = out.numel();
     if (zero || total == 0) return out;
+    if (out_nd == 0) {
+        out.copy_(sc);
+        return out;
+    }
 
     std::vector<int64_t> tstrides(out_nd, 1);
     for (int64_t i = out_nd - 2; i >= 0; --i) tstrides[i] = tstrides[i + 1] * target[i + 1];

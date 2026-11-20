@@ -51,10 +51,12 @@ std::vector<Tensor> unsafe_split_native(const Tensor& self,
 }
 
 Tensor fliplr_native(const Tensor& self) {
-    return ops::flip(self, {-1});
+    TP_CHECK(self.dim() >= 2, "Input must be >= 2-d.");
+    return ops::flip(self, {1});
 }
 
 Tensor flipud_native(const Tensor& self) {
+    TP_CHECK(self.dim() >= 1, "Input must be >= 1-d.");
     return ops::flip(self, {0});
 }
 
