@@ -516,6 +516,10 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
         # Forwarding the mode unconditionally would push every plain division
         # through the optional-string parse, so the wrapper only reaches for
         # the mode overloads once a mode is actually supplied.
+        #
+        # divide/true_divide ride the div method: the plain spelling routes
+        # through a Tensor-method round trip the div kernel answers directly.
+        method_redirect = {'divide': 'div', 'true_divide': 'div'}
         if (any(a.name == 'rounding_mode' for g in group for a in g.args)
                 and not any(a.name == 'rounding_mode' for a in f.args)):
             seen.add(name)
@@ -555,6 +559,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                 f'        return _C.{name}(input, other, '
                 'rounding_mode=rounding_mode, out=out)',
             ]
+            redirected = method_redirect.get(name, name)
             lines += [
                 f'def {name}(input, other, rounding_mode=None, *, out=None):',
                 '    if out is not None:',
@@ -576,7 +581,7 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
                 '    if not isinstance(input, tensorplay.Tensor):',
                 '        input = _as_left_operand(input, other)',
                 '    if rounding_mode is None:',
-                f'        return input.{name}(other=other)',
+                f'        return input.{redirected}(other=other)',
                 *mode_call,
                 '',
             ]
@@ -1452,20 +1457,12 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
 
             for a in f.args:
                 t, pname = a.type, _param_name(a)
-                if t.kind == 'Scalar' and not t.is_opt:
-                    lines.append(
-                        f'    if not isinstance({pname}, (tensorplay.Scalar, tensorplay.Tensor)):')
-                    lines.append(f'        {pname} = tensorplay.Scalar({pname})')
-                elif t.kind == 'int64_t' and t.is_list:
+                if t.kind == 'int64_t' and t.is_list:
                     # one-element list for `int[]` slots (`amax(x, dim=1)`);
                     # the generated FASTCALL binding only parses sequences.
                     lines.append(
                         f'    if isinstance({pname}, int) and not isinstance({pname}, bool):')
                     lines.append(f'        {pname} = [{pname}]')
-                elif t.kind == 'Scalar' and t.is_opt:
-                    lines.append(
-                        f'    if {pname} is not None and not isinstance({pname}, (tensorplay.Scalar, tensorplay.Tensor)):')
-                    lines.append(f'        {pname} = tensorplay.Scalar({pname})')
                 elif t.kind == 'DType' and t.is_opt:
                     # Factory ops (no leading tensor receiver) resolve an
                     # explicit None through the C++ default-dtype

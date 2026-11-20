@@ -630,7 +630,7 @@ def true_divide(input, other, *, out=None):
             return _captured
     if not isinstance(input, tensorplay.Tensor):
         input = _as_left_operand(input, other)
-    return input.div(other=other)
+    return input.true_divide(other=other)
 
 def floor_divide(input, other, *, out=None):
     if out is not None:
@@ -1992,8 +1992,6 @@ def _trapezoid_backward(grad_output, x, ysizes, dx, dim):
             return _captured
     if isinstance(ysizes, int) and not isinstance(ysizes, bool):
         ysizes = [ysizes]
-    if not isinstance(dx, (tensorplay.Scalar, tensorplay.Tensor)):
-        dx = tensorplay.Scalar(dx)
     return _C._trapezoid_backward(grad_output, x, ysizes, dx, dim)
 
 def _cumulative_trapezoid_backward(grad_output, x, dx, dim):
@@ -2001,8 +1999,6 @@ def _cumulative_trapezoid_backward(grad_output, x, dx, dim):
         _captured = _capture_call(_cumulative_trapezoid_backward, (grad_output, x, dx, dim), {})
         if _captured is not None:
             return _captured
-    if not isinstance(dx, (tensorplay.Scalar, tensorplay.Tensor)):
-        dx = tensorplay.Scalar(dx)
     return _C._cumulative_trapezoid_backward(grad_output, x, dx, dim)
 
 def gradient(input, spacing=[], dim=[], edge_order=1):
@@ -5464,10 +5460,6 @@ def clamp_(input, min=None, max=None):
         _captured = _capture_call(clamp_, (input, min, max), {})
         if _captured is not None:
             return _captured
-    if min is not None and not isinstance(min, (tensorplay.Scalar, tensorplay.Tensor)):
-        min = tensorplay.Scalar(min)
-    if max is not None and not isinstance(max, (tensorplay.Scalar, tensorplay.Tensor)):
-        max = tensorplay.Scalar(max)
     return _C.clamp_(input, min, max)
 
 def clamp_min_(input, min):
@@ -5475,8 +5467,6 @@ def clamp_min_(input, min):
         _captured = _capture_call(clamp_min_, (input, min), {})
         if _captured is not None:
             return _captured
-    if not isinstance(min, (tensorplay.Scalar, tensorplay.Tensor)):
-        min = tensorplay.Scalar(min)
     return _C.clamp_min_(input, min)
 
 def clamp_max_(input, max):
@@ -5484,8 +5474,6 @@ def clamp_max_(input, max):
         _captured = _capture_call(clamp_max_, (input, max), {})
         if _captured is not None:
             return _captured
-    if not isinstance(max, (tensorplay.Scalar, tensorplay.Tensor)):
-        max = tensorplay.Scalar(max)
     return _C.clamp_max_(input, max)
 
 def complex(real, imag, *, out=None):
@@ -5842,8 +5830,6 @@ def index_fill_(input, dim, index, value):
         _captured = _capture_call(index_fill_, (input, dim, index, value), {})
         if _captured is not None:
             return _captured
-    if not isinstance(value, (tensorplay.Scalar, tensorplay.Tensor)):
-        value = tensorplay.Scalar(value)
     return _C.index_fill_(input, dim, index, value)
 
 def searchsorted(sorted_sequence, input, *, out_int32=False, right=False, side=None, sorter=None, out=None):
@@ -7365,10 +7351,6 @@ def _sparse_semi_structured_addmm(input, mat1, mat1_meta, mat2, alpha=1, beta=1,
         _captured = _capture_call(_sparse_semi_structured_addmm, (input, mat1, mat1_meta, mat2, alpha, beta, out_dtype), {})
         if _captured is not None:
             return _captured
-    if not isinstance(alpha, (tensorplay.Scalar, tensorplay.Tensor)):
-        alpha = tensorplay.Scalar(alpha)
-    if not isinstance(beta, (tensorplay.Scalar, tensorplay.Tensor)):
-        beta = tensorplay.Scalar(beta)
     return _C._sparse_semi_structured_addmm(input, mat1, mat1_meta, mat2, alpha=alpha, beta=beta, out_dtype=out_dtype)
 
 def sparse_sum(input, dim=None, dtype=None):
@@ -7578,10 +7560,6 @@ def quantized_clamp(input, self_scale, self_zero_point, out_scale, out_zero_poin
         _captured = _capture_call(quantized_clamp, (input, self_scale, self_zero_point, out_scale, out_zero_point, min, max), {})
         if _captured is not None:
             return _captured
-    if min is not None and not isinstance(min, (tensorplay.Scalar, tensorplay.Tensor)):
-        min = tensorplay.Scalar(min)
-    if max is not None and not isinstance(max, (tensorplay.Scalar, tensorplay.Tensor)):
-        max = tensorplay.Scalar(max)
     return _C.quantized_clamp(input, self_scale, self_zero_point, out_scale, out_zero_point, min, max)
 
 def quantized_max_pool2d(input, kernel_size, stride=[], padding=0, dilation=1, ceil_mode=False, *, out=None):
@@ -7628,10 +7606,6 @@ def quantized_conv2d_run(input, weight_packed, bias_packed, weight_sizes, input_
         dilation = [dilation]
     if isinstance(output_padding, int) and not isinstance(output_padding, bool):
         output_padding = [output_padding]
-    if output_min is not None and not isinstance(output_min, (tensorplay.Scalar, tensorplay.Tensor)):
-        output_min = tensorplay.Scalar(output_min)
-    if output_max is not None and not isinstance(output_max, (tensorplay.Scalar, tensorplay.Tensor)):
-        output_max = tensorplay.Scalar(output_max)
     return _C.quantized_conv2d_run(input, weight_packed, bias_packed, weight_sizes, input_scale, input_zero_point, out_scale, out_zero_point, stride, padding, dilation, output_padding, groups, transposed, output_min, output_max)
 
 def quantized_conv2d(input, weight, bias, input_scale, input_zero_point, weight_scale, weight_zero_point, out_scale, out_zero_point, stride=1, padding=0, dilation=1, groups=1):
@@ -8502,10 +8476,6 @@ def addbmm_(input, batch1, batch2, beta=1, alpha=1):
         _captured = _capture_call(addbmm_, (input, batch1, batch2, beta, alpha), {})
         if _captured is not None:
             return _captured
-    if not isinstance(beta, (tensorplay.Scalar, tensorplay.Tensor)):
-        beta = tensorplay.Scalar(beta)
-    if not isinstance(alpha, (tensorplay.Scalar, tensorplay.Tensor)):
-        alpha = tensorplay.Scalar(alpha)
     return _C.addbmm_(input, batch1, batch2, beta=beta, alpha=alpha)
 
 def addmm_(input, mat1, mat2, beta=1, alpha=1):
@@ -8513,10 +8483,6 @@ def addmm_(input, mat1, mat2, beta=1, alpha=1):
         _captured = _capture_call(addmm_, (input, mat1, mat2, beta, alpha), {})
         if _captured is not None:
             return _captured
-    if not isinstance(beta, (tensorplay.Scalar, tensorplay.Tensor)):
-        beta = tensorplay.Scalar(beta)
-    if not isinstance(alpha, (tensorplay.Scalar, tensorplay.Tensor)):
-        alpha = tensorplay.Scalar(alpha)
     return _C.addmm_(input, mat1, mat2, beta=beta, alpha=alpha)
 
 def addmv_(input, mat, vec, beta=1, alpha=1):
@@ -8524,10 +8490,6 @@ def addmv_(input, mat, vec, beta=1, alpha=1):
         _captured = _capture_call(addmv_, (input, mat, vec, beta, alpha), {})
         if _captured is not None:
             return _captured
-    if not isinstance(beta, (tensorplay.Scalar, tensorplay.Tensor)):
-        beta = tensorplay.Scalar(beta)
-    if not isinstance(alpha, (tensorplay.Scalar, tensorplay.Tensor)):
-        alpha = tensorplay.Scalar(alpha)
     return _C.addmv_(input, mat, vec, beta=beta, alpha=alpha)
 
 def addr_(input, vec1, vec2, beta=1, alpha=1):
@@ -8535,10 +8497,6 @@ def addr_(input, vec1, vec2, beta=1, alpha=1):
         _captured = _capture_call(addr_, (input, vec1, vec2, beta, alpha), {})
         if _captured is not None:
             return _captured
-    if not isinstance(beta, (tensorplay.Scalar, tensorplay.Tensor)):
-        beta = tensorplay.Scalar(beta)
-    if not isinstance(alpha, (tensorplay.Scalar, tensorplay.Tensor)):
-        alpha = tensorplay.Scalar(alpha)
     return _C.addr_(input, vec1, vec2, beta=beta, alpha=alpha)
 
 def asin_(input):
@@ -8595,8 +8553,6 @@ def celu_(input, alpha=1.0):
         _captured = _capture_call(celu_, (input, alpha), {})
         if _captured is not None:
             return _captured
-    if not isinstance(alpha, (tensorplay.Scalar, tensorplay.Tensor)):
-        alpha = tensorplay.Scalar(alpha)
     return _C.celu_(input, alpha)
 
 def clip_(input, min=None, max=None):
@@ -8604,10 +8560,6 @@ def clip_(input, min=None, max=None):
         _captured = _capture_call(clip_, (input, min, max), {})
         if _captured is not None:
             return _captured
-    if min is not None and not isinstance(min, (tensorplay.Scalar, tensorplay.Tensor)):
-        min = tensorplay.Scalar(min)
-    if max is not None and not isinstance(max, (tensorplay.Scalar, tensorplay.Tensor)):
-        max = tensorplay.Scalar(max)
     return _C.clip_(input, min, max)
 
 def cos_(input):
@@ -8650,12 +8602,6 @@ def elu_(input, alpha=1, scale=1, input_scale=1):
         _captured = _capture_call(elu_, (input, alpha, scale, input_scale), {})
         if _captured is not None:
             return _captured
-    if not isinstance(alpha, (tensorplay.Scalar, tensorplay.Tensor)):
-        alpha = tensorplay.Scalar(alpha)
-    if not isinstance(scale, (tensorplay.Scalar, tensorplay.Tensor)):
-        scale = tensorplay.Scalar(scale)
-    if not isinstance(input_scale, (tensorplay.Scalar, tensorplay.Tensor)):
-        input_scale = tensorplay.Scalar(input_scale)
     return _C.elu_(input, alpha, scale, input_scale)
 
 def erf_(input):
@@ -8747,10 +8693,6 @@ def hardtanh_(input, min_val=-1, max_val=1):
         _captured = _capture_call(hardtanh_, (input, min_val, max_val), {})
         if _captured is not None:
             return _captured
-    if not isinstance(min_val, (tensorplay.Scalar, tensorplay.Tensor)):
-        min_val = tensorplay.Scalar(min_val)
-    if not isinstance(max_val, (tensorplay.Scalar, tensorplay.Tensor)):
-        max_val = tensorplay.Scalar(max_val)
     return _C.hardtanh_(input, min_val, max_val)
 
 def heaviside_(input, values):
@@ -8800,8 +8742,6 @@ def leaky_relu_(input, negative_slope=0.01):
         _captured = _capture_call(leaky_relu_, (input, negative_slope), {})
         if _captured is not None:
             return _captured
-    if not isinstance(negative_slope, (tensorplay.Scalar, tensorplay.Tensor)):
-        negative_slope = tensorplay.Scalar(negative_slope)
     return _C.leaky_relu_(input, negative_slope)
 
 def lgamma_(input):
@@ -8872,8 +8812,6 @@ def logit_(input, eps=None):
         _captured = _capture_call(logit_, (input, eps), {})
         if _captured is not None:
             return _captured
-    if eps is not None and not isinstance(eps, (tensorplay.Scalar, tensorplay.Tensor)):
-        eps = tensorplay.Scalar(eps)
     return _C.logit_(input, eps)
 
 def masked_scatter_(input, mask, source):
@@ -8895,12 +8833,6 @@ def nan_to_num_(input, nan=0.0, posinf=None, neginf=None):
         _captured = _capture_call(nan_to_num_, (input, nan, posinf, neginf), {})
         if _captured is not None:
             return _captured
-    if not isinstance(nan, (tensorplay.Scalar, tensorplay.Tensor)):
-        nan = tensorplay.Scalar(nan)
-    if posinf is not None and not isinstance(posinf, (tensorplay.Scalar, tensorplay.Tensor)):
-        posinf = tensorplay.Scalar(posinf)
-    if neginf is not None and not isinstance(neginf, (tensorplay.Scalar, tensorplay.Tensor)):
-        neginf = tensorplay.Scalar(neginf)
     return _C.nan_to_num_(input, nan, posinf, neginf)
 
 def nextafter_(input, other):
@@ -8936,10 +8868,6 @@ def renorm_(input, p, dim, maxnorm):
         _captured = _capture_call(renorm_, (input, p, dim, maxnorm), {})
         if _captured is not None:
             return _captured
-    if not isinstance(p, (tensorplay.Scalar, tensorplay.Tensor)):
-        p = tensorplay.Scalar(p)
-    if not isinstance(maxnorm, (tensorplay.Scalar, tensorplay.Tensor)):
-        maxnorm = tensorplay.Scalar(maxnorm)
     return _C.renorm_(input, p, dim, maxnorm)
 
 def round_(input):
@@ -9052,8 +8980,6 @@ def threshold_(input, threshold, value):
         _captured = _capture_call(threshold_, (input, threshold, value), {})
         if _captured is not None:
             return _captured
-    # The binding converts numbers to Scalar itself; wrapping here would
-    # build two Python objects on every call.
     return _C.threshold_(input, threshold, value)
 
 def i0_(input):
@@ -9546,10 +9472,6 @@ def rrelu(input, lower=0.125, upper=0.3333333333333333, training=False, generato
         _captured = _capture_call(rrelu, (input, lower, upper, training, generator), {})
         if _captured is not None:
             return _captured
-    if not isinstance(lower, (tensorplay.Scalar, tensorplay.Tensor)):
-        lower = tensorplay.Scalar(lower)
-    if not isinstance(upper, (tensorplay.Scalar, tensorplay.Tensor)):
-        upper = tensorplay.Scalar(upper)
     return _C.rrelu(input, lower, upper, training, generator)
 
 def rrelu_(input, lower=0.125, upper=0.3333333333333333, training=False, generator=None):
@@ -9557,10 +9479,6 @@ def rrelu_(input, lower=0.125, upper=0.3333333333333333, training=False, generat
         _captured = _capture_call(rrelu_, (input, lower, upper, training, generator), {})
         if _captured is not None:
             return _captured
-    if not isinstance(lower, (tensorplay.Scalar, tensorplay.Tensor)):
-        lower = tensorplay.Scalar(lower)
-    if not isinstance(upper, (tensorplay.Scalar, tensorplay.Tensor)):
-        upper = tensorplay.Scalar(upper)
     return _C.rrelu_(input, lower, upper, training, generator)
 
 def bilinear(input1, input2, weight, bias=None):
@@ -9809,13 +9727,7 @@ def float_power(input, exponent, *, out=None):
         _captured = _capture_call(float_power, (input, exponent), {})
         if _captured is not None:
             return _captured
-    if is_complex(input) or (isinstance(exponent, tensorplay.Tensor) and is_complex(exponent)):
-        return _C.float_power(input, exponent)
-    # The real path answers through pow in the operand's own width and
-    # widens: pow carries the gradient, the widening carries the double
-    # precision the float_power contract promises.
-    result = _C.pow(input, exponent)
-    return result.to(tensorplay.float64)
+    return _C.float_power(input, exponent)
 
 def mvlgamma(input, p, *, out=None):
     if out is not None:
@@ -10123,8 +10035,6 @@ def _assert_scalar(input, assert_msg):
         _captured = _capture_call(_assert_scalar, (input, assert_msg), {})
         if _captured is not None:
             return _captured
-    if not isinstance(input, (tensorplay.Scalar, tensorplay.Tensor)):
-        input = tensorplay.Scalar(input)
     return _C._assert_scalar(input, assert_msg)
 
 def _functional_assert_scalar(input, assert_msg, dep_token):
@@ -10132,8 +10042,6 @@ def _functional_assert_scalar(input, assert_msg, dep_token):
         _captured = _capture_call(_functional_assert_scalar, (input, assert_msg, dep_token), {})
         if _captured is not None:
             return _captured
-    if not isinstance(input, (tensorplay.Scalar, tensorplay.Tensor)):
-        input = tensorplay.Scalar(input)
     return _C._functional_assert_scalar(input, assert_msg, dep_token)
 
 def _functional_assert_async(input, assert_msg, dep_token):
@@ -10166,8 +10074,6 @@ def sym_constrain_range(size, min=None, max=None):
         _captured = _capture_call(sym_constrain_range, (size, min, max), {})
         if _captured is not None:
             return _captured
-    if not isinstance(size, (tensorplay.Scalar, tensorplay.Tensor)):
-        size = tensorplay.Scalar(size)
     return _C.sym_constrain_range(size, min=min, max=max)
 
 def sym_constrain_range_for_size(size, min=None, max=None):
@@ -10175,8 +10081,6 @@ def sym_constrain_range_for_size(size, min=None, max=None):
         _captured = _capture_call(sym_constrain_range_for_size, (size, min, max), {})
         if _captured is not None:
             return _captured
-    if not isinstance(size, (tensorplay.Scalar, tensorplay.Tensor)):
-        size = tensorplay.Scalar(size)
     return _C.sym_constrain_range_for_size(size, min=min, max=max)
 
 def _functional_sym_constrain_range(size, min, max, dep_token):
@@ -10184,8 +10088,6 @@ def _functional_sym_constrain_range(size, min, max, dep_token):
         _captured = _capture_call(_functional_sym_constrain_range, (size, min, max, dep_token), {})
         if _captured is not None:
             return _captured
-    if not isinstance(size, (tensorplay.Scalar, tensorplay.Tensor)):
-        size = tensorplay.Scalar(size)
     return _C._functional_sym_constrain_range(size, min, max, dep_token)
 
 def _functional_sym_constrain_range_for_size(size, min, max, dep_token):
@@ -10193,8 +10095,6 @@ def _functional_sym_constrain_range_for_size(size, min, max, dep_token):
         _captured = _capture_call(_functional_sym_constrain_range_for_size, (size, min, max, dep_token), {})
         if _captured is not None:
             return _captured
-    if not isinstance(size, (tensorplay.Scalar, tensorplay.Tensor)):
-        size = tensorplay.Scalar(size)
     return _C._functional_sym_constrain_range_for_size(size, min, max, dep_token)
 
 def _make_dep_token(dtype=None, layout=None, device=None, pin_memory=None, memory_format=None):
@@ -10418,8 +10318,6 @@ def _add_relu_(input, other, alpha=1):
         _captured = _capture_call(_add_relu_, (input, other, alpha), {})
         if _captured is not None:
             return _captured
-    if not isinstance(alpha, (tensorplay.Scalar, tensorplay.Tensor)):
-        alpha = tensorplay.Scalar(alpha)
     return _C._add_relu_(input, other, alpha=alpha)
 
 def affine_grid_generator(theta, size, align_corners, *, out=None):
@@ -11191,8 +11089,6 @@ def _unsafe_masked_index(input, mask, indices, fill):
         _captured = _capture_call(_unsafe_masked_index, (input, mask, indices, fill), {})
         if _captured is not None:
             return _captured
-    if not isinstance(fill, (tensorplay.Scalar, tensorplay.Tensor)):
-        fill = tensorplay.Scalar(fill)
     return _C._unsafe_masked_index(input, mask, indices, fill)
 
 def _unsafe_masked_index_put_accumulate(input, mask, indices, values):
@@ -11442,10 +11338,6 @@ def fbgemm_linear_int8_weight_fp32_activation(input, weight, packed, col_offsets
         _captured = _capture_call(fbgemm_linear_int8_weight_fp32_activation, (input, weight, packed, col_offsets, weight_scale, weight_zero_point, bias), {})
         if _captured is not None:
             return _captured
-    if not isinstance(weight_scale, (tensorplay.Scalar, tensorplay.Tensor)):
-        weight_scale = tensorplay.Scalar(weight_scale)
-    if not isinstance(weight_zero_point, (tensorplay.Scalar, tensorplay.Tensor)):
-        weight_zero_point = tensorplay.Scalar(weight_zero_point)
     return _C.fbgemm_linear_int8_weight_fp32_activation(input, weight, packed, col_offsets, weight_scale, weight_zero_point, bias)
 
 def fbgemm_linear_int8_weight(input, weight, packed, col_offsets, weight_scale, weight_zero_point, bias):
@@ -11453,10 +11345,6 @@ def fbgemm_linear_int8_weight(input, weight, packed, col_offsets, weight_scale, 
         _captured = _capture_call(fbgemm_linear_int8_weight, (input, weight, packed, col_offsets, weight_scale, weight_zero_point, bias), {})
         if _captured is not None:
             return _captured
-    if not isinstance(weight_scale, (tensorplay.Scalar, tensorplay.Tensor)):
-        weight_scale = tensorplay.Scalar(weight_scale)
-    if not isinstance(weight_zero_point, (tensorplay.Scalar, tensorplay.Tensor)):
-        weight_zero_point = tensorplay.Scalar(weight_zero_point)
     return _C.fbgemm_linear_int8_weight(input, weight, packed, col_offsets, weight_scale, weight_zero_point, bias)
 
 def fbgemm_linear_quantize_weight(input):
@@ -11845,8 +11733,6 @@ def miopen_convolution_add_relu(input, weight, z, alpha, bias, stride, padding, 
         _captured = _capture_call(miopen_convolution_add_relu, (input, weight, z, alpha, bias, stride, padding, dilation, groups), {})
         if _captured is not None:
             return _captured
-    if alpha is not None and not isinstance(alpha, (tensorplay.Scalar, tensorplay.Tensor)):
-        alpha = tensorplay.Scalar(alpha)
     if isinstance(stride, int) and not isinstance(stride, bool):
         stride = [stride]
     if isinstance(padding, int) and not isinstance(padding, bool):
@@ -14241,14 +14127,6 @@ def quantized_lstm_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh,
         _captured = _capture_call(quantized_lstm_cell, (input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh), {})
         if _captured is not None:
             return _captured
-    if not isinstance(scale_ih, (tensorplay.Scalar, tensorplay.Tensor)):
-        scale_ih = tensorplay.Scalar(scale_ih)
-    if not isinstance(scale_hh, (tensorplay.Scalar, tensorplay.Tensor)):
-        scale_hh = tensorplay.Scalar(scale_hh)
-    if not isinstance(zero_point_ih, (tensorplay.Scalar, tensorplay.Tensor)):
-        zero_point_ih = tensorplay.Scalar(zero_point_ih)
-    if not isinstance(zero_point_hh, (tensorplay.Scalar, tensorplay.Tensor)):
-        zero_point_hh = tensorplay.Scalar(zero_point_hh)
     return _C.quantized_lstm_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh)
 
 def quantized_gru_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh):
@@ -14256,14 +14134,6 @@ def quantized_gru_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, 
         _captured = _capture_call(quantized_gru_cell, (input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh), {})
         if _captured is not None:
             return _captured
-    if not isinstance(scale_ih, (tensorplay.Scalar, tensorplay.Tensor)):
-        scale_ih = tensorplay.Scalar(scale_ih)
-    if not isinstance(scale_hh, (tensorplay.Scalar, tensorplay.Tensor)):
-        scale_hh = tensorplay.Scalar(scale_hh)
-    if not isinstance(zero_point_ih, (tensorplay.Scalar, tensorplay.Tensor)):
-        zero_point_ih = tensorplay.Scalar(zero_point_ih)
-    if not isinstance(zero_point_hh, (tensorplay.Scalar, tensorplay.Tensor)):
-        zero_point_hh = tensorplay.Scalar(zero_point_hh)
     return _C.quantized_gru_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh)
 
 def quantized_rnn_relu_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh):
@@ -14271,14 +14141,6 @@ def quantized_rnn_relu_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed
         _captured = _capture_call(quantized_rnn_relu_cell, (input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh), {})
         if _captured is not None:
             return _captured
-    if not isinstance(scale_ih, (tensorplay.Scalar, tensorplay.Tensor)):
-        scale_ih = tensorplay.Scalar(scale_ih)
-    if not isinstance(scale_hh, (tensorplay.Scalar, tensorplay.Tensor)):
-        scale_hh = tensorplay.Scalar(scale_hh)
-    if not isinstance(zero_point_ih, (tensorplay.Scalar, tensorplay.Tensor)):
-        zero_point_ih = tensorplay.Scalar(zero_point_ih)
-    if not isinstance(zero_point_hh, (tensorplay.Scalar, tensorplay.Tensor)):
-        zero_point_hh = tensorplay.Scalar(zero_point_hh)
     return _C.quantized_rnn_relu_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh)
 
 def quantized_rnn_tanh_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh):
@@ -14286,14 +14148,6 @@ def quantized_rnn_tanh_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed
         _captured = _capture_call(quantized_rnn_tanh_cell, (input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh), {})
         if _captured is not None:
             return _captured
-    if not isinstance(scale_ih, (tensorplay.Scalar, tensorplay.Tensor)):
-        scale_ih = tensorplay.Scalar(scale_ih)
-    if not isinstance(scale_hh, (tensorplay.Scalar, tensorplay.Tensor)):
-        scale_hh = tensorplay.Scalar(scale_hh)
-    if not isinstance(zero_point_ih, (tensorplay.Scalar, tensorplay.Tensor)):
-        zero_point_ih = tensorplay.Scalar(zero_point_ih)
-    if not isinstance(zero_point_hh, (tensorplay.Scalar, tensorplay.Tensor)):
-        zero_point_hh = tensorplay.Scalar(zero_point_hh)
     return _C.quantized_rnn_tanh_cell(input, hx, w_ih, w_hh, b_ih, b_hh, packed_ih, packed_hh, col_offsets_ih, col_offsets_hh, scale_ih, scale_hh, zero_point_ih, zero_point_hh)
 
 def _pack_padded_sequence(input, lengths, batch_first, *, out=None):
@@ -14323,8 +14177,6 @@ def _pad_packed_sequence(data, batch_sizes, batch_first, padding_value, total_le
         _captured = _capture_call(_pad_packed_sequence, (data, batch_sizes, batch_first, padding_value, total_length), {})
         if _captured is not None:
             return _captured
-    if not isinstance(padding_value, (tensorplay.Scalar, tensorplay.Tensor)):
-        padding_value = tensorplay.Scalar(padding_value)
     return _C._pad_packed_sequence(data, batch_sizes, batch_first, padding_value, total_length)
 
 def set_(input, source):
@@ -14422,8 +14274,6 @@ def __and__(input, other):
         _captured = _capture_call(__and__, (input, other), {})
         if _captured is not None:
             return _captured
-    if not isinstance(other, (tensorplay.Scalar, tensorplay.Tensor)):
-        other = tensorplay.Scalar(other)
     return _C.__and__(input, other)
 
 def __iand__(input, other):
@@ -14437,8 +14287,6 @@ def __or__(input, other):
         _captured = _capture_call(__or__, (input, other), {})
         if _captured is not None:
             return _captured
-    if not isinstance(other, (tensorplay.Scalar, tensorplay.Tensor)):
-        other = tensorplay.Scalar(other)
     return _C.__or__(input, other)
 
 def __ior__(input, other):
@@ -14452,8 +14300,6 @@ def __xor__(input, other):
         _captured = _capture_call(__xor__, (input, other), {})
         if _captured is not None:
             return _captured
-    if not isinstance(other, (tensorplay.Scalar, tensorplay.Tensor)):
-        other = tensorplay.Scalar(other)
     return _C.__xor__(input, other)
 
 def __ixor__(input, other):
@@ -15313,10 +15159,6 @@ def rrelu_with_noise_(input, noise, lower=0.125, upper=0.3333333333333333, train
         _captured = _capture_call(rrelu_with_noise_, (input, noise, lower, upper, training, generator), {})
         if _captured is not None:
             return _captured
-    if not isinstance(lower, (tensorplay.Scalar, tensorplay.Tensor)):
-        lower = tensorplay.Scalar(lower)
-    if not isinstance(upper, (tensorplay.Scalar, tensorplay.Tensor)):
-        upper = tensorplay.Scalar(upper)
     return _C.rrelu_with_noise_(input, noise, lower, upper, training, generator)
 
 def mkldnn_adaptive_avg_pool2d(input, output_size, *, out=None):
@@ -16614,8 +16456,6 @@ def _test_serialization_subcmul(input, other, alpha=1):
         _captured = _capture_call(_test_serialization_subcmul, (input, other, alpha), {})
         if _captured is not None:
             return _captured
-    if not isinstance(alpha, (tensorplay.Scalar, tensorplay.Tensor)):
-        alpha = tensorplay.Scalar(alpha)
     return _C._test_serialization_subcmul(input, other, alpha)
 
 def _test_parallel_materialize(input, num_parallel, skip_first=False):
@@ -16759,8 +16599,6 @@ def _segment_reduce(data, reduce, lengths=None, offsets=None, axis=0, initial=No
         _captured = _capture_call(_segment_reduce, (data, reduce, lengths, offsets, axis, initial), {})
         if _captured is not None:
             return _captured
-    if initial is not None and not isinstance(initial, (tensorplay.Scalar, tensorplay.Tensor)):
-        initial = tensorplay.Scalar(initial)
     return _C._segment_reduce(data, reduce, lengths=lengths, offsets=offsets, axis=axis, initial=initial)
 
 def pad_sequence(sequences, batch_first=False, padding_value=0.0, padding_side='right'):
