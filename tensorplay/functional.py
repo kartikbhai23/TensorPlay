@@ -2210,10 +2210,6 @@ def clamp_backward(grad_output, input, min=None, max=None):
         _captured = _capture_call(clamp_backward, (grad_output, input, min, max), {})
         if _captured is not None:
             return _captured
-    if min is not None and not isinstance(min, (tensorplay.Scalar, tensorplay.Tensor)):
-        min = tensorplay.Scalar(min)
-    if max is not None and not isinstance(max, (tensorplay.Scalar, tensorplay.Tensor)):
-        max = tensorplay.Scalar(max)
     return _C.clamp_backward(grad_output, input, min, max)
 
 def cos(input, *, out=None):
@@ -2813,30 +2809,47 @@ def arange(*args, dtype=DType.undefined, device=None, requires_grad=False, out=N
     else:
         raise TypeError(f'arange expected 1-3 positional arguments, got {len(args)}')
 
-def linspace(start, end, steps, *, dtype=DType.float32, device=None, requires_grad=False, out=None):
+def _check_range_out_options(out, dtype, device):
+    if dtype is not None and dtype != out.dtype:
+        raise RuntimeError(f"dtype {dtype} does not match dtype of out parameter ({out.dtype})")
+    device = _ensure_device(device)
+    if device is not None and device.type != out.device.type:
+        raise RuntimeError(
+            f"device type {device.type} does not match device type of out parameter ({out.device.type})"
+        )
+
+def linspace(start, end, steps, *, dtype=None, device=None, requires_grad=False, out=None):
     if out is not None:
         if _capturing():
             _captured = _capture_call(linspace, (start, end, steps), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad, 'out': out})
             if _captured is not None:
                 return _captured
-        return _C.linspace(start, end, steps, dtype=dtype, device=device, requires_grad=requires_grad, out=out)
+        _check_range_out_options(out, dtype, device)
+        result = _C.linspace(start, end, steps, out=out)
+        return result.requires_grad_(True) if requires_grad else result
     if _capturing():
         _captured = _capture_call(linspace, (start, end, steps), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
+    if dtype is None:
+        return _C.linspace(start, end, steps, device=device, requires_grad=requires_grad)
     return _C.linspace(start, end, steps, dtype=dtype, device=device, requires_grad=requires_grad)
 
-def logspace(start, end, steps, base=10.0, *, dtype=DType.float32, device=None, requires_grad=False, out=None):
+def logspace(start, end, steps, base=10.0, *, dtype=None, device=None, requires_grad=False, out=None):
     if out is not None:
         if _capturing():
             _captured = _capture_call(logspace, (start, end, steps, base), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad, 'out': out})
             if _captured is not None:
                 return _captured
-        return _C.logspace(start, end, steps, base, dtype=dtype, device=device, requires_grad=requires_grad, out=out)
+        _check_range_out_options(out, dtype, device)
+        result = _C.logspace(start, end, steps, base, out=out)
+        return result.requires_grad_(True) if requires_grad else result
     if _capturing():
         _captured = _capture_call(logspace, (start, end, steps, base), {'dtype': dtype, 'device': device, 'requires_grad': requires_grad})
         if _captured is not None:
             return _captured
+    if dtype is None:
+        return _C.logspace(start, end, steps, base, device=device, requires_grad=requires_grad)
     return _C.logspace(start, end, steps, base, dtype=dtype, device=device, requires_grad=requires_grad)
 
 def sum(input, dim=None, keepdim=False, *, dtype=DType.undefined):
@@ -9035,10 +9048,8 @@ def threshold_(input, threshold, value):
         _captured = _capture_call(threshold_, (input, threshold, value), {})
         if _captured is not None:
             return _captured
-    if not isinstance(threshold, (tensorplay.Scalar, tensorplay.Tensor)):
-        threshold = tensorplay.Scalar(threshold)
-    if not isinstance(value, (tensorplay.Scalar, tensorplay.Tensor)):
-        value = tensorplay.Scalar(value)
+    # The binding converts numbers to Scalar itself; wrapping here would
+    # build two Python objects on every call.
     return _C.threshold_(input, threshold, value)
 
 def i0_(input):
