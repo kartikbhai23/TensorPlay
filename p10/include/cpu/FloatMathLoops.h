@@ -217,8 +217,44 @@ inline Tensor binary_float_kernel(const Tensor& a_in, const Tensor& b_in, F f,
     // Reduced-width inputs are evaluated in Float32 and narrowed once at the
     // end; the loops below only ever address float or double buffers.
     DType compute_dt = (dt == DType::Float64) ? DType::Float64 : DType::Float32;
-    Tensor ac = a_in.to(compute_dt).expand(out_shape).contiguous();
-    Tensor bc = b_in.to(compute_dt).expand(out_shape).contiguous();
+    // Each operand pays only what it misses: a cast when its dtype is below
+    // compute width, an expand/contiguous when its shape is not the broadcast
+    // result.  Same-shape same-dtype operands skip the chain entirely.
+    Tensor ac = (a_in.dtype() == compute_dt) ? a_in : a_in.to(compute_dt);
+    Tensor bc = (b_in.dtype() == compute_dt) ? b_in : b_in.to(compute_dt);
+    if (!(ac.is_contiguous() &&
+          static_cast<std::vector<int64_t>>(ac.shape()) == out_shape)) {
+        ac = ac.expand(out_shape).contiguous();
+    }
+    // Zero-dimensional second operand: the scalar rides a register, so the
+    // expand/contiguous copy of the whole buffer is pure overhead.
+    if (bc.dim() == 0 && ac.is_contiguous() &&
+        static_cast<std::vector<int64_t>>(ac.shape()) == out_shape) {
+        Tensor out = destination != nullptr
+                         ? *destination
+                         : Tensor::empty(out_shape, compute_dt, a_in.device());
+        int64_t n = out.numel();
+        if (compute_dt == DType::Float64) {
+            const double* ap = ac.data_ptr<double>();
+            const double bv = bc.data_ptr<double>()[0];
+            double* dp = out.data_ptr<double>();
+            parallel::parallel_for(0, n, parallel::GRAIN_SIZE, [&](int64_t begin, int64_t end) {
+                for (int64_t i = begin; i < end; ++i) dp[i] = f(ap[i], bv);
+            });
+        } else {
+            const float* ap = ac.data_ptr<float>();
+            const float bv = bc.data_ptr<float>()[0];
+            float* dp = out.data_ptr<float>();
+            parallel::parallel_for(0, n, parallel::GRAIN_SIZE, [&](int64_t begin, int64_t end) {
+                for (int64_t i = begin; i < end; ++i) dp[i] = f(ap[i], bv);
+            });
+        }
+        return out;
+    }
+    if (!(bc.is_contiguous() &&
+          static_cast<std::vector<int64_t>>(bc.shape()) == out_shape)) {
+        bc = bc.expand(out_shape).contiguous();
+    }
     Tensor out = destination != nullptr
                      ? *destination
                      : Tensor::empty(out_shape, compute_dt, a_in.device());
