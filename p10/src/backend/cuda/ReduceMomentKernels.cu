@@ -215,7 +215,7 @@ Tensor welford_dispatch(
 // because the second pass reads the mean straight from device memory.
 // The correction division is linear in the sum, so each block applies it
 // before the atomic accumulation.
-__global__ void var_two_pass_kernel(int64_t n, double correction,
+__global__ void var_two_pass_kernel(int64_t n, double divisor,
                                     const float* __restrict__ mean_ptr,
                                     const float* __restrict__ input,
                                     float* __restrict__ accumulator) {
@@ -242,9 +242,7 @@ __global__ void var_two_pass_kernel(int64_t n, double correction,
             value += __shfl_down_sync(0xffffffffffffffffull, value, offset);
         }
         if (lane == 0) {
-            const double divisor = n > correction ? n - correction : 0.0;
-            atomicAdd(accumulator,
-                      divisor > 0 ? static_cast<float>(value / divisor) : 0.0f);
+            atomicAdd(accumulator, static_cast<float>(value / divisor));
         }
     }
 }
@@ -259,7 +257,7 @@ Tensor var_two_pass_from_mean(const Tensor& self, Tensor& mean_t,
         std::min<int64_t>((n + threads * 4 - 1) / (threads * 4), 256);
     var_two_pass_kernel<<<static_cast<unsigned>(blocks), threads, 0,
                            getCurrentCUDAStream().stream()>>>(
-        n, static_cast<double>(correction), mean_t.data_ptr<float>(),
+        n, static_cast<double>(n) - static_cast<double>(correction), mean_t.data_ptr<float>(),
         self.data_ptr<float>(), out.data_ptr<float>());
     return out;
 }
@@ -267,6 +265,13 @@ Tensor var_two_pass_from_mean(const Tensor& self, Tensor& mean_t,
 Tensor var_two_pass(const Tensor& self, int64_t correction) {
     Tensor mean_t = mean_dim_kernel(self, {}, false, DType::Float32);
     return var_two_pass_from_mean(self, mean_t, correction);
+}
+
+static bool can_use_two_pass_variance(
+        const Tensor& self, const std::vector<int64_t>& dim, int64_t correction, bool keepdim) {
+    // Empty inputs and a zero divisor need the Welford path's NaN and Inf handling.
+    return dim.empty() && !keepdim && self.dtype() == DType::Float32 &&
+           self.is_contiguous() && self.numel() > std::max<int64_t>(0, correction);
 }
 
 Tensor var_dim_kernel(const Tensor& self, const std::vector<int64_t>& dim, int64_t correction, bool keepdim) {
@@ -279,8 +284,7 @@ Tensor var_dim_kernel(const Tensor& self, const std::vector<int64_t>& dim, int64
     const ReductionSpec spec = make_reduction_spec(self, dim);
     // Full-reduction float fast path: the two-pass pair runs at sum speed,
     // well ahead of the serial Welford chain on ordinary sizes.
-    if (dim.empty() && !keepdim && self.dtype() == DType::Float32 &&
-        self.is_contiguous()) {
+    if (can_use_two_pass_variance(self, dim, correction, keepdim)) {
         return var_two_pass(self, correction);
     }
     TP_DISPATCH_FLOAT_REDUCTION(welford_dispatch, self.dtype(), self, spec,
@@ -299,8 +303,7 @@ std::tuple<Tensor, Tensor> var_mean_dim_kernel(
     const ReductionSpec spec = make_reduction_spec(self, dim);
     // Full-reduction float fast path: the two-pass pair, with the mean the
     // first pass already produced returned as the second output.
-    if (dim.empty() && !keepdim && self.dtype() == DType::Float32 &&
-        self.is_contiguous()) {
+    if (can_use_two_pass_variance(self, dim, correction, keepdim)) {
         Tensor mean_t = mean_dim_kernel(self, {}, false, DType::Float32);
         Tensor var = var_two_pass_from_mean(self, mean_t, correction);
         return {var, mean_t};
@@ -332,8 +335,7 @@ Tensor std_dim_kernel(const Tensor& self, const std::vector<int64_t>& dim, int64
         return var_dim_kernel(self, dim, correction, keepdim).sqrt();
     }
     // Same two-pass fast path as var, with the sqrt folded into the caller.
-    if (dim.empty() && !keepdim && self.dtype() == DType::Float32 &&
-        self.is_contiguous()) {
+    if (can_use_two_pass_variance(self, dim, correction, keepdim)) {
         return var_two_pass(self, correction).sqrt();
     }
     const ReductionSpec spec = make_reduction_spec(self, dim);

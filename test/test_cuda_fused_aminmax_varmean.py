@@ -104,6 +104,23 @@ class TestCUDAVarMeanCorrection(unittest.TestCase):
         np.testing.assert_allclose(_to_numpy(var), npx.var(ddof=1), rtol=1e-5, atol=1e-7)
         np.testing.assert_allclose(_to_numpy(mean), npx.mean(), rtol=1e-5, atol=1e-7)
 
+    def test_global_empty_and_zero_degrees_of_freedom(self):
+        cases = (
+            ([], 0, np.nan, np.nan),
+            ([], -1, np.nan, np.nan),
+            ([3.0], 1, np.nan, 3.0),
+            ([2.0, 2.0], 2, np.nan, 2.0),
+            ([1.0, 3.0], 3, np.inf, 2.0),
+        )
+        for values, correction, moment, mean in cases:
+            with self.subTest(values=values, correction=correction):
+                x = tp.tensor(values, dtype=tp.float32, device="cuda")
+                for name in ("var", "std"):
+                    scalar = getattr(F, name)(x, correction=correction)
+                    pair = getattr(F, name + "_mean")(x, correction=correction)
+                    np.testing.assert_equal(scalar.item(), moment)
+                    np.testing.assert_equal(tuple(t.item() for t in pair), (moment, mean))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
