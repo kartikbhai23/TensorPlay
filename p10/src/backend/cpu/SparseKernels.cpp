@@ -610,6 +610,39 @@ Tensor to_sparse_coo_cpu(const Tensor& self) {
     const std::vector<int64_t> sizes =
         static_cast<std::vector<int64_t>>(contiguous_self.shape());
     const int64_t ndim = static_cast<int64_t>(sizes.size());
+    // One-dimensional dense input: count nonzeros, then fill indices and
+    // values in one direct walk — no intermediate position vector with its
+    // regrowing allocations, no per-element stride decomposition.
+    if (ndim == 1 && contiguous_self.is_contiguous()) {
+        const int64_t numel = contiguous_self.numel();
+        int64_t nnz = 0;
+        dispatch_dtype(contiguous_self.dtype(), [&](auto tag) {
+            using scalar_t = typename decltype(tag)::type;
+            const scalar_t* data = contiguous_self.data_ptr<scalar_t>();
+            for (int64_t i = 0; i < numel; ++i) {
+                if (data[i] != scalar_t(0)) ++nnz;
+            }
+        });
+        Tensor indices = Tensor::empty({1, nnz}, DType::Int64, self.device());
+        Tensor values =
+            Tensor::empty({nnz}, contiguous_self.dtype(), self.device());
+        int64_t* index_data = indices.data_ptr<int64_t>();
+        dispatch_dtype(contiguous_self.dtype(), [&](auto tag) {
+            using scalar_t = typename decltype(tag)::type;
+            const scalar_t* data = contiguous_self.data_ptr<scalar_t>();
+            scalar_t* destination = values.data_ptr<scalar_t>();
+            int64_t k = 0;
+            for (int64_t i = 0; i < numel; ++i) {
+                if (data[i] != scalar_t(0)) {
+                    index_data[k] = i;
+                    destination[k] = data[i];
+                    ++k;
+                }
+            }
+        });
+        return Tensor::make_sparse_coo_tensor(indices, values, sizes,
+                                              /*is_coalesced=*/true);
+    }
     const std::vector<int64_t> positions = nonzero_positions(contiguous_self);
     const int64_t nnz = static_cast<int64_t>(positions.size());
 
