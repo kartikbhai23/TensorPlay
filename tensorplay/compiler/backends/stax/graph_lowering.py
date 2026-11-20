@@ -467,27 +467,6 @@ def _node_device_type(node) -> str | None:
     return getattr(device, "type", None)
 
 
-def is_mkldnn_conv(node) -> bool:
-    # When mkldnn_fusion is enabled, conv will be replaced by the lowering pattern function.
-    # See _register_unary_fusion_lowering in tp/compiler/backends/stax/fx_passes/mkldnn_fusion.py.
-    if (
-        getattr(tp.ops, "mkldnn", None) is not None
-        and getattr(tp.ops.mkldnn, "_convolution_pointwise", None) is not None
-        and isinstance(node.target, functools.partial)
-        and len(node.target.args) > 0
-        and hasattr(node.target.args[0], "targets")
-    ):
-        for target in node.target.args[0].targets:
-            if target.fns[0] in [
-                tp.ops.mkldnn._convolution_pointwise.default,
-                tp.ops.mkldnn._convolution_pointwise.binary,
-                tp.ops.mkldnn._convolution_pointwise_.binary,
-            ]:
-                return True
-
-    return False
-
-
 def _load_python_wrapper(wrapper_code: ValueWithLineMap, attrs: dict[str, Any]):
     """Write what was printed, and load it back as something callable.
 
@@ -991,10 +970,6 @@ class GraphLowering(Interpreter):
         conv_nodes = [
             n for n in gm.graph.nodes if n.target is tp.ops.tp.convolution.default
         ]
-
-        for n in gm.graph.nodes:
-            if is_mkldnn_conv(n):
-                conv_nodes.append(n)
 
         if not conv_nodes:
             # A region records a convolution under the name it was called by.

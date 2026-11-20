@@ -94,11 +94,10 @@ def lazy_init(input_device: tp.device | None = None):
     from .misc_patterns import _misc_patterns_init
     from .pad_mm import _pad_mm_init
 
-    if tp._C.has_mkldnn():
-        # The product table is filled by importing its module; the rewrites
-        # themselves are pure graph rewriting, and a build without oneDNN
-        # does not use this table.
-        from . import decompose_mem_bound_mm  # noqa: F401
+    # The product table is filled by importing its module.  The rewrites are
+    # graph rewriting that does not depend on which kernels the build has, so
+    # the table is filled whether or not a particular library is present.
+    from . import decompose_mem_bound_mm  # noqa: F401
 
     _pad_mm_init(input_device)
     _sfdp_init(input_device)
