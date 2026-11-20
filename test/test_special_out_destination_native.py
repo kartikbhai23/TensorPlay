@@ -8,6 +8,7 @@ answer must be the same one the allocating form gives, and a reduced-width step
 has to land on the adjacent number the destination width can hold.
 """
 import numpy as np
+import pytest
 import tensorplay as tp
 
 LENGTH = 37  # leaves a tail behind every vector width
@@ -220,3 +221,17 @@ def test_nextafter_steps_a_zero_away_from_zero():
             target = tensor_of(np.array([np.inf if sign > 0 else -np.inf]), dtype)
             got = tp._C.nextafter(source, target).to(tp.float32).tolist()[0]
             assert got == sign * tiny, (dtype, sign, got)
+
+
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+def test_cuda_heaviside_broadcasts_into_a_strided_destination():
+    x = tp.tensor([[float("nan"), -1.0, 0.0, 2.0],
+                   [0.0, -2.0, 1.0, -0.0]], device="cuda")
+    at_zero = tp.tensor([0.25, 0.5, 0.75, 1.0], device="cuda")
+    expected = [[0.0, 0.0, 0.75, 1.0], [0.25, 0.0, 1.0, 1.0]]
+    assert tp.heaviside(x, at_zero).tolist() == expected
+    out = tp.empty((4, 2), device="cuda").T
+    tp.heaviside(x, at_zero, out=out)
+    assert out.tolist() == expected
+    with pytest.raises(RuntimeError, match="same dtype"):
+        tp.heaviside(x, at_zero.double())

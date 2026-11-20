@@ -511,16 +511,44 @@ Tensor& lcm_out_cuda(const Tensor& a, const Tensor& b, Tensor& out) {
                                 "lcm");
 }
 
+Tensor heaviside_apply(const Tensor& a, const Tensor& values, const Tensor& out) {
+    TP_CHECK_NOT_IMPLEMENTED(
+        !isComplexType(a.dtype()) && !isComplexType(values.dtype()) &&
+            (!out.defined() || !isComplexType(out.dtype())),
+        "heaviside does not support complex tensors");
+    TP_CHECK(a.dtype() == values.dtype() && (!out.defined() || out.dtype() == a.dtype()),
+             "heaviside requires all tensors to have the same dtype");
+    auto iter = TensorIteratorConfig()
+        .check_all_same_dtype(true)
+        .allow_cpu_scalars(true)
+        .add_output(out)
+        .add_const_input(a)
+        .add_const_input(values)
+        .build();
+    if (iter.numel() == 0) return iter.output();
+#define TP_HEAVISIDE(ctype, name) \
+    case DType::name: \
+        gpu_kernel_with_scalars(iter, [] __host__ __device__(ctype x, ctype value) -> ctype { \
+            const auto zero = static_cast<ctype>(0); \
+            return x == zero ? value : static_cast<ctype>(x > zero); \
+        }); \
+        break;
+    switch (a.dtype()) {
+        TENSORPLAY_FORALL_SCALAR_TYPES(TP_HEAVISIDE)
+        default: TP_THROW(TypeError, "heaviside: unsupported dtype");
+    }
+#undef TP_HEAVISIDE
+    CUDA_CHECK(cudaGetLastError());
+    return iter.output();
+}
+
 Tensor heaviside_cuda(const Tensor& a, const Tensor& values) {
-    return binary_same_cuda(a, values,
-                            HFn47{},
-                            "heaviside");
+    return heaviside_apply(a, values, Tensor());
 }
 
 Tensor& heaviside_out_cuda(const Tensor& a, const Tensor& values, Tensor& out) {
-    return binary_same_cuda_out(a, values, out,
-                                HFn47{},
-                                "heaviside");
+    out = heaviside_apply(a, values, out);
+    return out;
 }
 
 // ===========================================================================
