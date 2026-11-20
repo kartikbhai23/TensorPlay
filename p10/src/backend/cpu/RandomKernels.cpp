@@ -1070,10 +1070,15 @@ Tensor& log_normal_kernel(Tensor& self, double mean, double std,
     TP_THROW_IF(!(std > 0.0), RuntimeError, "log_normal_ expects std > 0.0, but found std=", std);
     if (self.numel() == 0) return self;
     check_writable_inplace(self);
-    lognormal_distribution<double> dist(mean, std);
 
     dispatch_floating(self.dtype(), [&](auto tag) {
         using scalar_t = decltype(tag);
+        // The generator rides the element's accumulation width: a
+        // double-precision detour pays a wider Box-Muller and a wider exp
+        // for nothing (Half and BFloat16 accumulate in float).
+        using acc_t = tensorplay::dist_acctype<scalar_t>;
+        lognormal_distribution<acc_t> dist(static_cast<acc_t>(mean),
+                                           static_cast<acc_t>(std));
         for_each_element<scalar_t>(self, [&](scalar_t& v) {
             v = static_cast<scalar_t>(dist(&gen));
         });
