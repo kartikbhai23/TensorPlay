@@ -388,8 +388,8 @@ std::tuple<Tensor, Tensor> nll_loss2d_forward_native(
 
 std::tuple<Tensor, Tensor, Tensor> _lu_with_info_native(const Tensor& self,
                                                         bool pivot,
-                                                        bool check_errors) {
-    return ops::linalg_lu_factor_ex(self, pivot, check_errors);
+                                                        bool /*check_errors*/) {
+    return ops::linalg_lu_factor_ex(self, pivot, false);
 }
 
 }  // namespace composite

@@ -678,6 +678,29 @@ def test_lu_with_info_reports_the_factorization():
     assert info.numel() == 1
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_lu_with_info_returns_status_for_singular_matrix(device):
+    if device == "cuda" and not tp.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    matrix = tp.tensor([[1.0, 2.0], [2.0, 4.0]], device=device)
+    for check_errors in (False, True):
+        _, _, info = tp._C._lu_with_info(matrix, True, check_errors)
+        assert info.item() == 2
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda", "meta"])
+@pytest.mark.parametrize("sizes", [(), (3, 0, 7)])
+def test_shape_as_tensor_returns_cpu_sizes(device, sizes):
+    if device == "cuda" and not tp.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    x = tp.empty(sizes, device=device)
+    result = tp.functional._shape_as_tensor(x)
+    assert result.device.type == "cpu"
+    assert result.dtype == tp.int64
+    assert tuple(result.shape) == (len(sizes),)
+    assert result.tolist() == list(sizes)
+
+
 # ------------------------------------------------------------- integer matmul
 
 

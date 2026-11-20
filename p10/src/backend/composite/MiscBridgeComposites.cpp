@@ -9,6 +9,7 @@
 #include "tensorplay/ops/TensorRedispatchGenerated.h"
 #include "OutWrite.h"
 
+#include <algorithm>
 #include <cmath>
 #include <optional>
 #include <string>
@@ -181,18 +182,14 @@ Tensor chalf_impl(const Tensor& self, std::optional<int64_t> memory_format) {
     return ops::to(self, DType::ComplexHalf, false, false, memory_format);
 }
 
-// ---- _shape_as_tensor: sizes as an int64 tensor
+// ---- _shape_as_tensor: sizes as a CPU int64 tensor
 Tensor _shape_as_tensor_impl(const Tensor& self) {
-    const int64_t ndim = self.dim();
-    std::vector<int64_t> s(ndim);
-    for (int64_t i = 0; i < ndim; ++i) {
-        s[i] = self.size(i);
+    const auto sizes = self.sizes();
+    Tensor shape({static_cast<int64_t>(sizes.size())}, DType::Int64, Device(DeviceType::CPU));
+    if (!sizes.empty()) {
+        std::copy(sizes.begin(), sizes.end(), shape.data_ptr<int64_t>());
     }
-    // Build on the host and issue a single device copy: the per-element
-    // select/fill chain launched two kernels per dimension.
-    Tensor host = Tensor({ndim}, DType::Int64, Device(DeviceType::CPU));
-    std::copy(s.begin(), s.end(), host.data_ptr<int64_t>());
-    return host.to(self.device());
+    return shape;
 }
 
 Tensor _dim_arange_impl(const Tensor& like, int64_t dim) {
