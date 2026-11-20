@@ -1874,6 +1874,20 @@ Tensor nonzero_cpu_impl(const Tensor& self) {
     Tensor result = Tensor::empty({count, nd}, DType::Int64, self.device());
     if (count == 0) return result;
     int64_t* result_data = result.data_ptr<int64_t>();
+    // One-dimensional input: the fill is a flat index copy — the cartesian
+    // coordinate maintenance of the generic walk below is pure overhead.
+    if (nd == 1) {
+        parallel_for(0, n, GRAIN_SIZE, [&](int64_t begin, int64_t end) {
+            int64_t output_index =
+                chunk_offsets[static_cast<size_t>(begin / chunk_size)];
+            for (int64_t i = begin; i < end; ++i) {
+                if (input_data[i] != scalar_t(0)) {
+                    result_data[output_index++] = i;
+                }
+            }
+        });
+        return result;
+    }
     const std::vector<int64_t> sizes =
         static_cast<std::vector<int64_t>>(input.shape());
     parallel_for(0, n, GRAIN_SIZE, [&](int64_t begin, int64_t end) {
