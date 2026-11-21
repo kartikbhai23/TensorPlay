@@ -2,26 +2,41 @@
 
 #include "ReduceEngine.cuh"
 
-#include <cub/block/block_reduce.cuh>
-
 namespace tensorplay::cuda::reduce_family {
 
 constexpr int kSmallArgThreads = 256;
 
+// The block folds through the shuffle tree and stages one key per warp: the
+// generic block-reduce body drags a large template into a launch that only
+// reads a short contiguous run.
 template <typename T, typename Ops>
-__global__ void small_arg_reduce_kernel(
-        const T* input, int count, unsigned long long identity, int64_t* output) {
+__global__ void __launch_bounds__(kSmallArgThreads)
+small_arg_reduce_kernel(
+        const T* __restrict__ input, int count, unsigned long long identity,
+        int64_t* __restrict__ output) {
+    constexpr int kWarps = kSmallArgThreads / reduction::kWarpSize;
     using Key = unsigned long long;
-    using BlockReduce = cub::BlockReduce<Key, kSmallArgThreads>;
-    __shared__ typename BlockReduce::TempStorage storage;
     const Ops ops{};
     Key key = identity;
-    for (int i = threadIdx.x; i < count; i += blockDim.x) {
+    for (int i = threadIdx.x; i < count; i += kSmallArgThreads) {
         key = ops.reduce(key, input[i], i);
     }
-    key = BlockReduce(storage).Reduce(
-        key, [ops] __device__(Key a, Key b) { return ops.combine(a, b); });
-    if (threadIdx.x == 0) *output = ops.project(key);
+    for (int offset = reduction::kWarpSize / 2; offset > 0; offset >>= 1) {
+        key = ops.combine(key, reduction::reduce_warp_shuffle_down(key, 0xffffffffu, offset));
+    }
+    __shared__ Key warp_key[kWarps];
+    if ((threadIdx.x & (reduction::kWarpSize - 1)) == 0) {
+        warp_key[threadIdx.x / reduction::kWarpSize] = key;
+    }
+    __syncthreads();
+    if (threadIdx.x < reduction::kWarpSize) {
+        Key value = threadIdx.x < kWarps ? warp_key[threadIdx.x] : identity;
+        for (int offset = reduction::kWarpSize / 2; offset > 0; offset >>= 1) {
+            value = ops.combine(value,
+                reduction::reduce_warp_shuffle_down(value, 0xffffffffu, offset));
+        }
+        if (threadIdx.x == 0) *output = ops.project(value);
+    }
 }
 
 inline bool use_small_arg_reduce(const Tensor& input, const ReductionSpec& spec) {
