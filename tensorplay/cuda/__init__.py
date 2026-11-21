@@ -47,14 +47,16 @@ from .streams import Event, ExternalStream, Stream
 
 
 def _bind_triton_stream() -> None:
-    """Point Triton's launch-stream query at this runtime's raw stream.
+    """Point Triton's device and stream queries at this runtime.
 
     Triton kernels resolve their launch stream through the active driver's
-    ``get_current_stream``.  When that query was installed by a different
-    host framework it keeps returning that framework's thread-local stream,
-    so launches ignore this runtime's stream selection and escape CUDA Graph
-    capture.  Rebinding it to ``_C._cuda_getCurrentRawStream`` makes the
-    runtime's own stream the single source of truth.
+    ``get_current_stream``, and the device they launch on through its
+    ``get_current_device``/``set_current_device``.  When those were installed
+    by a different host framework they keep reporting that framework's
+    thread-local state, so launches ignore this runtime's device and stream
+    selection and escape CUDA Graph capture.  Rebinding the three queries to
+    this runtime's raw stream and device functions makes it the single source
+    of truth, including across GPUs.
     """
 
     try:
@@ -66,6 +68,17 @@ def _bind_triton_stream() -> None:
     if getattr(active, "_tensorplay_raw_stream", False):
         return
     active.get_current_stream = tensorplay._C._cuda_getCurrentRawStream
+
+    # The device accessors live later in this module; resolve them at call
+    # time so binding also works when Triton was imported first.
+    def _current_device() -> int:
+        return tensorplay.cuda.current_device()
+
+    def _set_current_device(device: object) -> None:
+        tensorplay.cuda.set_device(device)
+
+    active.get_current_device = _current_device
+    active.set_current_device = _set_current_device
     active._tensorplay_raw_stream = True
 
 
