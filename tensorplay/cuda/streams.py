@@ -65,6 +65,20 @@ class Stream(StreamBase):
         self.__dict__["_stream"] = core_stream
         return self
 
+    @staticmethod
+    def priority_range() -> tuple[int, int]:
+        r"""Return the priority range of the current device.
+
+        The tuple is ``(least_priority, greatest_priority)``: priorities are
+        clamped to this interval, and a smaller number means a higher
+        priority.
+        """
+
+        if not _has_core:
+            raise RuntimeError("tensorplay.cuda.Stream requires CUDA support")
+        least, greatest = _lcuda.get_stream_priority_range()
+        return int(least), int(greatest)
+
     @property
     def device(self) -> Device:
         return self._stream.device
