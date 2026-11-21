@@ -133,7 +133,22 @@ Tensor run_reduction_typed(
         reduction_output_shape(input, spec, keepdim), output_dtype, input.device());
     if (input.numel() == 0 || result.numel() == 0) return result;
 
-    Tensor viewed = reduction_view(result, input, spec, keepdim);
+    // A reduced dimension is identified by a zero output stride.  The
+    // iterator derives that stride from an output of lower rank: a surviving
+    // dimension aligns with the input dimension it belongs to, and a reduced
+    // one carries no stride.  The alignment is exact when the reduced dims
+    // are a prefix of the input (the surviving extents are then the trailing
+    // ones) and for the fully reduced scalar; any other arrangement needs the
+    // explicit strided view so that every surviving dimension lands on its
+    // own input dimension.
+    bool reduced_prefix = true;
+    for (size_t i = 0; i < spec.dims.size() && reduced_prefix; ++i) {
+        reduced_prefix = spec.dims[i] == static_cast<int64_t>(i);
+    }
+    const bool strides_follow_rank =
+        result.dim() == 0 || (!keepdim && reduced_prefix);
+    Tensor viewed = strides_follow_rank
+        ? result : reduction_view(result, input, spec, keepdim);
     TensorIterator iter = TensorIterator::reduce_op(viewed, input);
     SecondOutputT* second_ptr =
         second_output == nullptr ? nullptr : second_output->data_ptr<SecondOutputT>();
