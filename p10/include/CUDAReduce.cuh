@@ -704,6 +704,7 @@ inline ReduceConfig make_reduce_config(const TensorIterator& iter) {
     // offset from half the width down to one, and that walk only reaches every
     // lane when the width divides the warp evenly, so a width like 7 or 12
     // would drop contributions (a 56-element row summed to 8.5x its value).
+    //
     constexpr int kElemsPerLane = 8;
     const int want_width = reduction_last_pow2(std::max<int64_t>(
         2, std::min<int64_t>(kWarpSize, config.num_inputs / kElemsPerLane)));
@@ -777,8 +778,13 @@ inline ReduceConfig make_reduce_config(const TensorIterator& iter) {
         // more than a couple of vectors: a single CTA leaves every SM but one
         // idle, while the clamp below still keeps at least 16 elements per
         // thread so the staging traffic stays a small multiple of the output
-        // size.  Only shorter reductions keep the single-CTA shape.
-        if (values_per_thread_elems >= 64) {
+        // size.  A contiguous walk reads the reduced run straight through, but
+        // a column walk revisits every row and pays the staging traffic on top
+        // of a strided read, so only a long run repays it: the floor there is
+        // the 256-element per-thread ceiling the split is bounded by.
+        const int64_t split_floor =
+            reduction_on_fastest_dimension ? 64 : 256;
+        if (values_per_thread_elems >= split_floor) {
             int device = -1;
             checkCuda(cudaGetDevice(&device), "cudaGetDevice");
             // Geometry comes from the per-device cache below: querying
@@ -1457,10 +1463,11 @@ reduce_output_kernel(Reduction op) {
 // generic reduce_kernel carries the full ReduceOp -- config arrays, staging
 // branches, second-output support -- even when the launch uses none of it,
 // and that body costs several microseconds on a medium row reduction.  This
-// kernel is the stripped-down version: one warp reduces one row with vector
-// loads, a shuffle fold, and a single store.  It is only selected when the
-// generic path would also use a full warp per row and needs none of the
-// staging machinery, so the two paths agree on geometry and semantics.
+// kernel is the stripped-down version: one warp reduces one row, a shuffle
+// fold, and a single store.  A row at or above the vector width loads
+// VecSize elements per step, a shorter row one element per step.  It is only
+// selected for a contiguous single-dimension row walk that needs none of the
+// staging machinery.
 template <typename InputT, typename AccT, typename OutputT, typename Ops,
           int VecSize, int RowsPerBlock>
 __global__ void __launch_bounds__(kWarpSize * RowsPerBlock)
@@ -1569,6 +1576,20 @@ inline void launch_reduce(
             expected *= iter.shape()[d];
         }
     }
+    // The row walk writes the outputs of one row to consecutive elements, so
+    // the surviving dimensions must flatten into a single contiguous run in
+    // the iterator's order: the first surviving dimension moves by one
+    // element, and each later one by the extents before it.  The reduced
+    // dimensions sit at the front, so that run starts at num_reduce_dims.
+    const int row_out_dims = config.ndim - config.num_reduce_dims;
+    bool output_row_contiguous =
+        row_out_dims >= 1 && config.ndim <= kInlineReduceDims;
+    int64_t expected_step = 1;
+    for (int dim = config.num_reduce_dims;
+         output_row_contiguous && dim < config.ndim; ++dim) {
+        output_row_contiguous = config.output_strides[dim] == expected_step;
+        expected_step *= config.shape[dim];
+    }
     const bool simple_row_reduce =
         config.index32 &&
         config.num_reduce_dims == 1 &&
@@ -1580,9 +1601,33 @@ inline void launch_reduce(
         config.num_inputs >= static_cast<int64_t>(kWarpSize) * InputVecSize &&
         config.block_width == kWarpSize &&
         config.output_vec_size == 1 &&
-        config.output_strides[1] == 1 &&
+        output_row_contiguous &&
         config.ctas_per_output == 1 &&
         config.num_outputs >= 32 &&
+        input_contiguous &&
+        output2 == nullptr &&
+        acc_buf == nullptr &&
+        base_idx == 0 &&
+        !iter.should_accumulate() &&
+        iter.is_final_output() &&
+        std::is_arithmetic_v<AccT>;
+    // The same single-warp walk serves a row below the vector width with a
+    // scalar load per lane: the general body would otherwise spread those
+    // rows over a block whose staging branches and offset walk cost more than
+    // the two rounds the row actually needs.
+    const bool simple_short_row_reduce =
+        !simple_row_reduce &&
+        config.index32 &&
+        config.num_reduce_dims == 1 &&
+        !config.vectorize_input &&
+        config.input_vec_size == 1 &&
+        config.input_strides[0] == 1 &&
+        config.num_inputs >= static_cast<int64_t>(kWarpSize) &&
+        config.num_inputs < 128 &&
+        config.output_vec_size == 1 &&
+        output_row_contiguous &&
+        config.ctas_per_output == 1 &&
+        config.num_outputs >= 16 &&
         input_contiguous &&
         output2 == nullptr &&
         acc_buf == nullptr &&
@@ -1600,10 +1645,23 @@ inline void launch_reduce(
                                  kRowsPerBlock>
             <<<grid, block, 0, stream>>>(
                 num_rows, config.num_inputs, config.input_strides[1],
-                static_cast<const InputT*>(iter.data_ptr(1)),
-                config.output_strides[1],
+                static_cast<const InputT*>(iter.data_ptr(1)), 1,
                 static_cast<OutputT*>(iter.data_ptr(0)), identity, ops);
         checkCuda(cudaGetLastError(), "CUDA simple row reduction kernel launch");
+        return;
+    }
+    if (simple_short_row_reduce) {
+        constexpr int kRowsPerBlock = 4;
+        const int64_t num_rows = config.num_outputs;
+        const dim3 block(kWarpSize, kRowsPerBlock);
+        const dim3 grid(static_cast<unsigned>(
+            (num_rows + kRowsPerBlock - 1) / kRowsPerBlock));
+        simple_row_reduce_kernel<InputT, AccT, OutputT, Ops, 1, kRowsPerBlock>
+            <<<grid, block, 0, stream>>>(
+                num_rows, config.num_inputs, config.input_strides[1],
+                static_cast<const InputT*>(iter.data_ptr(1)), 1,
+                static_cast<OutputT*>(iter.data_ptr(0)), identity, ops);
+        checkCuda(cudaGetLastError(), "CUDA short row reduction kernel launch");
         return;
     }
 
