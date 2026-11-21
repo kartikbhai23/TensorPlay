@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -150,60 +151,59 @@ struct PoolAccum<tensorplay::BFloat16> {
     using type = float;
 };
 
-template <typename scalar_t, typename acc_t>
+template <typename scalar_t, typename acc_t, typename DimT>
 __global__ void avg_pool3d_forward_kernel(
-    int64_t total,
+    DimT total,
     const scalar_t* __restrict__ input,
     scalar_t* __restrict__ output,
-    int64_t channels,
-    int64_t input_d, int64_t input_h, int64_t input_w,
-    int64_t output_d, int64_t output_h, int64_t output_w,
-    int64_t kernel_d, int64_t kernel_h, int64_t kernel_w,
-    int64_t stride_d, int64_t stride_h, int64_t stride_w,
-    int64_t pad_d, int64_t pad_h, int64_t pad_w,
+    DimT input_d, DimT input_h, DimT input_w,
+    DimT output_d, DimT output_h, DimT output_w,
+    DimT kernel_d, DimT kernel_h, DimT kernel_w,
+    DimT stride_d, DimT stride_h, DimT stride_w,
+    DimT pad_d, DimT pad_h, DimT pad_w,
     bool count_include_pad, int64_t divisor_override) {
-    const int64_t stride = static_cast<int64_t>(blockDim.x) * gridDim.x;
-    for (int64_t index = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const DimT stride = blockDim.x * gridDim.x;
+    for (DimT index = blockIdx.x * blockDim.x + threadIdx.x;
          index < total; index += stride) {
-        const int64_t ow = index % output_w;
-        const int64_t oh = (index / output_w) % output_h;
-        const int64_t od = (index / (output_w * output_h)) % output_d;
-        const int64_t nc = index / (output_w * output_h * output_d);
+        const DimT ow = index % output_w;
+        const DimT oh = (index / output_w) % output_h;
+        const DimT od = (index / (output_w * output_h)) % output_d;
+        const DimT nc = index / (output_w * output_h * output_d);
 
-        const int64_t d_start_raw = od * stride_d - pad_d;
-        const int64_t h_start_raw = oh * stride_h - pad_h;
-        const int64_t w_start_raw = ow * stride_w - pad_w;
-        const int64_t d_end_raw = min(d_start_raw + kernel_d, input_d + pad_d);
-        const int64_t h_end_raw = min(h_start_raw + kernel_h, input_h + pad_h);
-        const int64_t w_end_raw = min(w_start_raw + kernel_w, input_w + pad_w);
+        const DimT d_start_raw = od * stride_d - pad_d;
+        const DimT h_start_raw = oh * stride_h - pad_h;
+        const DimT w_start_raw = ow * stride_w - pad_w;
+        const DimT d_end_raw = min(d_start_raw + kernel_d, input_d + pad_d);
+        const DimT h_end_raw = min(h_start_raw + kernel_h, input_h + pad_h);
+        const DimT w_end_raw = min(w_start_raw + kernel_w, input_w + pad_w);
 
-        const int64_t pool_size = (d_end_raw - d_start_raw) *
-                                  (h_end_raw - h_start_raw) *
-                                  (w_end_raw - w_start_raw);
-        const int64_t d_start = max(d_start_raw, int64_t(0));
-        const int64_t h_start = max(h_start_raw, int64_t(0));
-        const int64_t w_start = max(w_start_raw, int64_t(0));
-        const int64_t d_end = min(d_end_raw, input_d);
-        const int64_t h_end = min(h_end_raw, input_h);
-        const int64_t w_end = min(w_end_raw, input_w);
+        const DimT pool_size = (d_end_raw - d_start_raw) *
+                               (h_end_raw - h_start_raw) *
+                               (w_end_raw - w_start_raw);
+        const DimT d_start = max(d_start_raw, DimT(0));
+        const DimT h_start = max(h_start_raw, DimT(0));
+        const DimT w_start = max(w_start_raw, DimT(0));
+        const DimT d_end = min(d_end_raw, input_d);
+        const DimT h_end = min(h_end_raw, input_h);
+        const DimT w_end = min(w_end_raw, input_w);
 
         if (d_start >= d_end || h_start >= h_end || w_start >= w_end) {
             output[index] = static_cast<scalar_t>(0);
             continue;
         }
 
-        const int64_t valid_size = (d_end - d_start) *
-                                   (h_end - h_start) *
-                                   (w_end - w_start);
+        const DimT valid_size = (d_end - d_start) *
+                                (h_end - h_start) *
+                                (w_end - w_start);
         const int64_t divisor = divisor_override != 0
             ? divisor_override
-            : (count_include_pad ? pool_size : valid_size);
+            : static_cast<int64_t>(count_include_pad ? pool_size : valid_size);
         const scalar_t* input_plane = input + nc * input_d * input_h * input_w;
         acc_t sum = static_cast<acc_t>(0);
-        for (int64_t d = d_start; d < d_end; ++d) {
-            for (int64_t h = h_start; h < h_end; ++h) {
+        for (DimT d = d_start; d < d_end; ++d) {
+            for (DimT h = h_start; h < h_end; ++h) {
                 const scalar_t* row = input_plane + (d * input_h + h) * input_w;
-                for (int64_t w = w_start; w < w_end; ++w) {
+                for (DimT w = w_start; w < w_end; ++w) {
                     sum += static_cast<acc_t>(row[w]);
                 }
             }
@@ -268,12 +268,59 @@ __global__ void avg_pool3d_backward_kernel(
     }
 }
 
+// A small output pool would otherwise get one wide block per 256 outputs,
+// leaving most multiprocessors idle behind a serial window walk.  Halving the
+// block keeps one output per thread while multiplying the block count, down
+// to a single warp per block.
+int avg_pool_threads(int64_t total) {
+    constexpr int widest = 256;
+    constexpr int narrowest = 32;
+    static thread_local int sm_count = 0;
+    if (sm_count == 0) {
+        checkCuda(cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount,
+                                         currentDevice()),
+                  "avg_pool multiprocessor count");
+    }
+    int threads = widest;
+    while (threads > narrowest &&
+           (total + threads - 1) / threads < 4 * sm_count) {
+        threads >>= 1;
+    }
+    return threads;
+}
+
+template <typename scalar_t, typename DimT>
+void launch_avg_pool3d_forward_typed(
+    const Tensor& input, Tensor& output, const Pool3dParams& params,
+    bool count_include_pad, int64_t divisor_override,
+    int64_t input_d, int64_t input_h, int64_t input_w,
+    int64_t output_d, int64_t output_h, int64_t output_w, int64_t total,
+    int blocks, int threads) {
+    using acc_t = typename PoolAccum<scalar_t>::type;
+    avg_pool3d_forward_kernel<scalar_t, acc_t, DimT><<<blocks, threads, 0,
+                                                     getCurrentCUDAStream().stream()>>>(
+        static_cast<DimT>(total), input.data_ptr<scalar_t>(),
+        output.data_ptr<scalar_t>(),
+        static_cast<DimT>(input_d), static_cast<DimT>(input_h),
+        static_cast<DimT>(input_w), static_cast<DimT>(output_d),
+        static_cast<DimT>(output_h), static_cast<DimT>(output_w),
+        static_cast<DimT>(params.kernel[0]), static_cast<DimT>(params.kernel[1]),
+        static_cast<DimT>(params.kernel[2]), static_cast<DimT>(params.stride[0]),
+        static_cast<DimT>(params.stride[1]), static_cast<DimT>(params.stride[2]),
+        static_cast<DimT>(params.padding[0]), static_cast<DimT>(params.padding[1]),
+        static_cast<DimT>(params.padding[2]), count_include_pad, divisor_override);
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        TP_THROW(RuntimeError, std::string("avg_pool3d CUDA kernel: ") +
+                 cudaGetErrorString(error));
+    }
+}
+
 template <typename scalar_t>
 void launch_avg_pool3d_forward(const Tensor& input, Tensor& output,
                                const Pool3dParams& params, bool ceil_mode,
                                bool count_include_pad,
                                std::optional<int64_t> divisor_override) {
-    using acc_t = typename PoolAccum<scalar_t>::type;
     const int64_t input_d = input.size(-3);
     const int64_t input_h = input.size(-2);
     const int64_t input_w = input.size(-1);
@@ -285,20 +332,79 @@ void launch_avg_pool3d_forward(const Tensor& input, Tensor& output,
         input_w, params.kernel[2], params.padding[2], params.stride[2], ceil_mode);
     const int64_t total = output.numel();
     if (total == 0) return;
-    const int64_t blocks = std::min<int64_t>((total + 255) / 256, 65535);
-    avg_pool3d_forward_kernel<scalar_t, acc_t><<<static_cast<unsigned>(blocks), 256,
-                                                   0, getCurrentCUDAStream().stream()>>>(
-        total, input.data_ptr<scalar_t>(), output.data_ptr<scalar_t>(),
-        input.dim() == 5 ? input.size(1) : 1,
-        input_d, input_h, input_w, output_d, output_h, output_w,
-        params.kernel[0], params.kernel[1], params.kernel[2],
-        params.stride[0], params.stride[1], params.stride[2],
-        params.padding[0], params.padding[1], params.padding[2],
-        count_include_pad, divisor_override.value_or(0));
-    const auto error = cudaGetLastError();
-    if (error != cudaSuccess) {
-        TP_THROW(RuntimeError, std::string("avg_pool3d CUDA kernel: ") +
-                 cudaGetErrorString(error));
+    const int threads = avg_pool_threads(total);
+    const int blocks = static_cast<int>(
+        std::min<int64_t>((total + threads - 1) / threads, 65535));
+    const int64_t divisor = divisor_override.value_or(0);
+
+    // The window walk multiplies positions per tap; keeping them in 32 bits
+    // halves that arithmetic.  The narrow form is used whenever every position
+    // and every intermediate product the walk forms is representable.
+    const int64_t widest = std::max(
+        {total, input.numel(), input_d, input_h, input_w,
+         output_d, output_h, output_w,
+         input_d + params.padding[0], input_h + params.padding[1],
+         input_w + params.padding[2]});
+    if (widest <= std::numeric_limits<int32_t>::max()) {
+        switch (input.dtype()) {
+            case DType::Float32:
+                launch_avg_pool3d_forward_typed<float, int32_t>(
+                    input, output, params, count_include_pad, divisor,
+                    input_d, input_h, input_w, output_d, output_h, output_w,
+                    total, blocks, threads);
+                break;
+            case DType::Float64:
+                launch_avg_pool3d_forward_typed<double, int32_t>(
+                    input, output, params, count_include_pad, divisor,
+                    input_d, input_h, input_w, output_d, output_h, output_w,
+                    total, blocks, threads);
+                break;
+            case DType::Float16:
+                launch_avg_pool3d_forward_typed<tensorplay::Half, int32_t>(
+                    input, output, params, count_include_pad, divisor,
+                    input_d, input_h, input_w, output_d, output_h, output_w,
+                    total, blocks, threads);
+                break;
+            case DType::BFloat16:
+                launch_avg_pool3d_forward_typed<tensorplay::BFloat16, int32_t>(
+                    input, output, params, count_include_pad, divisor,
+                    input_d, input_h, input_w, output_d, output_h, output_w,
+                    total, blocks, threads);
+                break;
+            default:
+                TP_THROW(RuntimeError,
+                         "avg_pool3d CUDA supports Float32/Float64/Float16/BFloat16 only");
+        }
+    } else {
+        switch (input.dtype()) {
+            case DType::Float32:
+                launch_avg_pool3d_forward_typed<float, int64_t>(
+                    input, output, params, count_include_pad, divisor,
+                    input_d, input_h, input_w, output_d, output_h, output_w,
+                    total, blocks, threads);
+                break;
+            case DType::Float64:
+                launch_avg_pool3d_forward_typed<double, int64_t>(
+                    input, output, params, count_include_pad, divisor,
+                    input_d, input_h, input_w, output_d, output_h, output_w,
+                    total, blocks, threads);
+                break;
+            case DType::Float16:
+                launch_avg_pool3d_forward_typed<tensorplay::Half, int64_t>(
+                    input, output, params, count_include_pad, divisor,
+                    input_d, input_h, input_w, output_d, output_h, output_w,
+                    total, blocks, threads);
+                break;
+            case DType::BFloat16:
+                launch_avg_pool3d_forward_typed<tensorplay::BFloat16, int64_t>(
+                    input, output, params, count_include_pad, divisor,
+                    input_d, input_h, input_w, output_d, output_h, output_w,
+                    total, blocks, threads);
+                break;
+            default:
+                TP_THROW(RuntimeError,
+                         "avg_pool3d CUDA supports Float32/Float64/Float16/BFloat16 only");
+        }
     }
 }
 

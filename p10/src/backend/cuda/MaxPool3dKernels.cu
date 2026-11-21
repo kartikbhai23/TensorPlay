@@ -30,6 +30,27 @@ int64_t pool_grid_blocks(int64_t n, int threads) {
     return blocks > 65535 ? 65535 : blocks;
 }
 
+// The per-output window walk is a long serial chain, so a small output pool
+// needs the grid spread over several waves of multiprocessors rather than one
+// wide block per 256 outputs.  Halving the block keeps one output per thread
+// while multiplying the block count, down to a single warp per block.
+int pool_threads(int64_t total) {
+    constexpr int widest = 256;
+    constexpr int narrowest = 32;
+    static thread_local int sm_count = 0;
+    if (sm_count == 0) {
+        checkCuda(cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount,
+                                         currentDevice()),
+                  "max_pool multiprocessor count");
+    }
+    int threads = widest;
+    while (threads > narrowest &&
+           (total + threads - 1) / threads < 4 * sm_count) {
+        threads >>= 1;
+    }
+    return threads;
+}
+
 int64_t pool_div_rtn(int64_t a, int64_t b) {
     int64_t q = a / b;
     if ((a % b != 0) && ((a < 0) != (b < 0))) --q;
@@ -99,23 +120,34 @@ __global__ void max_pool3d_wi_fwd_kernel(
         const DimT d = (i / (W_out * H_out)) % D_out;
         const DimT nc = i / out_spatial;
         const T* vol = input + static_cast<int64_t>(nc) * D_in * H_in * W_in;
+        // The window is contiguous per axis once walked with the dilation as
+        // the step: clamping its ends and skipping the padded prefix removes
+        // the per-tap bound checks from the hot loop entirely.
+        const DimT d_begin_raw = d * sD - pD;
+        const DimT h_begin_raw = h * sH - pH;
+        const DimT w_begin_raw = w * sW - pW;
+        const DimT d_end = std::min(d_begin_raw + (kD - 1) * dD + 1, D_in);
+        const DimT h_end = std::min(h_begin_raw + (kH - 1) * dH + 1, H_in);
+        const DimT w_end = std::min(w_begin_raw + (kW - 1) * dW + 1, W_in);
+        DimT d_begin = d_begin_raw;
+        DimT h_begin = h_begin_raw;
+        DimT w_begin = w_begin_raw;
+        while (d_begin < 0) d_begin += dD;
+        while (h_begin < 0) h_begin += dH;
+        while (w_begin < 0) w_begin += dW;
+
         M max_val = -std::numeric_limits<M>::infinity();
         int64_t max_idx = -1;
-        for (DimT kd = 0; kd < kD; ++kd) {
-            const DimT di = d * sD - pD + kd * dD;
-            if (di < 0 || di >= D_in) continue;
-            for (DimT kh = 0; kh < kH; ++kh) {
-                const DimT hi = h * sH - pH + kh * dH;
-                if (hi < 0 || hi >= H_in) continue;
-                for (DimT kw = 0; kw < kW; ++kw) {
-                    const DimT wi = w * sW - pW + kw * dW;
-                    if (wi < 0 || wi >= W_in) continue;
-                    const int64_t idx =
-                        (static_cast<int64_t>(di) * H_in + hi) * W_in + wi;
+        for (DimT di = d_begin; di < d_end; di += dD) {
+            const DimT plane = di * H_in;
+            for (DimT hi = h_begin; hi < h_end; hi += dH) {
+                const DimT row = (plane + hi) * W_in;
+                for (DimT wi = w_begin; wi < w_end; wi += dW) {
+                    const DimT idx = row + wi;
                     const M val = static_cast<M>(vol[idx]);
                     if ((val > max_val) || ::isnan(val)) {
                         max_val = val;
-                        max_idx = idx;
+                        max_idx = static_cast<int64_t>(idx);
                     }
                 }
             }
@@ -233,7 +265,7 @@ std::tuple<Tensor, Tensor> max_pool3d_with_indices_cuda(
     Tensor out = Tensor::empty(out_shape, input.dtype(), input.device());
     Tensor indices = Tensor::empty(out_shape, DType::Int64, input.device());
     const int64_t total = N * C * D_out * H_out * W_out;
-    const int threads = 256;
+    const int threads = pool_threads(total);
     const int64_t blocks = pool_grid_blocks(total, threads);
     const auto stream = getCurrentCUDAStream().stream();
 
