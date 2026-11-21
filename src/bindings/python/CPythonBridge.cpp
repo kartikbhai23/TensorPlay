@@ -1990,6 +1990,13 @@ bool wrapper_still_holds(PyObject* wrapper, const void* impl) {
 
 constexpr char kWrapCacheAttr[] = "__tp_impl_capsule__";
 
+// The attribute is installed on every fresh wrapper, so the name is interned
+// once instead of being built from the literal each time.
+PyObject* wrap_cache_attr_name() {
+    static PyObject* name = PyUnicode_InternFromString(kWrapCacheAttr);
+    return name;
+}
+
 }  // namespace
 
 PyObject* tpx_py_wrap(const Tensor& t) {
@@ -2014,7 +2021,8 @@ PyObject* tpx_py_wrap(const Tensor& t) {
         : nullptr;
     if (caps != nullptr) {
         PyCapsule_SetContext(caps, wrapped);
-        if (PyObject_SetAttrString(wrapped, kWrapCacheAttr, caps) == 0) {
+        PyObject* attr = wrap_cache_attr_name();
+        if (attr != nullptr && PyObject_SetAttr(wrapped, attr, caps) == 0) {
             g_wrap_cache.emplace(impl, wrapped);  // borrowed; owned by obj
         }
         Py_DECREF(caps);  // object holds its own reference via the attribute
