@@ -34,21 +34,41 @@ int64_t pool_grid_blocks(int64_t n, int threads) {
 // needs the grid spread over several waves of multiprocessors rather than one
 // wide block per 256 outputs.  Halving the block keeps one output per thread
 // while multiplying the block count, down to a single warp per block.
-int pool_threads(int64_t total) {
-    constexpr int widest = 256;
-    constexpr int narrowest = 32;
+int pool_sm_count() {
     static thread_local int sm_count = 0;
     if (sm_count == 0) {
         checkCuda(cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount,
                                          currentDevice()),
                   "max_pool multiprocessor count");
     }
+    return sm_count;
+}
+
+int pool_threads(int64_t total) {
+    constexpr int widest = 256;
+    constexpr int narrowest = 32;
     int threads = widest;
     while (threads > narrowest &&
-           (total + threads - 1) / threads < 4 * sm_count) {
+           (total + threads - 1) / threads < 4 * pool_sm_count()) {
         threads >>= 1;
     }
     return threads;
+}
+
+// A long window on a small output pool leaves too few warps in flight to
+// cover its load latency, so one output's window is spread over consecutive
+// lanes along the kernel depth: every extra lane adds its own outstanding
+// loads.  The split stops where the depth extent no longer divides it and at
+// a lane count that already fills the device.
+int pool_split_shift(int64_t kD, int64_t kH, int64_t kW, int64_t total) {
+    if (kD < 2 || kD * kH * kW < 8) return 0;
+    const int64_t lanes_target = static_cast<int64_t>(pool_sm_count()) * 512;
+    int shift = 0;
+    while (shift < 3 && (int64_t{1} << (shift + 1)) <= kD &&
+           (total << (shift + 1)) <= lanes_target) {
+        ++shift;
+    }
+    return shift;
 }
 
 int64_t pool_div_rtn(int64_t a, int64_t b) {
@@ -103,6 +123,13 @@ Tensor& write_pooling_out(const char* op, Tensor value, Tensor& out) {
 // output position are the expensive part of this kernel, and a 32-bit divide
 // costs a fraction of the 64-bit one.  The wide form keeps inputs whose
 // position arithmetic does not fit in 32 bits.
+//
+// `split_shift` hands one output's window to several lanes: lane `t` serves
+// output `t >> split_shift` over slice `t & (2^split_shift - 1)` of the kernel
+// depth.  A small output pool otherwise walks every window on one lane per
+// output, which leaves too few warps in flight to cover the load latency of a
+// long window walk.  The slices are folded back inside a warp in slice order,
+// so the tie and NaN rules keep the traversal order the unsplit walk had.
 template <typename T, typename M, typename DimT>
 __global__ void max_pool3d_wi_fwd_kernel(
     DimT total, DimT D_in, DimT H_in, DimT W_in,
@@ -110,11 +137,19 @@ __global__ void max_pool3d_wi_fwd_kernel(
     DimT kD, DimT kH, DimT kW, DimT sD, DimT sH, DimT sW,
     DimT pD, DimT pH, DimT pW, DimT dD, DimT dH, DimT dW,
     const T* __restrict__ input, T* __restrict__ output,
-    int64_t* __restrict__ indices) {
-    DimT i = blockIdx.x * DimT(blockDim.x) + threadIdx.x;
+    int64_t* __restrict__ indices, int split_shift) {
+    const DimT workers = DimT(1) << split_shift;
+    const DimT tid = blockIdx.x * DimT(blockDim.x) + threadIdx.x;
     const DimT span = DimT(blockDim.x) * DimT(gridDim.x);
+    const DimT lanes = total * workers;
+    // Rounding the bound up to whole spans keeps every lane of a warp in the
+    // loop for the same number of trips, which the fold below requires.
+    const DimT limit = span * ((lanes + span - 1) / span);
     const DimT out_spatial = D_out * H_out * W_out;
-    for (; i < total; i += span) {
+    for (DimT t = tid; t < limit; t += span) {
+        const bool valid = t < lanes;
+        const DimT i = valid ? t >> split_shift : DimT(0);
+        const DimT slice = valid ? t & (workers - DimT(1)) : DimT(0);
         const DimT w = i % W_out;
         const DimT h = (i / W_out) % H_out;
         const DimT d = (i / (W_out * H_out)) % D_out;
@@ -138,22 +173,48 @@ __global__ void max_pool3d_wi_fwd_kernel(
 
         M max_val = -std::numeric_limits<M>::infinity();
         int64_t max_idx = -1;
-        for (DimT di = d_begin; di < d_end; di += dD) {
-            const DimT plane = di * H_in;
-            for (DimT hi = h_begin; hi < h_end; hi += dH) {
-                const DimT row = (plane + hi) * W_in;
-                for (DimT wi = w_begin; wi < w_end; wi += dW) {
-                    const DimT idx = row + wi;
-                    const M val = static_cast<M>(vol[idx]);
-                    if ((val > max_val) || ::isnan(val)) {
-                        max_val = val;
-                        max_idx = static_cast<int64_t>(idx);
+        if (valid) {
+            // Contiguous depth slices, so folding them back in lane order
+            // reproduces the order one lane would have walked.
+            const DimT per_slice = (kD + workers - DimT(1)) / workers;
+            const DimT d_steps = d_begin < d_end
+                ? (d_end - d_begin + dD - 1) / dD : DimT(0);
+            const DimT k_first = slice * per_slice;
+            const DimT k_last = std::min(d_steps, k_first + per_slice);
+            for (DimT k = k_first; k < k_last; ++k) {
+                const DimT di = d_begin + k * dD;
+                const DimT plane = di * H_in;
+                for (DimT hi = h_begin; hi < h_end; hi += dH) {
+                    const DimT row = (plane + hi) * W_in;
+                    for (DimT wi = w_begin; wi < w_end; wi += dW) {
+                        const DimT idx = row + wi;
+                        const M val = static_cast<M>(vol[idx]);
+                        if ((val > max_val) || ::isnan(val)) {
+                            max_val = val;
+                            max_idx = static_cast<int64_t>(idx);
+                        }
                     }
                 }
             }
         }
-        output[i] = static_cast<T>(max_val);
-        indices[i] = max_idx;
+        if (split_shift > 0) {
+            const unsigned full = 0xffffffffu;
+            const int width = static_cast<int>(workers);
+            for (int offset = 1; offset < width; offset <<= 1) {
+                const M other_val = __shfl_down_sync(full, max_val, offset, width);
+                const int64_t other_idx = __shfl_down_sync(full, max_idx, offset, width);
+                // Later slices win only when they hold a larger value or a
+                // NaN, matching the single-lane walk's rule.
+                if ((other_val > max_val) || ::isnan(other_val)) {
+                    max_val = other_val;
+                    max_idx = other_idx;
+                }
+            }
+        }
+        if (valid && slice == DimT(0)) {
+            output[i] = static_cast<T>(max_val);
+            indices[i] = max_idx;
+        }
     }
 }
 
@@ -166,7 +227,7 @@ void launch_max_pool3d_wi_fwd(
     int64_t D_out, int64_t H_out, int64_t W_out,
     int64_t kD, int64_t kH, int64_t kW, int64_t sD, int64_t sH, int64_t sW,
     int64_t pD, int64_t pH, int64_t pW, int64_t dD, int64_t dH, int64_t dW,
-    const void* input, void* output, int64_t* indices) {
+    const void* input, void* output, int64_t* indices, int split_shift) {
 #define TP_POOL3D_FWD_CASE(ctype, name)                                       \
     case DType::name: {                                                       \
         using M = typename PoolMath<ctype>::type;                             \
@@ -183,7 +244,7 @@ void launch_max_pool3d_wi_fwd(
                 static_cast<DimT>(dD), static_cast<DimT>(dH),                 \
                 static_cast<DimT>(dW),                                        \
                 static_cast<const ctype*>(input),                             \
-                static_cast<ctype*>(output), indices);                        \
+                static_cast<ctype*>(output), indices, split_shift);           \
         break;                                                                \
     }
     switch (dtype) {
@@ -265,8 +326,9 @@ std::tuple<Tensor, Tensor> max_pool3d_with_indices_cuda(
     Tensor out = Tensor::empty(out_shape, input.dtype(), input.device());
     Tensor indices = Tensor::empty(out_shape, DType::Int64, input.device());
     const int64_t total = N * C * D_out * H_out * W_out;
-    const int threads = pool_threads(total);
-    const int64_t blocks = pool_grid_blocks(total, threads);
+    const int split_shift = pool_split_shift(kD, kH, kW, total);
+    const int threads = pool_threads(total << split_shift);
+    const int64_t blocks = pool_grid_blocks(total << split_shift, threads);
     const auto stream = getCurrentCUDAStream().stream();
 
     // Every position addressable by this launch fits in 32 bits unless one of
@@ -280,14 +342,14 @@ std::tuple<Tensor, Tensor> max_pool3d_with_indices_cuda(
             D_in, H_in, W_in, D_out, H_out, W_out,
             kD, kH, kW, sD, sH, sW, pD, pH, pW, dD, dH, dW,
             input_c.const_data_ptr(), out.data_ptr(),
-            indices.data_ptr<int64_t>());
+            indices.data_ptr<int64_t>(), split_shift);
     } else {
         launch_max_pool3d_wi_fwd<int64_t>(
             input.dtype(), blocks, threads, stream, total,
             D_in, H_in, W_in, D_out, H_out, W_out,
             kD, kH, kW, sD, sH, sW, pD, pH, pW, dD, dH, dW,
             input_c.const_data_ptr(), out.data_ptr(),
-            indices.data_ptr<int64_t>());
+            indices.data_ptr<int64_t>(), split_shift);
     }
     return std::make_tuple(out, indices);
 }
