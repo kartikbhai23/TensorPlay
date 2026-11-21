@@ -1497,6 +1497,64 @@ simple_row_reduce_kernel(
     }
 }
 
+constexpr int kFlatReduceWarps = 8;
+
+// The whole input reduces to one value: every lane walks a strided slice of
+// the contiguous extent, lanes fold through the shuffle tree, and the block
+// folds the warp results in shared memory.  The general body carries the
+// per-dimension offset walk, the staging branches and a large local frame
+// even when it reduces a short tensor, and that fixed cost dominates a
+// reduction of a few thousand elements.
+template <typename InputT, typename AccT, typename OutputT, typename Ops,
+          int VecSize>
+__global__ void __launch_bounds__(kWarpSize * kFlatReduceWarps)
+flat_reduce_kernel(int64_t numel, const InputT* __restrict__ input,
+                   OutputT* __restrict__ output, AccT identity, Ops ops) {
+    AccT acc = identity;
+    if constexpr (VecSize > 1) {
+        using Vec = aligned_vector<InputT, VecSize>;
+        const int64_t units = numel / VecSize;
+        for (int64_t unit = threadIdx.x; unit < units;
+             unit += static_cast<int64_t>(blockDim.x)) {
+            const Vec v = *reinterpret_cast<const Vec*>(input + unit * VecSize);
+            #pragma unroll
+            for (int j = 0; j < VecSize; ++j) {
+                acc = ops.reduce(acc, v.val[j], unit * VecSize + j);
+            }
+        }
+        for (int64_t index = units * VecSize + threadIdx.x; index < numel;
+             index += static_cast<int64_t>(blockDim.x)) {
+            acc = ops.reduce(acc, input[index], index);
+        }
+    } else {
+        for (int64_t index = threadIdx.x; index < numel;
+             index += static_cast<int64_t>(blockDim.x)) {
+            acc = ops.reduce(acc, input[index], index);
+        }
+    }
+    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+        acc = ops.combine(acc, reduce_warp_shuffle_down(acc, 0xffffffffu, offset));
+    }
+    __shared__ AccT warp_acc[kFlatReduceWarps];
+    if ((threadIdx.x & (kWarpSize - 1)) == 0) {
+        warp_acc[threadIdx.x / kWarpSize] = acc;
+    }
+    __syncthreads();
+    if (threadIdx.x < kFlatReduceWarps) {
+        // Lanes past the warp count fold in the identity, so the same tree
+        // serves a block that launches fewer warps than the array holds.
+        AccT value = warp_acc[threadIdx.x];
+        for (int offset = kFlatReduceWarps / 2; offset > 0; offset >>= 1) {
+            value = ops.combine(value, reduce_warp_shuffle_down(value, 0xffffffffu, offset));
+        }
+        if (threadIdx.x == 0) output[0] = ops.project(value);
+    }
+}
+
+// The single-warp row walk serves one reduced dimension; a launch that
+// reduces the whole extent to one value needs the block-wide form.
+constexpr int kFlatReduceThreads = kWarpSize * kFlatReduceWarps;
+
 // Flattened offset of a 32-bit sub-iterator's start inside the original
 // reduction index space.  Reduced dims are reordered to the front, so the
 // base is the sum over reduced dims of view_offset * product of faster
@@ -1662,6 +1720,49 @@ inline void launch_reduce(
                 static_cast<const InputT*>(iter.data_ptr(1)), 1,
                 static_cast<OutputT*>(iter.data_ptr(0)), identity, ops);
         checkCuda(cudaGetLastError(), "CUDA short row reduction kernel launch");
+        return;
+    }
+
+    // A reduction that keeps no dimensions collapses to one value, and the
+    // iterator has already flattened it into a contiguous run.  One block
+    // walks that run directly: the offset walk, the staging branches and the
+    // large local frame of the general body are all dead weight when there is
+    // exactly one output to fold.
+    const bool flat_full_reduce =
+        config.index32 &&
+        config.ndim >= 1 &&
+        config.num_outputs == 1 &&
+        config.num_reduce_dims == config.ndim &&
+        !config.global_reduce &&
+        config.ctas_per_output == 1 &&
+        config.output_vec_size == 1 &&
+        config.ndim <= kInlineReduceDims &&
+        input_contiguous &&
+        output2 == nullptr &&
+        acc_buf == nullptr &&
+        base_idx == 0 &&
+        !iter.should_accumulate() &&
+        iter.is_final_output() &&
+        std::is_arithmetic_v<AccT>;
+    if (flat_full_reduce) {
+        constexpr int kVecSize = input_vec_width_v<InputT>;
+        const dim3 block(kFlatReduceThreads);
+        const dim3 grid(1);
+        const auto* input = static_cast<const InputT*>(iter.data_ptr(1));
+        auto* output = static_cast<OutputT*>(iter.data_ptr(0));
+        if constexpr (kVecSize > 1) {
+            if (reduction_pointer_aligned(iter, sizeof(InputT) * kVecSize)) {
+                flat_reduce_kernel<InputT, AccT, OutputT, Ops, kVecSize>
+                    <<<grid, block, 0, stream>>>(
+                        config.num_inputs, input, output, identity, ops);
+                checkCuda(cudaGetLastError(), "CUDA flat reduction kernel launch");
+                return;
+            }
+        }
+        flat_reduce_kernel<InputT, AccT, OutputT, Ops, 1>
+            <<<grid, block, 0, stream>>>(
+                config.num_inputs, input, output, identity, ops);
+        checkCuda(cudaGetLastError(), "CUDA flat reduction kernel launch");
         return;
     }
 
