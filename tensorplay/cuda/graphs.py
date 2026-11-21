@@ -100,6 +100,9 @@ class CUDAGraph:
                 the legacy default stream cannot participate in capture.
         """
 
+        from . import _bind_triton_stream
+
+        _bind_triton_stream()
         if stream is not None:
             from .streams import Stream
 
@@ -266,6 +269,9 @@ def graph(cuda_graph, pool=None, stream=None, capture_error_mode="global"):
             "cuda_graph must be a tensorplay.cuda.CUDAGraph; got "
             f"{type(cuda_graph).__name__}"
         )
+    from . import _bind_triton_stream
+
+    _bind_triton_stream()
     cuda_graph.capture_begin(
         pool=pool, capture_error_mode=capture_error_mode, stream=stream
     )

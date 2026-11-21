@@ -18,6 +18,7 @@ It is lazily initialized, so you can always import it, and use
 
 import os
 import platform
+import sys
 import threading
 import traceback
 import warnings
@@ -43,6 +44,33 @@ from .graphs import (
 )
 from .green_contexts import GreenContext
 from .streams import Event, ExternalStream, Stream
+
+
+def _bind_triton_stream() -> None:
+    """Point Triton's launch-stream query at this runtime's raw stream.
+
+    Triton kernels resolve their launch stream through the active driver's
+    ``get_current_stream``.  When that query was installed by a different
+    host framework it keeps returning that framework's thread-local stream,
+    so launches ignore this runtime's stream selection and escape CUDA Graph
+    capture.  Rebinding it to ``_C._cuda_getCurrentRawStream`` makes the
+    runtime's own stream the single source of truth.
+    """
+
+    try:
+        from triton.runtime import driver as triton_driver
+
+        active = triton_driver.active
+    except Exception:  # pragma: no cover - Triton is optional
+        return
+    if getattr(active, "_tensorplay_raw_stream", False):
+        return
+    active.get_current_stream = tensorplay._C._cuda_getCurrentRawStream
+    active._tensorplay_raw_stream = True
+
+
+if "triton" in sys.modules:
+    _bind_triton_stream()
 
 
 try:

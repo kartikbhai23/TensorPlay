@@ -51,6 +51,9 @@ class Stream(StreamBase):
     def __new__(cls, device=None, priority=0, **kwargs):
         if not _has_core:
             raise RuntimeError("tensorplay.cuda.Stream requires CUDA support")
+        from . import _bind_triton_stream
+
+        _bind_triton_stream()
         core_stream = kwargs.pop("_stream", None)
         if core_stream is None:
             from . import device as device_ctx
