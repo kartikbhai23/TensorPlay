@@ -504,9 +504,124 @@ PyObject* op_packet_call(PyObject* packet, PyObject* /*defining_class*/,
 
 }  // namespace
 
+namespace {
+
+// A packet's call target lives in the instance itself, so a call does not go
+// through a class-level call slot: that path costs a method lookup and a fresh
+// bound-method object for every call, which dwarfs the body of an operator
+// that answers from a tensor's records.
+struct PacketSlots {
+    PyObject_HEAD
+    PyObject* entry;
+    vectorcallfunc entry_call;
+    vectorcallfunc vectorcall;
+};
+
+PyObject* packet_python_call(PyObject* packet, PyObject* const* args,
+                             Py_ssize_t nargs, PyObject* kwnames) {
+    PyObject* body = g_packet_body_name != nullptr
+        ? PyObject_GetAttr(packet, g_packet_body_name)
+        : nullptr;
+    if (body == nullptr) return nullptr;
+    // The Python body takes the packet as its first argument, so the call is
+    // rebuilt with the packet in front of the positional arguments; the
+    // keyword values stay where the vectorcall layout expects them.
+    const Py_ssize_t nkw = kwnames != nullptr ? PyTuple_GET_SIZE(kwnames) : 0;
+    const Py_ssize_t total = nargs + nkw;
+    PyObject* result = nullptr;
+    if (total < 8) {
+        PyObject* stack[9];
+        stack[0] = packet;
+        for (Py_ssize_t i = 0; i < total; ++i) stack[i + 1] = args[i];
+        result = PyObject_Vectorcall(body, stack,
+                                     static_cast<size_t>(nargs) + 1, kwnames);
+    } else {
+        std::vector<PyObject*> heap(static_cast<size_t>(total) + 1);
+        heap[0] = packet;
+        for (Py_ssize_t i = 0; i < total; ++i) {
+            heap[static_cast<size_t>(i) + 1] = args[i];
+        }
+        result = PyObject_Vectorcall(body, heap.data(),
+                                     static_cast<size_t>(nargs) + 1, kwnames);
+    }
+    Py_DECREF(body);
+    return result;
+}
+
+// Instance call slot: the operands go straight to the operator entry bound to
+// the packet, with the call mark unchanged so that the keyword payload and any
+// scratch slot the caller reserved stay in place.  A packet without a bound
+// entry keeps the Python body, which resolves the overload from the arguments.
+PyObject* packet_vectorcall(PyObject* self, PyObject* const* args, size_t nargsf,
+                            PyObject* kwnames) {
+    PyObject* entry = reinterpret_cast<PacketSlots*>(self)->entry;
+    if (entry != nullptr) {
+        return PyObject_Vectorcall(entry, args, nargsf, kwnames);
+    }
+    return packet_python_call(self, args, PyVectorcall_NARGS(nargsf), kwnames);
+}
+
+void packet_base_dealloc(PyObject* self) {
+    auto* slots = reinterpret_cast<PacketSlots*>(self);
+    PyObject* entry = slots->entry;
+    slots->entry = nullptr;
+    slots->vectorcall = nullptr;
+    Py_XDECREF(entry);
+    PyTypeObject* type = Py_TYPE(self);
+    if ((type->tp_flags & Py_TPFLAGS_HAVE_GC) != 0 &&
+        PyObject_GC_IsTracked(self)) {
+        PyObject_GC_UnTrack(self);
+    }
+    type->tp_free(self);
+}
+
+int packet_base_traverse(PyObject* self, visitproc visit, void* arg) {
+    Py_VISIT(reinterpret_cast<PacketSlots*>(self)->entry);
+    return 0;
+}
+
+int packet_base_clear(PyObject* self) {
+    Py_CLEAR(reinterpret_cast<PacketSlots*>(self)->entry);
+    return 0;
+}
+
+// The layout the Python packet class derives from: one field carries the
+// resolved entry, the other is the call mark CPython reads for the instance.
+PyTypeObject* packet_base_type() {
+    static PyTypeObject* type = []() -> PyTypeObject* {
+        PyType_Slot slots[] = {
+            {Py_tp_dealloc, reinterpret_cast<void*>(&packet_base_dealloc)},
+            {Py_tp_traverse, reinterpret_cast<void*>(&packet_base_traverse)},
+            {Py_tp_clear, reinterpret_cast<void*>(&packet_base_clear)},
+            {Py_tp_new, reinterpret_cast<void*>(&PyType_GenericNew)},
+            {0, nullptr}};
+        PyType_Spec spec = {
+            "tensorplay._C._PacketBase",
+            static_cast<int>(sizeof(PacketSlots)), 0,
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, slots};
+        auto* created = reinterpret_cast<PyTypeObject*>(PyType_FromSpec(&spec));
+        if (created != nullptr) {
+            created->tp_vectorcall_offset =
+                static_cast<Py_ssize_t>(offsetof(PacketSlots, vectorcall));
+        }
+        return created;
+    }();
+    return type;
+}
+
+}  // namespace
+
 PYBIND11_MODULE(_C, m) {
     init_monitor(m);
     m.doc() = "The C extension module of tensorplay";
+
+    g_packet_entry_name = PyUnicode_InternFromString("_resolver");
+    g_packet_body_name = PyUnicode_InternFromString("__call_py__");
+    if (PyTypeObject* base = packet_base_type()) {
+        m.add_object("_PacketBase",
+                     py::reinterpret_steal<py::object>(
+                         reinterpret_cast<PyObject*>(base)));
+    }
 
     // Catchable device-mismatch exception (RuntimeError subclass), so users
     // FakeTensorDeviceMismatchError but for real tensors. Auto re-exported at
@@ -589,8 +704,6 @@ PYBIND11_MODULE(_C, m) {
     m.def("_install_packet_call", [](py::object packet_type) {
         Py_INCREF(packet_type.ptr());
         g_packet_type = reinterpret_cast<PyTypeObject*>(packet_type.ptr());
-        g_packet_entry_name = PyUnicode_InternFromString("_resolver");
-        g_packet_body_name = PyUnicode_InternFromString("__call_py__");
         static PyMethodDef definition = {
             "_op_packet_call",
             (PyCFunction)(void (*)(void))&op_packet_call,
@@ -600,6 +713,37 @@ PYBIND11_MODULE(_C, m) {
         // needs the packet to find the operator entry.
         return py::reinterpret_steal<py::object>(
             PyDescr_NewMethod(g_packet_type, &definition));
+    });
+    // Binds the operator entry a packet calls into the packet's own instance
+    // slot, so the instance carries its call target instead of resolving it
+    // through the class.
+    m.def("_bind_packet_call", [](py::object packet) -> void {
+        if (g_packet_type == nullptr ||
+            !PyObject_TypeCheck(packet.ptr(), g_packet_type)) {
+            throw py::type_error("expected an operator packet");
+        }
+        PyObject* entry = g_packet_entry_name != nullptr
+            ? PyObject_GetAttr(packet.ptr(), g_packet_entry_name)
+            : nullptr;
+        if (entry == Py_None) {
+            Py_DECREF(entry);
+            entry = nullptr;
+        }
+        // The class-level slot setup can be discarded when the class is
+        // modified afterwards, so the concrete packet class names the
+        // instance layout here, after all of its attributes are in place.
+        // Subclasses keep the ordinary call slot.
+        PyTypeObject* type = Py_TYPE(packet.ptr());
+        if (type == g_packet_type) {
+            type->tp_vectorcall_offset =
+                static_cast<Py_ssize_t>(offsetof(PacketSlots, vectorcall));
+            type->tp_flags |= Py_TPFLAGS_HAVE_VECTORCALL;
+        }
+        auto* slots = reinterpret_cast<PacketSlots*>(packet.ptr());
+        PyObject* stale = slots->entry;
+        slots->entry = entry;  // takes the reference
+        slots->vectorcall = &packet_vectorcall;
+        Py_XDECREF(stale);
     });
     m.def("_call_overload", [](const std::string& name, py::tuple args, py::dict kwargs) -> py::object {
         static const auto table = [] {

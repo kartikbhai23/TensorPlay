@@ -217,7 +217,7 @@ class OpOverload:
         return self
 
 
-class OpOverloadPacket:
+class OpOverloadPacket(_C._PacketBase):
     """All overloads of one operator name (``add``).
 
     Attribute access yields an overload (``.Tensor``, ``.default``); calling
@@ -234,6 +234,9 @@ class OpOverloadPacket:
         self._resolver = getattr(_C, name, None)
         self._overloads: dict[str, OpOverload] = {}
         self._single_overload: OpOverload | None = None
+        # The instance carries its call target, so a call reaches the operator
+        # entry without going through a class-level call slot.
+        _C._bind_packet_call(self)
 
     def _add(self, overload: OpOverload) -> None:
         self._overloads[overload._overloadname] = overload
