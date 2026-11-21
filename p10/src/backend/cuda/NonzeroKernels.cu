@@ -14,13 +14,12 @@ namespace cuda {
 namespace {
 
 constexpr int kNonzeroThreads = 256;
-// Tiles are the unit of parallel work: every block reduces and scans one tile.
-// Widths trade metadata for parallelism, so mid-sized inputs use the narrowest
-// tile that still keeps the tile table inside the inline prefix scan.
-constexpr int kNonzeroItems = 16;
-constexpr int kNonzeroSmallItems = 1;
+// A tile is the unit of parallel work: every block reduces and scans one tile.
+// Tiles hold one element per thread, so both phases spread over the widest
+// grid the input allows and the tile table costs one int64 per 256 elements.
+constexpr int kNonzeroItems = 1;
 constexpr int kInlineNonzeroScanTiles = 256;
-constexpr int64_t kNonzeroTileSize = kNonzeroThreads * kNonzeroItems;
+constexpr int kNonzeroFillBlockCap = 4096;
 constexpr int64_t kSmallNonzeroCapacity = 16 * 1024;
 constexpr int kNonzeroMaxRank = 64;
 
@@ -232,7 +231,7 @@ Tensor nonzero_fused_typed(const Tensor& input, const NonzeroShape& shape,
     // reads the count back.
     Tensor buffer = Tensor::empty({count * shape.rank}, DType::Int64, input.device());
     Tensor total = Tensor::empty({1}, DType::Int64, input.device());
-    write_nonzero_tiles<T, kNonzeroSmallItems, true, true><<<1, kNonzeroThreads, 0, stream.stream()>>>(
+    write_nonzero_tiles<T, kNonzeroItems, true, true><<<1, kNonzeroThreads, 0, stream.stream()>>>(
         input.const_data_ptr<T>(), count, shape, count, 1, nullptr, nullptr, 0,
         shape.rank != 0 ? buffer.data_ptr<int64_t>() : nullptr, total.data_ptr<int64_t>());
     checkCuda(cudaGetLastError(), "nonzero single tile");
@@ -257,7 +256,7 @@ Tensor nonzero_dynamic_typed(const Tensor& input, const NonzeroShape& shape) {
     // each thread serializes many coordinate decodes. One element per thread
     // keeps both the scan and the scatter spread over the widest grid; the tile
     // table stays proportional to the input only through its 1/256 ratio.
-    return nonzero_tiled_typed<T, kNonzeroSmallItems>(input, shape, stream);
+    return nonzero_tiled_typed<T, kNonzeroItems>(input, shape, stream);
 }
 
 template <typename T>
@@ -267,15 +266,20 @@ void nonzero_static_typed(const Tensor& input, const NonzeroShape& shape,
     const auto stream = getCurrentCUDAStream().stream();
     const T* values = input.const_data_ptr<T>();
     int64_t* indices = out.data_ptr<int64_t>();
-    if (count <= kNonzeroTileSize && limit <= kNonzeroTileSize) {
+    if (count <= kNonzeroThreads && limit <= kNonzeroThreads) {
         write_nonzero_tiles<T, kNonzeroItems, true><<<1, kNonzeroThreads, 0, stream>>>(
             values, count, shape, limit, 1, nullptr, nullptr, fill_value, indices);
         checkCuda(cudaGetLastError(), "nonzero_static tile scan");
         return;
     }
 
+    // Both the scatter and the padding run on the same grid, so it is sized
+    // from the padded row count rather than the match count: every block
+    // covers one narrow tile of rows, and the strided padding loop absorbs any
+    // rows past the grid.
     const NonzeroTiles tiles = scan_nonzero_tiles<T, kNonzeroItems>(input, stream);
-    const auto pad_grid = static_cast<int>(std::min<int64_t>((limit - 1) / kNonzeroTileSize + 1, 4096));
+    const auto pad_grid = static_cast<int>(std::min<int64_t>(
+        (limit - 1) / (kNonzeroThreads * kNonzeroItems) + 1, kNonzeroFillBlockCap));
     const int grid = std::max(tiles.blocks, pad_grid);
     write_nonzero_tiles<T, kNonzeroItems, false><<<grid, kNonzeroThreads, 0, stream>>>(
         values, count, shape, limit, tiles.blocks, tiles.counts.const_data_ptr<int64_t>(),
