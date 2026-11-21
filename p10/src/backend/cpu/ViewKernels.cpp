@@ -229,10 +229,30 @@ Tensor permute_kernel(const Tensor& self, const std::vector<int64_t>& dims) {
 }
 
 
+// A squeeze that drops no axis answers with the operand itself: no view is
+// built and no geometry is re-derived.  A tensor carrying a gradient gets its
+// own handle instead, so autograd can tag the result without rewriting the
+// operand's graph.
+Tensor squeeze_identity(const Tensor& self) {
+    if (self.requires_grad()) {
+        return Tensor(make_intrusive<TensorImpl>(*self.unsafeGetTensorImpl()));
+    }
+    return self;
+}
+
 Tensor squeeze_kernel(const Tensor& self) {
+    const int64_t ndim = self.dim();
+    bool drops_axis = false;
+    for (int64_t i = 0; i < ndim; ++i) {
+        if (self.size(i) == 1) {
+            drops_axis = true;
+            break;
+        }
+    }
+    if (!drops_axis) return squeeze_identity(self);
     std::vector<int64_t> new_sizes;
     std::vector<int64_t> new_strides;
-    for (int64_t i = 0; i < self.dim(); ++i) {
+    for (int64_t i = 0; i < ndim; ++i) {
         if (self.size(i) != 1) {
             new_sizes.push_back(self.size(i));
             new_strides.push_back(self.stride(i));
@@ -243,13 +263,12 @@ Tensor squeeze_kernel(const Tensor& self) {
 
 
 Tensor squeeze_dim_kernel(const Tensor& self, int64_t dim) {
-    // Rank-0 accepts the scalar dimension range; a non-singleton dimension is
-    // returned as an equivalent view.
+    // Rank-0 accepts the scalar dimension range; a non-singleton dimension
+    // leaves the operand itself as the answer.
     const int64_t ndim = self.dim();
     dim = join_detail::wrap_dim_scalar(dim, ndim);
     if (ndim == 0 || self.size(dim) != 1) {
-        return self.as_strided(static_cast<std::vector<int64_t>>(self.shape()),
-                               self.strides());
+        return squeeze_identity(self);
     }
     std::vector<int64_t> new_sizes;
     std::vector<int64_t> new_strides;
@@ -280,6 +299,14 @@ Tensor squeeze_dims_kernel(const Tensor& self, const std::vector<int64_t>& dims)
             mask[w] = true;
         }
     }
+    bool drops_axis = false;
+    for (int64_t i = 0; i < ndim; ++i) {
+        if (mask[i] && self.size(i) == 1) {
+            drops_axis = true;
+            break;
+        }
+    }
+    if (!drops_axis) return squeeze_identity(self);
     std::vector<int64_t> new_sizes;
     std::vector<int64_t> new_strides;
     for (int64_t i = 0; i < ndim; ++i) {

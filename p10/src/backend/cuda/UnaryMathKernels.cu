@@ -390,6 +390,9 @@ struct HypotFloatPair {
         return static_cast<double>(
             ::hypotf(static_cast<float>(x), static_cast<float>(y)));
     }
+    __host__ __device__ float runf(float x, float y) const {
+        return ::hypotf(x, y);
+    }
 };
 
 Tensor hypot_cuda(const Tensor& a, const Tensor& b) {
