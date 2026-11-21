@@ -72,11 +72,15 @@ class cuBLASModule:
     def __getattr__(self, name):
         if name == "allow_tf32":
             return tensorplay._C._get_cublas_allow_tf32()
+        if name == "allow_fp16_accumulation":
+            return tensorplay._C._get_cublas_allow_fp16_accumulation()
         raise AttributeError("Unknown attribute " + name)
 
     def __setattr__(self, name, value):
         if name == "allow_tf32":
             return tensorplay._C._set_cublas_allow_tf32(value)
+        if name == "allow_fp16_accumulation":
+            return tensorplay._C._set_cublas_allow_fp16_accumulation(value)
         raise AttributeError("Unknown attribute " + name)
 
 

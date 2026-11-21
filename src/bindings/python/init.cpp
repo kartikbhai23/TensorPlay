@@ -424,6 +424,25 @@ PyTypeObject* g_packet_type = nullptr;
 PyObject* g_packet_entry_name = nullptr;
 PyObject* g_packet_body_name = nullptr;
 
+// A dispatch loop calls the same packet many times in a row, so the entry that
+// served the previous call stays wired in: the repeated case is answered by a
+// pointer comparison instead of an attribute lookup.  The cache owns its
+// reference, and a call takes one of its own for the duration so that a nested
+// packet call replacing the cache cannot free the entry mid-call.
+PyObject* g_last_packet = nullptr;
+PyObject* g_last_entry = nullptr;
+
+inline void remember_last_entry(PyObject* packet, PyObject* entry) {
+    Py_INCREF(packet);
+    Py_INCREF(entry);
+    PyObject* stale_packet = g_last_packet;
+    PyObject* stale_entry = g_last_entry;
+    g_last_packet = packet;
+    g_last_entry = entry;
+    Py_XDECREF(stale_entry);
+    Py_XDECREF(stale_packet);
+}
+
 PyObject* op_packet_call(PyObject* packet, PyObject* /*defining_class*/,
                          PyObject* const* args, Py_ssize_t nargs,
                          PyObject* kwnames) {
@@ -434,10 +453,19 @@ PyObject* op_packet_call(PyObject* packet, PyObject* /*defining_class*/,
                         "receiver");
         return nullptr;
     }
+    if (packet == g_last_packet && g_last_entry != nullptr) {
+        PyObject* entry = g_last_entry;
+        Py_INCREF(entry);
+        PyObject* result = PyObject_Vectorcall(
+            entry, args, static_cast<size_t>(nargs), kwnames);
+        Py_DECREF(entry);
+        return result;
+    }
     PyObject* entry = g_packet_entry_name != nullptr
         ? PyObject_GetAttr(packet, g_packet_entry_name)
         : nullptr;
     if (entry != nullptr && entry != Py_None) {
+        remember_last_entry(packet, entry);
         PyObject* result = PyObject_Vectorcall(
             entry, args, static_cast<size_t>(nargs), kwnames);
         Py_DECREF(entry);
@@ -953,6 +981,12 @@ PYBIND11_MODULE(_C, m) {
     });
     m.def("_set_cublas_allow_tf32", [](bool enabled) {
         tensorplay::globalContext().setAllowTF32CuBLAS(enabled);
+    }, "enabled"_a);
+    m.def("_get_cublas_allow_fp16_accumulation", []() {
+        return tensorplay::globalContext().allowFP16AccumulationCuBLAS();
+    });
+    m.def("_set_cublas_allow_fp16_accumulation", [](bool enabled) {
+        tensorplay::globalContext().setAllowFP16AccumulationCuBLAS(enabled);
     }, "enabled"_a);
     m.def("_get_cudnn_allow_tf32", []() {
         return tensorplay::globalContext().allowTF32CuDNN();
