@@ -61,7 +61,10 @@ py::object converted_or_self(const py::object& self_obj, Tensor result) {
         result.unsafeGetTensorImpl() == self.unsafeGetTensorImpl()) {
         return self_obj;
     }
-    return py::cast(std::move(result));
+    // Wrap through the identity cache so a later call that returns the same
+    // impl (an identity view of this result) hands back this object.
+    return py::reinterpret_steal<py::object>(
+        tensorplay::python_c::tpx_py_wrap(result));
 }
 
 std::string tensor_repr(const Tensor& self) {
