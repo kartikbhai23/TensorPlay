@@ -183,6 +183,28 @@ _VMAP_STATIC_OPS = frozenset({
     "maximum", "minimum", "logical_and", "cat", "stack", "linear",
 })
 
+# Bookkeeping operations read a tensor's own records and never wait on a
+# device, so lending the interpreter to another thread around them buys no
+# overlap and adds the thread-state save/restore to a body that is a handful of
+# loads.  They keep the GIL; every operation that dispatches real work keeps
+# the unconditional release.
+_NO_GIL_RELEASE = frozenset({
+    "get_device", "is_inference", "_is_zerotensor",
+    "_debug_has_internal_overlap", "_shape_as_tensor", "_lazy_clone",
+    "_has_compatible_shallow_copy_type", "_has_same_storage_numel",
+    "numel", "dim", "ndimension", "element_size", "nbytes", "storage_offset",
+    "is_contiguous", "is_floating_point", "is_complex", "is_conj", "is_neg",
+    "is_sparse", "is_coalesced", "is_set_to", "_is_view",
+    "sym_numel", "sym_nbytes", "sym_storage_offset", "sym_size", "sym_stride",
+})
+
+
+def _gil_guard(f) -> str:
+    """The statement that hands the GIL over for this call, when it helps."""
+    if f.base_name in _NO_GIL_RELEASE:
+        return ""
+    return "tpx_py_GilRelease _gil; "
+
 
 def _schema_tag(f, variant: str, ordinal: int) -> str:
     payload = f"{variant}\0{ordinal}\0{f.schema}".encode("utf-8")
@@ -340,7 +362,7 @@ def _tuple_invoke(f, invoke_expr: str, site_hook: str) -> str | None:
         ])
     statements.append("return tpx_tuple_result;")
     return (site_hook
-            + f"auto r = [&]() {{ tpx_py_GilRelease _gil; return {invoke_expr}; }}(); "
+            + f"auto r = [&]() {{ {_gil_guard(f)}return {invoke_expr}; }}(); "
             + " ".join(statements))
 
 
@@ -801,26 +823,27 @@ def _emit_op(out: list[str], f, variant: str, fn: str,
     # GIL at binding entry, before the GIL-releasing invoke.  The helper
     # itself re-checks the capture flags, so inactive cost is one load.
     site_hook = "tensorplay::python::tpx_prof_capture_site();\n        "
-    # Wrap every dispatch in an unconditional GIL release so kernels
-    # run multithreaded.  The lambda restores the GIL before the result is
-    # wrapped (all Python C-API stays under the GIL).
+    # Work-dispatching calls hand the GIL over unconditionally so kernels run
+    # multithreaded; bookkeeping calls keep it (see _NO_GIL_RELEASE).  The
+    # lambda restores the GIL before the result is wrapped (all Python C-API
+    # stays under the GIL).
     if kind == "void":
-        invoke = site_hook + f"[&]() {{ tpx_py_GilRelease _gil; {invoke_expr}; }}(); Py_RETURN_NONE;"
+        invoke = site_hook + f"[&]() {{ {_gil_guard(f)}{invoke_expr}; }}(); Py_RETURN_NONE;"
     elif kind == "value":
         if ret_cpp == "bool":
-            invoke = (site_hook + f"auto r = [&]() {{ tpx_py_GilRelease _gil; return {invoke_expr}; }}(); "
+            invoke = (site_hook + f"auto r = [&]() {{ {_gil_guard(f)}return {invoke_expr}; }}(); "
                       "return PyBool_FromLong(r);")
         elif ret_cpp == "Scalar":
-            invoke = (site_hook + f"auto r = [&]() {{ tpx_py_GilRelease _gil; return {invoke_expr}; }}(); "
+            invoke = (site_hook + f"auto r = [&]() {{ {_gil_guard(f)}return {invoke_expr}; }}(); "
                       "return tpx_py_wrap_scalar(r);")
         elif ret_cpp == "int64_t":
-            invoke = (site_hook + f"auto r = [&]() {{ tpx_py_GilRelease _gil; return {invoke_expr}; }}(); "
+            invoke = (site_hook + f"auto r = [&]() {{ {_gil_guard(f)}return {invoke_expr}; }}(); "
                       "return PyLong_FromLongLong(r);")
         elif ret_cpp == "Tensor":
             mark = ("if (s_requires_grad) "
                     "tensorplay::tpx::impl::set_requires_grad(r, true); "
                     if marks_result else "")
-            invoke = (site_hook + f"auto r = [&]() {{ tpx_py_GilRelease _gil; return {invoke_expr}; }}(); "
+            invoke = (site_hook + f"auto r = [&]() {{ {_gil_guard(f)}return {invoke_expr}; }}(); "
                       f"{mark}return tpx_py_wrap(r);")
         else:
             pack = _pack_expr(ret_cpp, "r")
@@ -828,7 +851,7 @@ def _emit_op(out: list[str], f, variant: str, fn: str,
                 raise SystemExit(
                     f"native CPython bridge has no packer for C++ type {ret_cpp!r} "
                     f"in {f.func_name} ({variant})")
-            invoke = (site_hook + f"auto r = [&]() {{ tpx_py_GilRelease _gil; return {invoke_expr}; }}(); "
+            invoke = (site_hook + f"auto r = [&]() {{ {_gil_guard(f)}return {invoke_expr}; }}(); "
                       f"return {pack};")
     elif kind == "tuple":
         invoke = _tuple_invoke(f, invoke_expr, site_hook)
@@ -842,13 +865,13 @@ def _emit_op(out: list[str], f, variant: str, fn: str,
             raise SystemExit(
                 f"native CPython bridge has no packer for C++ type {ret_cpp!r} "
                 f"in {f.func_name} ({variant})")
-        invoke = (site_hook + f"auto r = [&]() {{ tpx_py_GilRelease _gil; return {invoke_expr}; }}(); "
+        invoke = (site_hook + f"auto r = [&]() {{ {_gil_guard(f)}return {invoke_expr}; }}(); "
                   f"return {pack};")
     else:                                      # mut_ref
         # slots[0] is the raw self PyObject; the s_* locals hold unpacked
         # C++ tensors.
         keep = "tpx_py_keep_alive(slots[0]);" if nargs else ""
-        invoke = (site_hook + f"auto& r = [&]() -> auto& {{ tpx_py_GilRelease _gil; "
+        invoke = (site_hook + f"auto& r = [&]() -> auto& {{ {_gil_guard(f)}"
                   f"return {invoke_expr}; }}(); {keep} return tpx_py_wrap(r);")
 
     recv = "PyObject* self" if is_method else "PyObject*"
