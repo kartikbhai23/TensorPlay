@@ -1404,6 +1404,85 @@ Tensor& float_math_out(const Tensor& self, Tensor& out, F f, const char* name) {
 
 // Math binary with floating promotion.
 
+// The elementwise value for one position.  Single precision stays single
+// precision when the operation offers a float form, while the narrow formats
+// widen to float and narrow once on the way back.
+template <typename T, typename F>
+__host__ __device__ inline T binary_float_value(F f, T x, T y) {
+    if constexpr (std::is_same_v<T, float>) {
+        if constexpr (has_runf2<F>::value) {
+            return f.runf(x, y);
+        } else {
+            return static_cast<float>(f(static_cast<double>(x),
+                                        static_cast<double>(y)));
+        }
+    } else if constexpr (std::is_same_v<T, double>) {
+        return f(x, y);
+    } else if constexpr (has_runf2<F>::value) {
+        return static_cast<T>(f.runf(static_cast<float>(x),
+                                     static_cast<float>(y)));
+    } else {
+        return static_cast<T>(f(static_cast<float>(x),
+                                static_cast<float>(y)));
+    }
+}
+
+// Equal extents, every operand contiguous: the element index is the offset, so
+// the per-element offset walk of the general body has nothing to compute.  One
+// packed load per operand keeps that case to a single launch.  Alignment and
+// the pack-divisible length are checked by the caller.
+template <typename T, typename F>
+__global__ void binary_float_pack_kernel(
+        int64_t n, const T* __restrict__ a, const T* __restrict__ b,
+        T* __restrict__ y, F f) {
+    constexpr int Vec = static_cast<int>(16 / sizeof(T));
+    static_assert(sizeof(T) * Vec == 16, "pack width must fill one 16-byte load");
+    struct alignas(16) Pack {
+        T v[Vec];
+    };
+    const int64_t packs = n / Vec;
+    const int64_t stride = static_cast<int64_t>(blockDim.x) * gridDim.x;
+    for (int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         i < packs; i += stride) {
+        const Pack pa = *reinterpret_cast<const Pack*>(a + i * Vec);
+        const Pack pb = *reinterpret_cast<const Pack*>(b + i * Vec);
+        Pack py;
+        #pragma unroll
+        for (int j = 0; j < Vec; ++j) {
+            py.v[j] = binary_float_value<T>(f, pa.v[j], pb.v[j]);
+        }
+        *reinterpret_cast<Pack*>(y + i * Vec) = py;
+    }
+}
+
+constexpr int64_t kBinaryPackMinElems = 256;
+
+template <typename T, typename F>
+inline bool binary_float_pack(
+        const Tensor& a, const Tensor& b, const Tensor& y, F f) {
+    constexpr int Vec = static_cast<int>(16 / sizeof(T));
+    const int64_t n = y.numel();
+    if (n < kBinaryPackMinElems || n % Vec != 0) return false;
+    if (!a.is_contiguous() || !b.is_contiguous() || !y.is_contiguous()) {
+        return false;
+    }
+    if (a.numel() != n || b.numel() != n) return false;
+    const uintptr_t align_mask = sizeof(T) * Vec - 1;
+    if ((reinterpret_cast<uintptr_t>(a.const_data_ptr<T>()) |
+         reinterpret_cast<uintptr_t>(b.const_data_ptr<T>()) |
+         reinterpret_cast<uintptr_t>(y.const_data_ptr<T>())) & align_mask) {
+        return false;
+    }
+    const int threads = 128;
+    const int64_t packs = n / Vec;
+    const int64_t blocks = (packs + threads - 1) / threads;
+    binary_float_pack_kernel<T, F>
+        <<<static_cast<unsigned>(blocks < 1 ? 1 : blocks), threads, 0,
+           getCurrentCUDAStream().stream()>>>(
+            n, a.const_data_ptr<T>(), b.const_data_ptr<T>(), y.data_ptr<T>(), f);
+    return true;
+}
+
 // Runs the floating-compute elementwise body into a destination whose shape
 // and width the caller has already matched to the allocating form.  The width
 // the answer comes back in is `dt`; the half and bfloat16 widths widen and
@@ -1414,6 +1493,22 @@ void binary_float_into(const Tensor& a_in, const Tensor& b_in, const Tensor& out
     if (out.numel() == 0) return;
     const Tensor ac = a_in.dtype() == dt ? a_in : a_in.to(dt);
     const Tensor bc = b_in.dtype() == dt ? b_in : b_in.to(dt);
+    switch (dt) {
+        case DType::Float32:
+            if (binary_float_pack<float>(ac, bc, out, f)) return;
+            break;
+        case DType::Float64:
+            if (binary_float_pack<double>(ac, bc, out, f)) return;
+            break;
+        case DType::Float16:
+            if (binary_float_pack<tensorplay::Half>(ac, bc, out, f)) return;
+            break;
+        case DType::BFloat16:
+            if (binary_float_pack<tensorplay::BFloat16>(ac, bc, out, f)) return;
+            break;
+        default:
+            break;
+    }
     TensorIterator iter = TensorIteratorConfig()
         .check_all_same_dtype(true)
         .add_output(out)
@@ -1454,8 +1549,15 @@ template <typename F>
 Tensor binary_float_cuda(const Tensor& a_in, const Tensor& b_in, F f, const char* name) {
     DType dt = promoteTypes(a_in.dtype(), b_in.dtype());
     if (!isFloatingType(dt)) dt = DType::Float32;
-    const std::vector<int64_t> out_shape = broadcast_shapes(
-        shape_of(a_in), shape_of(b_in));
+    // Equal extents need no broadcast walk: the result takes the operands'
+    // layout, so one copy of their extent replaces the element-wise merge of
+    // two freshly materialized shape vectors.
+    std::vector<int64_t> out_shape;
+    if (a_in.sizes() == b_in.sizes()) {
+        out_shape.assign(a_in.sizes().begin(), a_in.sizes().end());
+    } else {
+        out_shape = broadcast_shapes(shape_of(a_in), shape_of(b_in));
+    }
     Tensor out = Tensor::empty(out_shape, dt, a_in.device());
     binary_float_into(a_in, b_in, out, dt, f);
     CUDA_CHECK(cudaGetLastError());
