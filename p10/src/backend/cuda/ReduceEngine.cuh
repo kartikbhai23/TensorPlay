@@ -84,8 +84,8 @@ inline ReductionSpec make_reduction_spec(
 
 inline std::vector<int64_t> reduction_output_shape(
         const Tensor& self, const ReductionSpec& spec, bool keepdim) {
+    const IntArrayRef input_shape = self.sizes();
     std::vector<int64_t> shape;
-    const auto input_shape = static_cast<std::vector<int64_t>>(self.shape());
     shape.reserve(input_shape.size());
     for (size_t dim = 0; dim < input_shape.size(); ++dim) {
         if (spec.mask[dim]) {
@@ -102,8 +102,10 @@ inline Tensor reduction_view(
         bool keepdim) {
     if (input.dim() == 0) return result;
 
-    const auto input_shape = static_cast<std::vector<int64_t>>(input.shape());
-    const auto result_strides = static_cast<std::vector<int64_t>>(result.strides());
+    const IntArrayRef input_shape = input.sizes();
+    const IntArrayRef result_strides =
+        result.unsafeGetTensorImpl()->strides();
+    std::vector<int64_t> view_shape(input_shape.begin(), input_shape.end());
     std::vector<int64_t> strides(input_shape.size(), 0);
     size_t result_dim = 0;
     for (size_t dim = 0; dim < input_shape.size(); ++dim) {
@@ -117,7 +119,7 @@ inline Tensor reduction_view(
     // This must also be materialized for keepdim=true: a regular size-1
     // tensor has a non-zero stride, which would make the iterator mistake the
     // reduction for an elementwise operation.
-    return result.as_strided(input_shape, strides);
+    return result.as_strided(view_shape, strides);
 }
 
 template <typename InputT, typename AccT, typename OutputT, typename Ops,

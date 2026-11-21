@@ -71,8 +71,11 @@ Tensor sum_dim_kernel(const Tensor& self, const std::vector<int64_t>& dim, bool 
         return sum_same_dtype<tensorplay::complex<Half>, tensorplay::complex<Half>>(
             self, spec, keepdim, out_dtype);
     }
-    Tensor input = self.dtype() == out_dtype ? self : self.to(out_dtype);
-    const ReductionSpec input_spec = make_reduction_spec(input, dim);
+    // The dtype already matches for the plainest case, so the extent set the
+    // source was described with still applies to the operand.
+    const bool promoted = self.dtype() != out_dtype;
+    Tensor input = promoted ? self.to(out_dtype) : self;
+    const ReductionSpec input_spec = promoted ? make_reduction_spec(input, dim) : spec;
     // Complex accumulates in its own width via the generic ops (+ only).
     if (input.dtype() == DType::ComplexFloat) {
         return sum_same_dtype<tensorplay::complex<float>>(input, input_spec, keepdim, out_dtype);
@@ -142,8 +145,11 @@ Tensor prod_dim_kernel(const Tensor& self, const std::vector<int64_t>& dim, bool
         return prod_same_dtype<tensorplay::complex<Half>, tensorplay::complex<Half>>(
             self, spec, keepdim, out_dtype);
     }
-    Tensor input = self.dtype() == out_dtype ? self : self.to(out_dtype);
-    const ReductionSpec input_spec = make_reduction_spec(input, dim);
+    // The dtype already matches for the plainest case, so the extent set the
+    // source was described with still applies to the operand.
+    const bool promoted = self.dtype() != out_dtype;
+    Tensor input = promoted ? self.to(out_dtype) : self;
+    const ReductionSpec input_spec = promoted ? make_reduction_spec(input, dim) : spec;
     if (input.dtype() == DType::ComplexFloat) {
         return prod_same_dtype<tensorplay::complex<float>>(input, input_spec, keepdim, out_dtype);
     }
