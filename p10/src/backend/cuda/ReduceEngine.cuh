@@ -82,19 +82,23 @@ inline ReductionSpec make_reduction_spec(
     return spec;
 }
 
-inline std::vector<int64_t> reduction_output_shape(
+// The shape is consumed by the call that asks for it (an allocation or a
+// fill), so one per-thread buffer serves every reduction and keeps the
+// metadata-only step out of the allocator.
+inline const std::vector<int64_t>& reduction_output_shape(
         const Tensor& self, const ReductionSpec& spec, bool keepdim) {
+    static thread_local std::vector<int64_t> shape_scratch;
     const IntArrayRef input_shape = self.sizes();
-    std::vector<int64_t> shape;
-    shape.reserve(input_shape.size());
+    shape_scratch.clear();
+    shape_scratch.reserve(input_shape.size());
     for (size_t dim = 0; dim < input_shape.size(); ++dim) {
         if (spec.mask[dim]) {
-            if (keepdim) shape.push_back(1);
+            if (keepdim) shape_scratch.push_back(1);
         } else {
-            shape.push_back(input_shape[dim]);
+            shape_scratch.push_back(input_shape[dim]);
         }
     }
-    return shape;
+    return shape_scratch;
 }
 
 inline Tensor reduction_view(
@@ -105,21 +109,26 @@ inline Tensor reduction_view(
     const IntArrayRef input_shape = input.sizes();
     const IntArrayRef result_strides =
         result.unsafeGetTensorImpl()->strides();
-    std::vector<int64_t> view_shape(input_shape.begin(), input_shape.end());
-    std::vector<int64_t> strides(input_shape.size(), 0);
+    // The view's shape and stride lists are rebuilt under the same call that
+    // consumes them, so per-thread buffers keep them out of the allocator.
+    static thread_local std::vector<int64_t> view_shape_scratch;
+    static thread_local std::vector<int64_t> strides_scratch;
+    view_shape_scratch.assign(input_shape.begin(), input_shape.end());
+    strides_scratch.assign(input_shape.size(), 0);
     size_t result_dim = 0;
     for (size_t dim = 0; dim < input_shape.size(); ++dim) {
         if (!spec.mask[dim]) {
             // keepdim retains the reduced dimensions in the result shape;
             // without it, result strides are packed over non-reduced dims.
-            strides[dim] = keepdim ? result_strides[dim] : result_strides[result_dim++];
+            strides_scratch[dim] = keepdim ? result_strides[dim]
+                                           : result_strides[result_dim++];
         }
     }
     // TensorIterator identifies reduced dimensions by a zero output stride.
     // This must also be materialized for keepdim=true: a regular size-1
     // tensor has a non-zero stride, which would make the iterator mistake the
     // reduction for an elementwise operation.
-    return result.as_strided(view_shape, strides);
+    return result.as_strided(view_shape_scratch, strides_scratch);
 }
 
 template <typename InputT, typename AccT, typename OutputT, typename Ops,
@@ -134,19 +143,24 @@ Tensor run_reduction_typed(
     if (input.numel() == 0 || result.numel() == 0) return result;
 
     // A reduced dimension is identified by a zero output stride.  The
-    // iterator derives that stride from an output of lower rank: a surviving
-    // dimension aligns with the input dimension it belongs to, and a reduced
-    // one carries no stride.  The alignment is exact when the reduced dims
-    // are a prefix of the input (the surviving extents are then the trailing
-    // ones) and for the fully reduced scalar; any other arrangement needs the
-    // explicit strided view so that every surviving dimension lands on its
-    // own input dimension.
+    // iterator assigns that stride itself: by rank alignment when the output
+    // has fewer dimensions (exact when the reduced dims are a prefix, and for
+    // the fully reduced scalar), and by the size-1 rule when a dimension that
+    // the output keeps as 1 is wider in the input, which covers every keepdim
+    // reduction whose reduced dims are wider than one.  A reduced dimension of
+    // extent one keeps a real stride under that rule and would go uncounted,
+    // so it takes the explicit strided view.
     bool reduced_prefix = true;
-    for (size_t i = 0; i < spec.dims.size() && reduced_prefix; ++i) {
-        reduced_prefix = spec.dims[i] == static_cast<int64_t>(i);
+    bool reduced_wider_than_one = true;
+    for (size_t i = 0; i < spec.dims.size(); ++i) {
+        reduced_prefix = reduced_prefix && spec.dims[i] == static_cast<int64_t>(i);
+        reduced_wider_than_one =
+            reduced_wider_than_one && input.size(spec.dims[i]) > 1;
     }
     const bool strides_follow_rank =
-        result.dim() == 0 || (!keepdim && reduced_prefix);
+        result.dim() == 0 ||
+        (keepdim && reduced_wider_than_one) ||
+        (!keepdim && reduced_prefix);
     Tensor viewed = strides_follow_rank
         ? result : reduction_view(result, input, spec, keepdim);
     TensorIterator iter = TensorIterator::reduce_op(viewed, input);
