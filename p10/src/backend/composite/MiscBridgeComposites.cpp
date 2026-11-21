@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -215,14 +216,15 @@ Tensor chalf_impl(const Tensor& self, std::optional<int64_t> memory_format) {
 
 // ---- _shape_as_tensor: sizes as a CPU int64 tensor
 Tensor _shape_as_tensor_impl(const Tensor& self) {
-    const auto sizes = self.sizes();
-    // The extent list is short and rebuilt on every call, so a thread-local
-    // buffer keeps the allocation out of a metadata-only query.
-    static thread_local std::vector<int64_t> shape_scratch;
-    shape_scratch.assign(sizes.begin(), sizes.end());
-    Tensor shape(shape_scratch, DType::Int64, Device(DeviceType::CPU));
+    const IntArrayRef sizes = self.sizes();
+    // One 1-D buffer of int64 holds the extents.  The answer is a fresh
+    // allocator block every call, so the values are copied in as one run
+    // rather than element by element.
+    static const Device cpu_device(DeviceType::CPU);
+    Tensor shape({static_cast<int64_t>(sizes.size())}, DType::Int64, cpu_device);
     if (!sizes.empty()) {
-        std::copy(sizes.begin(), sizes.end(), shape.data_ptr<int64_t>());
+        std::memcpy(shape.data_ptr<int64_t>(), sizes.data(),
+                    sizes.size() * sizeof(int64_t));
     }
     return shape;
 }
