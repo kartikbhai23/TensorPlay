@@ -1013,11 +1013,14 @@ Tensor positive_cpu(const Tensor& self) {
         TP_THROW(NotImplementedError,
                  "positive(): the unary plus operator is not defined for bool");
     }
-    // A metadata copy of the impl already shares storage and the version
-    // counter, which is the whole of an identity view; going through the
-    // strided-view entry point would re-derive sizes and strides that are
-    // unchanged.
-    return Tensor(make_intrusive<TensorImpl>(*self.unsafeGetTensorImpl()));
+    // Nothing changes, so the operand answers itself.  A tensor that carries
+    // a gradient gets its own handle instead: the autograd layer above tags
+    // the result with this operation's history, and writing that onto the
+    // operand would rewrite its graph in place.
+    if (self.requires_grad()) {
+        return Tensor(make_intrusive<TensorImpl>(*self.unsafeGetTensorImpl()));
+    }
+    return self;
 }
 
 // ===========================================================================

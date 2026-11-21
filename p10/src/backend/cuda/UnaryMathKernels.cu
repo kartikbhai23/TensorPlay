@@ -35,14 +35,20 @@ Tensor negative_cuda(const Tensor& self) {
 }
 
 Tensor positive_cuda(const Tensor& self) {
-    // Unary plus is the identity: a view over the same buffer answers it, with
-    // no launch.  Bool carries no sign to keep, so it is refused.
+    // Unary plus is the identity: the operand answers itself, with no launch
+    // and no new geometry.  Bool carries no sign to keep, so it is refused.
     if (self.dtype() == DType::Bool) {
         TP_THROW(NotImplementedError,
                  "positive(): the unary plus operator is not defined for bool");
     }
-    return self.as_strided(static_cast<std::vector<int64_t>>(self.shape()),
-                           static_cast<std::vector<int64_t>>(self.strides()));
+    // A tensor that carries a gradient gets its own handle instead: the
+    // autograd layer above tags the result with this operation's history,
+    // and writing that onto the operand would rewrite its graph in place.
+    if (self.requires_grad()) {
+        return self.as_strided(static_cast<std::vector<int64_t>>(self.shape()),
+                               static_cast<std::vector<int64_t>>(self.strides()));
+    }
+    return self;
 }
 
 // ===========================================================================

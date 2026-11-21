@@ -1958,8 +1958,18 @@ namespace {
 // wrapper's current value before it is handed back.
 std::unordered_map<const void*, PyObject*> g_wrap_cache;
 
+// Erase only the entry this capsule installed.  A wrapper that outlives the
+// impl it was cached under leaves its capsule alive while the address may
+// already serve a newer impl; erasing by address alone would then drop the
+// newer impl's entry, and every later wrap of that live impl would build a
+// second wrapper.  The context slot carries the wrapper that owns the entry.
 void wrap_cache_capsule_destructor(PyObject* caps) {
-    g_wrap_cache.erase(PyCapsule_GetPointer(caps, nullptr));
+    auto* impl = PyCapsule_GetPointer(caps, nullptr);
+    auto* owner = static_cast<PyObject*>(PyCapsule_GetContext(caps));
+    auto it = g_wrap_cache.find(impl);
+    if (it != g_wrap_cache.end() && it->second == owner) {
+        g_wrap_cache.erase(it);
+    }
 }
 
 // True when `wrapper` is a plain tensor wrapper whose current value still
@@ -2003,6 +2013,7 @@ PyObject* tpx_py_wrap(const Tensor& t) {
                         &wrap_cache_capsule_destructor)
         : nullptr;
     if (caps != nullptr) {
+        PyCapsule_SetContext(caps, wrapped);
         if (PyObject_SetAttrString(wrapped, kWrapCacheAttr, caps) == 0) {
             g_wrap_cache.emplace(impl, wrapped);  // borrowed; owned by obj
         }

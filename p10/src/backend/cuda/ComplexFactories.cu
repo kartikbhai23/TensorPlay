@@ -116,10 +116,14 @@ void polar_loop(const Tensor& abs, const Tensor& angle, const Tensor& output) {
 // ---------------------------------------------------------------------------
 
 Tensor real_cuda(const Tensor& self) {
-    // Real input is its own real part: a strided view aliases the buffer with
-    // no launch.  Complex input materializes the real component at its paired
-    // real precision.
+    // Real input is its own real part, so the operand answers itself with no
+    // launch and no new geometry.  Complex input materializes the real
+    // component at its paired real precision.
     if (!is_cplx(self.dtype())) {
+        // A tensor carrying a gradient gets its own handle instead: the
+        // autograd layer tags the result with this operation's history, and
+        // writing that onto the operand would rewrite its graph in place.
+        if (!self.requires_grad()) return self;
         return self.as_strided(static_cast<std::vector<int64_t>>(self.shape()),
                                static_cast<std::vector<int64_t>>(self.strides()));
     }
@@ -172,9 +176,13 @@ Tensor imag_cuda(const Tensor& self) {
 }
 
 Tensor conj_cuda(const Tensor& self) {
-    // Real dtypes are self-conjugate: a strided view aliases the storage
-    // with no data movement, matching the CPU factory's contract.
+    // Real dtypes are self-conjugate, so the operand answers itself with no
+    // data movement and no new geometry.
     if (!is_cplx(self.dtype())) {
+        // A tensor carrying a gradient gets its own handle instead: the
+        // autograd layer tags the result with this operation's history, and
+        // writing that onto the operand would rewrite its graph in place.
+        if (!self.requires_grad()) return self;
         return self.as_strided(static_cast<std::vector<int64_t>>(self.shape()),
                                static_cast<std::vector<int64_t>>(self.strides()));
     }
@@ -258,6 +266,12 @@ Tensor polar_cuda(const Tensor& abs_, const Tensor& angle_) {
 // composed with conj(); ndim <= 1 is plain conj.  conj_cuda materializes the
 // conjugate for complex inputs and aliases real ones.
 Tensor adjoint_cuda(const Tensor& self) {
+    if (!is_cplx(self.dtype()) && !self.requires_grad()) {
+        // Real values are their own conjugates, so only the transpose is
+        // left; going through conj would add a dispatch for nothing.
+        if (self.dim() <= 1) return self;
+        return self.transpose(-2, -1);
+    }
     if (self.dim() <= 1) return conj_cuda(self);
     return conj_cuda(self.transpose(-2, -1));
 }

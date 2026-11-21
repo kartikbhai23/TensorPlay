@@ -52,16 +52,23 @@ Tensor _cast_Long_native(const Tensor& self, bool non_blocking) {
 
 Tensor _cast_Half_native(const Tensor& self, bool non_blocking) {
     reject_active_transform(self, "_cast_Half");
+    // An operand that already holds this width needs no cast at all.
+    if (self.dtype() == DType::Float16) return self;
     return ops::to(self, DType::Float16, non_blocking);
 }
 
 Tensor _cast_Float_native(const Tensor& self, bool non_blocking) {
     reject_active_transform(self, "_cast_Float");
+    // A float operand already holds the values the caller asked for, so no
+    // cast entry point is entered at all.
+    if (self.dtype() == DType::Float32) return self;
     return ops::to(self, DType::Float32, non_blocking);
 }
 
 Tensor _cast_Double_native(const Tensor& self, bool non_blocking) {
     reject_active_transform(self, "_cast_Double");
+    // An operand that already holds this width needs no cast at all.
+    if (self.dtype() == DType::Float64) return self;
     return ops::to(self, DType::Float64, non_blocking);
 }
 

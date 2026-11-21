@@ -48,14 +48,16 @@ std::vector<int64_t> shape_of(const Tensor& t) {
 }  // namespace
 
 Tensor real_cpu(const Tensor& self) {
-    // A real tensor is its own real part: the answer is a view over the same
-    // storage, with no element pass.
+    // A real tensor is its own real part, so it answers itself: no element
+    // pass, no new geometry.
     if (!is_cplx(self.dtype())) {
-        // An identity alias: a metadata copy of the impl already shares the
-        // storage and the version counter, so no layout is re-derived and
-        // nothing is read.  The impl is fresh, so autograd wrappers above
-        // still tag their own grad_fn.
-        return Tensor(make_intrusive<TensorImpl>(*self.unsafeGetTensorImpl()));
+        // A tensor carrying a gradient gets its own handle instead: the
+        // autograd layer tags the result with this operation's history, and
+        // writing that onto the operand would rewrite its graph in place.
+        if (self.requires_grad()) {
+            return Tensor(make_intrusive<TensorImpl>(*self.unsafeGetTensorImpl()));
+        }
+        return self;
     }
     Tensor out = Tensor::empty(shape_of(self), toRealValueType(self.dtype()), self.device());
     Tensor sc = self.contiguous();
@@ -131,14 +133,15 @@ Tensor imag_cpu(const Tensor& self) {
 }
 
 Tensor conj_cpu(const Tensor& self) {
-    // Returning `self` itself would hand the same impl back to autograd
-    // wrappers, which then re-tag the input's grad_fn and corrupt graphs.
+    // Real values are their own conjugates, so the operand answers itself.
     if (!is_cplx(self.dtype())) {
-        // An identity alias: a metadata copy of the impl already shares the
-        // storage and the version counter, so no layout is re-derived and
-        // nothing is read.  The impl is fresh, so autograd wrappers above
-        // still tag their own grad_fn.
-        return Tensor(make_intrusive<TensorImpl>(*self.unsafeGetTensorImpl()));
+        // A tensor carrying a gradient gets its own handle instead: the
+        // autograd layer tags the result with this operation's history, and
+        // writing that onto the operand would rewrite its graph in place.
+        if (self.requires_grad()) {
+            return Tensor(make_intrusive<TensorImpl>(*self.unsafeGetTensorImpl()));
+        }
+        return self;
     }
     Tensor out = detail::contiguous_clone(self);
     int64_t n = out.numel();
@@ -179,6 +182,12 @@ Tensor conj_cpu(const Tensor& self) {
 
 // transpose(-2, -1) composed with conj(); ndim <= 1 is plain conj.
 Tensor adjoint_cpu(const Tensor& self) {
+    if (!is_cplx(self.dtype()) && !self.requires_grad()) {
+        // Real values are their own conjugates, so only the transpose is
+        // left; going through conj would add a dispatch for nothing.
+        if (self.dim() <= 1) return self;
+        return self.transpose(-2, -1);
+    }
     if (self.dim() <= 1) return conj_cpu(self);
     return conj_cpu(self.transpose(-2, -1));
 }
@@ -305,7 +314,10 @@ namespace {
 Tensor conj_device_view(const Tensor& self) {
     TP_CHECK(!is_cplx(self.dtype()),
              "conj is not supported for complex tensors on this device");
-    return Tensor(make_intrusive<TensorImpl>(*self.unsafeGetTensorImpl()));
+    if (self.requires_grad()) {
+        return Tensor(make_intrusive<TensorImpl>(*self.unsafeGetTensorImpl()));
+    }
+    return self;
 }
 
 Tensor adjoint_device_view(const Tensor& self) {
