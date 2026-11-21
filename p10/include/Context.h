@@ -91,10 +91,10 @@ public:
     bool allowTF32CuDNN() const { return allow_tf32_cudnn_; }
     void setAllowTF32CuDNN(bool b) { allow_tf32_cudnn_ = b; }
 
-    // Half-precision GEMM accumulation: when true (default), float16 inputs
-    // accumulate in float16 (compute type 16F) on tensor cores; when false,
-    // accumulation stays in float32.  BFloat16 is unaffected (cuBLAS has no
-    // 16BF compute type and always accumulates in float32).
+    // Half-precision GEMM accumulation: float16 inputs accumulate in float32
+    // by default.  Enabling this switches fp16 GEMMs to compute type 16F for
+    // speed on tensor cores, at a measurable accuracy cost.  BFloat16 is
+    // unaffected (cuBLAS has no 16BF compute type).
     bool allowFP16AccumulationCuBLAS() const { return allow_fp16_acc_cublas_; }
     void setAllowFP16AccumulationCuBLAS(bool b) { allow_fp16_acc_cublas_ = b; }
 
@@ -180,7 +180,7 @@ private:
     bool deterministic_algorithms_warn_only_ = false;
     Float32MatmulPrecision float32_matmul_precision_ = Float32MatmulPrecision::HIGHEST;
     bool allow_tf32_cudnn_ = true;
-    bool allow_fp16_acc_cublas_ = true;
+    bool allow_fp16_acc_cublas_ = false;
     // Off by default: the plain heuristic pick is the fast path, and turning
     // this on makes every new shape time several candidate plans first.
     bool cudnn_benchmark_ = false;
