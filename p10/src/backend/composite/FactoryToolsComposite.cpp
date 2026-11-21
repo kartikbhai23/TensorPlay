@@ -699,17 +699,16 @@ Tensor lazy_clone_native(const Tensor& self) {
         // so the eager copy is the only answer.
         return ops::clone(self);
     }
-    Tensor shared(make_intrusive<TensorImpl>(
-        storage.share_bytes(),
-        static_cast<std::vector<int64_t>>(self.shape()),
-        self.strides(),
-        impl->dtype(),
-        impl->storage_offset()));
-    // The view keeps its own version counter: its writes never reach the
-    // source's bytes, so bumping the source's version would report an
-    // in-place modification that did not happen.
-    if (impl->has_quantizer()) shared.unsafeGetTensorImpl()->set_quantizer(impl->quantizer());
-    return shared;
+    // The result repeats the source's metadata and shares its bytes; only the
+    // version counter is its own, so a write through either side never
+    // reports an in-place update of the other.  Adopting the metadata record
+    // as one unit keeps the size, stride and layout state intact without
+    // materializing the two extent lists.
+    auto shared_impl = make_intrusive<TensorImpl>(*impl);
+    shared_impl->set_version_counter(
+        impl->is_inference() ? VariableVersion(false) : VariableVersion());
+    shared_impl->set_storage(storage.share_bytes());
+    return Tensor(std::move(shared_impl));
 }
 
 Tensor normal_functional_native(const Tensor& self, double mean, double std,
@@ -769,18 +768,47 @@ int64_t debug_has_internal_overlap_native(const Tensor& self) {
     constexpr int64_t kNoOverlap = 0;
     constexpr int64_t kOverlapping = 1;
     constexpr int64_t kTooHard = 2;
+    // The dimension order lives on the stack: the dense test only needs the
+    // dims that span more than one element, ordered by ascending stride, and
+    // that order is recovered by insertion instead of a heap permutation plus
+    // two owning shape/stride copies.
+    constexpr size_t kStackRank = 8;
 
-    const std::vector<int64_t> sizes = self.shape();
-    const std::vector<int64_t> strides = self.strides();
-    if (SizesAndStrides::is_non_overlapping_and_dense(sizes, strides)) {
-        return kNoOverlap;
-    }
-    for (size_t i = 0; i < sizes.size(); ++i) {
-        if (sizes[i] > 1 && strides[i] == 0) {
-            return kOverlapping;
+    const IntArrayRef sizes = self.sizes();
+    const IntArrayRef strides = self.stride();
+    if (sizes.size() > kStackRank) {
+        if (SizesAndStrides::is_non_overlapping_and_dense(
+                std::vector<int64_t>(sizes.begin(), sizes.end()),
+                std::vector<int64_t>(strides.begin(), strides.end()))) {
+            return kNoOverlap;
         }
+        for (size_t dim = 0; dim < sizes.size(); ++dim) {
+            if (sizes[dim] > 1 && strides[dim] == 0) return kOverlapping;
+        }
+        return kTooHard;
     }
-    return kTooHard;
+    size_t order[kStackRank];
+    size_t spanning = 0;
+    for (size_t dim = 0; dim < sizes.size(); ++dim) {
+        if (sizes[dim] < 2) continue;
+        size_t slot = spanning++;
+        while (slot > 0 && strides[order[slot - 1]] > strides[dim]) {
+            order[slot] = order[slot - 1];
+            --slot;
+        }
+        order[slot] = dim;
+    }
+    int64_t required_stride = 1;
+    for (size_t i = 0; i < spanning; ++i) {
+        if (strides[order[i]] != required_stride) {
+            for (size_t j = 0; j < sizes.size(); ++j) {
+                if (sizes[j] > 1 && strides[j] == 0) return kOverlapping;
+            }
+            return kTooHard;
+        }
+        required_stride *= sizes[order[i]];
+    }
+    return kNoOverlap;
 }
 
 Tensor reshape_from_tensor_native(const Tensor& self, const Tensor& shape_tensor) {
