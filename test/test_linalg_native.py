@@ -164,8 +164,8 @@ def test_max_min_binary_and_namedtuple_faces():
 def test_tensor_device_method_face():
     t = tp.tensor([1.0, 2.0])
     assert t.is_cpu and not t.is_cuda and not t.is_meta
-    assert t.nbytes() == 8
-    assert tp.tensor([1.0, 2.0], dtype=tp.float64).nbytes() == 16
+    assert t.nbytes == 8
+    assert tp.tensor([1.0, 2.0], dtype=tp.float64).nbytes == 16
     assert t.storage_offset() == 0
     assert t.get_device() == -1
     assert t.cpu().data_ptr() == t.data_ptr()

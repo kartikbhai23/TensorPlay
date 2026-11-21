@@ -2527,7 +2527,7 @@ void init_tensor(py::module_& m) {
         .def("element_size", [](const Tensor& self) -> int64_t {
             return static_cast<int64_t>(self.itemsize());
         })
-        .def("nbytes", [](const Tensor& self) -> int64_t {
+        .def_property_readonly("nbytes", [](const Tensor& self) -> int64_t {
             return static_cast<int64_t>(self.numel() * self.itemsize());
         })
         .def("storage_offset", [](const Tensor& self) -> int64_t {
