@@ -3,7 +3,7 @@
 #include "Exception.h"
 #include "Storage.h"
 #include "Tensor.h"
-#include "tensorplay/TensorRedispatchGenerated.h"
+#include "tensorplay/ops/TensorRedispatchGenerated.h"
 
 namespace tensorplay {
 
