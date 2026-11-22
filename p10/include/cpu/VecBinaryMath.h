@@ -1,53 +1,5 @@
 #pragma once
 
-// The lane pow with whole-lane special cases for the exponents that come up
-// constantly in practice: squaring, cubing, square roots and reciprocals
-// answer with multiplies, a square root or a reciprocal instead of the full
-// polynomial.  A lane mixture falls to the library pow.  The target
-// attribute is what keeps the lane loop; the translation unit compiles
-// without the ISA.
-__attribute__((target("avx2,fma"), always_inline))
-inline __m256 pow_lane_f32(__m256 x, __m256 y) {
-    const __m256 two = _mm256_set1_ps(2.0f);
-    if (_mm256_movemask_ps(_mm256_cmp_ps(y, two, _CMP_EQ_OQ)) == -1) {
-        return _mm256_mul_ps(x, x);
-    }
-    const __m256 three = _mm256_set1_ps(3.0f);
-    if (_mm256_movemask_ps(_mm256_cmp_ps(y, three, _CMP_EQ_OQ)) == -1) {
-        return _mm256_mul_ps(_mm256_mul_ps(x, x), x);
-    }
-    const __m256 half = _mm256_set1_ps(0.5f);
-    if (_mm256_movemask_ps(_mm256_cmp_ps(y, half, _CMP_EQ_OQ)) == -1) {
-        return _mm256_sqrt_ps(x);
-    }
-    const __m256 minus_one = _mm256_set1_ps(-1.0f);
-    if (_mm256_movemask_ps(_mm256_cmp_ps(y, minus_one, _CMP_EQ_OQ)) == -1) {
-        return _mm256_div_ps(_mm256_set1_ps(1.0f), x);
-    }
-    return tensorplay::tpsleef::pow(x, y);
-}
-
-__attribute__((target("avx2,fma"), always_inline))
-inline __m256d pow_lane_f64(__m256d x, __m256d y) {
-    const __m256d two = _mm256_set1_pd(2.0);
-    if (_mm256_movemask_pd(_mm256_cmp_pd(y, two, _CMP_EQ_OQ)) == -1) {
-        return _mm256_mul_pd(x, x);
-    }
-    const __m256d three = _mm256_set1_pd(3.0);
-    if (_mm256_movemask_pd(_mm256_cmp_pd(y, three, _CMP_EQ_OQ)) == -1) {
-        return _mm256_mul_pd(_mm256_mul_pd(x, x), x);
-    }
-    const __m256d half = _mm256_set1_pd(0.5);
-    if (_mm256_movemask_pd(_mm256_cmp_pd(y, half, _CMP_EQ_OQ)) == -1) {
-        return _mm256_sqrt_pd(x);
-    }
-    const __m256d minus_one = _mm256_set1_pd(-1.0);
-    if (_mm256_movemask_pd(_mm256_cmp_pd(y, minus_one, _CMP_EQ_OQ)) == -1) {
-        return _mm256_div_pd(_mm256_set1_pd(1.0), x);
-    }
-    return tensorplay::tpsleef::pow(x, y);
-}
-
 // Vectorized fast paths for the pairwise float maps whose answer costs a
 // library call per element: hypot, atan2 and the logarithmic sum.
 //
@@ -437,6 +389,54 @@ inline uint16_t scalar_bf16(BOp op, uint16_t a, uint16_t b) {
                 scalar_f32_of<BOp::TruncDiv>(x, y));
     }
     return 0;
+}
+
+// The lane pow with whole-lane special cases for the exponents that come up
+// constantly in practice: squaring, cubing, square roots and reciprocals
+// answer with multiplies, a square root or a reciprocal instead of the full
+// polynomial.  A lane mixture falls to the library pow.  The target
+// attribute is what keeps the lane loop; the translation unit compiles
+// without the ISA.
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256 pow_lane_f32(__m256 x, __m256 y) {
+    const __m256 two = _mm256_set1_ps(2.0f);
+    if (_mm256_movemask_ps(_mm256_cmp_ps(y, two, _CMP_EQ_OQ)) == -1) {
+        return _mm256_mul_ps(x, x);
+    }
+    const __m256 three = _mm256_set1_ps(3.0f);
+    if (_mm256_movemask_ps(_mm256_cmp_ps(y, three, _CMP_EQ_OQ)) == -1) {
+        return _mm256_mul_ps(_mm256_mul_ps(x, x), x);
+    }
+    const __m256 half = _mm256_set1_ps(0.5f);
+    if (_mm256_movemask_ps(_mm256_cmp_ps(y, half, _CMP_EQ_OQ)) == -1) {
+        return _mm256_sqrt_ps(x);
+    }
+    const __m256 minus_one = _mm256_set1_ps(-1.0f);
+    if (_mm256_movemask_ps(_mm256_cmp_ps(y, minus_one, _CMP_EQ_OQ)) == -1) {
+        return _mm256_div_ps(_mm256_set1_ps(1.0f), x);
+    }
+    return tensorplay::tpsleef::pow(x, y);
+}
+
+__attribute__((target("avx2,fma"), always_inline))
+inline __m256d pow_lane_f64(__m256d x, __m256d y) {
+    const __m256d two = _mm256_set1_pd(2.0);
+    if (_mm256_movemask_pd(_mm256_cmp_pd(y, two, _CMP_EQ_OQ)) == -1) {
+        return _mm256_mul_pd(x, x);
+    }
+    const __m256d three = _mm256_set1_pd(3.0);
+    if (_mm256_movemask_pd(_mm256_cmp_pd(y, three, _CMP_EQ_OQ)) == -1) {
+        return _mm256_mul_pd(_mm256_mul_pd(x, x), x);
+    }
+    const __m256d half = _mm256_set1_pd(0.5);
+    if (_mm256_movemask_pd(_mm256_cmp_pd(y, half, _CMP_EQ_OQ)) == -1) {
+        return _mm256_sqrt_pd(x);
+    }
+    const __m256d minus_one = _mm256_set1_pd(-1.0);
+    if (_mm256_movemask_pd(_mm256_cmp_pd(y, minus_one, _CMP_EQ_OQ)) == -1) {
+        return _mm256_div_pd(_mm256_set1_pd(1.0), x);
+    }
+    return tensorplay::tpsleef::pow(x, y);
 }
 
 __attribute__((target("avx2,fma"), always_inline))
