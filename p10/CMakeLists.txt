@@ -1382,12 +1382,19 @@ install(TARGETS p10
 # Repeated calls on the same length reuse the transform plan instead of
 # rebuilding twiddle tables for every invocation.
 # The runtime dispatch of other kernels is untouched; these files only.
+# The -m flags are x86-only: arm64 and other non-x86 compilers reject them,
+# so those targets build pocketfft with its scalar/default lane width.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i386|i686" OR MSVC)
+    set(_TP_FFT_COMPILE_OPTIONS "-mavx2;-mfma")
+else()
+    set(_TP_FFT_COMPILE_OPTIONS "")
+endif()
 set_source_files_properties(
     src/backend/cpu/SpectralKernels.cpp
     src/backend/cpu/SpectralInteropKernels.cpp
     src/backend/cpu/Spectral2DKernels.cpp
     PROPERTIES
-        COMPILE_OPTIONS "-mavx2;-mfma"
+        COMPILE_OPTIONS "${_TP_FFT_COMPILE_OPTIONS}"
         COMPILE_DEFINITIONS "POCKETFFT_CACHE_SIZE=16"
 )
 
