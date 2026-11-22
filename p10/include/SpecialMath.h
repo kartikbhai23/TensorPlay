@@ -3244,6 +3244,13 @@ inline TP_HOST_DEVICE T hermite_polynomial_h_forward(T x, int64_t n) {
         return x + x;
     }
 
+    if (n == 2) {
+        return T(4.0) * x * x - T(2.0);
+    }
+    if (n == 3) {
+        return T(8.0) * x * x * x - T(12.0) * x;
+    }
+
     if (n > getHermitianLimit<T>()) {
         return std::numeric_limits<T>::quiet_NaN();
     }
