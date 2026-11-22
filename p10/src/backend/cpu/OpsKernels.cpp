@@ -690,6 +690,7 @@ Tensor remainder_scalar_tensor_cpu(const Scalar& self, const Tensor& other) {
 // inputs are exact there and the remainder survives to f32 rounding.  The
 // target attribute is what keeps the lane loop; the translation unit
 // compiles without the ISA.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 __attribute__((target("avx2,fma"), noinline))
 static void fmod_f32_sweep(const float* sp, const float* yp, float* dp,
                            int64_t n) {
@@ -708,10 +709,12 @@ static void fmod_f32_sweep(const float* sp, const float* yp, float* dp,
         dp[i] = sp[i] - __builtin_truncf(sp[i] / yp[i]) * yp[i];
     }
 }
+#endif  // __x86_64__ && (__GNUC__ || __clang__)
 
 // The scalar-divisor form of the sweep: a size-1 divisor tensor falls out of
 // the pair requirement above into a per-element libm fmod, so the constant
 // divisor rides in a register and the lane walk answers directly.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 __attribute__((target("avx2,fma"), noinline))
 static void fmod_f32_sweep_scalar(const float* sp, float y, float* dp,
                                   int64_t n) {
@@ -727,10 +730,12 @@ static void fmod_f32_sweep_scalar(const float* sp, float y, float* dp,
         dp[i] = sp[i] - __builtin_truncf(sp[i] / y) * y;
     }
 }
+#endif  // __x86_64__ && (__GNUC__ || __clang__)
 
 Tensor fmod_tensor_cpu(const Tensor& self, const Tensor& other) {
     // Contiguous float pairs answer in one lane-division sweep; the pair
     // kernel falls back to libm fmod per element.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
     if (self.dtype() == DType::Float32 && self.is_contiguous() &&
         other.is_contiguous()) {
         Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
@@ -750,6 +755,7 @@ Tensor fmod_tensor_cpu(const Tensor& self, const Tensor& other) {
             return result;
         }
     }
+#endif  // __x86_64__ && (__GNUC__ || __clang__)
     // C fmod: sign follows the dividend
     return fmod_like_pair_kernel<vecbinary::BOp::Fmod>(self, other,
         [](auto x, auto y) -> decltype(x) {
@@ -872,6 +878,7 @@ struct DivRoundedPair {
 // f32 inputs stay exact and the per-lane branches become lane selects.  The
 // target attribute is what keeps the lane loop; the translation unit
 // compiles without the ISA.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 __attribute__((target("avx2,fma"), noinline))
 static void floor_div_f32_sweep(const float* ap, const float* bp,
                                 float* dp, int64_t n) {
@@ -932,6 +939,7 @@ static void floor_div_f32_sweep(const float* ap, const float* bp,
         dp[i] = div != 0.0f ? fd : std::copysign(0.0f, a / b);
     }
 }
+#endif  // __x86_64__ && (__GNUC__ || __clang__)
 
 Tensor div_rounded_core(const Tensor& a, const Tensor& b, DivRounding rounding) {
     if (rounding == DivRounding::kTrue) return true_divide_core(a, b);
@@ -939,6 +947,7 @@ Tensor div_rounded_core(const Tensor& a, const Tensor& b, DivRounding rounding) 
     // replicates floor_div_value exactly: the fmod correction, the floor and
     // the round-half-up nudge, all in f64 lanes -- f32 inputs are exact there
     // and the divisor's sign rules flow through the compares.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
     if (rounding == DivRounding::kFloor && a.dtype() == DType::Float32 &&
         b.dtype() == DType::Float32 && a.is_contiguous() && b.is_contiguous() &&
         a.numel() == b.numel()) {
@@ -948,6 +957,7 @@ Tensor div_rounded_core(const Tensor& a, const Tensor& b, DivRounding rounding) 
                             result.data_ptr<float>(), a.numel());
         return result;
     }
+#endif  // __x86_64__ && (__GNUC__ || __clang__)
     // A floating pair of one width, in one shape and packed, is answered a
     // vector at a time; an integral pair keeps the flat map.
     if (pair_vector_takes(a, b)) {
@@ -1785,7 +1795,6 @@ inline void f64_256(const double* in, double* out, int64_t n, double lo, double 
         out[i] = v;
     }
 }
-#endif
 // Elementwise bound clamps for the .Tensor overloads: each lane compares
 // against its own bound.  The target attribute is what keeps the lane loop;
 // the translation unit compiles without the ISA.
@@ -1807,6 +1816,7 @@ static void f32_256_elementwise(const float* in, const float* b, float* out,
                         : (in[i] < b[i] ? in[i] : b[i]);
     }
 }
+#endif  // __x86_64__
 
 }  // namespace clamp_row
 
@@ -1906,6 +1916,7 @@ Tensor clamp_max_scalar_cpu(const Tensor& self, Scalar max) {
 Tensor clamp_min_tensor_cpu(const Tensor& self, const Tensor& min) {
     // Contiguous float pairs clamp in one vector pass with per-lane bounds;
     // the scalar lambda fallback pays a libm-double round trip per element.
+#if defined(__x86_64__)
     if (self.dtype() == DType::Float32 && self.is_contiguous() &&
         min.is_contiguous() && self.numel() == min.numel()) {
         Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
@@ -1914,12 +1925,14 @@ Tensor clamp_min_tensor_cpu(const Tensor& self, const Tensor& min) {
                                        result.data_ptr<float>(), self.numel(), true);
         return result;
     }
+#endif
     return binary_same_kernel(self, min, [](auto x, auto m) -> decltype(x) {
         using T = decltype(x);
         return static_cast<double>(m) > static_cast<double>(x) ? static_cast<T>(m) : static_cast<T>(x);
     }, "clamp_min");
 }
 Tensor clamp_max_tensor_cpu(const Tensor& self, const Tensor& max) {
+#if defined(__x86_64__)
     if (self.dtype() == DType::Float32 && self.is_contiguous() &&
         max.is_contiguous() && self.numel() == max.numel()) {
         Tensor result = Tensor::empty(static_cast<std::vector<int64_t>>(self.shape()),
@@ -1928,6 +1941,7 @@ Tensor clamp_max_tensor_cpu(const Tensor& self, const Tensor& max) {
                                        result.data_ptr<float>(), self.numel(), false);
         return result;
     }
+#endif
     return binary_same_kernel(self, max, [](auto x, auto m) -> decltype(x) {
         using T = decltype(x);
         return static_cast<double>(m) < static_cast<double>(x) ? static_cast<T>(m) : static_cast<T>(x);
@@ -2236,6 +2250,7 @@ Tensor& tanh_backward_out_cpu(const Tensor& grad_output, const Tensor& output,
 // infinity at the closed ends, the reciprocal form in between.  The target
 // attribute is what keeps the lane loop; the translation unit compiles
 // without the ISA.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 __attribute__((target("avx2,fma"), noinline))
 static void logit_backward_f32_sweep(const float* gp, const float* sp,
                                      float* dp, int64_t n) {
@@ -2270,12 +2285,14 @@ static void logit_backward_f32_sweep(const float* gp, const float* sp,
         dp[i] = gp[i] / (s * (1.0f - s));
     }
 }
+#endif  // __x86_64__ && (__GNUC__ || __clang__)
 
 Tensor logit_backward_cpu(const Tensor& grad_output, const Tensor& self, const std::optional<Scalar>& eps) {
     double e = eps.has_value() ? eps->toDouble() : -1.0;
     // Contiguous float32 pairs answer in one lane sweep; the lane formula
-    // mirrors the pair kernel exactly -- domain NaN outside [0,1], the
+    // repeats the pair kernel exactly -- domain NaN outside [0,1], the
     // infinity at the closed ends, the reciprocal form in between.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
     if (e < 0 && grad_output.dtype() == DType::Float32 &&
         grad_output.is_contiguous() && self.is_contiguous() &&
         grad_output.numel() == self.numel()) {
@@ -2285,6 +2302,7 @@ Tensor logit_backward_cpu(const Tensor& grad_output, const Tensor& self, const s
                                  result.data_ptr<float>(), grad_output.numel());
         return result;
     }
+#endif  // __x86_64__ && (__GNUC__ || __clang__)
     return binary_same_kernel(grad_output, self, LogitGradPair{e}, "logit_backward");
 }
 Tensor& logit_backward_out_cpu(const Tensor& grad_output, const Tensor& self,

@@ -9,7 +9,9 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
+#endif
 #include <limits>
 #include <optional>
 #include <tuple>
@@ -806,6 +808,7 @@ Tensor ger_native_cpu(const Tensor& self, const Tensor& vec2) {
 
 // The 1D kron lays each scaled copy of the other back to back: eight-lane
 // multiplies per step against a broadcast scalar, per the AVX2 tier.
+#if defined(__x86_64__) || defined(__i386__)
 __attribute__((target("avx2,fma"), noinline))
 void kron_block_f32_avx2(const float* a, int64_t an, const float* b,
                          int64_t bn, float* dp) {
@@ -831,6 +834,7 @@ void kron_block_f64_avx2(const double* a, int64_t an, const double* b,
         for (; j < bn; ++j) dst[j] = a[i] * b[j];
     }
 }
+#endif  // __x86_64__ || __i386__
 
 Tensor kron_native_cpu(const Tensor& self, const Tensor& other) {
     // multiply, then view the product back to the result shape.
@@ -851,6 +855,7 @@ Tensor kron_native_cpu(const Tensor& self, const Tensor& other) {
     // each scaled copy of the other back to back — a block multiply that
     // skips the broadcast iterator.  Multi-dim operands interleave the
     // copies across dims, so they keep the broadcast walk.
+#if defined(__x86_64__) || defined(__i386__)
     if (self.device().is_cpu() && other.device().is_cpu()
             && self.dim() == 1 && other.dim() == 1
             && (self.dtype() == DType::Float32 || self.dtype() == DType::Float64)) {
@@ -867,6 +872,7 @@ Tensor kron_native_cpu(const Tensor& self, const Tensor& other) {
         }
         return ops::view(flat, result_shape);
     }
+#endif  // __x86_64__ || __i386__
     return ops::view(
         ops::mul(ops::view(self, a_shape), ops::view(other, b_shape)),
         result_shape);

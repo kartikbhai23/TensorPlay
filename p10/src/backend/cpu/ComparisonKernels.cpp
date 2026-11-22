@@ -294,6 +294,7 @@ Tensor comparison_kernel_impl(const Tensor& self, const Tensor& other, Op op);
 // broadcast, reorder, coalesce, parallelism and the overlap judgment over the
 // destination.
 // The scalar comparison matching the lane predicate, for the sweep tails.
+#if defined(__x86_64__) || defined(__i386__)
 template <typename T, int PRED>
 inline bool op_pred(T x, T y) {
     switch (PRED) {
@@ -366,6 +367,7 @@ static void compare_sweep_pd(const T* xp, const T* yp, bool* rp, int64_t n) {
     }
     for (; i < n; ++i) rp[i] = op_pred<T, PRED>(xp[i], yp[i]);
 }
+#endif  // x86
 
 template <bool kEquality, NarrowCmp C, typename Op>
 void comparison_pass(Tensor& result, const Tensor& self, const Tensor& other,
@@ -375,6 +377,7 @@ void comparison_pass(Tensor& result, const Tensor& self, const Tensor& other,
     // A scalar other broadcasts over the base: the lane compare runs with
     // the scalar in a broadcast register.  The predicate instantiates per
     // comparison kind.
+#if defined(__x86_64__) || defined(__i386__)
     if ((common_dtype == DType::Float32 || common_dtype == DType::Float64) &&
         self_casted.is_contiguous() && other_casted.dim() == 0 &&
         self_casted.numel() == result.numel()) {
@@ -427,6 +430,7 @@ void comparison_pass(Tensor& result, const Tensor& self, const Tensor& other,
             }
         }
     }
+#endif  // x86
     if (narrow_compare_path<C>(result, self_casted, other_casted, common_dtype)) {
         return;
     }

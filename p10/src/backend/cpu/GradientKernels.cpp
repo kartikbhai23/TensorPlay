@@ -18,7 +18,9 @@
 #include "Dispatcher.h"
 #include "Exception.h"
 
+#if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
+#endif
 #include <optional>
 #include <vector>
 
@@ -39,6 +41,7 @@ int64_t grad_wrap_dim(int64_t dim, int64_t ndim) {
 // The one-dimensional uniform gradient answers from contiguous storage in a
 // single pass: central differences in the interior, one-sided at the ends.
 // AVX2 tier, eight lanes per step.
+#if defined(__x86_64__) || defined(__i386__)
 __attribute__((target("avx2,fma"), noinline))
 void gradient_uniform_walk_f32(const float* x, float* out, int64_t n, float h) {
     if (n < 3) return;
@@ -71,6 +74,7 @@ void gradient_uniform_walk_f64(const double* x, double* out, int64_t n,
     for (; i < n - 1; ++i) out[i] = (x[i + 1] - x[i - 1]) / two_h;
     out[n - 1] = (x[n - 1] - x[n - 2]) / h;
 }
+#endif  // __x86_64__ || __i386__
 
 // Reshape a 1-D weight vector so its only non-unit axis sits at `d`
 // (broadcast-ready against slices of a tensor with `ndim` axes).
@@ -91,6 +95,7 @@ Tensor gradient_uniform_axis(const Tensor& src, int64_t d, double hd,
     // One-dimensional float operands answer in a single walk: the
     // slice-combine form below spends nine dispatches and several
     // temporaries on what one loop over the contiguous storage does.
+#if defined(__x86_64__) || defined(__i386__)
     if (src.dim() == 1 && src.is_contiguous()
             && (src.dtype() == DType::Float32 || src.dtype() == DType::Float64)) {
         Tensor out = Tensor::empty({n}, src.dtype(), src.device());
@@ -104,6 +109,7 @@ Tensor gradient_uniform_axis(const Tensor& src, int64_t d, double hd,
         }
         return out;
     }
+#endif  // __x86_64__ || __i386__
     const Scalar h(hd), two_h(2.0 * hd);
     const auto seg = [&](int64_t start) { return src.narrow(d, start, 1); };
     Tensor gi = src.narrow(d, 2, n - 2).sub(src.narrow(d, 0, n - 2)).div(two_h);

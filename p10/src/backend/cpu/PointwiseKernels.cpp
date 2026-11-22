@@ -1919,6 +1919,7 @@ Tensor& hardswish_out_cpu(const Tensor& self, Tensor& out) {
 // piecewise-linear map with the bounds compared per lane.  The target
 // attribute is what keeps the lane loop; the translation unit compiles
 // without the ISA.
+#if defined(__x86_64__) || defined(__i386__)
 __attribute__((target("avx2,fma"), noinline))
 static void hardswish_backward_f32_sweep(const float* gp, const float* xp,
                                          float* dp, int64_t n) {
@@ -1944,9 +1945,11 @@ static void hardswish_backward_f32_sweep(const float* gp, const float* xp,
         dp[i] = x <= -3.0f ? 0.0f : (x < 3.0f ? gp[i] * (x / 3.0f + 0.5f) : gp[i]);
     }
 }
+#endif  // __x86_64__ || __i386__
 
 Tensor hardswish_backward_kernel_impl(const Tensor& grad_output, const Tensor& self) {
     // Contiguous float32 pairs answer in one lane sweep.
+#if defined(__x86_64__) || defined(__i386__)
     if (grad_output.dtype() == DType::Float32 &&
         grad_output.is_contiguous() && self.is_contiguous() &&
         grad_output.numel() == self.numel()) {
@@ -1956,6 +1959,7 @@ Tensor hardswish_backward_kernel_impl(const Tensor& grad_output, const Tensor& s
                                      result.data_ptr<float>(), grad_output.numel());
         return result;
     }
+#endif  // __x86_64__ || __i386__
     //   d/dx [x * relu6(x + 3) / 6]:
     //   x <= -3 -> 0 ; -3 < x < 3 -> dy * (x/3 + 0.5) ; x >= 3 -> dy
     return activation_backward_kernel(grad_output, self,
@@ -2031,6 +2035,7 @@ struct HardsigmoidBackward {
 // open band (-3, 3) scales the gradient by 1/6 and the bounds steer to zero.
 // The target attribute is what keeps the lane loop; the translation unit
 // compiles without the ISA.
+#if defined(__x86_64__) || defined(__i386__)
 __attribute__((target("avx2,fma"), noinline))
 static void hardsigmoid_backward_f32_sweep(const float* gp, const float* xp,
                                            float* dp, int64_t n) {
@@ -2051,10 +2056,12 @@ static void hardsigmoid_backward_f32_sweep(const float* gp, const float* xp,
         dp[i] = (x <= -3.0f || x >= 3.0f) ? 0.0f : gp[i] / 6.0f;
     }
 }
+#endif  // __x86_64__ || __i386__
 
 Tensor hardsigmoid_backward_kernel_impl(const Tensor& grad_output, const Tensor& self) {
     // Contiguous float32 pairs answer in one lane sweep; the open band
     // scales the gradient by 1/6 and the bounds steer to zero.
+#if defined(__x86_64__) || defined(__i386__)
     if (grad_output.dtype() == DType::Float32 &&
         grad_output.is_contiguous() && self.is_contiguous() &&
         grad_output.numel() == self.numel()) {
@@ -2064,6 +2071,7 @@ Tensor hardsigmoid_backward_kernel_impl(const Tensor& grad_output, const Tensor&
                                        result.data_ptr<float>(), grad_output.numel());
         return result;
     }
+#endif  // __x86_64__ || __i386__
     return activation_backward_kernel(grad_output, self, HardsigmoidBackward{});
 }
 
@@ -2230,6 +2238,7 @@ struct EluBackwardAt {
 // positive branch passes the gradient, the negative branch scales by the
 // exponential.  The target attribute is what keeps the lane loop; the
 // translation unit compiles without the ISA.
+#if defined(__x86_64__) || defined(__i386__)
 __attribute__((target("avx2,fma"), noinline))
 static void elu_backward_f32_sweep(const float* gp, const float* xp,
                                    float* dp, int64_t n) {
@@ -2245,6 +2254,7 @@ static void elu_backward_f32_sweep(const float* gp, const float* xp,
         dp[i] = xp[i] > 0.0f ? gp[i] : gp[i] * std::exp(xp[i]);
     }
 }
+#endif  // __x86_64__ || __i386__
 
 Tensor elu_backward_kernel_impl(const Tensor& grad_output, const Scalar& alpha, const Scalar& scale, const Scalar& input_scale, bool is_result, const Tensor& self_or_result) {
     //   is_result: b <= 0 ? a*negiptcoef*(b + negcoef) : a*poscoef
@@ -2254,6 +2264,7 @@ Tensor elu_backward_kernel_impl(const Tensor& grad_output, const Scalar& alpha, 
     double negiptcoef = input_scale.toDouble();
     // The default spelling with a contiguous float32 pair answers in one
     // lane sweep; the lane exp matches libm to its last ulp.
+#if defined(__x86_64__) || defined(__i386__)
     if (!is_result && negcoef == 1.0 && poscoef == 1.0 && negiptcoef == 1.0 &&
         grad_output.dtype() == DType::Float32 &&
         grad_output.is_contiguous() && self_or_result.is_contiguous() &&
@@ -2264,6 +2275,7 @@ Tensor elu_backward_kernel_impl(const Tensor& grad_output, const Scalar& alpha, 
                                result.data_ptr<float>(), grad_output.numel());
         return result;
     }
+#endif  // __x86_64__ || __i386__
     return activation_backward_kernel(grad_output, self_or_result,
                                       EluBackwardAt{negcoef, poscoef, negiptcoef,
                                                     is_result});
@@ -2306,6 +2318,7 @@ Tensor& mish_out_cpu(const Tensor& self, Tensor& out) {
 // tanh and sigmoid run in the lane helpers; tanh comes from sigmoid as
 // 2*sigmoid(2z) - 1.  The target attribute is what keeps the lane loop; the
 // translation unit compiles without the ISA.
+#if defined(__x86_64__) || defined(__i386__)
 __attribute__((target("avx2,fma"), noinline))
 static void mish_backward_f32_sweep(const float* gp, const float* xp,
                                     float* dp, int64_t n) {
@@ -2352,10 +2365,12 @@ static void mish_backward_f32_sweep(const float* gp, const float* xp,
         dp[i] = gp[i] * (tanh_sp + x * sech2 * gsp);
     }
 }
+#endif  // __x86_64__ || __i386__
 
 Tensor mish_backward_kernel_impl(const Tensor& grad_output, const Tensor& self) {
     // Contiguous float32 pairs answer in one lane sweep; the composite map
     // below falls back to scalar libm calls per element.
+#if defined(__x86_64__) || defined(__i386__)
     if (grad_output.dtype() == DType::Float32 &&
         grad_output.is_contiguous() && self.is_contiguous() &&
         grad_output.numel() == self.numel()) {
@@ -2365,6 +2380,7 @@ Tensor mish_backward_kernel_impl(const Tensor& grad_output, const Tensor& self) 
                                 result.data_ptr<float>(), grad_output.numel());
         return result;
     }
+#endif  // __x86_64__ || __i386__
     //   sp = log1p(exp(x)); tanh_sp = tanh(sp); sech2 = 1 - tanh_sp^2
     //   return dy * (tanh_sp + x * sech2 * sigmoid(x))
     return activation_backward_kernel(grad_output, self,

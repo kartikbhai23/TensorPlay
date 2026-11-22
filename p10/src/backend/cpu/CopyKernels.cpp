@@ -374,6 +374,7 @@ static void widen_int_simd(dst_t* dst, const src_t* src, int64_t n) {
 // One sweep of the float <-> double widening and narrowing.  The target
 // attribute is what keeps the lane loop; the translation unit compiles
 // without the ISA.
+#if defined(__x86_64__)
 __attribute__((target("avx2,fma"), noinline))
 static void widen_f32_to_f64_simd(const float* src, double* dst, int64_t len) {
     int64_t i = 0;
@@ -393,6 +394,7 @@ static void narrow_f64_to_f32_simd(const double* src, float* dst, int64_t len) {
     }
     for (; i < len; ++i) dst[i] = static_cast<float>(src[i]);
 }
+#endif  // __x86_64__
 
 template <typename dst_t, typename src_t>
 void cast_contiguous(dst_t* dst, const src_t* src, int64_t len) {
