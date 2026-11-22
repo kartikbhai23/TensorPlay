@@ -130,6 +130,17 @@ def test_cuda_scalar_reads_complex_and_unsigned_values():
     assert values[1].item() == 2**58
 
 
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+@pytest.mark.parametrize("factory", [tp.linspace, tp.logspace])
+def test_cuda_range_reads_mixed_bounds_on_the_active_stream(factory):
+    with tp.cuda.stream(tp.cuda.Stream()):
+        first = tp.tensor([11, 0], dtype=tp.int64, device="cuda")[1]
+        last = tp.tensor([13.0, 2.0], dtype=tp.float32, device="cuda")[1]
+        out = tp.empty(3, dtype=tp.float64, device="cuda")
+        factory(first, last, 3, out=out)
+        _close(out.tolist(), factory(0, 2, 3).tolist())
+
+
 def test_unsupported_dtype_reports_the_name():
     with pytest.raises(Exception):
         tp.linspace(0.0, 1.0, 4, dtype=tp.bool)

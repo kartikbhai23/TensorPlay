@@ -19,6 +19,9 @@
 #include "Context.h"
 #include "SizesAndStrides.h"
 #include "tensorplay/ops/TPXOpsGenerated.h"
+#ifdef USE_CUDA
+#include "../cuda/CUDAScalar.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -192,6 +195,19 @@ Scalar range_bound(const Tensor& bound, int64_t steps) {
         return isComplexType(bound.dtype()) ? Scalar(complex<double>{}) : Scalar(0);
     }
     return bound.item();
+}
+
+std::pair<Scalar, Scalar> range_bounds(const Tensor& start, const Tensor& end, int64_t steps) {
+#ifdef USE_CUDA
+    if (steps > 0 && start.defined() && end.defined() &&
+        start.device().is_cuda() && start.device() == end.device() &&
+        !start.is_sparse() && !end.is_sparse() && !start.is_batched() && !end.is_batched() &&
+        !isQuantizedType(start.dtype()) && !isQuantizedType(end.dtype()) &&
+        !impl::python_dispatch_active()) {
+        return cuda::read_cuda_scalar_pair(start, end);
+    }
+#endif
+    return {range_bound(start, steps), range_bound(end, steps)};
 }
 
 DType infer_linspace_logspace_dtype(const Scalar& start, const Scalar& end,
@@ -410,8 +426,8 @@ Tensor linspace_tensor_tensor_native(const Tensor& start, const Tensor& end,
                  "but got start with ", start.dim(), " dimension(s) and end with ",
                  end.dim(), " dimension(s).");
     }
-    return linspace_scalar_impl(range_bound(start, steps), range_bound(end, steps),
-                                steps, dtype, layout, device, pin_memory);
+    const auto [first, last] = range_bounds(start, end, steps);
+    return linspace_scalar_impl(first, last, steps, dtype, layout, device, pin_memory);
 }
 
 Tensor linspace_tensor_scalar_native(const Tensor& start, const Scalar& end, int64_t steps,
@@ -450,7 +466,8 @@ Tensor& linspace_tensor_tensor_out_native(const Tensor& start, const Tensor& end
                  "but got start with ", start.dim(), " dimension(s) and end with ",
                  end.dim(), " dimension(s).");
     }
-    return ops::linspace(range_bound(start, steps), range_bound(end, steps), steps, out);
+    const auto [first, last] = range_bounds(start, end, steps);
+    return ops::linspace(first, last, steps, out);
 }
 
 Tensor& linspace_tensor_scalar_out_native(const Tensor& start, const Scalar& end,
@@ -485,8 +502,8 @@ Tensor logspace_tensor_tensor_native(const Tensor& start, const Tensor& end,
                  "but got start with ", start.dim(), " dimension(s) and end with ",
                  end.dim(), " dimension(s).");
     }
-    return logspace_scalar_impl(range_bound(start, steps), range_bound(end, steps),
-                                steps, base, dtype, layout, device, pin_memory);
+    const auto [first, last] = range_bounds(start, end, steps);
+    return logspace_scalar_impl(first, last, steps, base, dtype, layout, device, pin_memory);
 }
 
 Tensor logspace_tensor_scalar_native(const Tensor& start, const Scalar& end, int64_t steps,
@@ -525,7 +542,8 @@ Tensor& logspace_tensor_tensor_out_native(const Tensor& start, const Tensor& end
                  "but got start with ", start.dim(), " dimension(s) and end with ",
                  end.dim(), " dimension(s).");
     }
-    return ops::logspace(range_bound(start, steps), range_bound(end, steps), steps, base, out);
+    const auto [first, last] = range_bounds(start, end, steps);
+    return ops::logspace(first, last, steps, base, out);
 }
 
 Tensor& logspace_tensor_scalar_out_native(const Tensor& start, const Scalar& end,
