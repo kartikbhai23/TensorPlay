@@ -372,6 +372,44 @@ def test_nonzero_numpy_on_a_scalar():
     assert tp._C.nonzero_numpy(tp.tensor(0.0))[0].tolist() == []
 
 
+def test_nonzero_tuple_mode_through_function_and_method():
+    x = tp.tensor([[0, 1], [2, 0]])
+    for coordinates in (tp.nonzero(x, as_tuple=True), x.nonzero(as_tuple=True)):
+        assert isinstance(coordinates, tuple)
+        assert [col.tolist() for col in coordinates] == [[0, 1], [1, 0]]
+    with pytest.raises(RuntimeError, match="as_tuple"):
+        tp.nonzero(x, as_tuple=True, out=tp.empty((0, 2), dtype=tp.int64))
+
+
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+@pytest.mark.parametrize("width", [17, 4000, 550000])
+def test_cuda_nonzero_packs_ordered_coordinate_columns(width):
+    x = tp.zeros((2, width), device="cuda")
+    assert tp.nonzero(x).shape == (0, 2)
+    x[0, width - 1] = -2
+    x[1, 1] = 7
+    expected = [[1, 1], [width - 1, 0]]
+    indices = tp.nonzero(x.T)
+    assert indices.tolist() == expected
+    assert indices.stride() == (1, 2)
+    for coordinates in (tp.nonzero(x.T, as_tuple=True), x.T.nonzero(as_tuple=True), tp.where(x.T)):
+        assert [col.tolist() for col in coordinates] == [[1, width - 1], [1, 0]]
+        assert all(col.is_contiguous() for col in coordinates)
+    out = tp.empty((2, 4), dtype=tp.int64, device="cuda")[:, ::2]
+    tp.nonzero(x.T, out=out)
+    assert out.tolist() == expected and out.stride() == (4, 2)
+    with pytest.raises(TypeError, match="out must be int64"):
+        tp.nonzero(x.T, out=tp.empty((0, 2), dtype=tp.float32, device="cuda"))
+
+
+@pytest.mark.skipif(not tp.cuda.is_available(), reason="CUDA unavailable")
+def test_cuda_nonzero_counts_scalar_matches():
+    for value, rows in ((0, 0), (3, 1)):
+        x = tp.tensor(value, device="cuda")
+        assert tp.nonzero(x).shape == (rows, 0)
+        assert tp._C.nonzero_numpy(x)[0].tolist() == [0] * rows
+
+
 def test_type_as_adopts_the_other_dtype():
     x = tp.tensor([1.5, 2.5])
     other = tp.zeros(1, dtype=tp.int32)
