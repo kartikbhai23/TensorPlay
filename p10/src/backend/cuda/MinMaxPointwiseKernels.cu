@@ -205,6 +205,13 @@ Tensor ldexp_cuda(const Tensor& self, const Tensor& other) {
     return result;
 }
 
+Tensor& ldexp__cuda(Tensor& self, const Tensor& other) {
+    // The CUDA key must own the in-place form: the composite fallback
+    // dereferences device pointers on the host.
+    self.copy_(ldexp_cuda(self, other));
+    return self;
+}
+
 TENSORPLAY_LIBRARY_IMPL(CUDA, PointwiseKernels) {
     m.impl("maximum", maximum_cuda);
     m.impl("minimum", minimum_cuda);
@@ -212,6 +219,7 @@ TENSORPLAY_LIBRARY_IMPL(CUDA, PointwiseKernels) {
     m.impl("fmax", fmax_cuda);
     m.impl("fmin", fmin_cuda);
     m.impl("ldexp", ldexp_cuda);
+    m.impl("ldexp_", ldexp__cuda);
 }
 
 } // namespace cuda
