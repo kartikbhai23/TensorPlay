@@ -930,7 +930,10 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i386|i686")
         target_compile_definitions(p10_kernel_default_${KERNEL_NAME} PRIVATE
             P10_EXPORTS CPU_CAPABILITY_DEFAULT CPU_CAPABILITY=DEFAULT
             HAVE_AVX2_CPU_DEFINITION)
-        if(TP_CXX_AVX512_FOUND)
+        # MSVC omits the AVX512 tier: its static archive is already near the
+        # COFF 4 GiB ceiling, and a tier that is not compiled must not declare
+        # a dispatch slot either.
+        if(TP_CXX_AVX512_FOUND AND NOT MSVC)
             target_compile_definitions(p10_kernel_default_${KERNEL_NAME} PRIVATE
                 HAVE_AVX512_CPU_DEFINITION)
         endif()
@@ -951,7 +954,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i386|i686")
     list(APPEND P10_SOURCES ${TP_CPU_KERNEL_DEFAULT_OBJS})
     # Linked after all baseline code; see Note [Linking ISA-tier kernel copies].
     tp_add_cpu_kernel_isa_tier(AVX2 ${TP_AVX2_TIER_FLAGS})
-    if(TP_CXX_AVX512_FOUND)
+    if(TP_CXX_AVX512_FOUND AND NOT MSVC)
         # Same flag set as the AVX512 capability entry.
         tp_add_cpu_kernel_isa_tier(AVX512 ${TP_AVX512_TIER_FLAGS})
     endif()
@@ -1120,17 +1123,25 @@ else()
         list(APPEND P10_SOURCES $<TARGET_OBJECTS:p10_kernel_default_${KERNEL_NAME}>)
     endforeach()
 endif()
-# Windows links everything into the extension statically because the shared
-# build was disabled globally, but the p10 archive alone outgrows lib.exe's
-# 4 GiB COFF limit.  Build p10 as a DLL there: the import library stays small
-# and the runtime already loads p10.dll from the package lib directory.  The
-# public headers carry P10_API export markers; export every symbol as well so
-# internally linked helpers crossing into the extension stay resolvable.
-if(WIN32)
-    add_library(p10 SHARED ${P10_SOURCES})
-    set_property(TARGET p10 PROPERTY WINDOWS_EXPORT_ALL_SYMBOLS ON)
-else()
-    add_library(p10 ${P10_SOURCES})
+add_library(p10 ${P10_SOURCES})
+if(MSVC)
+    # A single static archive of all translation units grows past the COFF
+    # 4 GiB image limit that lib.exe enforces.  Whole-program optimization
+    # emits intermediate representation instead of fully expanded objects,
+    # which keeps the archive comfortably under that ceiling.  CMake maps
+    # this property to /GL on compilation and /LTCG on archive and final link.
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT TP_MSVC_IPO_SUPPORTED LANGUAGES CXX)
+    if(TP_MSVC_IPO_SUPPORTED)
+        set_property(TARGET p10 PROPERTY INTERPROCEDURAL_OPTIMIZATION ON)
+        foreach(KERNEL_SRC ${TP_CPU_KERNEL_SRCS})
+            get_filename_component(KERNEL_NAME ${KERNEL_SRC} NAME_WE)
+            if(TARGET p10_kernel_default_${KERNEL_NAME})
+                set_property(TARGET p10_kernel_default_${KERNEL_NAME}
+                    PROPERTY INTERPROCEDURAL_OPTIMIZATION ON)
+            endif()
+        endforeach()
+    endif()
 endif()
 if(USE_METAX)
     # Host translation units of the device backend include the same
@@ -1179,7 +1190,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i386|i686")
     # Tell DispatchStub (and every TU) that AVX2 kernel copies exist, so the
     # AVX2 dispatch slots are registered and selected at runtime.
     target_compile_definitions(p10 PUBLIC HAVE_AVX2_CPU_DEFINITION)
-    if(TP_CXX_AVX512_FOUND)
+    if(TP_CXX_AVX512_FOUND AND NOT MSVC)
         target_compile_definitions(p10 PUBLIC HAVE_AVX512_CPU_DEFINITION)
     endif()
 elseif(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(powerpc|ppc)64" AND TP_CXX_VSX_FOUND)
