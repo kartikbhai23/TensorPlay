@@ -844,10 +844,7 @@ Tensor& random_to_kernel_cuda(Tensor& self, int64_t to,
 // walk and no host hand-off.  The device assertion stays active in release
 // builds.
 __device__ __forceinline__ void bernoulli_check_probability(double p) {
-    if (!(0.0 <= p && p <= 1.0)) {
-        __assert_fail("0 <= probability && probability <= 1", __FILE__,
-                      __LINE__, __func__);
-    }
+    assert(0.0 <= p && p <= 1.0);
 }
 
 template <typename output_t, typename probability_t>

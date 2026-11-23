@@ -17,6 +17,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <limits>
 #include <mutex>
@@ -155,10 +156,7 @@ __global__ void sr_mean_divide_kernel(int64_t n, T* data,
 // stream-wide wait on every call.  The device assertion stays active in
 // release builds.
 __device__ __forceinline__ void sr_check_index(int64_t idx, int64_t size) {
-    if (!(idx >= 0 && idx < size)) {
-        __assert_fail("0 <= index && index < size", __FILE__, __LINE__,
-                      __func__);
-    }
+    assert(idx >= 0 && idx < size);
 }
 
 template <typename T>
