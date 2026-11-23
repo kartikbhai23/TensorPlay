@@ -1120,25 +1120,17 @@ else()
         list(APPEND P10_SOURCES $<TARGET_OBJECTS:p10_kernel_default_${KERNEL_NAME}>)
     endforeach()
 endif()
-add_library(p10 ${P10_SOURCES})
-if(MSVC)
-    # A single static archive of all translation units grows past the COFF
-    # 4 GiB image limit that lib.exe enforces.  Whole-program optimization
-    # emits intermediate representation instead of fully expanded objects,
-    # which keeps the archive comfortably under that ceiling.  CMake maps
-    # this property to /GL on compilation and /LTCG on archive and final link.
-    include(CheckIPOSupported)
-    check_ipo_supported(RESULT TP_MSVC_IPO_SUPPORTED LANGUAGES CXX)
-    if(TP_MSVC_IPO_SUPPORTED)
-        set_property(TARGET p10 PROPERTY INTERPROCEDURAL_OPTIMIZATION ON)
-        foreach(KERNEL_SRC ${TP_CPU_KERNEL_SRCS})
-            get_filename_component(KERNEL_NAME ${KERNEL_SRC} NAME_WE)
-            if(TARGET p10_kernel_default_${KERNEL_NAME})
-                set_property(TARGET p10_kernel_default_${KERNEL_NAME}
-                    PROPERTY INTERPROCEDURAL_OPTIMIZATION ON)
-            endif()
-        endforeach()
-    endif()
+# Windows links everything into the extension statically because the shared
+# build was disabled globally, but the p10 archive alone outgrows lib.exe's
+# 4 GiB COFF limit.  Build p10 as a DLL there: the import library stays small
+# and the runtime already loads p10.dll from the package lib directory.  The
+# public headers carry P10_API export markers; export every symbol as well so
+# internally linked helpers crossing into the extension stay resolvable.
+if(WIN32)
+    add_library(p10 SHARED ${P10_SOURCES})
+    set_property(TARGET p10 PROPERTY WINDOWS_EXPORT_ALL_SYMBOLS ON)
+else()
+    add_library(p10 ${P10_SOURCES})
 endif()
 if(USE_METAX)
     # Host translation units of the device backend include the same
