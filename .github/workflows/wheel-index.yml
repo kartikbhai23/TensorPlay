@@ -1,20 +1,22 @@
 name: wheel-index
 
-# Hands the download site a rebuild signal after every wheel-publishing
-# run. The site itself lives in lexing-2026/tensorplay-index: its
-# refresh-manifest workflow re-reads every non-draft release of this
-# repository and republishes the static index. This workflow keeps one
-# piece of release hygiene local: the rolling nightly release keeps only
-# the newest calendar day of wheels, so the site can never point at
-# pruned downloads. Every wheel tag from that day is retained while the
-# matrix finishes.
+# Keeps the download site's wheel index in sync with this repository's
+# releases. The site lives in lexing-2026/tensorplay-index; its
+# refresh-manifest workflow re-reads every non-draft release and republishes
+# the PEP 503 index. This workflow keeps one piece of release hygiene local:
+# the rolling nightly release retains only the newest calendar day of wheels.
 #
 # The trigger listens on workflow_run rather than release events because
-# every release write in this repository (trunk, nightly, publish)
-# happens through the default GITHUB_TOKEN, and GitHub suppresses
-# workflow-triggering for events created by it to prevent recursion.
-# Workflow completion events are not affected, so a finished publisher
-# run is a reliable rebuild signal.
+# every release write here uses the default GITHUB_TOKEN, and GitHub suppresses
+# workflow-triggering for events created by it. Workflow completion events are
+# not affected. A publisher may upload wheels and still fail later in its
+# matrix, so the rebuild decision is based on which wheels the release
+# actually contains, never on the upstream conclusion.
+#
+# Cancellation is the failure mode to avoid: several publisher runs finish in
+# a burst, and cancelling a queued prune/dispatch is how the index ended up
+# frozen on an older wheel set. Runs are cheap and idempotent, so they queue
+# instead of cancelling, and the hourly schedule reconciles anything missed.
 
 on:
   workflow_run:
@@ -25,22 +27,19 @@ on:
     types: [completed]
   release:
     types: [published, edited, unpublished, deleted]
+  schedule:
+    - cron: "23 * * * *"
   workflow_dispatch:
 
 permissions: read-all
 
 concurrency:
-  # Coalesces bursts: rapid edited events (one per uploaded asset) cancel
-  # the running rebuild, and only the last one completes.
   group: wheel-index
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   rebuild:
     name: prune-nightly-and-dispatch-site
-    # Failed publisher runs upload no new wheels; skipping them keeps a
-    # late failure from cancelling the rebuild a successful run queued.
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -54,6 +53,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           submodules: false
           show-progress: false
+
       - name: Enforce nightly rolling retention
         shell: bash
         run: |
@@ -66,17 +66,66 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --release nightly
 
+      - name: Find wheels missing from the live index
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '[.[] | select(.draft == false) | .assets[]? | select(.name | endswith(".whl")) | .name] | unique | .[]' \
+            > release-wheels.txt
+
+          # The site's committed manifest is the source of truth for what is
+          # already indexed. If it cannot be read, treat every wheel as new:
+          # a redundant dispatch is harmless, a missing one is not.
+          if ! gh api \
+              -H 'Accept: application/vnd.github.raw+json' \
+              "repos/${INDEX_REPO}/contents/src/data/manifest.json" \
+              > site-manifest.json 2>/dev/null; then
+            echo "::warning::Cannot read the site manifest; treating all wheels as new."
+            echo '{"packages":[]}' > site-manifest.json
+          fi
+
+          python3 - <<'PY'
+          import json
+          import pathlib
+
+          release = {
+              line.strip()
+              for line in pathlib.Path("release-wheels.txt").read_text().splitlines()
+              if line.strip()
+          }
+          indexed = set()
+          manifest = json.loads(pathlib.Path("site-manifest.json").read_text())
+          for package in manifest.get("packages", []):
+              for version in package.get("versions", {}).values():
+                  for build in version.get("builds", []):
+                      name = build.get("filename")
+                      if name:
+                          indexed.add(name)
+
+          new = sorted(release - indexed)
+          pathlib.Path("new-wheels.txt").write_text("".join(f"{name}\n" for name in new))
+          print(f"release wheels: {len(release)}, indexed: {len(indexed)}, unindexed: {len(new)}")
+          for name in new:
+              print(f"  {name}")
+          PY
+
       - name: Dispatch site rebuild
         shell: bash
         env:
           DISPATCH_TOKEN: ${{ secrets.WEBSITE_DEPLOY_TOKEN }}
           # Release events carry the tag; workflow_run carries the finished
-          # run's head commit; manual dispatches fall back to this run's SHA.
+          # run's head commit; schedule/manual dispatches fall back to this SHA.
           SOURCE_REF: ${{ github.event.release.tag_name || github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
+          if [[ ! -s new-wheels.txt ]]; then
+            echo "Index already covers every release wheel; nothing to dispatch."
+            exit 0
+          fi
           if [[ -z "${DISPATCH_TOKEN}" ]]; then
-            echo "::warning::WEBSITE_DEPLOY_TOKEN secret is not set; skipping site rebuild dispatch."
+            echo "::warning::WEBSITE_DEPLOY_TOKEN is not set; the index self-heals on its scheduled refresh."
             exit 0
           fi
           gh api \
