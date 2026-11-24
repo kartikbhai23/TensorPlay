@@ -953,6 +953,16 @@ endif()
 
 set(MKLDNN_USE_NATIVE_ARCH ${USE_NATIVE_ARCH})
 set(ONEDNN_FOUND FALSE)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND TARGET OpenMP::OpenMP_CXX
+   AND MKL_OPENMP_TYPE STREQUAL "Intel")
+    # Parallel regions and omp_* queries must use the same runtime. The
+    # Intel runtime implements the MSVC OpenMP ABI and is already linked
+    # by the threaded math library.
+    add_compile_definitions(_OPENMP_NOFORCE_MANIFEST)
+    set_property(TARGET OpenMP::OpenMP_CXX PROPERTY
+        INTERFACE_LINK_LIBRARIES "${MKL_OPENMP_LIBRARY}")
+    target_link_options(OpenMP::OpenMP_CXX INTERFACE /NODEFAULTLIB:vcomp /NODEFAULTLIB:vcompd)
+endif()
 if(USE_MKLDNN)
     find_package(MKLDNN QUIET)
     if(MKLDNN_FOUND)

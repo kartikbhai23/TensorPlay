@@ -772,7 +772,6 @@ jobs:
           TEST_FILES: ${{ matrix.test_files }}
           PYTEST_EXTRA_ARGS: ${{ inputs.pytest_extra_args }}
           TP_ENGINE_TRACE: ${{ runner.os == 'Windows' && matrix.name == 'autograd' && '3' || '0' }}
-          TP_PARALLEL_BACKEND: ${{ runner.os == 'Windows' && 'native' || '' }}
         run: |
           set -euo pipefail
           test_root="$GITHUB_WORKSPACE/.ci-test-tmp"
