@@ -1693,6 +1693,9 @@ if(MSVC)
     target_link_options(_C PRIVATE
         "/WHOLEARCHIVE:$<TARGET_FILE:p10>"
         "/WHOLEARCHIVE:$<TARGET_FILE:stax>")
+    if(TARGET p10_cuda)
+        target_link_options(_C PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:p10_cuda>")
+    endif()
 endif()
 
 # target_compile_definitions(_C PRIVATE TP_STATIC_BUILD)

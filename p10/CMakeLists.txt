@@ -613,7 +613,9 @@ if(USE_CUDA OR USE_ROCM OR USE_METAX)
         list(APPEND P10_SOURCES src/backend/cuda/transformers/SdpaComposed.cpp)
     else()
         list(APPEND TP_CUDA_BACKEND_SOURCES src/backend/cuda/NCCLContext.cpp)
-        list(APPEND P10_SOURCES ${TP_CUDA_BACKEND_SOURCES})
+        if(NOT MSVC)
+            list(APPEND P10_SOURCES ${TP_CUDA_BACKEND_SOURCES})
+        endif()
     endif()
 endif()
 if(USE_MPS)
@@ -1129,16 +1131,27 @@ else()
     endforeach()
 endif()
 add_library(p10 ${P10_SOURCES})
+if(MSVC AND USE_CUDA)
+    # lib.exe cannot index a combined host and device archive past 4 GiB.
+    # Keep the backend objects in a separate archive for the final link.
+    add_library(p10_cuda STATIC ${TP_CUDA_BACKEND_SOURCES})
+    add_dependencies(p10_cuda generate_code)
+    target_include_directories(p10_cuda PRIVATE "$<TARGET_PROPERTY:p10,INCLUDE_DIRECTORIES>")
+    target_compile_definitions(p10_cuda PRIVATE "$<TARGET_PROPERTY:p10,COMPILE_DEFINITIONS>")
+    target_compile_options(p10_cuda PRIVATE "$<TARGET_PROPERTY:p10,COMPILE_OPTIONS>")
+    target_link_libraries(p10 PRIVATE p10_cuda)
+    install(TARGETS p10_cuda ARCHIVE DESTINATION tensorplay/lib)
+endif()
 if(MSVC)
-    # A single static archive of all translation units grows past the COFF
-    # 4 GiB image limit that lib.exe enforces.  Whole-program optimization
-    # emits intermediate representation instead of fully expanded objects,
-    # which keeps the archive comfortably under that ceiling.  CMake maps
-    # this property to /GL on compilation and /LTCG on archive and final link.
+    # Keep object sizes down with whole-program optimization. CMake maps
+    # this to /GL on compilation and /LTCG on archive and final link.
     include(CheckIPOSupported)
     check_ipo_supported(RESULT TP_MSVC_IPO_SUPPORTED LANGUAGES CXX)
     if(TP_MSVC_IPO_SUPPORTED)
         set_property(TARGET p10 PROPERTY INTERPROCEDURAL_OPTIMIZATION ON)
+        if(TARGET p10_cuda)
+            set_property(TARGET p10_cuda PROPERTY INTERPROCEDURAL_OPTIMIZATION ON)
+        endif()
         foreach(KERNEL_SRC ${TP_CPU_KERNEL_SRCS})
             get_filename_component(KERNEL_NAME ${KERNEL_SRC} NAME_WE)
             if(TARGET p10_kernel_default_${KERNEL_NAME})
