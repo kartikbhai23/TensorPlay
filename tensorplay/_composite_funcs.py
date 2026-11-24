@@ -17,7 +17,7 @@ import math
 import numpy as np
 
 import tensorplay
-from tensorplay._C import DType
+from tensorplay._C import DType, TensorBase
 from tensorplay.autograd.function import Function
 from tensorplay.graph import capture_call as _capture_call
 
@@ -31,7 +31,7 @@ __all__ = [
     "tril_indices", "triu_indices", "cartesian_prod", "combinations",
     "trapezoid", "trapz", "cumulative_trapezoid",
     "quantile", "nanquantile", "histc", "histogram",
-    "isin", "unique_consecutive", "repeat_interleave", "kaiser_window",
+    "isin", "unique_static", "unique_consecutive", "repeat_interleave", "kaiser_window",
     "lstm_cell", "rnn_relu_cell", "rnn_tanh_cell",
     "put", "resolve_conj", "resolve_neg", "is_conj", "is_neg",
     "can_cast", "promote_types", "result_type", "is_nonzero",
@@ -549,6 +549,36 @@ def isin(elements, test_elements, *, assume_unique=False, invert=False):
     if invert:
         return out.logical_not()
     return out
+
+
+def unique_static(
+    input: TensorBase, *, size: int, fill_value: int | float | bool = 0
+) -> tuple[TensorBase, TensorBase]:
+    """Return sorted distinct values of a flattened tensor with a fixed size.
+
+    Keep the first ``size`` values and pad any remaining slots with
+    ``fill_value``. The second result is an int64 scalar on the input device
+    holding the number of unpadded slots. Both shapes are fixed during CUDA
+    Graph capture even when the number of distinct values changes on replay.
+    """
+    if size < 0:
+        raise ValueError("unique_static: size must be non-negative")
+    n = input.numel()
+    options = {"dtype": input.dtype, "device": input.device}
+    if size == 0 or n == 0:
+        return (
+            tensorplay.full((size,), fill_value, **options),
+            tensorplay.zeros((), dtype=DType.int64, device=input.device),
+        )
+
+    ordered, _ = tensorplay.sort(input.reshape(-1))
+    starts = tensorplay.cat((
+        tensorplay.ones((1,), dtype=DType.bool, device=input.device),
+        ordered[1:] != ordered[:-1],
+    ))
+    indices = tensorplay.nonzero_static(starts, size=size, fill_value=n).reshape(-1)
+    padded = tensorplay.cat((ordered, tensorplay.full((1,), fill_value, **options)))
+    return padded.index_select(0, indices), (indices != n).sum(dtype=DType.int64)
 
 
 def unique_consecutive(input, return_inverse=False, return_counts=False,

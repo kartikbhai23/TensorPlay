@@ -41,6 +41,49 @@ def test_capture_replay_matches_eager():
         assert tp.allclose(got, want), f"replay {i} diverged from eager"
 
 
+@pytest.mark.parametrize("k", [1, 5, 3000])
+def test_topk_out_replays_with_new_input(k):
+    device = _cuda_device()
+    original = tp.arange(2 * 6000, dtype=tp.float32, device=device).reshape(2, 6000).t()
+    static_x = original.clone()
+    values = tp.empty((k, 2), dtype=original.dtype, device=device)
+    indices = tp.empty((k, 2), dtype=tp.int64, device=device)
+    graph = tp.cuda.CUDAGraph()
+    with tp.cuda.graph(graph):
+        captured = tp.topk(static_x, k, dim=0, out=(values, indices))
+    assert captured.values is values
+    assert captured.indices is indices
+
+    for x in (original, -original):
+        static_x.copy_(x)
+        graph.replay()
+        expected = tp.topk(x, k, dim=0)
+        assert tp.equal(values, expected.values)
+        assert tp.equal(indices, expected.indices)
+
+
+@pytest.mark.parametrize("size", [0, 2, 5])
+def test_unique_static_replays_with_changing_cardinality(size):
+    device = _cuda_device()
+    inputs = [
+        ([3, 2, 3, 1], [1, 2, 3]),
+        ([6] * 4, [6]),
+        ([2, 3, 9, 4], [2, 3, 4, 9]),
+    ]
+    static_x = tp.empty((2, 2), dtype=tp.int64, device=device).t()
+    graph = tp.cuda.CUDAGraph()
+    with tp.cuda.graph(graph):
+        values, count = tp.unique_static(static_x, size=size, fill_value=-1)
+
+    for data, distinct in inputs:
+        static_x.copy_(tp.tensor(data, device=device).reshape(2, 2))
+        graph.replay()
+        assert values.shape == (size,)
+        assert count.device == static_x.device
+        assert count.item() == min(size, len(distinct))
+        assert values.tolist() == (distinct + [-1] * size)[:size]
+
+
 def test_stage_and_launch_bulk_path():
     device = _cuda_device()
     w = tp.randn((32, 32), device=device)

@@ -68,7 +68,7 @@ _FUNCTIONAL_HAND_NAMES = frozenset([
     "rand", "rand_like", "randint", "randint_like", "randn", "randn_like",
     "random_", "repeat", "resize_", "rsqrt_",
     "select", "slice", "sqrt_", "squeeze_copy", "sub", "sub_",
-    "trapz",
+    "topk", "trapz",
     "unique_consecutive", "uniform_",
     "view",
     "where",

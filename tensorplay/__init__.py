@@ -669,6 +669,8 @@ from ._composite_funcs import *
 from ._einsum import einsum
 from .utils.comparison import allclose
 
+__all__.append("unique_static")
+
 from ._ops import ops as ops
 
 

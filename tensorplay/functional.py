@@ -3724,17 +3724,19 @@ def multinomial(input, num_samples, replacement=False, *, generator=None, out=No
     return _C.multinomial(self=input, num_samples=num_samples, replacement=replacement, generator=generator)
 
 def topk(input, k, dim=-1, largest=True, sorted=True, impl=0, *, out=None):
-    if out is not None:
-        if _graph_state._TRACE_DEPTH:
-            _captured = _capture_call(topk, (input, k, dim, largest, sorted, impl), {'out': out})
-            if _captured is not None:
-                return _captured
-        return _C.topk(self=input, k=k, dim=dim, largest=largest, sorted=sorted, impl=impl, out=out)
     if _graph_state._TRACE_DEPTH:
-        _captured = _capture_call(topk, (input, k, dim, largest, sorted, impl), {})
+        kwargs = {} if out is None else {'out': out}
+        _captured = _capture_call(topk, (input, k, dim, largest, sorted, impl), kwargs)
         if _captured is not None:
             return _captured
-    return _C.topk(self=input, k=k, dim=dim, largest=largest, sorted=sorted, impl=impl)
+    if out is None:
+        return _C.topk(input, k, dim, largest, sorted, impl)
+    if impl != 0:
+        raise ValueError("topk: out requires the default implementation")
+    if not isinstance(out, (tuple, list)) or len(out) != 2:
+        raise TypeError("topk: out must contain a values tensor and an indices tensor")
+    values, indices = out
+    return _C.topk(input, k, dim, largest, sorted, values=values, indices=indices)
 
 def sample(logits, temperature=1.0, top_k=0, top_p=1.0, impl=0):
     if _graph_state._TRACE_DEPTH:

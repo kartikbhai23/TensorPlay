@@ -941,6 +941,27 @@ def generate_functional_py(funcs: list[NativeFunction]) -> str:
             ]
             continue
 
+        if name == 'topk' and 'function' in f.variants:
+            seen.add(name)
+            lines += [
+                'def topk(input, k, dim=-1, largest=True, sorted=True, impl=0, *, out=None):',
+                '    if _graph_state._TRACE_DEPTH:',
+                "        kwargs = {} if out is None else {'out': out}",
+                '        _captured = _capture_call(topk, (input, k, dim, largest, sorted, impl), kwargs)',
+                '        if _captured is not None:',
+                '            return _captured',
+                '    if out is None:',
+                '        return _C.topk(input, k, dim, largest, sorted, impl)',
+                '    if impl != 0:',
+                '        raise ValueError("topk: out requires the default implementation")',
+                '    if not isinstance(out, (tuple, list)) or len(out) != 2:',
+                '        raise TypeError("topk: out must contain a values tensor and an indices tensor")',
+                '    values, indices = out',
+                '    return _C.topk(input, k, dim, largest, sorted, values=values, indices=indices)',
+                '',
+            ]
+            continue
+
         if name == 'unique' and 'function' in f.variants:
             seen.add(name)
             # dim form routes to unique_dim.  The flags go down to the

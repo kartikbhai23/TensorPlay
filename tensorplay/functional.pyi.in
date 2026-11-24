@@ -268,6 +268,17 @@ def trapz(y: TensorBase, x: TensorBase | None = None, dx: _float | None = None, 
 
 __all__ += ["trapz"]
 
+def topk(
+    input: TensorBase,
+    k: _int,
+    dim: _int = -1,
+    largest: _bool = True,
+    sorted: _bool = True,
+    impl: _int = 0,
+    *,
+    out: tuple[TensorBase, TensorBase] | list[TensorBase] | None = None,
+) -> tuple[TensorBase, TensorBase]: ...
+
 def unique_consecutive(input: TensorBase, return_inverse: _bool = False, return_counts: _bool = False, dim: _int | None = None) -> Any: ...
 
 __all__ += ["unique_consecutive"]
