@@ -23,6 +23,11 @@ if(TP_USE_CUDA)
     add_executable(test_cuda_reduction_dimensions
         cpp/cuda/test_reduction_dimensions.cu)
     target_link_libraries(test_cuda_reduction_dimensions PRIVATE p10 CUDA::cudart)
+    if(TARGET p10_cuda)
+        # The backend objects are not archived; the executable takes them
+        # from the object library as well.
+        target_link_libraries(test_cuda_reduction_dimensions PRIVATE p10_cuda)
+    endif()
     target_compile_definitions(test_cuda_reduction_dimensions PRIVATE
         CCCL_DISABLE_CTK_COMPATIBILITY_CHECK)
     target_compile_options(test_cuda_reduction_dimensions PRIVATE

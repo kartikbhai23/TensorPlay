@@ -1694,7 +1694,10 @@ if(MSVC)
         "/WHOLEARCHIVE:$<TARGET_FILE:p10>"
         "/WHOLEARCHIVE:$<TARGET_FILE:stax>")
     if(TARGET p10_cuda)
-        target_link_options(_C PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:p10_cuda>")
+        # The backend objects carry the registrations the module needs, and
+        # linking an object library contributes its objects directly, so no
+        # archive is formed for them.
+        target_link_libraries(_C PRIVATE p10_cuda)
     endif()
 endif()
 

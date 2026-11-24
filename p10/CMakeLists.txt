@@ -1132,15 +1132,15 @@ else()
 endif()
 add_library(p10 ${P10_SOURCES})
 if(MSVC AND USE_CUDA)
-    # lib.exe cannot index a combined host and device archive past 4 GiB.
-    # Keep the backend objects in a separate archive for the final link.
-    add_library(p10_cuda STATIC ${TP_CUDA_BACKEND_SOURCES})
+    # The archiver builds one image out of everything it is handed, and the
+    # CUDA backend no longer fits in the image the COFF format allows.  Compile
+    # the backend once as an object library instead: an object library has no
+    # archive step, and the module that links it takes the objects directly.
+    add_library(p10_cuda OBJECT ${TP_CUDA_BACKEND_SOURCES})
     add_dependencies(p10_cuda generate_code)
     target_include_directories(p10_cuda PRIVATE "$<TARGET_PROPERTY:p10,INCLUDE_DIRECTORIES>")
     target_compile_definitions(p10_cuda PRIVATE "$<TARGET_PROPERTY:p10,COMPILE_DEFINITIONS>")
     target_compile_options(p10_cuda PRIVATE "$<TARGET_PROPERTY:p10,COMPILE_OPTIONS>")
-    target_link_libraries(p10 PRIVATE p10_cuda)
-    install(TARGETS p10_cuda ARCHIVE DESTINATION tensorplay/lib)
 endif()
 if(MSVC)
     # Keep object sizes down with whole-program optimization. CMake maps
