@@ -72,6 +72,10 @@ __global__ void write_nonzero_tiles(
             __shared__ int64_t prefixes[2];
             const int lane = threadIdx.x;
             if (lane < 32) {
+                // Only the low half of the first wave takes part, so the mask
+                // names those lanes; the reduction segments cover one row of
+                // 32 lanes.
+                constexpr unsigned long long kPrefixMask = 0x00000000ffffffffull;
                 int64_t total = 0;
                 int64_t before = 0;
                 for (int tile = lane; tile < tiles; tile += 32) {
@@ -80,8 +84,8 @@ __global__ void write_nonzero_tiles(
                     if (static_cast<unsigned>(tile) < blockIdx.x) before += tile_count;
                 }
                 for (int distance = 16; distance > 0; distance /= 2) {
-                    total += __shfl_down_sync(0xffffffffu, total, distance);
-                    before += __shfl_down_sync(0xffffffffu, before, distance);
+                    total += __shfl_down_sync(kPrefixMask, total, distance, 32);
+                    before += __shfl_down_sync(kPrefixMask, before, distance, 32);
                 }
                 if (lane == 0) {
                     prefixes[0] = before;

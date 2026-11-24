@@ -68,6 +68,10 @@ template <> struct DepthwiseMath<tensorplay::BFloat16> { using type = float; };
 
 constexpr int kDepthwiseThreads = 256;
 constexpr int kDepthwiseWarpSize = 32;
+// Lanes of the hardware wave the block covers: the 256-thread block fills
+// whole waves on either width, so the sync mask names every lane and the
+// 32-thread reduction rows keep their own width.
+constexpr unsigned long long kDepthwiseWaveMask = 0xffffffffffffffffull;
 // The filter gradient keeps one accumulator per tap in registers, so callers
 // with a wider filter fall back to the general grouped path.
 constexpr int kMaxDepthwiseTaps = 64;
@@ -329,7 +333,8 @@ __global__ void depthwise_conv2d_grad_weight_kernel(
     for (int off = kDepthwiseWarpSize / 2; off > 0; off >>= 1) {
 #pragma unroll
         for (int t = 0; t < taps; ++t) {
-            acc[t] += __shfl_down_sync(0xffffffffu, acc[t], off);
+            acc[t] += __shfl_down_sync(kDepthwiseWaveMask, acc[t], off,
+                                       kDepthwiseWarpSize);
         }
     }
 

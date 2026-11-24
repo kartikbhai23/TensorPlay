@@ -508,7 +508,10 @@ template <typename T>
 __global__ void det_slogdet_kernel(int64_t n, const T* lu,
                                    const int32_t* pivots, T* det_out,
                                    T* sign_out, T* logabsdet_out) {
-    constexpr unsigned kFullWarp = 0xffffffffu;
+    // The block is one row of 32 lanes, which is the whole active set of the
+    // wave; the mask carries that value in a 64-bit integer and the shuffles
+    // keep the reduction inside the row.
+    constexpr unsigned long long kFullWarp = 0x00000000ffffffffull;
     const int64_t b = blockIdx.x;
     const T* diag = lu + b * n * n;
     const int32_t* piv = pivots + b * n;
@@ -532,11 +535,11 @@ __global__ void det_slogdet_kernel(int64_t n, const T* lu,
         sign_changes += (piv[i] - 1 != static_cast<int32_t>(i)) ? 1ULL : 0ULL;
     }
     for (int offset = 16; offset > 0; offset >>= 1) {
-        product *= __shfl_down_sync(kFullWarp, product, offset);
-        log_sum += __shfl_down_sync(kFullWarp, log_sum, offset);
-        negative ^= __shfl_down_sync(kFullWarp, negative, offset);
-        zero |= __shfl_down_sync(kFullWarp, zero, offset);
-        sign_changes += __shfl_down_sync(kFullWarp, sign_changes, offset);
+        product *= __shfl_down_sync(kFullWarp, product, offset, 32);
+        log_sum += __shfl_down_sync(kFullWarp, log_sum, offset, 32);
+        negative ^= __shfl_down_sync(kFullWarp, negative, offset, 32);
+        zero |= __shfl_down_sync(kFullWarp, zero, offset, 32);
+        sign_changes += __shfl_down_sync(kFullWarp, sign_changes, offset, 32);
     }
     if (threadIdx.x != 0) return;
     const T permutation = (sign_changes % 2 == 0) ? T(1) : T(-1);

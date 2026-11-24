@@ -198,7 +198,11 @@ __global__ void max_pool3d_wi_fwd_kernel(
             }
         }
         if (split_shift > 0) {
-            const unsigned full = 0xffffffffu;
+            // The mask names the lanes of the wave this block fills: a block
+            // of one wave or more names all of them, a narrower block names
+            // its low lanes.  The fold itself stays inside `width` lanes.
+            const unsigned long long full = blockDim.x >= 64
+                ? 0xffffffffffffffffull : 0x00000000ffffffffull;
             const int width = static_cast<int>(workers);
             for (int offset = 1; offset < width; offset <<= 1) {
                 const M other_val = __shfl_down_sync(full, max_val, offset, width);

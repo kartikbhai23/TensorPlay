@@ -33,6 +33,11 @@ namespace {
 enum BagMode : int64_t { kBagSum = 0, kBagMean = 1, kBagMax = 2 };
 
 constexpr int kWarp = 32;
+// Mask value for the warp-sync builtins: the lanes of the hardware wave the
+// block covers.  A block of 256 threads fills whole waves on either width, so
+// the mask names every lane of them; the 32-thread reduction rows inside the
+// wave stay apart through the width argument the shuffles carry.
+constexpr unsigned long long kWaveMask = 0xffffffffffffffffull;
 constexpr int kBagsPerBlock = 8;
 constexpr int kBagSplitRows = 8;
 constexpr int kFlatThreads = 256;
@@ -85,8 +90,8 @@ __global__ void bag_layout_size_kernel(const IndexT* __restrict__ offsets,
     if (end < start) end = start;
     if (end > numel) end = numel;
   }
-  start = __shfl_sync(0xffffffffu, start, 0);
-  end = __shfl_sync(0xffffffffu, end, 0);
+  start = __shfl_sync(kWaveMask, start, 0, kWarp);
+  end = __shfl_sync(kWaveMask, end, 0, kWarp);
 
   int64_t count = 0;
   bool invalid = false;
@@ -97,9 +102,9 @@ __global__ void bag_layout_size_kernel(const IndexT* __restrict__ offsets,
     offset2bag[i] = bag;
   }
   for (int step = kWarp / 2; step > 0; step >>= 1) {
-    count += __shfl_down_sync(0xffffffffu, count, step);
+    count += __shfl_down_sync(kWaveMask, count, step, kWarp);
   }
-  assert(__ballot_sync(0xffffffffu, invalid) == 0 &&
+  assert(__ballot_sync(kWaveMask, invalid) == 0 &&
          "embedding_bag: index out of range in the embedding table");
   if (threadIdx.x == 0) {
     starts[bag] = start;
@@ -312,7 +317,7 @@ __global__ void bag_psw_backward_kernel(const T* __restrict__ grad,
     dot += static_cast<AccT>(grad[bag * D + d]) * static_cast<AccT>(weight[r * D + d]);
   }
   for (int offset = kWarp / 2; offset > 0; offset >>= 1) {
-    dot += __shfl_down_sync(0xffffffffffffffffull, dot, offset);
+    dot += __shfl_down_sync(kWaveMask, dot, offset, kWarp);
   }
   if (threadIdx.x == 0) output[i] = static_cast<T>(dot);
 }

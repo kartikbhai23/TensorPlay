@@ -627,18 +627,24 @@ __global__ void dirichlet_normalize_kernel(
 template <typename scalar_t>
 __global__ void dirichlet_normalize_rows_kernel(int64_t rows, int cols, scalar_t* data) {
     using acc_t = dirichlet_acc_t<scalar_t>;
+    // One row is folded by one 32-thread block: the stride and the reduction
+    // width follow the block, not the hardware wave, so the sum covers every
+    // column and the fold stays inside the block's lanes.
+    constexpr int kRowLanes = 32;
+    constexpr unsigned long long kRowMask = 0x00000000ffffffffull;
     const int lane = threadIdx.x;
     for (int64_t row = blockIdx.x; row < rows; row += gridDim.x) {
         scalar_t* values = data + row * cols;
         acc_t sum = 0;
-        for (int i = lane; i < cols; i += warpSize) {
+        for (int i = lane; i < cols; i += kRowLanes) {
             sum += static_cast<acc_t>(values[i]);
         }
-        for (int offset = warpSize / 2; offset > 0; offset /= 2) {
-            sum += __shfl_down_sync(0xffffffffu, sum, offset);
+        for (int offset = kRowLanes / 2; offset > 0; offset /= 2) {
+            sum += __shfl_down_sync(kRowMask, sum, offset, kRowLanes);
         }
-        const auto denom = static_cast<scalar_t>(__shfl_sync(0xffffffffu, sum, 0));
-        for (int i = lane; i < cols; i += warpSize) {
+        const auto denom =
+            static_cast<scalar_t>(__shfl_sync(kRowMask, sum, 0, kRowLanes));
+        for (int i = lane; i < cols; i += kRowLanes) {
             values[i] = normalize_dirichlet_value(values[i], denom);
         }
     }
