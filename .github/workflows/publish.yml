@@ -282,7 +282,10 @@ jobs:
 
   cpu-build:
     name: ${{ matrix.build_name }}-build-test
-    if: inputs.pypi_only != 'true'
+    # A dispatch from a branch skips the release job, and a plain needs
+    # gate would skip every lane with it; !cancelled() keeps the lanes
+    # running there while a cancelled run still stops everything.
+    if: inputs.pypi_only != 'true' && !cancelled()
     needs:
       - define-wheel-matrix
       - create-release
@@ -320,7 +323,10 @@ jobs:
 
   cuda-build:
     name: ${{ matrix.build_name }}-build-test
-    if: inputs.pypi_only != 'true'
+    # A dispatch from a branch skips the release job, and a plain needs
+    # gate would skip every lane with it; !cancelled() keeps the lanes
+    # running there while a cancelled run still stops everything.
+    if: inputs.pypi_only != 'true' && !cancelled()
     needs:
       - define-wheel-matrix
       - create-release
@@ -352,7 +358,10 @@ jobs:
 
   rocm-build:
     name: ${{ matrix.build_name }}-build-test
-    if: inputs.pypi_only != 'true'
+    # A dispatch from a branch skips the release job, and a plain needs
+    # gate would skip every lane with it; !cancelled() keeps the lanes
+    # running there while a cancelled run still stops everything.
+    if: inputs.pypi_only != 'true' && !cancelled()
     needs:
       - define-wheel-matrix
       - create-release
