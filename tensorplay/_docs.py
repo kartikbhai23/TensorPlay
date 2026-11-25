@@ -2591,24 +2591,6 @@ of each of the individual matrices. Similarly, when :attr:`upper` is ``False``, 
 tensor will be composed of lower-triangular Cholesky factors of each of the individual
 matrices.
 
-.. warning::
-
-    :func:`tensorplay.cholesky` is deprecated in favor of :func:`tensorplay.linalg.cholesky`
-
-    ``L = tensorplay.cholesky(A)`` should be replaced with
-
-    .. code:: python
-
-        L = tensorplay.linalg.cholesky(A)
-
-    ``U = tensorplay.cholesky(A, upper=True)`` should be replaced with
-
-    .. code:: python
-
-        U = tensorplay.linalg.cholesky(A).mH
-
-    This transform will produce equivalent results for all valid (symmetric positive definite) inputs.
-
 Args:
     input (Tensor): the input tensor :math:`A` of size :math:`(*, n, n)` where `*` is zero or more
                 batch dimensions consisting of symmetric positive-definite matrices.
@@ -3201,9 +3183,6 @@ In this case, the output has the same batch dimensions as the inputs.
 .. warning::
     If :attr:`dim` is not given, it defaults to the first dimension found
     with the size 3. Note that this might be unexpected.
-
-    This behavior is deprecated and will be changed to match that of :func:`tensorplay.linalg.cross`
-    in a future release.
 
 .. seealso::
         :func:`tensorplay.linalg.cross` which has dim=-1 as default.
@@ -6495,15 +6474,6 @@ LU factorization of A from :func:`~linalg.lu_factor`.
 
 This function supports ``float``, ``double``, ``cfloat`` and ``cdouble`` dtypes for :attr:`input`.
 
-.. warning::
-
-    :func:`tensorplay.lu_solve` is deprecated in favor of :func:`tensorplay.linalg.lu_solve`.
-    ``X = tensorplay.lu_solve(B, LU, pivots)`` should be replaced with
-
-    .. code:: python
-
-        X = linalg.lu_solve(LU, pivots, B)
-
 Arguments:
     b (Tensor): the RHS tensor of size :math:`(*, m, k)`, where :math:`*`
                 is zero or more batch dimensions.
@@ -8811,23 +8781,6 @@ if hasattr(tensorplay, "qr"):
     Otherwise, if :attr:`some` is ``False``, this function returns the complete QR factorization.
 
     .. warning::
-
-        :func:`tensorplay.qr` is deprecated in favor of :func:`tensorplay.linalg.qr`
-        replaced with a string parameter :attr:`mode`.
-
-        ``Q, R = tensorplay.qr(A)`` should be replaced with
-
-        .. code:: python
-
-            Q, R = tensorplay.linalg.qr(A)
-
-        ``Q, R = tensorplay.qr(A, some=False)`` should be replaced with
-
-        .. code:: python
-
-            Q, R = tensorplay.linalg.qr(A, mode="complete")
-
-    .. warning::
               If you plan to backpropagate through QR, note that the current backward implementation
               is only well-defined when the first :math:`\min(input.size(-1), input.size(-2))`
               columns of :attr:`input` are linearly independent.
@@ -9278,10 +9231,6 @@ the gap between two values in the tensor.
     \text{out}_{i+1} = \text{out}_i + \text{step}.
 """
     + r"""
-.. warning::
-    This function is deprecated and will be removed in a future release because its behavior is inconsistent with
-    Python's range builtin. Instead, use :func:`tensorplay.arange`, which produces values in [start, end).
-
 Args:
     start (float, optional): the starting value for the set of points. Default: ``0``.
     end (float): the ending value for the set of points
@@ -10951,23 +10900,6 @@ Supports :attr:`input` of float, double, cfloat and cdouble data types.
 The dtypes of `U` and `V` are the same as :attr:`input`'s. `S` will
 always be real-valued, even if :attr:`input` is complex.
 
-.. warning::
-
-    :func:`tensorplay.svd` is deprecated in favor of :func:`tensorplay.linalg.svd`
-
-    ``U, S, V = tensorplay.svd(A, some=some, compute_uv=True)`` (default) should be replaced with
-
-    .. code:: python
-
-        U, S, Vh = tensorplay.linalg.svd(A, full_matrices=not some)
-        V = Vh.mH
-
-    ``_, S, _ = tensorplay.svd(A, some=some, compute_uv=False)`` should be replaced with
-
-    .. code:: python
-
-        S = tensorplay.linalg.svdvals(A)
-
 .. note:: Differences with :func:`tensorplay.linalg.svd`:
 
              * :attr:`some` is the opposite of
@@ -11544,18 +11476,6 @@ If the diagonal of :attr:`A` contains zeros or elements that are very close to z
 the result may contain `NaN` s.
 
 Supports input of float, double, cfloat and cdouble data types.
-
-.. warning::
-
-    :func:`tensorplay.triangular_solve` is deprecated in favor of :func:`tensorplay.linalg.solve_triangular`
-    :func:`tensorplay.linalg.solve_triangular` has its arguments reversed and does not return a
-    copy of one of the inputs.
-
-    ``X = tensorplay.triangular_solve(B, A).solution`` should be replaced with
-
-    .. code:: python
-
-        X = tensorplay.linalg.solve_triangular(A, B)
 
 Args:
     b (Tensor): multiple right-hand sides of size :math:`(*, m, k)` where

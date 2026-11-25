@@ -545,7 +545,7 @@ def corrcoef(
     dtype: DTypeLike | None = None,
 ):
     if bias is not None or ddof is not None:
-        # deprecated in NumPy
+        # NumPy no longer accepts these arguments; not implemented here
         raise NotImplementedError
     xy_tensor = _xy_helper_corrcoef(x, y, rowvar)
 
@@ -1899,7 +1899,7 @@ def histogram(
     density=None,
 ):
     if normed is not None:
-        raise ValueError("normed argument is deprecated, use density= instead")
+        raise ValueError("normed argument is not supported; use density= instead")
 
     if weights is not None and weights.dtype.is_complex:
         raise NotImplementedError("complex weights histogram.")
@@ -1971,7 +1971,7 @@ def histogramdd(
     # have to normalize manually because `sample` interpretation differs
     # for a list of lists and a 2D array
     if normed is not None:
-        raise ValueError("normed argument is deprecated, use density= instead")
+        raise ValueError("normed argument is not supported; use density= instead")
 
     from ._normalizations import normalize_array_like, normalize_seq_array_like
 

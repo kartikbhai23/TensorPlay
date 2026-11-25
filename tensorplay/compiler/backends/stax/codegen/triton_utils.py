@@ -210,7 +210,7 @@ def signature_to_meta(
         # for kernels like a mean when theic shape is enabled.
         #
         # Block pointers do not support 64-bit indexing, so keep ks indices in
-        # tl.int32 whenever the (deprecated) block-pointer path is actually
+        # tl.int32 whenever the block-pointer path is actually
         # active. Templates like omni attention/decoding likewise use
         # hand-written block pointers, so they also stay on 32-bit ks indexing.
         if (
