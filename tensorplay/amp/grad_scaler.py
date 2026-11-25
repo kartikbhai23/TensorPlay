@@ -49,11 +49,13 @@ class _MultiDeviceReplicator:
     def get(self, device: Any) -> tensorplay.Tensor:
         retval = self._per_device_tensors.get(device, None)
         if retval is None:
-            target = (
-                device
-                if isinstance(device, tensorplay.Device)
-                else tensorplay.Device(*device)
-            )
+            if isinstance(device, tensorplay.Device):
+                target = device
+            elif device[1] is None or device[1] < 0:
+                # CPU keys carry index -1, which the device constructor rejects.
+                target = tensorplay.device(device[0])
+            else:
+                target = tensorplay.device(*device)
             retval = self.master.to(device=target, non_blocking=True, copy=True)
             self._per_device_tensors[device] = retval
         return retval
