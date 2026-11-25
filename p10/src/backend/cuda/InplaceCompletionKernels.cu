@@ -13,6 +13,7 @@
 #include "GradMode.h"
 #include "Tensor.h"
 #include "CudaGemm.h"
+#include "QuantTensorOperators.h"
 #include "tensorplay/ops/TPXOpsGenerated.h"
 
 namespace tensorplay {
@@ -216,6 +217,11 @@ Tensor& gcd_inplace_kernel(Tensor& self, const Tensor& other) {
 
 Tensor& gelu_inplace_kernel(Tensor& self, const std::string& approximate) {
     NoGradGuard __tp_nograd;
+    if (isQuantizedType(self.dtype())) {
+        Tensor result = quantized::activation(self, approximate == "tanh" ? 9 : 8);
+        self.copy_(result);
+        return self;
+    }
     tensorplay::detail::redispatch_gelu_out_function(self, approximate, self);
     return self;
 }
@@ -234,6 +240,11 @@ Tensor& hardswish_inplace_kernel(Tensor& self) {
 
 Tensor& hardtanh_inplace_kernel(Tensor& self, const Scalar& min_val, const Scalar& max_val) {
     NoGradGuard __tp_nograd;
+    if (isQuantizedType(self.dtype())) {
+        Tensor result = quantized::activation(self, 7, min_val.toDouble(), max_val.toDouble());
+        self.copy_(result);
+        return self;
+    }
     tensorplay::detail::redispatch_hardtanh_out_function(self, min_val, max_val, self);
     return self;
 }

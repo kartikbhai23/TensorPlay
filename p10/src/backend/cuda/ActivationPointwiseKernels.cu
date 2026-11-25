@@ -539,13 +539,17 @@ Tensor& selu_out_cuda(const Tensor& self, Tensor& out) {
 }
 
 Tensor& hardtanh_out_cuda(const Tensor& self, const Scalar& min_val, const Scalar& max_val, Tensor& out) {
-    if (isQuantizedType(self.dtype()) || isComplexType(self.dtype()))
+    if (isQuantizedType(self.dtype()))
+        return out = hardtanh_kernel_cuda(self, min_val, max_val);
+    if (isComplexType(self.dtype()))
         return write_out(out, hardtanh_kernel_cuda(self, min_val, max_val));
     return unary_float_op_kernel_out(self, out, HardtanhFunctor(min_val.toDouble(), max_val.toDouble()));
 }
 
 Tensor& leaky_relu_out_cuda(const Tensor& self, const Scalar& negative_slope, Tensor& out) {
-    if (isQuantizedType(self.dtype()) || isComplexType(self.dtype()))
+    if (isQuantizedType(self.dtype()))
+        return quantized::activation_out(self, out, 0, negative_slope.toDouble());
+    if (isComplexType(self.dtype()))
         return write_out(out, leaky_relu_kernel_cuda(self, negative_slope));
     return unary_float_op_kernel_out(self, out, LeakyReluFunctor(negative_slope.toDouble()));
 }
