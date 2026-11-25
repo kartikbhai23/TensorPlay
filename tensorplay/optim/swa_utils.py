@@ -16,7 +16,7 @@ from tensorplay.autograd.grad_mode import no_grad
 from tensorplay.nn import Module
 from tensorplay.nn.modules.batchnorm import _BatchNorm
 
-from .lr_scheduler import _LRScheduler
+from .lr_scheduler import LRScheduler
 from tensorplay.utils._foreach_utils import (
     _get_foreach_kernels_supported_devices,
     _group_tensors_by_device_and_dtype,
@@ -248,7 +248,7 @@ def update_bn(
     model.train(was_training)
 
 
-class SWALR(_LRScheduler):
+class SWALR(LRScheduler):
     """Anneal each optimizer learning rate to a fixed SWA learning rate."""
 
     def __init__(

@@ -289,12 +289,6 @@ def _warn_get_lr_called_within_step(lr_scheduler: LRScheduler) -> None:
         )
 
 
-# Including _LRScheduler for backwards compatibility
-# Subclass instead of assign because we want __name__ of _LRScheduler to be _LRScheduler (assigning would make it LRScheduler).
-class _LRScheduler(LRScheduler):
-    pass
-
-
 class _enable_get_lr_call:
     def __init__(self, o: LRScheduler) -> None:
         self.o = o

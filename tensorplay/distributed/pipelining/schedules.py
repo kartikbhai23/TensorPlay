@@ -947,12 +947,11 @@ class Schedule1F1B(PipelineScheduleSingle):
 
 
 class PipelineScheduleMulti(_PipelineSchedule):
-    def __init__(self, stages: list[Any], n_microbatches: int, loss_fn: Any = None, args_chunk_spec: Any = None, kwargs_chunk_spec: Any = None, output_merge_spec: Any = None, use_full_backward: bool | None = None, scale_grads: bool = True, backward_requires_autograd: bool = True) -> None:
+    def __init__(self, stages: list[Any], n_microbatches: int, loss_fn: Any = None, args_chunk_spec: Any = None, kwargs_chunk_spec: Any = None, output_merge_spec: Any = None, scale_grads: bool = True, backward_requires_autograd: bool = True) -> None:
         if not stages:
             raise ValueError("at least one pipeline stage is required")
         super().__init__(n_microbatches, loss_fn, args_chunk_spec, kwargs_chunk_spec, output_merge_spec, scale_grads)
         self._stages = list(stages)
-        self.use_full_backward = use_full_backward
         self.backward_requires_autograd = backward_requires_autograd
         self._backward_requires_autograd = backward_requires_autograd
         self._num_stages = int(stages[0].num_stages)
@@ -972,10 +971,6 @@ class PipelineScheduleMulti(_PipelineSchedule):
         self._stages_forward_initialized = False
         self._stages_backward_initialized = False
         self.pipeline_order: dict[int, list[_Action | None]] = {}
-        if use_full_backward is not None:
-            logger.warning(
-                "use_full_backward is no longer supported; omit it from the schedule"
-            )
 
     def _initialize_stages(self, args: Any, kwargs: Any, target: Any = None, loss_kwargs: Any = None) -> None:
         reinit_for_mode_switch = self._stages_forward_initialized and (

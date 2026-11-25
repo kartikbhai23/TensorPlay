@@ -738,38 +738,6 @@ class Metric(Module, ABC):
         """Return the default dtype of the metric."""
         return self._dtype
 
-    def type(self, dst_type: Union[str, tensorplay.DType]) -> "Metric":
-        """Override default and prevent dtype casting.
-
-        Please use :meth:`Metric.set_dtype` instead.
-
-        """
-        return self
-
-    def float(self) -> "Metric":
-        """Override default and prevent dtype casting.
-
-        Please use :meth:`Metric.set_dtype` instead.
-
-        """
-        return self
-
-    def double(self) -> "Metric":
-        """Override default and prevent dtype casting.
-
-        Please use :meth:`Metric.set_dtype` instead.
-
-        """
-        return self
-
-    def half(self) -> "Metric":
-        """Override default and prevent dtype casting.
-
-        Please use :meth:`Metric.set_dtype` instead.
-
-        """
-        return self
-
     def set_dtype(self, dst_type: Union[str, tensorplay.DType]) -> "Metric":
         """Transfer all metric state to specific dtype. Special version of standard ``type`` method.
 

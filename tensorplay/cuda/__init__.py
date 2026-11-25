@@ -990,7 +990,6 @@ def get_sync_debug_mode() -> int:
     return 0
 
 
-# pyrefly: ignore [deprecated]
 from .memory import *  # noqa: F403
 from .random import *  # noqa: F403
 

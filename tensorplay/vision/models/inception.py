@@ -14,15 +14,11 @@ from ._meta import _IMAGENET_CATEGORIES
 from ._utils import _ovewrite_named_param
 
 
-__all__ = ["Inception3", "InceptionOutputs", "_InceptionOutputs", "Inception_V3_Weights", "inception_v3"]
+__all__ = ["Inception3", "InceptionOutputs", "Inception_V3_Weights", "inception_v3"]
 
 
 InceptionOutputs = namedtuple("InceptionOutputs", ["logits", "aux_logits"])
 InceptionOutputs.__annotations__ = {"logits": Tensor, "aux_logits": Optional[Tensor]}
-
-# Script annotations failed with _GoogleNetOutputs = namedtuple ...
-# _InceptionOutputs set here for backwards compat
-_InceptionOutputs = InceptionOutputs
 
 
 class Inception3(nn.Module):

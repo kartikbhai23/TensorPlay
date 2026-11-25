@@ -2967,19 +2967,11 @@ def _linspace_from_neg_one(num_steps, align_corners, dtype, device):
     return rng
 
 
-def affine_grid(theta: Tensor, size, align_corners=None) -> Tensor:
+def affine_grid(theta: Tensor, size, align_corners=False) -> Tensor:
     r"""Generate 2D or 3D flow field (sampling grid), given a batch of affine
     matrices :attr:`theta`.
 
     """
-    if align_corners is None:
-        warnings.warn(
-            "Default grid_sample and affine_grid behavior has changed "
-            "to align_corners=False since 1.3.0. Please specify "
-            "align_corners=True if the old behavior is desired. "
-            "See the documentation of affine_grid for details.",
-            stacklevel=2)
-        align_corners = False
     if len(size) == 4:
         n, _, h, w = size
         if theta.dim() != 3 or theta.size(0) != n or theta.size(1) != 2 or theta.size(2) != 3:
@@ -3157,7 +3149,7 @@ def grid_sample(
     grid: Tensor,
     mode: str = "bilinear",
     padding_mode: str = "zeros",
-    align_corners=None,
+    align_corners=False,
 ) -> Tensor:
     r"""Compute grid sample.
 
@@ -3186,14 +3178,6 @@ def grid_sample(
             "nn.functional.grid_sample(): expected padding_mode "
             "to be 'zeros', 'border', or 'reflection', "
             f"but got: '{padding_mode}'")
-    if align_corners is None:
-        warnings.warn(
-            "Default grid_sample and affine_grid behavior has changed "
-            "to align_corners=False since 1.3.0. Please specify "
-            "align_corners=True if the old behavior is desired. "
-            "See the documentation of grid_sample for details.",
-            stacklevel=2)
-        align_corners = False
     mode_enum = GRID_SAMPLE_INTERPOLATION_MODES.index(mode)
     pad_enum = GRID_SAMPLE_PADDING_MODES.index(padding_mode)
 

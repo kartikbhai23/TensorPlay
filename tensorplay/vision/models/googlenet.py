@@ -15,15 +15,11 @@ from ._meta import _IMAGENET_CATEGORIES
 from ._utils import _ovewrite_named_param
 
 
-__all__ = ["GoogLeNet", "GoogLeNetOutputs", "_GoogLeNetOutputs", "GoogLeNet_Weights", "googlenet"]
+__all__ = ["GoogLeNet", "GoogLeNetOutputs", "GoogLeNet_Weights", "googlenet"]
 
 
 GoogLeNetOutputs = namedtuple("GoogLeNetOutputs", ["logits", "aux_logits2", "aux_logits1"])
 GoogLeNetOutputs.__annotations__ = {"logits": Tensor, "aux_logits2": Optional[Tensor], "aux_logits1": Optional[Tensor]}
-
-# Script annotations failed with _GoogleNetOutputs = namedtuple ...
-# _GoogLeNetOutputs set here for backwards compat
-_GoogLeNetOutputs = GoogLeNetOutputs
 
 
 class GoogLeNet(nn.Module):
@@ -157,7 +153,7 @@ class GoogLeNet(nn.Module):
     @tensorplay.compiler.unused
     def eager_outputs(self, x: Tensor, aux2: Tensor, aux1: Optional[Tensor]) -> GoogLeNetOutputs:
         if self.training and self.aux_logits:
-            return _GoogLeNetOutputs(x, aux2, aux1)
+            return GoogLeNetOutputs(x, aux2, aux1)
         else:
             return x  # type: ignore[return-value]
 

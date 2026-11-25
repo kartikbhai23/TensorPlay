@@ -15,7 +15,7 @@ from ._utils import _make_divisible, _ovewrite_named_param
 __all__ = ["MobileNetV2", "MobileNet_V2_Weights", "mobilenet_v2"]
 
 
-# necessary for backwards compatibility
+# Inverted residual block, the building block of the MobileNetV2 stages.
 class InvertedResidual(nn.Module):
     def __init__(
         self, inp: int, oup: int, stride: int, expand_ratio: int, norm_layer: Optional[Callable[..., nn.Module]] = None
