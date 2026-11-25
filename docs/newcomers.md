@@ -3,12 +3,8 @@
 Looking for a first contribution? This page is the curated entry point: what to
 pick, how to claim it, and what a good starter change looks like in TensorPlay.
 
-The conventions here follow what established projects do for first-time
-contributors — PyTorch's
-[good first issues](https://github.com/pytorch/pytorch/contribute),
-Kubernetes' [new contributor guide](https://github.com/kubernetes/community/blob/master/contributors/guide/README.md)
-and Rust's [mentor program](https://rust-lang.org/contribute/) all pair a
-label with a curated index and a named maintainer per task.
+Each starter task pairs a label with a curated index and a named maintainer,
+so you always know what to read and who to ask.
 
 ## Pick a task
 
