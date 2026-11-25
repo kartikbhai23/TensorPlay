@@ -39,7 +39,7 @@ Other labels you will see: `needs triage` (not checked by a maintainer yet),
 | [#117](https://github.com/lexing-2026/TensorPlay/issues/117) | build, CPU kernels | `good first issue` | how the ISA tiers (`DEFAULT` / `AVX2` / `AVX512`) are compiled and selected, and why a Windows wheel can silently ship without any of them |
 | [#122](https://github.com/lexing-2026/TensorPlay/issues/122) | loss kernels, CPU | `good first issue` | how a row-wise loss is assembled from norms, and why a hand-written loop can lose 20x to the same math expressed with ordinary ops |
 | [#120](https://github.com/lexing-2026/TensorPlay/issues/120) | vector math, CPU | `help wanted` | how the vector math layer gates its SIMD bodies behind compiler macros, and what a Windows build loses when it falls through |
-| [#121](https://github.com/lexing-2026/TensorPlay/issues/121) | pointwise kernels, CPU | `help wanted` | how hand-vectorized `where` / `clamp` paths are compiled out by a platform macro, and what it takes to put them back |
+| [#121](https://github.com/lexing-2026/TensorPlay/issues/121) | arithmetic / pointwise, CPU | `help wanted` | how 200 vector fast paths sit behind an arch macro, and what a Windows build loses when MSVC never matches it |
 
 The list is mirrored in the pinned **Newcomer tasks** issue and grows as
 maintainers triage new reports.
