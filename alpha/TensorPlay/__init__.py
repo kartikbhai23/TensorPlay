@@ -15,7 +15,7 @@ TensorPlay - 一个用于深度学习验证的工具包
 """
 __version__ = "0.1.1"
 __author__ = "Welog"
-__email__ = "2095774200@shu.edu.cn"
+__email__ = "feedback@tensorplay.org"
 __description__ = "一个用于深度学习验证的工具包"
 __url__ = "https://github.com/lexing-2026/TensorPlay"
 __license__ = "MIT"

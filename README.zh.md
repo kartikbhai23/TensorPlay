@@ -618,7 +618,7 @@ CI 会在每个 PR 和 main 推送上构建完整 wheel 矩阵（Python 3.11–3
 
 - **Discord**：[discord.gg/u6T5e2kGJm](https://discord.gg/u6T5e2kGJm) —— 提问、想法、作品展示
 - **GitHub Issues**：缺陷报告、功能建议、RFC
-- **邮箱**：feedback@tensorplay.cn
+- **邮箱**：feedback@tensorplay.org
 
 ## 发布与贡献
 

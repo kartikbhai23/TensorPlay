@@ -619,7 +619,7 @@ CI builds the full wheel matrix (Python 3.11–3.13; CPU on Linux x86_64/aarch64
 
 - **Discord**: [discord.gg/u6T5e2kGJm](https://discord.gg/u6T5e2kGJm) — questions, ideas, showcase
 - **GitHub Issues**: bug reports, feature requests, RFCs
-- **Email**: feedback@tensorplay.cn
+- **Email**: feedback@tensorplay.org
 
 ## Releases and Contributing
 

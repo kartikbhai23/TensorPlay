@@ -4,7 +4,7 @@ title: "TensorPlay: A simple deep learning framework designed for educational pu
 type: software
 authors:
   - name: zlx
-    email: 2095774200@shu.edu.cn
+    email: feedback@tensorplay.org
     affiliation: Shanghai University
 repository-code: "https://github.com/lexing-2026/TensorPlay"
 url: "https://tensorplay.cn"
