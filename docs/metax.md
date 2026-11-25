@@ -101,12 +101,12 @@ compiles therefore share one Ninja pool sized from physical memory
 
 There is no CI lane: the MACA SDK is not publicly downloadable and the
 acceptance run needs a real card, so a MetaX wheel is built by hand on a
-C500 and attached to a GitHub pre-release.  Reuse the build tree from the
+C500 and attached to the GitHub release.  Reuse the build tree from the
 sections above so the wheel does not recompile the device image:
 
 ```bash
 export MACA_PATH=/opt/maca PATH=/opt/maca/mxgpu_llvm/bin:$PATH
-export TENSORPLAY_BUILD_VERSION=1.3.0a0+maca330
+export TENSORPLAY_BUILD_VERSION=1.3.0+maca330
 export SKBUILD_BUILD_DIR=build-metax
 export SKBUILD_CMAKE_DEFINE="USE_CUDA=OFF;USE_METAX=ON;USE_MPI=OFF"
 python -m build --wheel --no-isolation --outdir dist
