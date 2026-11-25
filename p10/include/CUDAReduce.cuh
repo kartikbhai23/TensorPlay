@@ -1535,7 +1535,11 @@ flat_reduce_kernel(int64_t numel, const InputT* __restrict__ input,
     for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
         acc = ops.combine(acc, reduce_warp_shuffle_down(acc, 0xffffffffu, offset));
     }
-    __shared__ AccT warp_acc[kFlatReduceWarps];
+    // Warp accumulators may be element types that carry a default state,
+    // which shared memory cannot construct.  Keep raw aligned storage and let
+    // the leading lanes write their finalized accumulators into it.
+    alignas(AccT) __shared__ char warp_acc_storage[kFlatReduceWarps * sizeof(AccT)];
+    AccT* warp_acc = reinterpret_cast<AccT*>(warp_acc_storage);
     if ((threadIdx.x & (kWarpSize - 1)) == 0) {
         warp_acc[threadIdx.x / kWarpSize] = acc;
     }
