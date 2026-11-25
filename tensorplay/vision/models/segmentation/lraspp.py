@@ -11,7 +11,7 @@ from ...transforms._presets import SemanticSegmentation
 from ...utils import _log_api_usage_once
 from .._api import register_model, Weights, WeightsEnum
 from .._meta import _VOC_CATEGORIES
-from .._utils import _ovewrite_value_param, handle_legacy_interface, IntermediateLayerGetter
+from .._utils import _ovewrite_value_param, IntermediateLayerGetter
 from ..mobilenetv3 import MobileNet_V3_Large_Weights, MobileNetV3, mobilenet_v3_large
 
 
@@ -113,10 +113,6 @@ class LRASPP_MobileNet_V3_Large_Weights(WeightsEnum):
 
 
 @register_model()
-@handle_legacy_interface(
-    weights=("pretrained", LRASPP_MobileNet_V3_Large_Weights.COCO_WITH_VOC_LABELS_V1),
-    weights_backbone=("pretrained_backbone", MobileNet_V3_Large_Weights.IMAGENET1K_V1),
-)
 def lraspp_mobilenet_v3_large(
     *,
     weights: Optional[LRASPP_MobileNet_V3_Large_Weights] = None,

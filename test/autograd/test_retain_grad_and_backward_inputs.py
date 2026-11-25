@@ -3,8 +3,6 @@
 Also the batched, materialized and dict forms of autograd.grad.
 """
 
-import warnings
-
 import pytest
 
 import tensorplay as tp
@@ -132,11 +130,10 @@ def test_empty_inputs_are_refused():
         tp.autograd.backward((a * 2).sum(), inputs=[])
 
 
-def test_grad_variables_is_the_deprecated_spelling_of_grad_tensors():
+def test_grad_variables_is_rejected():
     a = leaf(1.0, 2.0)
-    with pytest.warns(FutureWarning, match="grad_variables"):
+    with pytest.raises(TypeError):
         tp.autograd.backward(a * 2, grad_variables=tp.ones(2, dtype=tp.float64))
-    assert a.grad.tolist() == [2.0, 2.0]
 
 
 # ---------------------------------------------------------------------------
@@ -183,10 +180,7 @@ def test_grad_with_a_dict_of_inputs_returns_a_dict():
     assert grads["b"].tolist() == [2.0]
 
 
-def test_only_inputs_false_warns_and_is_ignored():
+def test_only_inputs_is_rejected():
     a = leaf(1.0)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        (g,) = tp.autograd.grad((a * 4).sum(), a, only_inputs=False)
-    assert any("only_inputs" in str(w.message) for w in caught)
-    assert g.tolist() == [4.0]
+    with pytest.raises(TypeError):
+        tp.autograd.grad((a * 4).sum(), a, only_inputs=False)

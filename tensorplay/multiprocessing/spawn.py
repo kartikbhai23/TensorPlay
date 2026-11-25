@@ -8,7 +8,6 @@ import signal
 import sys
 import tempfile
 import time
-import warnings
 from concurrent.futures import as_completed, ThreadPoolExecutor
 
 from . import _prctl_pr_set_pdeathsig  # type: ignore[attr-defined]
@@ -280,7 +279,7 @@ def start_processes(
         pass
 
 
-def spawn(fn, args=(), nprocs=1, join=True, daemon=False, start_method="spawn"):
+def spawn(fn, args=(), nprocs=1, join=True, daemon=False):
     r"""Spawns ``nprocs`` processes that run ``fn`` with ``args``.
 
     If one of the processes exits with a non-zero exit status, the
@@ -304,20 +303,9 @@ def spawn(fn, args=(), nprocs=1, join=True, daemon=False, start_method="spawn"):
         join (bool): Perform a blocking join on all processes.
         daemon (bool): The spawned processes' daemon flag. If set to True,
                        daemonic processes will be created.
-        start_method (str): (deprecated) this method will always use ``spawn``
-                               as the start method. To use a different start method
-                               use ``start_processes()``.
-
     Returns:
         None if ``join`` is ``True``,
         :class:`~ProcessContext` if ``join`` is ``False``
 
     """
-    if start_method != "spawn":
-        msg = (
-            f"This method only supports start_method=spawn (got: {start_method}).\n"
-            "To use a different start_method use:\n\t\t"
-            " tensorplay.multiprocessing.start_processes(...)"
-        )
-        warnings.warn(msg, FutureWarning, stacklevel=2)
     return start_processes(fn, args, nprocs, join, daemon, start_method="spawn")

@@ -11,18 +11,14 @@ from ..transforms._presets import ImageClassification
 from ..utils import _log_api_usage_once
 from ._api import register_model, Weights, WeightsEnum
 from ._meta import _IMAGENET_CATEGORIES
-from ._utils import _ovewrite_named_param, handle_legacy_interface
+from ._utils import _ovewrite_named_param
 
 
-__all__ = ["Inception3", "InceptionOutputs", "_InceptionOutputs", "Inception_V3_Weights", "inception_v3"]
+__all__ = ["Inception3", "InceptionOutputs", "Inception_V3_Weights", "inception_v3"]
 
 
 InceptionOutputs = namedtuple("InceptionOutputs", ["logits", "aux_logits"])
 InceptionOutputs.__annotations__ = {"logits": Tensor, "aux_logits": Optional[Tensor]}
-
-# Script annotations failed with _GoogleNetOutputs = namedtuple ...
-# _InceptionOutputs set here for backwards compat
-_InceptionOutputs = InceptionOutputs
 
 
 class Inception3(nn.Module):
@@ -422,7 +418,6 @@ class Inception_V3_Weights(WeightsEnum):
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", Inception_V3_Weights.IMAGENET1K_V1))
 def inception_v3(*, weights: Optional[Inception_V3_Weights] = None, progress: bool = True, **kwargs: Any) -> Inception3:
     """
     Inception v3 model architecture from

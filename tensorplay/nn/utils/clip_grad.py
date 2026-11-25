@@ -13,7 +13,6 @@ from tensorplay.utils._foreach_utils import (
 )
 
 __all__ = [
-    "clip_grad_norm",
     "clip_grad_norm_",
     "clip_grad_value_",
     "clip_grads_with_norm_",
@@ -166,27 +165,6 @@ def clip_grad_norm_(
     total_norm = get_total_norm(grads, norm_type, error_if_nonfinite, foreach)
     clip_grads_with_norm_(parameters, max_norm, total_norm, foreach)
     return total_norm
-
-
-def clip_grad_norm(
-    parameters: _TensorOrTensors,
-    max_norm: float,
-    norm_type: float = 2.0,
-    error_if_nonfinite: bool = False,
-    foreach: Optional[bool] = None,
-) -> Tensor:
-    """Clip the gradient norm of an iterable of parameters.
-
-    .. deprecated:: use :func:`clip_grad_norm_` instead.
-    """
-    warnings.warn(
-        "`tensorplay.nn.utils.clip_grad_norm` is now deprecated in favor of "
-        "`tensorplay.nn.utils.clip_grad_norm_`.",
-        FutureWarning,
-        stacklevel=2,
-    )
-    return clip_grad_norm_(parameters, max_norm, norm_type, error_if_nonfinite,
-                           foreach)
 
 
 def clip_grad_value_(

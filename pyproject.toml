@@ -16,8 +16,8 @@ name = "tensorplay"
 dynamic = ["version"]
 description = "A simple deep learning framework designed for educational purposes and small-scale experiments."
 readme = "README.md"
-authors = [{ name = "zlx", email = "2095774200@shu.edu.cn" }]
-maintainers = [{ name = "lexing-2026", email = "2095774200@shu.edu.cn" }]
+authors = [{ name = "zlx", email = "feedback@tensorplay.org" }]
+maintainers = [{ name = "lexing-2026", email = "feedback@tensorplay.org" }]
 license = { text = "Apache License 2.0" }
 keywords = ["deep learning", "neural network", "tensor", "framework", "education", "CUDA", "CPU"]
 requires-python = ">=3.11,<3.16"

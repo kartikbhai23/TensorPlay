@@ -1,5 +1,4 @@
 from collections import namedtuple
-import warnings
 
 import tensorplay
 from tensorplay import Tensor
@@ -560,14 +559,8 @@ class SparseSemiStructuredTensorCUSPARSELT(SparseSemiStructuredTensor):
 
 
 def to_sparse_semi_structured(
-    original_tensor, transposed=False, alg_id=SparseSemiStructuredTensor._DEFAULT_ALG_ID
+    original_tensor, alg_id=SparseSemiStructuredTensor._DEFAULT_ALG_ID
 ):
-    if transposed:
-        warnings.warn(
-            "the transposed argument is deprecated; pass contiguous input instead",
-            FutureWarning,
-            stacklevel=2,
-        )
     sparse_class = (
         SparseSemiStructuredTensorCUTLASS
         if SparseSemiStructuredTensor._FORCE_CUTLASS

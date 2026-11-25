@@ -11,6 +11,5 @@ def test_ctc_reduction_validation(device):
     args = (log_probs, targets, [6, 6], [2, 2])
     with pytest.raises(ValueError, match="not a valid value for reduction"):
         F.ctc_loss(*args, reduction="invalid")
-    with pytest.warns(UserWarning, match="elementwise_mean.*deprecated"):
-        deprecated = F.ctc_loss(*args, reduction="elementwise_mean")
-    assert abs(deprecated.item() - F.ctc_loss(*args, reduction="mean").item()) < 1e-6
+    with pytest.raises(ValueError, match="not a valid value for reduction"):
+        F.ctc_loss(*args, reduction="elementwise_mean")

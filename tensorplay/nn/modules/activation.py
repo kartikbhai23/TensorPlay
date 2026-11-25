@@ -1,4 +1,3 @@
-import warnings
 from typing import Optional
 
 import tensorplay
@@ -607,25 +606,8 @@ class Hardtanh(Module):
         min_val: float = -1.0,
         max_val: float = 1.0,
         inplace: bool = False,
-        min_value: Optional[float] = None,
-        max_value: Optional[float] = None,
     ) -> None:
         super().__init__()
-        if min_value is not None:
-            warnings.warn(
-                "keyword argument `min_value` is deprecated and renamed to `min_val`",
-                FutureWarning,
-                stacklevel=2,
-            )
-            min_val = min_value
-        if max_value is not None:
-            warnings.warn(
-                "keyword argument `max_value` is deprecated and renamed to `max_val`",
-                FutureWarning,
-                stacklevel=2,
-            )
-            max_val = max_value
-
         self.min_val = min_val
         self.max_val = max_val
         self.inplace = inplace

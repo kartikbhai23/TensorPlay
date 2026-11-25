@@ -689,15 +689,6 @@ class ConcatDataset(Dataset[_T_co]):
             return _FAST_BATCH_UNAVAILABLE
         return getter(local_indices)
 
-    @property
-    def cummulative_sizes(self):
-        warnings.warn(
-            "`cummulative_sizes` attribute is renamed to `cumulative_sizes`",
-            FutureWarning,
-            stacklevel=2,
-        )
-        return self.cumulative_sizes
-
 
 class ChainDataset(IterableDataset):
     """Dataset for chaining multiple :class:`IterableDataset` s.
@@ -2523,8 +2514,8 @@ class DataLoader(Generic[_T_co]):
             not shut down the worker processes after a dataset has been
             consumed once. This allows to maintain the workers `Dataset`
             instances alive. (default: ``False``)
-        pin_memory_device (str, optional): Deprecated device spelling kept for
-            accelerator for pinned host allocations. (default: ``""``)
+        pin_memory_device (str, optional): Device used for pinned host
+            allocations. (default: ``""``)
         in_order (bool, optional): If ``False``, the data loader will not
             enforce that batches returned from multiprocessing workers are
             provided in the order the sampler produced them. This enables

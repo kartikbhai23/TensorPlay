@@ -1,4 +1,3 @@
-import warnings
 from collections.abc import Sequence
 from typing import Callable, Optional, Union
 
@@ -116,11 +115,6 @@ class ConvNormActivation(tensorplay.nn.Sequential):
         super().__init__(*layers)
         _log_api_usage_once(self)
         self.out_channels = out_channels
-
-        if self.__class__ == ConvNormActivation:
-            warnings.warn(
-                "Don't use ConvNormActivation directly, please use Conv2dNormActivation and Conv3dNormActivation instead."
-            )
 
 
 class Conv2dNormActivation(ConvNormActivation):

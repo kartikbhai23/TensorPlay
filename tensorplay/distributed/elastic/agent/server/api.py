@@ -12,7 +12,6 @@ import signal
 import socket
 import time
 import traceback
-import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
@@ -59,7 +58,6 @@ class WorkerSpec:
     role: str
     local_world_size: int
     rdzv_handler: RendezvousHandler
-    fn: Callable | None = None
     entrypoint: Callable | str | None = None
     args: tuple = ()
     max_restarts: int = 3
@@ -83,13 +81,6 @@ class WorkerSpec:
             raise AssertionError
         if self.monitor_interval <= 0:
             raise AssertionError
-        if self.fn:
-            warnings.warn(
-                "WorkerSpec.fn is deprecated; use WorkerSpec.entrypoint instead",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            self.entrypoint = self.fn
         if not self.entrypoint:
             raise AssertionError
 

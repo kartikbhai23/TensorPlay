@@ -74,7 +74,6 @@ class Metric(Module, ABC):
         "plot_upper_bound",
         "plot_legend_name",
         "metric_state",
-        "_update_called",
     ]
     is_differentiable: Optional[bool] = None
     higher_is_better: Optional[bool] = None
@@ -170,15 +169,6 @@ class Metric(Module, ABC):
             # filtering logic is likely implemented within the update call.
             return kwargs
         return filtered_kwargs
-
-    @property
-    def _update_called(self) -> bool:
-        rank_zero_warn(
-            "This property will be removed in 2.0.0. Use `Metric.updated_called` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.update_called
 
     @property
     def update_called(self) -> bool:
@@ -747,38 +737,6 @@ class Metric(Module, ABC):
     def dtype(self) -> "tensorplay.DType":
         """Return the default dtype of the metric."""
         return self._dtype
-
-    def type(self, dst_type: Union[str, tensorplay.DType]) -> "Metric":
-        """Override default and prevent dtype casting.
-
-        Please use :meth:`Metric.set_dtype` instead.
-
-        """
-        return self
-
-    def float(self) -> "Metric":
-        """Override default and prevent dtype casting.
-
-        Please use :meth:`Metric.set_dtype` instead.
-
-        """
-        return self
-
-    def double(self) -> "Metric":
-        """Override default and prevent dtype casting.
-
-        Please use :meth:`Metric.set_dtype` instead.
-
-        """
-        return self
-
-    def half(self) -> "Metric":
-        """Override default and prevent dtype casting.
-
-        Please use :meth:`Metric.set_dtype` instead.
-
-        """
-        return self
 
     def set_dtype(self, dst_type: Union[str, tensorplay.DType]) -> "Metric":
         """Transfer all metric state to specific dtype. Special version of standard ``type`` method.

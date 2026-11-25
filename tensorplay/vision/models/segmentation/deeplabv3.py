@@ -11,7 +11,7 @@ from tensorplay.nn import functional as F
 from ...transforms._presets import SemanticSegmentation
 from .._api import register_model, Weights, WeightsEnum
 from .._meta import _VOC_CATEGORIES
-from .._utils import _ovewrite_value_param, handle_legacy_interface, IntermediateLayerGetter
+from .._utils import _ovewrite_value_param, IntermediateLayerGetter
 from ..mobilenetv3 import MobileNet_V3_Large_Weights, MobileNetV3, mobilenet_v3_large
 from ..resnet import ResNet, ResNet101_Weights, ResNet50_Weights, resnet101, resnet50
 from ._utils import _SimpleSegmentationModel
@@ -272,10 +272,6 @@ def _deeplabv3_resnet101(
 
 
 @register_model()
-@handle_legacy_interface(
-    weights=("pretrained", DeepLabV3_ResNet50_Weights.COCO_WITH_VOC_LABELS_V1),
-    weights_backbone=("pretrained_backbone", ResNet50_Weights.IMAGENET1K_V1),
-)
 def deeplabv3_resnet50(
     *,
     weights: Optional[DeepLabV3_ResNet50_Weights] = None,
@@ -314,10 +310,6 @@ def deeplabv3_resnet50(
 
 
 @register_model()
-@handle_legacy_interface(
-    weights=("pretrained", DeepLabV3_ResNet101_Weights.COCO_WITH_VOC_LABELS_V1),
-    weights_backbone=("pretrained_backbone", ResNet101_Weights.IMAGENET1K_V1),
-)
 def deeplabv3_resnet101(
     *,
     weights: Optional[DeepLabV3_ResNet101_Weights] = None,
@@ -356,10 +348,6 @@ def deeplabv3_resnet101(
 
 
 @register_model()
-@handle_legacy_interface(
-    weights=("pretrained", DeepLabV3_MobileNet_V3_Large_Weights.COCO_WITH_VOC_LABELS_V1),
-    weights_backbone=("pretrained_backbone", MobileNet_V3_Large_Weights.IMAGENET1K_V1),
-)
 def deeplabv3_mobilenet_v3_large(
     *,
     weights: Optional[DeepLabV3_MobileNet_V3_Large_Weights] = None,

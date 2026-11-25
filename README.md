@@ -619,13 +619,13 @@ CI builds the full wheel matrix (Python 3.11–3.13; CPU on Linux x86_64/aarch64
 
 - **Discord**: [discord.gg/u6T5e2kGJm](https://discord.gg/u6T5e2kGJm) — questions, ideas, showcase
 - **GitHub Issues**: bug reports, feature requests, RFCs
-- **Email**: feedback@tensorplay.cn
+- **Email**: feedback@tensorplay.org
 
 ## Releases and Contributing
 
 The package version lives in [`version.txt`](version.txt) (single source of truth; development installs carry a `+git<sha>` suffix). Releases are cut by pushing a `vMAJOR.MINOR.0` tag; patch tags such as `v1.2.1` do not publish binaries. CI then builds and validates the full wheel matrix — CPU (macOS wheels with the MPS backend), CUDA (cu124/cu126/cu130) and ROCm (AMD/HIP) lanes — publishes CPU wheels to PyPI, and uploads the CUDA and ROCm wheels to a GitHub Release with a PEP 503 index on Cloudflare Pages. Wheel-matrix infrastructure (platform runners, CUDA variants, the ROCm channel) is documented in [RELEASE.md](RELEASE.md).
 
-We welcome contributions of all kinds — bug fixes, documentation, new features. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and coding standards.
+We welcome contributions of all kinds — bug fixes, documentation, new features. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and coding standards. Making your first contribution? Start at the [Newcomer Hub](docs/newcomers.md) for environment setup, claiming a starter task and the first-pull-request checklist.
 
 <a href="https://github.com/lexing-2026/TensorPlay/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=lexing-2026/TensorPlay&columns=10" alt="Contributors" />

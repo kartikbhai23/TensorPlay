@@ -9,7 +9,7 @@ from ..transforms._presets import ImageClassification
 from ..utils import _log_api_usage_once
 from ._api import register_model, Weights, WeightsEnum
 from ._meta import _IMAGENET_CATEGORIES
-from ._utils import _ovewrite_named_param, handle_legacy_interface
+from ._utils import _ovewrite_named_param
 
 
 __all__ = [
@@ -279,7 +279,6 @@ class ShuffleNet_V2_X2_0_Weights(WeightsEnum):
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", ShuffleNet_V2_X0_5_Weights.IMAGENET1K_V1))
 def shufflenet_v2_x0_5(
     *, weights: Optional[ShuffleNet_V2_X0_5_Weights] = None, progress: bool = True, **kwargs: Any
 ) -> ShuffleNetV2:
@@ -309,7 +308,6 @@ def shufflenet_v2_x0_5(
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", ShuffleNet_V2_X1_0_Weights.IMAGENET1K_V1))
 def shufflenet_v2_x1_0(
     *, weights: Optional[ShuffleNet_V2_X1_0_Weights] = None, progress: bool = True, **kwargs: Any
 ) -> ShuffleNetV2:
@@ -339,7 +337,6 @@ def shufflenet_v2_x1_0(
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", ShuffleNet_V2_X1_5_Weights.IMAGENET1K_V1))
 def shufflenet_v2_x1_5(
     *, weights: Optional[ShuffleNet_V2_X1_5_Weights] = None, progress: bool = True, **kwargs: Any
 ) -> ShuffleNetV2:
@@ -369,7 +366,6 @@ def shufflenet_v2_x1_5(
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", ShuffleNet_V2_X2_0_Weights.IMAGENET1K_V1))
 def shufflenet_v2_x2_0(
     *, weights: Optional[ShuffleNet_V2_X2_0_Weights] = None, progress: bool = True, **kwargs: Any
 ) -> ShuffleNetV2:

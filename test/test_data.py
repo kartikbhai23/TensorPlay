@@ -1,5 +1,4 @@
 import unittest
-import warnings
 
 import numpy as np
 
@@ -128,9 +127,7 @@ class TestDatasetParity(unittest.TestCase):
             td.ConcatDataset([])
         with self.assertRaisesRegex(AssertionError, "empty iterable"):
             torchdata.ConcatDataset([])
-        # deprecated alias
-        with self.assertWarns(FutureWarning):
-            self.assertEqual(tp_ds.cummulative_sizes, tp_ds.cumulative_sizes)
+        assert not hasattr(tp_ds, "cummulative_sizes")
 
     def test_subset(self):
         s = td.Subset(_DS(10), [2, 5, 7])

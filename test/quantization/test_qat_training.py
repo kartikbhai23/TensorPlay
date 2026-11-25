@@ -10,6 +10,8 @@ from tensorplay.ao.quantization import (
 
 torch.backends.cudnn.allow_tf32 = False
 torch.backends.cuda.matmul.allow_tf32 = False
+tp.backends.cudnn.allow_tf32 = False
+tp.backends.cuda.matmul.allow_tf32 = False
 
 DEVICES = ['cpu', 'cuda'] if tp.cuda.is_available() else ['cpu']
 

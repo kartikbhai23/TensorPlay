@@ -1930,9 +1930,7 @@ class Module:
         keep_vars: bool = ...,
     ) -> dict[str, Any]: ...
 
-    # TODO: Change `*args` to `*` and remove the corresponding warning in docs when BC allows.
-    # Also remove the logic for arg parsing together.
-    def state_dict(self, *args, destination=None, prefix="", keep_vars=False):
+    def state_dict(self, *, destination=None, prefix="", keep_vars=False):
         r"""Return a dictionary containing references to the whole state of the module.
 
         Both parameters and persistent buffers (e.g. running averages) are
@@ -1942,12 +1940,6 @@ class Module:
         .. note::
             The returned object is a shallow copy. It contains references
             to the module's parameters and buffers.
-
-        .. warning::
-            Currently ``state_dict()`` also accepts positional arguments for
-            ``destination``, ``prefix`` and ``keep_vars`` in order. However,
-            this is being deprecated and keyword arguments will be enforced in
-            future releases.
 
         .. warning::
             Please avoid the use of argument ``destination`` as it is not
@@ -1976,23 +1968,6 @@ class Module:
             ['bias', 'weight']
 
         """
-        # TODO: Remove `args` and the parsing logic when BC allows.
-        if len(args) > 0:
-            # DeprecationWarning is ignored by default
-            warnings.warn(
-                "Positional args are being deprecated, use kwargs instead. Refer to "
-                "https://pytensorplay.org/docs/main/generated/tensorplay.nn.Module.html#tensorplay.nn.Module.state_dict"
-                " for details.",
-                FutureWarning,
-                stacklevel=2,
-            )
-            if destination is None:
-                destination = args[0]
-            if len(args) > 1 and prefix == "":
-                prefix = args[1]
-            if len(args) > 2 and keep_vars is False:
-                keep_vars = args[2]
-
         if destination is None:
             destination = OrderedDict()
             destination._metadata = OrderedDict()

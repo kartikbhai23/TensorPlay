@@ -12,10 +12,8 @@ flags consumed by ``tensorplay.nn.attention.sdpa_kernel``, and the
 a given call.
 """
 
-import contextlib
 from typing import Any, Optional, Union
 
-from typing_extensions import deprecated
 
 import tensorplay
 
@@ -46,7 +44,6 @@ __all__ = [
     "can_use_flash_attention",
     "can_use_efficient_attention",
     "can_use_cudnn_attention",
-    "sdp_kernel",
     "is_available",
     "get_name",
 ]
@@ -450,47 +447,6 @@ def enable_cudnn_sdp(enabled: bool):
     Enables or disables cuDNN scaled dot product attention.
     """
     tensorplay._C._set_sdp_use_cudnn(enabled)
-
-
-@contextlib.contextmanager
-@deprecated(
-    (
-        "`tensorplay.backends.cuda.sdp_kernel()` is deprecated. "
-        "In the future, this context manager will be removed. "
-        "Please see `tensorplay.nn.attention.sdpa_kernel()` for the new context manager, "
-        "with updated signature."
-    ),
-    category=FutureWarning,
-)
-def sdp_kernel(
-    enable_flash: bool = True,
-    enable_math: bool = True,
-    enable_mem_efficient: bool = True,
-    enable_cudnn: bool = True,
-):
-    r"""
-    .. warning:: This flag is beta and subject to change.
-
-    This context manager can be used to temporarily enable or disable any of the three backends for scaled dot product attention.
-    Upon exiting the context manager, the previous state of the flags will be restored.
-    """
-    from tensorplay.nn.attention import sdpa_kernel
-
-    backend_list = []
-    if enable_flash:
-        backend_list.append(SDPBackend.FLASH_ATTENTION)
-    if enable_mem_efficient:
-        backend_list.append(SDPBackend.EFFICIENT_ATTENTION)
-    if enable_math:
-        backend_list.append(SDPBackend.MATH)
-    if enable_cudnn:
-        backend_list.append(SDPBackend.CUDNN_ATTENTION)
-
-    with sdpa_kernel(backend_list) as context:
-        try:
-            yield context
-        finally:
-            pass
 
 
 matmul = cuBLASModule()

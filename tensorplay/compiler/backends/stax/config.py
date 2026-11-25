@@ -1121,9 +1121,6 @@ class _TritonConfig:
     #: load that is not aligned is the slower of the two.
     divisible_by_16 = os.environ.get("TP_DIVISIBLE_BY_16", "1") == "1"
 
-    #: Read through a block pointer rather than through a row of offsets.
-    use_block_ptr = False
-
     #: Hand a block to the runtime as a descriptor it builds once, rather than
     #: as a pointer it walks per access.  Worth it for a block read many times
     #: and not worth the setup for one read once, so this leaves the choice to

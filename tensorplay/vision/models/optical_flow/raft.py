@@ -11,7 +11,6 @@ from ...ops.misc import Conv2dNormActivation
 from ...transforms._presets import OpticalFlow
 from ...utils import _log_api_usage_once
 from .._api import register_model, Weights, WeightsEnum
-from .._utils import handle_legacy_interface
 from ._utils import grid_sample, make_coords_grid, upsample_flow
 
 
@@ -798,7 +797,6 @@ def _raft(
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", Raft_Large_Weights.C_T_SKHT_V2))
 def raft_large(*, weights: Optional[Raft_Large_Weights] = None, progress=True, **kwargs) -> RAFT:
     """RAFT model from
     `RAFT: Recurrent All Pairs Field Transforms for Optical Flow <https://arxiv.org/abs/2003.12039>`_.
@@ -851,7 +849,6 @@ def raft_large(*, weights: Optional[Raft_Large_Weights] = None, progress=True, *
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", Raft_Small_Weights.C_T_V2))
 def raft_small(*, weights: Optional[Raft_Small_Weights] = None, progress=True, **kwargs) -> RAFT:
     """RAFT "small" model from
     `RAFT: Recurrent All Pairs Field Transforms for Optical Flow <https://arxiv.org/abs/2003.12039>`_.

@@ -2,6 +2,9 @@
 
 We want to make contributing to TensorPlay as easy and transparent as possible.
 
+First contribution? Start with the [Newcomer Hub](docs/newcomers.md): it covers
+environment setup, claiming a scoped task, and the first-pull-request checklist.
+
 ## Development Process
 
 1.  **Fork the repository**: Click the 'Fork' button on the repository page.
@@ -53,7 +56,7 @@ documented in the release notes), `regression`, `performance`, and
 Work that suits a first contribution is labeled `good first issue` (add
 `help wanted` when it needs more hands than one person). The curated entry
 point is [docs/newcomers.md](docs/newcomers.md); the pinned "Newcomer tasks"
-issue mirrors the same list.
+issue lists the same tasks.
 
 Label an issue `good first issue` only when it names the files or modules to
 touch, ships a command that shows the current behaviour, states an observable

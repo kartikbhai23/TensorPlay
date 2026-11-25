@@ -1,5 +1,4 @@
 import contextlib
-import warnings
 from collections.abc import Sequence
 from typing import Optional, overload, Protocol, Union
 from typing_extensions import TypeIs
@@ -71,14 +70,6 @@ class TensorPlayDispatchMode:
             _is_in_non_infra_tensorplay_dispatch_mode,
             _is_in_any_mode_without_ignore_compile_internals,
         ) = self._old_mode_flags.pop()
-
-    @classmethod
-    def push(cls, *args, **kwargs):
-        warnings.warn(
-            "`Mode.push()` is no longer necessary and can be replaced with just `with Mode()`",
-            stacklevel=2,
-        )
-        return cls(*args, **kwargs)
 
     @classmethod
     def is_infra_mode(cls) -> bool:

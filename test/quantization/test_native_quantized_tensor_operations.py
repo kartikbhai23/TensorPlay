@@ -7,6 +7,11 @@ import torch
 DEVICES = ['cpu'] + (['cuda'] if tp.cuda.is_available() else [])
 TYPES = [('int8', -11), ('uint8', 119), ('int32', -11)]
 
+# The two builds use different SLEEF releases for vector tanh.  On qint32's
+# fine output grid a one-ULP difference in tanh shows up as 128 output codes
+# (~6e-8 in the real value), so word-sized tanh comparisons allow that much.
+_TANH_QINT32_TOL = 128
+
 
 def pair(device, dtype='uint8', zp=119, shape=(2, 4, 5, 7), strided=False):
     values = (np.arange(np.prod(shape)).reshape(shape) % 73 - 36 + zp).astype(dtype)
@@ -394,7 +399,9 @@ def test_channels_last_activation_prelu_and_moments(device, dtype, zp, rank):
                                    ('_prelu_kernel', (w,), (rw,))]:
         actual = resolve(tp.ops.tp, operation)(x, *args)
         expected = resolve(torch.ops.aten, operation)(r, *rargs)
-        equal(actual, expected, 1 if operation in ('sigmoid', 'tanh') else 0)
+        tol = (_TANH_QINT32_TOL if operation == 'tanh' and dtype == 'int32'
+               else 1 if operation in ('sigmoid', 'tanh') else 0)
+        equal(actual, expected, tol)
         assert actual.stride() == expected.stride()
     equal(tp.ops.tp.mean.dim(x, [-1], True), torch.ops.aten.mean.dim(r, [-1], True))
     equal(tp.ops.tp.std.correction(x, [-1], correction=.5, keepdim=True),
@@ -485,7 +492,8 @@ def test_word_activation_vector_blocks_and_scalar_tails(device, size, strided, o
     x, r = pair(device, 'int32', -11, shape=(size * (2 if strided else 1),))
     if strided:
         x, r = x[::2], r[::2]
-    equal(resolve(tp.ops.tp, operation)(x), resolve(torch.ops.aten, operation)(r))
+    equal(resolve(tp.ops.tp, operation)(x), resolve(torch.ops.aten, operation)(r),
+          _TANH_QINT32_TOL if operation == 'tanh' else 0)
 
 
 @pytest.mark.parametrize('device', DEVICES)
@@ -516,7 +524,8 @@ def test_word_activation_fine_output_grids(device, operation, scale):
     codes = np.arange(-256, 256, dtype='int32') - 11
     x = tp._C._make_per_tensor_quantized_tensor(tp.tensor(codes, device=device), scale, -11)
     r = torch._make_per_tensor_quantized_tensor(torch.tensor(codes), scale, -11)
-    equal(resolve(tp.ops.tp, operation)(x), resolve(torch.ops.aten, operation)(r))
+    equal(resolve(tp.ops.tp, operation)(x), resolve(torch.ops.aten, operation)(r),
+          _TANH_QINT32_TOL if operation == 'tanh' else 0)
 
 
 @pytest.mark.parametrize('device', DEVICES)

@@ -13,7 +13,7 @@ import warnings
 from bisect import bisect_right
 from collections import Counter
 from functools import partial, wraps
-from typing import Any, cast, Literal, SupportsFloat, TYPE_CHECKING, TypedDict
+from typing import Any, Literal, SupportsFloat, TYPE_CHECKING, TypedDict
 from typing_extensions import override, Self
 from weakref import ref
 
@@ -46,15 +46,6 @@ __all__ = [
     "PolynomialLR",
     "LRScheduler",
 ]
-
-EPOCH_DEPRECATION_WARNING = (
-    "The epoch parameter in `scheduler.step()` was not necessary and is being "
-    "deprecated where possible. Please use `scheduler.step()` to step the "
-    "scheduler. During the deprecation, if epoch is different from None, the "
-    "closed form is used instead of the new chainable form, where available. "
-    "Please open an issue if you are unable to replicate your use case: "
-)
-
 
 def _format_param(name: str, optimizer: Optimizer, param):
     """Return correctly formatted lr/momentum for each param group."""
@@ -233,16 +224,8 @@ class LRScheduler:
         """
         raise NotImplementedError
 
-    def step(self, epoch: int | None = None) -> None:
+    def step(self) -> None:
         """Step the scheduler.
-
-        Args:
-            epoch (int, optional):
-                .. deprecated:: 1.4
-                    If provided, sets :attr:`last_epoch` to ``epoch`` and uses
-                    :meth:`_get_closed_form_lr` if it is available. This is not
-                    universally supported. Use :meth:`step` without arguments
-                    instead.
 
         .. note::
             Call this method after calling the optimizer's
@@ -271,21 +254,22 @@ class LRScheduler:
                 )
 
         self._step_count += 1
-        if epoch is not None:
-            warnings.warn(EPOCH_DEPRECATION_WARNING, UserWarning, stacklevel=2)
-        self._update_lr(epoch)
+        self._update_lr()
 
-    def _update_lr(self, epoch: int | None = None) -> None:
+    def _update_lr(self, *, restart: bool = False) -> None:
+        """Advance one epoch and install the resulting learning rates.
+
+        ``restart`` re-applies the scheduler's epoch-0 rates without advancing,
+        which is what a scheduler entering a sequence needs.
+        """
         with _enable_get_lr_call(self):
-            if epoch is None:
+            if restart:
+                # Entering a sequence: adopt the epoch-0 rate for this scheduler.
+                self.last_epoch = 0
+                values = self.base_lrs
+            else:
                 self.last_epoch += 1
                 values = self.get_lr()
-            else:
-                self.last_epoch = epoch
-                if hasattr(self, "_get_closed_form_lr"):
-                    values = cast(list[float | Tensor], self._get_closed_form_lr())
-                else:
-                    values = self.get_lr()
 
         for param_group, lr in zip(self.optimizer.param_groups, values, strict=True):
             _update_param_group_val(param_group, "lr", lr)
@@ -303,12 +287,6 @@ def _warn_get_lr_called_within_step(lr_scheduler: LRScheduler) -> None:
             UserWarning,
             stacklevel=2,
         )
-
-
-# Including _LRScheduler for backwards compatibility
-# Subclass instead of assign because we want __name__ of _LRScheduler to be _LRScheduler (assigning would make it LRScheduler).
-class _LRScheduler(LRScheduler):
-    pass
 
 
 class _enable_get_lr_call:
@@ -638,22 +616,6 @@ class StepLR(LRScheduler):
             return _param_groups_val_list(self.optimizer, "lr")
         return [group["lr"] * self.gamma for group in self.optimizer.param_groups]
 
-    def _get_closed_form_lr(self) -> list[float | Tensor]:
-        r"""Compute learning rates for each of the optimizer's
-        a closed-form formula.
-
-        Uses :attr:`base_lrs` to compute learning rates. This method is called
-        when an epoch is passed to :meth:`step`.
-
-        Returns:
-            list[float | Tensor]: A :class:`list` of learning rates for each of
-            same types as their current ``group["lr"]``\s.
-        """
-        return [
-            base_lr * self.gamma ** (self.last_epoch // self.step_size)
-            for base_lr in self.base_lrs
-        ]
-
 
 class MultiStepLR(LRScheduler):
     """Decays the learning rate of each parameter group by gamma once the number of epoch reaches one of the milestones.
@@ -723,23 +685,6 @@ class MultiStepLR(LRScheduler):
         return [
             group["lr"] * self.gamma ** self.milestones[self.last_epoch]
             for group in self.optimizer.param_groups
-        ]
-
-    def _get_closed_form_lr(self):
-        r"""Compute learning rates for each of the optimizer's
-        a closed-form formula.
-
-        Uses :attr:`base_lrs` to compute learning rates. This method is called
-        when an epoch is passed to :meth:`step`.
-
-        Returns:
-            list[float | Tensor]: A :class:`list` of learning rates for each of
-            same types as their current ``group["lr"]``\s.
-        """
-        milestones = sorted(self.milestones.elements())
-        return [
-            base_lr * self.gamma ** bisect_right(milestones, self.last_epoch)
-            for base_lr in self.base_lrs
         ]
 
 
@@ -821,23 +766,6 @@ class ConstantLR(LRScheduler):
 
         return [
             group["lr"] * (1.0 / self.factor) for group in self.optimizer.param_groups
-        ]
-
-    def _get_closed_form_lr(self):
-        r"""Compute learning rates for each of the optimizer's
-        a closed-form formula.
-
-        Uses :attr:`base_lrs` to compute learning rates. This method is called
-        when an epoch is passed to :meth:`step`.
-
-        Returns:
-            list[float | Tensor]: A :class:`list` of learning rates for each of
-            same types as their current ``group["lr"]``\s.
-        """
-        return [
-            base_lr
-            * (self.factor + (self.last_epoch >= self.total_iters) * (1 - self.factor))
-            for base_lr in self.base_lrs
         ]
 
 
@@ -942,28 +870,6 @@ class LinearLR(LRScheduler):
             for group in self.optimizer.param_groups
         ]
 
-    def _get_closed_form_lr(self):
-        r"""Compute learning rates for each of the optimizer's
-        a closed-form formula.
-
-        Uses :attr:`base_lrs` to compute learning rates. This method is called
-        when an epoch is passed to :meth:`step`.
-
-        Returns:
-            list[float | Tensor]: A :class:`list` of learning rates for each of
-            same types as their current ``group["lr"]``\s.
-        """
-        return [
-            base_lr
-            * (
-                self.start_factor
-                + (self.end_factor - self.start_factor)
-                * min(self.total_iters, self.last_epoch)
-                / self.total_iters
-            )
-            for base_lr in self.base_lrs
-        ]
-
 
 class ExponentialLR(LRScheduler):
     """Decays the learning rate of each parameter group by gamma every epoch.
@@ -1019,19 +925,6 @@ class ExponentialLR(LRScheduler):
         if self._is_initial:
             return _param_groups_val_list(self.optimizer, "lr")
         return [group["lr"] * self.gamma for group in self.optimizer.param_groups]
-
-    def _get_closed_form_lr(self):
-        r"""Compute learning rates for each of the optimizer's
-        a closed-form formula.
-
-        Uses :attr:`base_lrs` to compute learning rates. This method is called
-        when an epoch is passed to :meth:`step`.
-
-        Returns:
-            list[float | Tensor]: A :class:`list` of learning rates for each of
-            same types as their current ``group["lr"]``\s.
-        """
-        return [base_lr * self.gamma**self.last_epoch for base_lr in self.base_lrs]
 
 
 class SequentialLR(LRScheduler):
@@ -1144,7 +1037,7 @@ class SequentialLR(LRScheduler):
         idx = bisect_right(self._milestones, self.last_epoch)
         scheduler = self._schedulers[idx]
         if idx > 0 and self._milestones[idx - 1] == self.last_epoch:
-            scheduler._update_lr(0)
+            scheduler._update_lr(restart=True)
         else:
             scheduler.step()
 
@@ -1262,26 +1155,6 @@ class PolynomialLR(LRScheduler):
         ) ** self.power
         return [group["lr"] * decay_factor for group in self.optimizer.param_groups]
 
-    def _get_closed_form_lr(self) -> list[float | Tensor]:
-        r"""Compute learning rates for each of the optimizer's
-        a closed-form formula.
-
-        Uses :attr:`base_lrs` to compute learning rates. This method is called
-        when an epoch is passed to :meth:`step`.
-
-        Returns:
-            list[float | Tensor]: A :class:`list` of learning rates for each of
-            same types as their current ``group["lr"]``\s.
-        """
-        return [
-            (
-                base_lr
-                * (1.0 - min(self.total_iters, self.last_epoch) / self.total_iters)
-                ** self.power
-            )
-            for base_lr in self.base_lrs
-        ]
-
 
 class CosineAnnealingLR(LRScheduler):
     r"""
@@ -1395,25 +1268,6 @@ class CosineAnnealingLR(LRScheduler):
             * (group["lr"] - self.eta_min)
             + self.eta_min
             for group in self.optimizer.param_groups
-        ]
-
-    def _get_closed_form_lr(self) -> list[float | Tensor]:
-        r"""Compute learning rates for each of the optimizer's
-        a closed-form formula.
-
-        Uses :attr:`base_lrs` to compute learning rates. This method is called
-        when an epoch is passed to :meth:`step`.
-
-        Returns:
-            list[float | Tensor]: A :class:`list` of learning rates for each of
-            same types as their current ``group["lr"]``\s.
-        """
-        return [
-            self.eta_min
-            + (base_lr - self.eta_min)
-            * (1 + math.cos(math.pi * self.last_epoch / self.T_max))
-            / 2
-            for base_lr in self.base_lrs
         ]
 
 
@@ -1633,15 +1487,11 @@ class ReduceLROnPlateau(LRScheduler):
         self.cooldown_counter = 0
         self.num_bad_epochs = 0
 
-    def step(self, metrics: SupportsFloat, epoch=None) -> None:  # type: ignore[override]
+    def step(self, metrics: SupportsFloat) -> None:  # type: ignore[override]
         """Perform a step."""
         # convert `metrics` to float, in case it's a zero-dim Tensor
         current = float(metrics)
-        if epoch is None:
-            epoch = self.last_epoch + 1
-        else:
-            warnings.warn(EPOCH_DEPRECATION_WARNING, UserWarning, stacklevel=2)
-        self.last_epoch = epoch
+        self.last_epoch += 1
 
         if self._is_better(current, self.best):
             self.best = current
@@ -1654,13 +1504,13 @@ class ReduceLROnPlateau(LRScheduler):
             self.num_bad_epochs = 0  # ignore any bad epochs in cooldown
 
         if self.num_bad_epochs > self.patience:
-            self._reduce_lr(epoch)
+            self._reduce_lr()
             self.cooldown_counter = self.cooldown
             self.num_bad_epochs = 0
 
         self._last_lr = _param_groups_val_list(self.optimizer, "lr")
 
-    def _reduce_lr(self, epoch) -> None:
+    def _reduce_lr(self) -> None:
         if len(self.optimizer.param_groups) != len(self.min_lrs):
             if self.default_min_lr is None:
                 raise RuntimeError(
@@ -2132,8 +1982,8 @@ class CosineAnnealingWarmRestarts(LRScheduler):
         ]
 
     @override
-    def step(self, epoch=None) -> None:
-        """Step could be called after every batch update.
+    def step(self) -> None:
+        """Step once per batch update.
 
         Example:
             >>> # xdoctest: +SKIP("Undefined vars")
@@ -2147,7 +1997,7 @@ class CosineAnnealingWarmRestarts(LRScheduler):
             >>>         loss = criterion(outputs, labels)
             >>>         loss.backward()
             >>>         optimizer.step()
-            >>>         scheduler.step(epoch + i / iters)
+            >>>         scheduler.step()
 
         This function can be called in an interleaved way.
 
@@ -2156,38 +2006,17 @@ class CosineAnnealingWarmRestarts(LRScheduler):
             >>> scheduler = CosineAnnealingWarmRestarts(optimizer, T_0, T_mult)
             >>> for epoch in range(20):
             >>>     scheduler.step()
-            >>> scheduler.step(26)
-            >>> scheduler.step()  # scheduler.step(27), instead of scheduler(20)
         """
-        if epoch is None and self.last_epoch < 0:
-            epoch = 0
-
-        if epoch is None:
-            epoch = self.last_epoch + 1
+        if self.last_epoch < 0:
+            # The initial step seeds the rate at T_cur = 0 without advancing a cycle.
+            self.last_epoch = 0
+            self.T_cur = 0
+        else:
+            self.last_epoch += 1
             self.T_cur = self.T_cur + 1
             if self.T_cur >= self.T_i:
                 self.T_cur = self.T_cur % self.T_i
                 self.T_i = self.T_i * self.T_mult
-        else:
-            if epoch < 0:
-                raise ValueError(f"Expected non-negative epoch, but got {epoch}")
-            if epoch >= self.T_0:
-                if self.T_mult == 1:
-                    self.T_cur = epoch % self.T_0
-                else:
-                    n = int(
-                        math.log(
-                            (epoch / self.T_0 * (self.T_mult - 1) + 1), self.T_mult
-                        )
-                    )
-                    self.T_cur = epoch - self.T_0 * (self.T_mult**n - 1) / (
-                        self.T_mult - 1
-                    )
-                    self.T_i = self.T_0 * self.T_mult ** (n)
-            else:
-                self.T_i = self.T_0
-                self.T_cur = epoch
-        self.last_epoch = math.floor(epoch)
 
         with _enable_get_lr_call(self):
             for param_group, lr in zip(

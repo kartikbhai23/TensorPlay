@@ -4,7 +4,6 @@ import os.path
 import shutil
 import string
 import sys
-import warnings
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 from urllib.error import URLError
@@ -60,26 +59,6 @@ class MNIST(VisionDataset):
         "8 - eight",
         "9 - nine",
     ]
-
-    @property
-    def train_labels(self):
-        warnings.warn("train_labels has been renamed targets")
-        return self.targets
-
-    @property
-    def test_labels(self):
-        warnings.warn("test_labels has been renamed targets")
-        return self.targets
-
-    @property
-    def train_data(self):
-        warnings.warn("train_data has been renamed data")
-        return self.data
-
-    @property
-    def test_data(self):
-        warnings.warn("test_data has been renamed data")
-        return self.data
 
     def __init__(
         self,

@@ -116,14 +116,12 @@ def test_get_lr_outside_step_warns():
         sched.get_lr()
 
 
-def test_epoch_argument_uses_closed_form():
+def test_epoch_argument_is_rejected():
     opt = _optimizer()
     sched = L.StepLR(opt, step_size=5, gamma=0.5)
     _step_optimizer(opt)
-    with pytest.warns(UserWarning, match="deprecated"):
+    with pytest.raises(TypeError):
         sched.step(20)
-    assert _close(_lr(opt), 0.1 * 0.5**4)
-    assert sched.last_epoch == 20
 
 
 def test_scheduler_state_dict_roundtrip():
@@ -309,13 +307,12 @@ def test_cosine_annealing_lr():
         assert _close(_lr(opt), _closed_cosine(0.1, epoch, 10, 0.01), tol=1e-6), epoch
 
 
-def test_cosine_annealing_lr_epoch_argument():
+def test_cosine_annealing_lr_epoch_argument_is_rejected():
     opt = _optimizer(lr=0.1)
     sched = L.CosineAnnealingLR(opt, T_max=10, eta_min=0.01)
     _step_optimizer(opt)
-    with pytest.warns(UserWarning, match="deprecated"):
+    with pytest.raises(TypeError):
         sched.step(7)
-    assert _close(_lr(opt), _closed_cosine(0.1, 7, 10, 0.01), tol=1e-6)
 
 
 def test_cosine_annealing_warm_restarts():

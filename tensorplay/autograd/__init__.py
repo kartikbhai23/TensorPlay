@@ -7,7 +7,6 @@ As of now, we only support autograd for floating point :class:`Tensor` types (
 half, float, double and bfloat16) and complex :class:`Tensor` types (cfloat, cdouble).
 """
 
-import warnings
 from collections.abc import Mapping, Sequence
 from typing import Optional, Union
 
@@ -151,7 +150,6 @@ def backward(
     grad_tensors: Optional[_TensorOrTensors] = None,
     retain_graph: Optional[bool] = None,
     create_graph: bool = False,
-    grad_variables: Optional[_TensorOrTensors] = None,
     inputs: Optional[_TensorOrTensorsOrGradEdge] = None,
 ) -> None:
     r"""Compute the sum of gradients of given tensors with respect to graph leaves.
@@ -170,8 +168,6 @@ def backward(
             the grad will be freed. Defaults to the value of ``create_graph``.
         create_graph (bool, optional): If ``True``, the graph of the derivative
             is constructed, allowing higher order derivative products.
-        grad_variables (Sequence[Tensor or None] or Tensor, optional): Deprecated
-            spelling of ``grad_tensors``.
         inputs (Sequence[Tensor] or Tensor or dict, optional): Tensors w.r.t.
             which the gradient will be accumulated into ``.grad``.  All other
             tensors are ignored, and only the part of the graph that leads to
@@ -179,20 +175,6 @@ def backward(
             had called :meth:`~tensorplay.Tensor.retain_grad`.  A dict (e.g.
             ``dict(model.named_parameters())``) names its values.
     """
-    if grad_variables is not None:
-        warnings.warn(
-            "`grad_variables` is deprecated. Use `grad_tensors` instead.",
-            FutureWarning,
-            stacklevel=2,
-        )
-        if grad_tensors is None:
-            grad_tensors = grad_variables
-        else:
-            raise RuntimeError(
-                "`grad_tensors` and `grad_variables` (deprecated) "
-                "arguments both passed to `backward()`. Please only "
-                "use `grad_tensors`."
-            )
     inputs_tuple = None
     if inputs is not None:
         inputs_tuple = _inputs_tuple(inputs, "backward")
@@ -212,7 +194,6 @@ def grad(
     grad_outputs: Optional[_TensorOrTensors] = None,
     retain_graph: Optional[bool] = None,
     create_graph: bool = False,
-    only_inputs: bool = True,
     allow_unused: Optional[bool] = None,
     is_grads_batched: bool = False,
     materialize_grads: bool = False,
@@ -245,8 +226,6 @@ def grad(
         create_graph (bool, optional): If ``True``, graph of the derivative will
             be constructed, allowing to compute higher order derivative products.
             Default: ``False``.
-        only_inputs (bool, optional): Deprecated and ignored; gradients are
-            only ever returned for ``inputs``.
         allow_unused (Optional[bool], optional): If ``False``, specifying inputs
             that were not used when computing outputs (and therefore their grad is
             always zero) is an error. Defaults to the value of ``materialize_grads``.
@@ -268,14 +247,6 @@ def grad(
         )
     if allow_unused is None:
         allow_unused = materialize_grads
-    if not only_inputs:
-        warnings.warn(
-            "only_inputs argument is deprecated and is ignored now "
-            "(defaults to True). To accumulate gradient for other "
-            "parts of the graph, please use tensorplay.autograd.backward.",
-            FutureWarning,
-            stacklevel=2,
-        )
     named = inputs if type(inputs) is dict else None
     outputs = _as_tuple(outputs)
     inputs_tuple = _inputs_tuple(inputs, "grad")

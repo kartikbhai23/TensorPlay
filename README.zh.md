@@ -618,13 +618,13 @@ CI 会在每个 PR 和 main 推送上构建完整 wheel 矩阵（Python 3.11–3
 
 - **Discord**：[discord.gg/u6T5e2kGJm](https://discord.gg/u6T5e2kGJm) —— 提问、想法、作品展示
 - **GitHub Issues**：缺陷报告、功能建议、RFC
-- **邮箱**：feedback@tensorplay.cn
+- **邮箱**：feedback@tensorplay.org
 
 ## 发布与贡献
 
 包版本号以 [`version.txt`](version.txt) 为单一来源（开发安装会带 `+git<sha>` 后缀）。正式发布通过推送 `v主版本.次版本.0` tag 触发；例如 `v1.2.1` 这样的修订版本 tag 不会发布二进制包。CI 流水线自动构建并验证完整 wheel 矩阵——CPU（macOS wheel 含 MPS 后端）、CUDA（cu124/cu126/cu130）与 ROCm（AMD/HIP）渠道——CPU wheel 发布到 PyPI，CUDA 与 ROCm wheel 上传到 GitHub Release，并将其 PEP 503 索引部署到 Cloudflare Pages。wheel 矩阵基础设施（平台 runner、CUDA 变体、ROCm 渠道）见 [RELEASE.md](RELEASE.md)。
 
-我们欢迎各种形式的贡献——bug 修复、文档改进、新功能建议。开发流程与编码规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+我们欢迎各种形式的贡献——bug 修复、文档改进、新功能建议。开发流程与编码规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。第一次参与？先看[新人入口](docs/newcomers.md)：环境搭建、认领入门任务，以及首个 PR 的检查清单。
 
 <a href="https://github.com/lexing-2026/TensorPlay/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=lexing-2026/TensorPlay&columns=10" alt="Contributors" />

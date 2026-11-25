@@ -10,7 +10,7 @@ from ...transforms._presets import VideoClassification
 from ...utils import _log_api_usage_once
 from .._api import register_model, Weights, WeightsEnum
 from .._meta import _KINETICS400_CATEGORIES
-from .._utils import _ovewrite_named_param, handle_legacy_interface
+from .._utils import _ovewrite_named_param
 from ..swin_transformer import PatchMerging, SwinTransformerBlock
 
 
@@ -602,7 +602,6 @@ class Swin3D_B_Weights(WeightsEnum):
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", Swin3D_T_Weights.KINETICS400_V1))
 def swin3d_t(*, weights: Optional[Swin3D_T_Weights] = None, progress: bool = True, **kwargs: Any) -> SwinTransformer3d:
     """Swin-tiny 3D architecture from
     `Video Swin Transformer <https://arxiv.org/abs/2106.13230>`_.
@@ -634,7 +633,6 @@ def swin3d_t(*, weights: Optional[Swin3D_T_Weights] = None, progress: bool = Tru
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", Swin3D_S_Weights.KINETICS400_V1))
 def swin3d_s(*, weights: Optional[Swin3D_S_Weights] = None, progress: bool = True, **kwargs: Any) -> SwinTransformer3d:
     """Swin-small 3D architecture from
     `Video Swin Transformer <https://arxiv.org/abs/2106.13230>`_.
@@ -666,7 +664,6 @@ def swin3d_s(*, weights: Optional[Swin3D_S_Weights] = None, progress: bool = Tru
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", Swin3D_B_Weights.KINETICS400_V1))
 def swin3d_b(*, weights: Optional[Swin3D_B_Weights] = None, progress: bool = True, **kwargs: Any) -> SwinTransformer3d:
     """Swin-base 3D architecture from
     `Video Swin Transformer <https://arxiv.org/abs/2106.13230>`_.
