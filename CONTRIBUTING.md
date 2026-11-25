@@ -48,6 +48,18 @@ Useful labels: `kind/flaky` (flaky test/build), `breaking change` (must be
 documented in the release notes), `regression`, `performance`, and
 `platform: linux|macos|windows`.
 
+## Newcomer tasks
+
+Work that suits a first contribution is labeled `good first issue` (add
+`help wanted` when it needs more hands than one person). The curated entry
+point is [docs/newcomers.md](docs/newcomers.md); the pinned "Newcomer tasks"
+issue mirrors the same list.
+
+Label an issue `good first issue` only when it names the files or modules to
+touch, ships a command that shows the current behaviour, states an observable
+acceptance check (a capability value, a timing number, a passing test), and the
+change fits in one or two files. Anything larger is `help wanted`.
+
 ## Commit conventions
 
 TensorPlay uses [Conventional Commits](https://www.conventionalcommits.org/),
