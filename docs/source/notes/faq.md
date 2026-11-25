@@ -67,7 +67,7 @@ if you try to feed an RNN a sequence that is too long.
 
 The technical term for this phenomenon is [backpropagation through time](https://en.wikipedia.org/wiki/Backpropagation_through_time),
 and there are plenty of references for how to implement truncated
-BPTT, including in the [word language model](https://github.com/tensorplay/examples/tree/master/word_language_model) example; truncation is handled by the
+BPTT; truncation is handled by the
 `repackage` function as described in
 [this forum post](https://discuss.tensorplay.cn/t/help-clarifying-repackage-hidden-in-word-language-model/226).
 
