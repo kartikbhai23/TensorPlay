@@ -222,9 +222,11 @@ entries of `config/native_functions.yaml`:
 | tp-only | 590 | `tp_*`, `forward_*`, `snn_*`, `quantized_*`, `quantum_*`: no upstream reference |
 | measured | 287 | fixed arguments, same tensors on both sides, value check, timing |
 
-The 113 functions the overload sweep never reached were measured with
-`bench_gap.py`: one fixed argument set per function, torch's own constructor
-recorded and replayed into tp so both sides see identical tensors.
+The 122 functions the overload sweep never reached were attacked with two
+harnesses. `bench_gap.py` runs one fixed argument set per case (113 cases), with
+torch's own constructor recorded and replayed into tp so both sides see
+identical tensors; `bench_gap2.py` rebuilds the inputs inside every call for the
+ops that mutate them (19 cases).
 
 - 88 exact-value passes and 12 randomised ops (no value comparison possible)
 - 6 value mismatches, all re-checked with a rebuild-per-call harness
@@ -238,9 +240,7 @@ recorded and replayed into tp so both sides see identical tensors.
   `_fused_adamw_` (torch's own `state_steps`/`max_exp_avg_sqs` strictness, now
   driven correctly in the second harness) and `_ctc_loss_backward`.
 
-19 more functions that mutate their arguments or need a fresh RNG state per
-call were run in `bench_gap2.py` with inputs rebuilt inside each call; all 19
-pass, including `_fused_adam_`/`_fused_adamw_` (parameter values after the
+The 19 rebuild-per-call cases all pass, including `_fused_adam_`/`_fused_adamw_` (parameter values after the
 update), `_convert_indices_*`, `fractional_max_pool2d/3d_backward`,
 `_upsample_nearest_exact1d/2d/3d_backward`, `glu_backward`, `neg_` (through the
 public op) and `linalg_householder_product`.
