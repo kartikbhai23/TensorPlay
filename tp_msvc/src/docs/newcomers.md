@@ -43,6 +43,7 @@ Other labels you will see: `needs triage` (not checked by a maintainer yet),
 | [#120](https://github.com/lexing-2026/TensorPlay/issues/120) | vector math, CPU | `help wanted` | how the vector math layer gates its SIMD bodies behind compiler macros, and what a Windows build loses when it falls through |
 | [#121](https://github.com/lexing-2026/TensorPlay/issues/121) | arithmetic / pointwise, CPU | `help wanted` | how 200 vector fast paths sit behind an arch macro, and what a Windows build loses when MSVC never matches it |
 | [#131](https://github.com/lexing-2026/TensorPlay/issues/131) | coverage, CPU kernels | `help wanted` | how a kernel registration turns an unimplemented op into a real path, and how a dispatch probe separates a genuine gap from a backend that never ran on CPU |
+| [#135](https://github.com/lexing-2026/TensorPlay/issues/135) | loss kernels, CPU | `good first issue` | how an op can return the right number in the wrong shape: mapping `nll_loss` onto the two-result forward kernel leaks a tuple to callers |
 
 The list is mirrored in the pinned **Newcomer tasks** issue and grows as
 maintainers triage new reports.
