@@ -147,16 +147,6 @@ class _NodeDescGenerator:
         return _NodeDesc(local_addr or socket.getfqdn(), os.getpid(), local_id)
 
 
-def _node_desc(
-    addr: str | None = None,
-    pid: int | None = None,
-    local_id: str | None = None,
-) -> _NodeDesc:
-    """Build a descriptor for callers using the legacy helper."""
-    value = int(local_id, 16) if local_id else 0
-    return _NodeDesc(addr or "localhost", pid or os.getpid(), value)
-
-
 class _RendezvousState:
     """Serializable state for one rendezvous round."""
 
