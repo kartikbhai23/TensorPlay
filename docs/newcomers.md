@@ -43,6 +43,11 @@ Other labels you will see: `needs triage` (not checked by a maintainer yet),
 | [#120](https://github.com/lexing-2026/TensorPlay/issues/120) | vector math, CPU | `help wanted` | how the vector math layer gates its SIMD bodies behind compiler macros, and what a Windows build loses when it falls through |
 | [#121](https://github.com/lexing-2026/TensorPlay/issues/121) | arithmetic / pointwise, CPU | `help wanted` | how 200 vector fast paths sit behind an arch macro, and what a Windows build loses when MSVC never matches it |
 
+| [#137](https://github.com/lexing-2026/TensorPlay/issues/137) | bindings, CPU | `good first issue` | how a packet binding is registered next to its public op, and what "too many positional arguments" from a zero-arg stub tells you |
+| [#138](https://github.com/lexing-2026/TensorPlay/issues/138) | loss kernels, CPU | `good first issue` | how a probability-domain loss validates its input, and why a bounds check that rejects `0.5` is reading the wrong buffer |
+| [#139](https://github.com/lexing-2026/TensorPlay/issues/139) | loss kernels, CPU | `good first issue` | how CTC reads `input_lengths` against the time axis, and why the packet and the public op disagree |
+| [#140](https://github.com/lexing-2026/TensorPlay/issues/140) | sampling, CPU | `performance` | how a categorical sampler turns a row into a cumulative walk, and what a per-sample allocation costs at 256x256 |
+| [#135](https://github.com/lexing-2026/TensorPlay/issues/135) | loss kernels, CPU | `good first issue` | how an op's Python return type is decided, and why returning `(loss, total_weight)` breaks every caller that expects a tensor |
 The list is mirrored in the pinned **Newcomer tasks** issue and grows as
 maintainers triage new reports.
 
@@ -74,3 +79,4 @@ conventions and the release-note labels live in
 
 Every `good first issue` gets a maintainer watching the thread. Expect a first
 reply within two working days; if the thread has gone quiet, ping it again.
+
