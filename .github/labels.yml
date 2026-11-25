@@ -23,11 +23,11 @@
 
 - name: "good first issue"
   color: "7057ff"
-  description: Good for newcomers.
+  description: Scoped first contribution; criteria in docs/newcomers.md.
 
 - name: "help wanted"
   color: "008672"
-  description: Extra attention is needed.
+  description: Needs extra hands; see docs/newcomers.md to claim a task.
 
 - name: "invalid"
   color: "e4e669"
