@@ -435,14 +435,17 @@ std::tuple<Tensor, Tensor> log_sigmoid_forward_components_cuda(const Tensor& sel
         gpu_kernel_multiple_outputs(
             iter, [] __host__ __device__(double x) -> std::tuple<double, double> {
                 const double b = ::exp(-::fabs(x));
-                const double base = ::std::min(0.0, x);
+                // min(0, x) without a library call: the lambda runs on both
+                // the host and the device, and the translation stage rewrites
+                // std::min into a form that only resolves on the device.
+                const double base = x < 0.0 ? x : 0.0;
                 return {base - ::log1p(b), b};
             });
     } else {
         gpu_kernel_multiple_outputs(
             iter, [] __host__ __device__(float x) -> std::tuple<float, float> {
                 const float b = ::expf(-::fabsf(x));
-                const float base = ::std::min(0.0f, x);
+                const float base = x < 0.0f ? x : 0.0f;
                 return {base - ::log1pf(b), b};
             });
     }

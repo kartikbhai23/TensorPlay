@@ -1396,7 +1396,9 @@ void apply_syevj_batched(const Tensor& values, const Tensor& vectors,
 
 // 64-bit batched driver: same Jacobi semantics as the legacy syevjBatched,
 // but computes through the typed-params entry point that the current
-// cuSOLVER optimizes for large batches.
+// cuSOLVER optimizes for large batches.  The other solver backend does not
+// carry that entry point, so it keeps the syevjBatched path below.
+#if !defined(USE_ROCM)
 template <typename scalar_t>
 void apply_xsyev_batched(const Tensor& values, const Tensor& vectors,
                          const Tensor& infos, bool upper,
@@ -1432,6 +1434,7 @@ void apply_xsyev_batched(const Tensor& values, const Tensor& vectors,
             work_host.data(), ws_host, infos_data, batch));
     CUSOLVER_CHECK(cusolverDnDestroyParams(params));
 }
+#endif
 
 std::tuple<Tensor, Tensor> eigh_impl_cuda(const Tensor& A, bool upper,
                                           bool compute_eigenvectors) {
@@ -1454,8 +1457,13 @@ std::tuple<Tensor, Tensor> eigh_impl_cuda(const Tensor& A, bool upper,
     // per-matrix syevd loop and the legacy syevjBatched pass.
     run_real(A.dtype(), [&](auto tag) {
         using T = std::remove_pointer_t<decltype(tag)>;
+#if defined(USE_ROCM)
+        apply_syevj_batched<T>(values, vectors, info, upper,
+                               compute_eigenvectors);
+#else
         apply_xsyev_batched<T>(values, vectors, info, upper,
                                compute_eigenvectors);
+#endif
     });
     check_infos(info, "linalg.eigh", A.dim() == 2);
     return {values.contiguous(), vectors.contiguous()};

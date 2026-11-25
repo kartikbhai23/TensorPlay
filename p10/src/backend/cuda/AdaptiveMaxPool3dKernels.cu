@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <tuple>
@@ -158,9 +159,10 @@ std::tuple<Tensor, Tensor> adaptive_max_pool3d_with_indices_cuda(
     const auto stream = getCurrentCUDAStream().stream();
     // Every position addressable by this launch fits in 32 bits unless one of
     // the extents or the output count says otherwise.
-    const int64_t widest = std::max(
-        {total, D, H, W, oD, oH, oW,
-         D * H * W, N * C * D * H * W});
+    const int64_t extents[] = {total, D, H, W, oD, oH, oW,
+                               D * H * W, N * C * D * H * W};
+    const int64_t widest =
+        *std::max_element(std::begin(extents), std::end(extents));
     if (widest <= std::numeric_limits<int32_t>::max()) {
 #define TP_AMP3D_FWD_CASE(ctype, name)                                       \
         case DType::name: {                                                   \

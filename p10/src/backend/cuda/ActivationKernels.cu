@@ -616,7 +616,7 @@ inline bool full_precision_float(DType dtype) {
 
 struct HardshrinkFunctor {
     double l_;
-    __device__ HardshrinkFunctor(double l) : l_(l) {}
+    __host__ __device__ HardshrinkFunctor(double l) : l_(l) {}
     template <typename T> __device__ T operator()(T x) const {
         const T l = static_cast<T>(l_);
         return (x >= -l && x <= l) ? static_cast<T>(0) : x;
@@ -624,7 +624,7 @@ struct HardshrinkFunctor {
 };
 struct SoftshrinkFunctor {
     double l_;
-    __device__ SoftshrinkFunctor(double l) : l_(l) {}
+    __host__ __device__ SoftshrinkFunctor(double l) : l_(l) {}
     template <typename T> __device__ T operator()(T x) const {
         const T l = static_cast<T>(l_);
         if (x > l) return static_cast<T>(x - l);
@@ -635,7 +635,7 @@ struct SoftshrinkFunctor {
 struct ThresholdFunctor {
     double t_;
     double v_;
-    __device__ ThresholdFunctor(double t, double v) : t_(t), v_(v) {}
+    __host__ __device__ ThresholdFunctor(double t, double v) : t_(t), v_(v) {}
     template <typename T> __device__ T operator()(T x) const {
         return x <= static_cast<T>(t_) ? static_cast<T>(v_) : x;
     }

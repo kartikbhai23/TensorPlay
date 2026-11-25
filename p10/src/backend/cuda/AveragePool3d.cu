@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <string>
@@ -340,11 +341,13 @@ void launch_avg_pool3d_forward(const Tensor& input, Tensor& output,
     // The window walk multiplies positions per tap; keeping them in 32 bits
     // halves that arithmetic.  The narrow form is used whenever every position
     // and every intermediate product the walk forms is representable.
-    const int64_t widest = std::max(
-        {total, input.numel(), input_d, input_h, input_w,
-         output_d, output_h, output_w,
-         input_d + params.padding[0], input_h + params.padding[1],
-         input_w + params.padding[2]});
+    const int64_t extents[] = {
+        total, input.numel(), input_d, input_h, input_w,
+        output_d, output_h, output_w,
+        input_d + params.padding[0], input_h + params.padding[1],
+        input_w + params.padding[2]};
+    const int64_t widest =
+        *std::max_element(std::begin(extents), std::end(extents));
     if (widest <= std::numeric_limits<int32_t>::max()) {
         switch (input.dtype()) {
             case DType::Float32:

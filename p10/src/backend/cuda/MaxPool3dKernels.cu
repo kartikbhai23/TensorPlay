@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <string>
@@ -337,9 +338,11 @@ std::tuple<Tensor, Tensor> max_pool3d_with_indices_cuda(
 
     // Every position addressable by this launch fits in 32 bits unless one of
     // the extents or the output count says otherwise.
-    const int64_t widest = std::max(
-        {total, D_in, H_in, W_in, D_out, H_out, W_out,
-         D_in * H_in * W_in, N * C * D_in * H_in * W_in});
+    const int64_t extents[] = {total, D_in, H_in, W_in, D_out, H_out,
+                               W_out, D_in * H_in * W_in,
+                               N * C * D_in * H_in * W_in};
+    const int64_t widest =
+        *std::max_element(std::begin(extents), std::end(extents));
     if (widest <= std::numeric_limits<int32_t>::max()) {
         launch_max_pool3d_wi_fwd<int32_t>(
             input.dtype(), blocks, threads, stream, total,

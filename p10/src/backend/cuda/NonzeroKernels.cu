@@ -1,9 +1,6 @@
 #include "CudaDispatchHelpers.cuh"
 #include "Complex.h"
-
-#include <cub/block/block_reduce.cuh>
-#include <cub/block/block_scan.cuh>
-#include <cub/device/device_scan.cuh>
+#include "GPUPrimitives.cuh"
 
 #include <numeric>
 
