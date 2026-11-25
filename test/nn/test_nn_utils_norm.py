@@ -113,12 +113,8 @@ def test_clip_grad_norm_foreach_true_rejects_unsupported_devices():
         U.clip_grad._device_has_foreach_support = real
 
 
-def test_clip_grad_norm_deprecated_alias_warns():
-    p = tp.tensor([3.0, 4.0], requires_grad=True)
-    (p * p).sum().backward()
-    with pytest.warns(FutureWarning):
-        U.clip_grad_norm([p], 1.0)
-    assert U.get_total_norm([p.grad]).item() <= 1.0 + 1e-3
+def test_clip_grad_norm_alias_is_gone():
+    assert not hasattr(U, "clip_grad_norm")
 
 
 def test_clip_grad_norm_can_reject_nonfinite_before_scaling():

@@ -7,12 +7,12 @@ rank by default so that the user sees them regardless of which process they watc
 import logging
 import os
 import warnings
-from functools import partial, wraps
+from functools import wraps
 from typing import Any, Callable
 
 _logger = logging.getLogger("tensorplay.metrics")
 
-__all__ = ["rank_zero_debug", "rank_zero_info", "rank_zero_warn", "_future_warning"]
+__all__ = ["rank_zero_debug", "rank_zero_info", "rank_zero_warn"]
 
 
 def rank_zero_only(fn: Callable) -> Callable:
@@ -45,4 +45,3 @@ def _debug(*args: Any, **kwargs: Any) -> None:
 rank_zero_debug = rank_zero_only(_debug)
 rank_zero_info = rank_zero_only(_info)
 rank_zero_warn = rank_zero_only(_warn)
-_future_warning = partial(warnings.warn, category=FutureWarning)

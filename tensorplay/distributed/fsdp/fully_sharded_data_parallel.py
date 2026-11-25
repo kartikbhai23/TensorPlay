@@ -3,7 +3,6 @@
 import contextlib
 import copy
 import math
-import warnings
 from enum import Enum, auto
 from typing import Any, Iterable
 
@@ -517,50 +516,17 @@ class FullyShardedDataParallel(Module):
             )
 
     @staticmethod
-    def _warn_optim_input(optim_input: Any, *, stacklevel: int = 1) -> None:
-        if optim_input is not None:
-            warnings.warn(
-                "optim_input is deprecated",
-                FutureWarning,
-                stacklevel=stacklevel + 1,
-            )
-
-    @staticmethod
-    def _is_using_optim_input(optim_input: Any, optim: Any) -> bool:
-        return optim_input is not None or optim is None
-
-    @staticmethod
-    def _warn_legacy_optim_state_dict(
-        current_name: str, new_name: str, *, stacklevel: int = 1
-    ) -> None:
-        warnings.warn(
-            f"{current_name} is deprecated; use {new_name}",
-            FutureWarning,
-            stacklevel=stacklevel + 1,
-        )
-
-    @staticmethod
     def _optim_state_dict_impl(
         model: Module,
         optim: Any,
         optim_state_dict: dict[str, Any] | None = None,
-        optim_input: Any = None,
         rank0_only: bool = True,
         full_state_dict: bool = True,
         group: Any = None,
         cpu_offload: bool = True,
-        *,
-        _stacklevel: int = 1,
     ) -> dict[str, Any]:
-        if full_state_dict:
-            FullyShardedDataParallel._warn_optim_input(
-                optim_input, stacklevel=_stacklevel + 1
-            )
         wrappers = FullyShardedDataParallel.fsdp_modules(model)
         use_orig_params = bool(getattr(wrappers[0], "use_orig_params", False)) if wrappers else False
-        using_optim_input = FullyShardedDataParallel._is_using_optim_input(
-            optim_input, optim
-        )
         source = optim_state_dict
         if source is None and optim is not None:
             source = optim.state_dict()
@@ -570,11 +536,9 @@ class FullyShardedDataParallel(Module):
             model,
             optim,
             source,
-            optim_input,
             rank0_only,
             not full_state_dict,
             group,
-            using_optim_input,
             use_orig_params,
             cpu_offload,
         )
@@ -583,24 +547,16 @@ class FullyShardedDataParallel(Module):
     def _optim_state_dict_to_load_impl(
         optim_state_dict: dict[str, Any],
         model: Module,
-        optim_input: Any = None,
         optim: Any = None,
         full_state_dict: bool = True,
         rank0_only: bool = False,
         is_named_optimizer: bool = False,
         group: Any = None,
     ) -> dict[str, Any]:
-        if full_state_dict:
-            FullyShardedDataParallel._warn_optim_input(optim_input)
-            using_optim_input = FullyShardedDataParallel._is_using_optim_input(
-                optim_input, optim
+        if not full_state_dict and rank0_only:
+            raise AssertionError(
+                "full optimizer state loading requires rank0_only=False for a sharded input"
             )
-        else:
-            using_optim_input = False
-            if optim_input is not None or rank0_only:
-                raise AssertionError(
-                    "full optimizer state loading requires rank0_only=False for a sharded input"
-                )
         if rank0_only and dist.is_initialized() and _global_rank() != 0:
             source = {"state": {}}
         else:
@@ -621,8 +577,6 @@ class FullyShardedDataParallel(Module):
             flattened,
             model,
             optim,
-            optim_input,
-            using_optim_input,
             is_named_optimizer,
         )
 
@@ -756,8 +710,8 @@ class FullyShardedDataParallel(Module):
         finally:
             FullyShardedDataParallel.set_state_dict_type(module, previous.state_dict_type, previous.state_dict_config, previous.optim_state_dict_config)
 
-    def state_dict(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return super().state_dict(*args, **kwargs)
+    def state_dict(self, **kwargs: Any) -> dict[str, Any]:
+        return super().state_dict(**kwargs)
 
     def load_state_dict(self, state_dict: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
         return super().load_state_dict(state_dict, *args, **kwargs)
@@ -1172,13 +1126,12 @@ class FullyShardedDataParallel(Module):
             if handle is not None:
                 handle._training_state = previous_handle_state
 
-    def full_optim_state_dict(self, optim: Any, optim_input: Any = None, rank0_only: bool = True, group: Any = None) -> dict[str, Any]:
+    def full_optim_state_dict(self, optim: Any, rank0_only: bool = True, group: Any = None) -> dict[str, Any]:
         config = self._optim_state_dict_config
         return self._optim_state_dict_impl(
             self,
             optim,
             optim.state_dict(),
-            optim_input,
             rank0_only,
             True,
             group,
@@ -1191,7 +1144,6 @@ class FullyShardedDataParallel(Module):
             self,
             optim,
             optim.state_dict(),
-            None,
             False,
             False,
             group,
@@ -1199,16 +1151,14 @@ class FullyShardedDataParallel(Module):
         )
 
     @staticmethod
-    def shard_full_optim_state_dict(full_optim_state_dict: dict[str, Any], model: Module, optim_input: Any = None, optim: Any = None) -> dict[str, Any]:
+    def shard_full_optim_state_dict(full_optim_state_dict: dict[str, Any], model: Module, optim: Any = None) -> dict[str, Any]:
         sharded = _optim_state_dict(
             model,
             optim,
             full_optim_state_dict,
-            optim_input,
             False,
             True,
             None,
-            optim_input is not None,
             bool(getattr(model, "use_orig_params", False)),
             False,
         )
@@ -1216,8 +1166,6 @@ class FullyShardedDataParallel(Module):
             sharded,
             model,
             optim,
-            optim_input,
-            optim_input is not None,
             False,
         )
 
@@ -1227,24 +1175,20 @@ class FullyShardedDataParallel(Module):
             sharded_optim_state_dict,
             model,
             optim,
-            None,
-            False,
             False,
         )
 
     @staticmethod
-    def scatter_full_optim_state_dict(full_optim_state_dict: dict[str, Any] | None, model: Module, optim_input: Any = None, optim: Any = None, group: Any = None) -> dict[str, Any]:
+    def scatter_full_optim_state_dict(full_optim_state_dict: dict[str, Any] | None, model: Module, optim: Any = None, group: Any = None) -> dict[str, Any]:
         if full_optim_state_dict is None:
             return {}
         sharded = _optim_state_dict(
             model,
             optim,
             full_optim_state_dict,
-            optim_input,
             False,
             True,
             group,
-            optim_input is not None,
             bool(getattr(model, "use_orig_params", False)),
             False,
         )
@@ -1252,13 +1196,11 @@ class FullyShardedDataParallel(Module):
             sharded,
             model,
             optim,
-            optim_input,
-            optim_input is not None,
             False,
         )
 
     @staticmethod
-    def rekey_optim_state_dict(optim_state_dict: dict[str, Any], optim_state_key_type: OptimStateKeyType, model: Module, optim_input: Any = None, optim: Any = None) -> dict[str, Any]:
+    def rekey_optim_state_dict(optim_state_dict: dict[str, Any], optim_state_key_type: OptimStateKeyType, model: Module, optim: Any = None) -> dict[str, Any]:
         if optim_state_key_type not in (
             OptimStateKeyType.PARAM_NAME,
             OptimStateKeyType.PARAM_ID,
@@ -1285,7 +1227,6 @@ class FullyShardedDataParallel(Module):
         id_to_name, name_to_id = _optimizer_parameter_maps(
             model,
             optim,
-            optim_input,
             param_groups,
             names_by_identity,
         )
@@ -1311,10 +1252,10 @@ class FullyShardedDataParallel(Module):
         source = optim_state_dict if optim_state_dict is not None else optim.state_dict()
         if state_type == StateDictType.FULL_STATE_DICT:
             return FullyShardedDataParallel._optim_state_dict_impl(
-                model, optim, source, None, True, True, group, True
+                model, optim, source, True, True, group, True
             )
         return FullyShardedDataParallel._optim_state_dict_impl(
-            model, optim, source, None, False, False, group, False
+            model, optim, source, False, False, group, False
         )
 
     @staticmethod
@@ -1324,7 +1265,6 @@ class FullyShardedDataParallel(Module):
         result = FullyShardedDataParallel._optim_state_dict_to_load_impl(
             optim_state_dict,
             model,
-            None,
             optim,
             state_type == StateDictType.FULL_STATE_DICT,
             False,
@@ -1339,7 +1279,6 @@ class FullyShardedDataParallel(Module):
 def _optimizer_parameter_maps(
     model: Module,
     optim: Any,
-    optim_input: Any,
     saved_groups: Any,
     names_by_identity: dict[int, str],
 ) -> tuple[dict[int, str], dict[str, int]]:
@@ -1359,16 +1298,7 @@ def _optimizer_parameter_maps(
                     id_to_name[int(param_id)] = name
                     name_to_id[name] = int(param_id)
     else:
-        values: list[Any] = []
-        if optim_input is not None:
-            source = list(optim_input)
-            if source and isinstance(source[0], dict):
-                for group in source:
-                    values.extend(group.get("params", ()))
-            else:
-                values = source
-        if not values:
-            values = [param for _, param in model.named_parameters()]
+        values: list[Any] = [param for _, param in model.named_parameters()]
 
         saved_ids = [
             param_id

@@ -10,7 +10,7 @@ import tensorplay.nn.functional as F
 from tensorplay import nn, Tensor
 from ._api import register_model, Weights, WeightsEnum
 from ._meta import _IMAGENET_CATEGORIES
-from ._utils import _ovewrite_named_param, handle_legacy_interface
+from ._utils import _ovewrite_named_param
 from ..ops.misc import Conv2dNormActivation, SqueezeExcitation
 from ..ops.stochastic_depth import StochasticDepth
 from ..transforms._presets import ImageClassification, InterpolationMode
@@ -796,7 +796,6 @@ class MaxVit_T_Weights(WeightsEnum):
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", MaxVit_T_Weights.IMAGENET1K_V1))
 def maxvit_t(*, weights: Optional[MaxVit_T_Weights] = None, progress: bool = True, **kwargs: Any) -> MaxVit:
     """
     Constructs a maxvit_t architecture from

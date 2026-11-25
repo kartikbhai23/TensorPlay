@@ -49,8 +49,6 @@ class Spectrogram(tensorplay.nn.Module):
             :attr:`center` is ``True``. (Default: ``"reflect"``)
         onesided (bool, optional): controls whether to return half of results to
             avoid redundancy (Default: ``True``)
-        return_complex (bool, optional):
-            Deprecated and not used.
 
     Example
         >>> waveform, sample_rate = tensorplay.audio.load("test.wav", normalize=True)
@@ -73,7 +71,6 @@ class Spectrogram(tensorplay.nn.Module):
         center: bool = True,
         pad_mode: str = "reflect",
         onesided: bool = True,
-        return_complex: Optional[bool] = None,
     ) -> None:
         super(Spectrogram, self).__init__()
         tensorplay._C._log_api_usage_once("tensorplay.audio.transforms.Spectrogram")
@@ -89,12 +86,6 @@ class Spectrogram(tensorplay.nn.Module):
         self.center = center
         self.pad_mode = pad_mode
         self.onesided = onesided
-        if return_complex is not None:
-            warnings.warn(
-                "`return_complex` argument is now deprecated and is not effective."
-                "`tensorplay.audio.transforms.Spectrogram(power=None)` always returns a tensor with "
-                "complex dtype. Please remove the argument in the function call."
-            )
 
     def forward(self, waveform: Tensor) -> Tensor:
         r"""
@@ -539,7 +530,6 @@ class MelSpectrogram(tensorplay.nn.Module):
             (Default: ``True``)
         pad_mode (string, optional): controls the padding method used when
             :attr:`center` is ``True``. (Default: ``"reflect"``)
-        onesided: Deprecated and unused.
         norm (str or None, optional): If "slaney", divide the triangular mel weights by the width of the mel band
             (area normalization). (Default: ``None``)
         mel_scale (str, optional): Scale to use: ``htk`` or ``slaney``. (Default: ``htk``)
@@ -571,17 +561,11 @@ class MelSpectrogram(tensorplay.nn.Module):
         wkwargs: Optional[dict] = None,
         center: bool = True,
         pad_mode: str = "reflect",
-        onesided: Optional[bool] = None,
         norm: Optional[str] = None,
         mel_scale: str = "htk",
     ) -> None:
         super(MelSpectrogram, self).__init__()
         tensorplay._C._log_api_usage_once("tensorplay.audio.transforms.MelSpectrogram")
-
-        if onesided is not None:
-            warnings.warn(
-                "Argument 'onesided' has been deprecated and has no influence on the behavior of this module."
-            )
 
         self.sample_rate = sample_rate
         self.n_fft = n_fft

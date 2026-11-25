@@ -1207,8 +1207,8 @@ def interpolate(
     if mode in ('nearest', 'nearest-exact'):
         if align_corners is not None:
             raise ValueError("align_corners option can only be set with interpolating modes")
-        # 'nearest-exact' resolves to the pixel-center kernels; the legacy
-        # 'nearest' keeps the deprecated asymmetric-index behavior.
+        # 'nearest-exact' resolves to the pixel-center kernels; 'nearest'
+        # keeps the asymmetric-index sampling of the native op.
         if mode == 'nearest-exact':
             import tensorplay.functional as _functional
             if ndim == 3:
@@ -2055,10 +2055,9 @@ def _canonical_mask(
             )
         if check_other and other_type is not None:
             if _mask_dtype != other_type:
-                warnings.warn(
-                    f"Support for mismatched {mask_name} and {other_name} "
-                    "is deprecated. Use same type for both instead.",
-                    stacklevel=2,
+                raise ValueError(
+                    f"{mask_name} has dtype {_mask_dtype} but {other_name} "
+                    f"expects {other_type}; both must have the same dtype."
                 )
         if not _mask_is_float:
             mask = tensorplay.zeros_like(mask, dtype=target_type).masked_fill_(
@@ -2366,15 +2365,12 @@ def gumbel_softmax(
     logits: Tensor,
     tau: float = 1,
     hard: bool = False,
-    eps: float = 1e-10,
     dim: int = -1,
 ) -> Tensor:
     r"""Sample from the Gumbel-Softmax distribution and optionally discretize.
 
     straight-through when ``hard=True``).
     """
-    if eps != 1e-10:
-        warnings.warn("`eps` parameter is deprecated and has no effect.", stacklevel=2)
     u = tensorplay.empty_like(logits)
     u.exponential_()
     gumbels = -u.log()
@@ -2566,8 +2562,8 @@ def binary_cross_entropy(
         reduction_enum = _get_reduction_enum(reduction)
     if target.size() != input.size():
         raise ValueError(
-            f"Using a target size ({target.size()}) that is different to the input size ({input.size()}) is deprecated. "
-            "Please ensure they have the same size."
+            f"Target size ({target.size()}) must match the input size "
+            f"({input.size()}); they are not broadcastable."
         )
     if weight is not None:
         new_size = _broadcast_shapes(tuple(target.size()), tuple(weight.size()))
@@ -2816,11 +2812,7 @@ def ctc_loss(
         )
         if captured is not None:
             return captured
-    if reduction == "elementwise_mean":
-        warnings.warn("reduction='elementwise_mean' is deprecated. Please use reduction='mean' instead.",
-                      stacklevel=2)
-        reduction = "mean"
-    elif reduction not in ("none", "mean", "sum"):
+    if reduction not in ("none", "mean", "sum"):
         raise ValueError(f"{reduction} is not a valid value for reduction")
     if log_probs.dim() == 2:
         log_probs = log_probs.unsqueeze(1)
@@ -3288,10 +3280,6 @@ def _grid_sampler_3d(input, grid, interpolation_mode, padding_mode, align_corner
 # -----------------------------------------------------------------------------
 
 
-def _is_float_dtype(dt):
-    return dt in (DType.float16, DType.bfloat16, DType.float32, DType.float64)
-
-
 def _vector_norm(vec, p, keepdim=False):
     """Norm over the last dim of a broadcast difference, matching
 """
@@ -3369,16 +3357,6 @@ def embedding_bag(
         )
         if captured is not None:
             return captured
-    # Backward compatibility with the old (weight, input) argument order.
-    if weight.dtype == DType.int64 and _is_float_dtype(input.dtype):
-        warnings.warn(
-            "Argument order of nn.functional.embedding_bag was changed. "
-            "Usage `embedding_bag(weight, input, ...)` is deprecated, "
-            "and should now be `embedding_bag(input, weight, ...)`.",
-            stacklevel=2,
-        )
-        weight, input = input, weight
-
     if per_sample_weights is not None and tuple(input.shape) != tuple(per_sample_weights.shape):
         raise ValueError(
             f"embedding_bag: If per_sample_weights ({per_sample_weights.shape}) is not None, "

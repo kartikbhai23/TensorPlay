@@ -464,23 +464,13 @@ def _fqn_aliases(model: Any, fqn_to_fsdp_param_info: dict[str, FSDPParamInfo]) -
     return aliases
 
 
-def _optimizer_key_maps(model: Any, optim: Any, optim_input: Any = None) -> tuple[dict[Any, Any], dict[Any, list[str]]]:
+def _optimizer_key_maps(model: Any, optim: Any) -> tuple[dict[Any, Any], dict[Any, list[str]]]:
     key_to_param: dict[Any, Any] = {}
     if optim is not None:
         saved = optim.state_dict()
         for physical, packed in zip(getattr(optim, "param_groups", ()), saved.get("param_groups", ())):
             for param, key in zip(physical.get("params", ()), packed.get("params", ())):
                 key_to_param[key] = param
-    elif optim_input is not None:
-        values: list[Any] = []
-        source = list(optim_input)
-        if source and isinstance(source[0], dict):
-            for group in source:
-                values.extend(group.get("params", ()))
-        else:
-            values = source
-        for key, value in enumerate(values):
-            key_to_param[key] = value[1] if isinstance(value, tuple) and len(value) == 2 else value
     else:
         for key, (_, param) in enumerate(model.named_parameters()):
             key_to_param[key] = param
@@ -492,9 +482,8 @@ def _named_state(
     optim_state_dict: dict[str, Any],
     model: Any,
     optim: Any = None,
-    optim_input: Any = None,
 ) -> tuple[dict[Any, dict[str, Any]], dict[Any, Any], dict[Any, list[str]]]:
-    key_to_param, key_to_names = _optimizer_key_maps(model, optim, optim_input)
+    key_to_param, key_to_names = _optimizer_key_maps(model, optim)
     aliases = _fqn_aliases(model, _get_fqn_to_fsdp_param_info(model))
     result: dict[Any, dict[str, Any]] = {}
     for key, value in optim_state_dict.get("state", {}).items():
@@ -690,17 +679,11 @@ def _rekey_sharded_optim_state_dict(
     sharded_osd: dict[str, Any],
     model: Any,
     optim: Any,
-    optim_input: Any,
-    using_optim_input: bool,
     is_named_optimizer: bool,
 ) -> dict[str, Any]:
     if "state" not in sharded_osd:
         raise ValueError("sharded optimizer state must contain state")
-    key_to_param, key_to_names = _optimizer_key_maps(
-        model,
-        None if using_optim_input else optim,
-        optim_input if using_optim_input else None,
-    )
+    key_to_param, key_to_names = _optimizer_key_maps(model, optim)
     del key_to_param
     names_to_key: dict[str, Any] = {}
     for key, names in key_to_names.items():
@@ -734,23 +717,6 @@ def _rekey_sharded_optim_state_dict(
             groups.append(group)
         result["param_groups"] = groups
     return result
-
-
-def _get_param_id_to_param_from_optim_input(model: Any, optim_input: Any) -> dict[Any, Any]:
-    del model
-    if optim_input is None:
-        return {}
-    values: list[Any] = []
-    source = list(optim_input)
-    if source and isinstance(source[0], dict):
-        for group in source:
-            values.extend(group.get("params", ()))
-    else:
-        values = source
-    return {
-        index: value[1] if isinstance(value, tuple) and len(value) == 2 else value
-        for index, value in enumerate(values)
-    }
 
 
 def _get_flat_param_to_fqn(model: Any) -> dict[Any, str]:
@@ -807,10 +773,6 @@ def _get_param_to_param_key(
             optim, model, is_named_optimizer, param_to_fqns, flat_param_to_fqn
         ).items()
     }
-
-
-def _get_param_to_param_id_from_optim_input(model: Any, optim_input: Any) -> dict[Any, int]:
-    return {value: key for key, value in _get_param_id_to_param_from_optim_input(model, optim_input).items()}
 
 
 def _check_missing_keys_on_rank(
@@ -1119,11 +1081,9 @@ def _optim_state_dict(
     model: Any,
     optim: Any,
     optim_state_dict: Any,
-    optim_input: Any,
     rank0_only: bool,
     shard_state: bool,
     group: Any,
-    using_optim_input: bool,
     use_orig_params: bool,
     cpu_offload: bool,
 ) -> dict[str, Any]:
@@ -1134,11 +1094,7 @@ def _optim_state_dict(
         return {}
     infos = _get_fqn_to_fsdp_param_info(model)
     aliases = _fqn_aliases(model, infos)
-    _, key_to_names = _optimizer_key_maps(
-        model,
-        None if using_optim_input else optim,
-        optim_input if using_optim_input else None,
-    )
+    _, key_to_names = _optimizer_key_maps(model, optim)
     result_state: dict[Any, Any] = {}
     for key, value in source["state"].items():
         if isinstance(key, _OptimStateKey):

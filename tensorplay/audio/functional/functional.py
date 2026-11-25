@@ -62,7 +62,6 @@ def spectrogram(
     center: bool = True,
     pad_mode: str = "reflect",
     onesided: bool = True,
-    return_complex: Optional[bool] = None,
 ) -> Tensor:
     r"""Create a spectrogram or a batch of spectrograms from a raw audio signal.
     The spectrogram can be either magnitude-only or complex.
@@ -92,21 +91,12 @@ def spectrogram(
             :attr:`center` is ``True``. Default: ``"reflect"``
         onesided (bool, optional): controls whether to return half of results to
             avoid redundancy. Default: ``True``
-        return_complex (bool, optional):
-            Deprecated and not used.
 
     Returns:
         Tensor: Dimension `(..., freq, time)`, freq is
         ``n_fft // 2 + 1`` and ``n_fft`` is the number of
         Fourier bins, and time is the number of window hops (n_frame).
     """
-    if return_complex is not None:
-        warnings.warn(
-            "`return_complex` argument is now deprecated and is not effective."
-            "`tensorplay.audio.functional.spectrogram(power=None)` always returns a tensor with "
-            "complex dtype. Please remove the argument in the function call."
-        )
-
     if pad > 0:
         waveform = tensorplay.nn.functional.pad(waveform, (pad, pad), "constant")
 
@@ -1301,18 +1291,7 @@ def _get_sinc_resample_kernel(
             "For more information, please refer to https://github.com/tensorplay/audio/issues/1487."
         )
 
-    if resampling_method in ["sinc_interpolation", "kaiser_window"]:
-        method_map = {
-            "sinc_interpolation": "sinc_interp_hann",
-            "kaiser_window": "sinc_interp_kaiser",
-        }
-        warnings.warn(
-            f'"{resampling_method}" resampling method name is being deprecated and replaced by '
-            f'"{method_map[resampling_method]}" in the next release. '
-            "The default behavior remains unchanged.",
-            stacklevel=3,
-        )
-    elif resampling_method not in ["sinc_interp_hann", "sinc_interp_kaiser"]:
+    if resampling_method not in ["sinc_interp_hann", "sinc_interp_kaiser"]:
         raise ValueError("Invalid resampling method: {}".format(resampling_method))
 
     orig_freq = int(orig_freq) // gcd

@@ -81,10 +81,10 @@ modification.
 
 ## Outputs
 
-By default the function returns the output tensor. `return_lse=True` additionally
-returns the log-sum-exp of the attention weights (what decoders with incremental
-caching recombine), and the `return_aux` keyword requests the auxiliary outputs the
-backward pass reuses, as an `AuxOutput`.
+By default the function returns the output tensor. The `return_aux` keyword requests
+the auxiliary outputs the backward pass reuses, as an `AuxOutput`; asking for
+`lse` there additionally returns the log-sum-exp of the attention weights (what
+decoders with incremental caching recombine).
 
 ## API
 

@@ -9,7 +9,7 @@ from ...transforms._presets import VideoClassification
 from ...utils import _log_api_usage_once
 from .._api import register_model, Weights, WeightsEnum
 from .._meta import _KINETICS400_CATEGORIES
-from .._utils import _ovewrite_named_param, handle_legacy_interface
+from .._utils import _ovewrite_named_param
 
 
 __all__ = [
@@ -373,7 +373,6 @@ class R2Plus1D_18_Weights(WeightsEnum):
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", R3D_18_Weights.KINETICS400_V1))
 def r3d_18(*, weights: Optional[R3D_18_Weights] = None, progress: bool = True, **kwargs: Any) -> VideoResNet:
     """18 layer Resnet3D model from
     `A Closer Look at Spatiotemporal Convolutions for Action Recognition <https://arxiv.org/abs/1711.11248>`__.
@@ -401,7 +400,6 @@ def r3d_18(*, weights: Optional[R3D_18_Weights] = None, progress: bool = True, *
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", MC3_18_Weights.KINETICS400_V1))
 def mc3_18(*, weights: Optional[MC3_18_Weights] = None, progress: bool = True, **kwargs: Any) -> VideoResNet:
     """18 layer Mixed Convolution network from
     `A Closer Look at Spatiotemporal Convolutions for Action Recognition <https://arxiv.org/abs/1711.11248>`__.
@@ -429,7 +427,6 @@ def mc3_18(*, weights: Optional[MC3_18_Weights] = None, progress: bool = True, *
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", R2Plus1D_18_Weights.KINETICS400_V1))
 def r2plus1d_18(*, weights: Optional[R2Plus1D_18_Weights] = None, progress: bool = True, **kwargs: Any) -> VideoResNet:
     """18 layer deep R(2+1)D network from
     `A Closer Look at Spatiotemporal Convolutions for Action Recognition <https://arxiv.org/abs/1711.11248>`__.

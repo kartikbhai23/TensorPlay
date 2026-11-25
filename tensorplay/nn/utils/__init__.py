@@ -21,7 +21,6 @@ from .rnn import (
     unpack_sequence as unpack_sequence,
 )
 from .clip_grad import (
-    clip_grad_norm as clip_grad_norm,
     clip_grad_norm_ as clip_grad_norm_,
     clip_grad_value_ as clip_grad_value_,
     clip_grads_with_norm_ as clip_grads_with_norm_,

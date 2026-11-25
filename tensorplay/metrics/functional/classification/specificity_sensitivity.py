@@ -1,4 +1,3 @@
-import warnings
 from typing import List, Optional, Union
 
 import tensorplay
@@ -389,42 +388,6 @@ def multilabel_specificity_at_sensitivity(
     )
     state = _multilabel_precision_recall_curve_update(preds, target, num_labels, thresholds)
     return _multilabel_specificity_at_sensitivity_compute(state, num_labels, thresholds, ignore_index, min_sensitivity)
-
-
-def specicity_at_sensitivity(
-    preds: Tensor,
-    target: Tensor,
-    task: Literal["binary", "multiclass", "multilabel"],
-    min_sensitivity: float,
-    thresholds: Optional[Union[int, list[float], Tensor]] = None,
-    num_classes: Optional[int] = None,
-    num_labels: Optional[int] = None,
-    ignore_index: Optional[int] = None,
-    validate_args: bool = True,
-) -> Union[Tensor, tuple[Tensor, Tensor, Tensor], tuple[List[Tensor], List[Tensor], List[Tensor]]]:
-    r"""Compute the highest possible specificity value given the minimum sensitivity thresholds provided.
-
-    .. warning::
-        This function was deprecated in v1.3.0 of metrics and will be removed in v2.0.0.
-        Use `specificity_at_sensitivity` instead.
-
-    """
-    warnings.warn(
-        "This method has will be removed in 2.0.0. Use `specificity_at_sensitivity` instead.",
-        DeprecationWarning,
-        stacklevel=1,
-    )
-    return specificity_at_sensitivity(
-        preds=preds,
-        target=target,
-        task=task,
-        min_sensitivity=min_sensitivity,
-        thresholds=thresholds,
-        num_classes=num_classes,
-        num_labels=num_labels,
-        ignore_index=ignore_index,
-        validate_args=validate_args,
-    )
 
 
 def specificity_at_sensitivity(

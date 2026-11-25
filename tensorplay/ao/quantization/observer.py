@@ -129,8 +129,6 @@ class UniformQuantizationObserverBase(ObserverBase):
         factory_kwargs = tensorplay.nn.factory_kwargs(factory_kwargs)
         super().__init__(dtype=dtype, is_dynamic=is_dynamic, **kwargs)
         self.qscheme = qscheme
-        if reduce_range:
-            warnings.warn('Please use quant_min and quant_max to specify the range for observers.                     reduce_range will be deprecated in a future release of quantization.', stacklevel=2)
         self.reduce_range = reduce_range
         self.register_buffer('eps', tensorplay.tensor([eps], **factory_kwargs))
         if self.qscheme not in (tensorplay.per_tensor_affine, tensorplay.per_tensor_symmetric, tensorplay.per_channel_affine, tensorplay.per_channel_symmetric, tensorplay.per_channel_affine_float_qparams):
@@ -569,7 +567,7 @@ class FixedQParamsObserver(ObserverBase):
 
 class PlaceholderObserver(ObserverBase):
 
-    def __init__(self, dtype=tensorplay.float32, custom_op_name='', compute_dtype=None, quant_min=None, quant_max=None, qscheme=None, eps=None, is_dynamic=False):
+    def __init__(self, dtype=tensorplay.float32, custom_op_name='', quant_min=None, quant_max=None, qscheme=None, eps=None, is_dynamic=False):
         super().__init__(dtype=dtype, is_dynamic=is_dynamic)
         if qscheme is None:
             qscheme = tensorplay.per_tensor_affine
@@ -581,9 +579,6 @@ class PlaceholderObserver(ObserverBase):
         self.quant_max = quant_max
         self.eps = eps
         self.custom_op = custom_op_name
-        if compute_dtype:
-            is_dynamic = True
-            warnings.warn('Please use `is_dynamic` instead of `compute_dtype`.                     `compute_dtype` will be deprecated in a future release                     of quantization.', stacklevel=2)
 
     def forward(self, x):
         return x

@@ -1278,25 +1278,11 @@ class GraphModule:
 
     def state_dict(
         self,
-        *args: Any,
+        *,
         destination: dict[str, Any] | None = None,
         prefix: str = "",
         keep_vars: bool = False,
     ) -> dict[str, Any]:
-        if args:
-            warnings.warn(
-                "positional state_dict arguments are deprecated; use keyword arguments",
-                FutureWarning,
-                stacklevel=2,
-            )
-            if destination is None:
-                destination = args[0]
-            if len(args) > 1:
-                prefix = args[1]
-            if len(args) > 2:
-                keep_vars = args[2]
-            if len(args) > 3:
-                raise TypeError(f"state_dict() takes at most 3 positional arguments ({len(args)} given)")
         if destination is None:
             destination = OrderedDict()
         for hook in self._state_dict_pre_hooks.values():

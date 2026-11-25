@@ -1,6 +1,5 @@
 # mypy: allow-untyped-defs
 import warnings
-from typing_extensions import deprecated
 
 import tensorplay
 from tensorplay import Tensor
@@ -179,17 +178,6 @@ class Distribution:
         are batched.
         """
         raise NotImplementedError
-
-    @deprecated(
-        "`sample_n(n)` will be deprecated. Use `sample((n,))` instead.",
-        category=FutureWarning,
-    )
-    def sample_n(self, n: int) -> Tensor:
-        """
-        Generates n samples or n batches of samples if the distribution
-        parameters are batched.
-        """
-        return self.sample(tensorplay.Size((n,)))
 
     def log_prob(self, value: Tensor) -> Tensor:
         """

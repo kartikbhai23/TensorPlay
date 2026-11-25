@@ -5,7 +5,6 @@ bucketing via ``_compute_bucket_assignment_by_size``, post-accumulate grad
 returning ``tensorplay.futures.Future``, and coalesced buffer broadcasts.
 """
 
-import warnings
 from contextlib import contextmanager
 from typing import Any, List, Optional
 
@@ -168,7 +167,6 @@ class DistributedDataParallel(Module, Joinable):
         process_group=None,
         bucket_cap_mb=None,
         find_unused_parameters=False,
-        check_reduction=False,
         gradient_as_bucket_view=False,
         static_graph=False,
     ):
@@ -251,16 +249,6 @@ class DistributedDataParallel(Module, Joinable):
         self.require_backward_grad_sync = True
         self.require_forward_param_sync = True
         self.gradient_as_bucket_view = gradient_as_bucket_view
-        if check_reduction:
-            # This argument is no longer used since the reducer
-            # will ensure reduction completes even if some parameters
-            # do not receive gradients.
-            warnings.warn(
-                "The `check_reduction` argument in `DistributedDataParallel` "
-                "module is deprecated. Please avoid using it.",
-                stacklevel=2,
-            )
-
         # used for intra-node param sync and inter-node sync as well
         self.broadcast_bucket_size = 250 * 1024 * 1024
         self.bucket_bytes_cap = (

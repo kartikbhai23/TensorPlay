@@ -1,7 +1,6 @@
 # mypy: allow-untyped-defs
 from __future__ import annotations
 
-import warnings
 from collections.abc import Callable, Sequence
 from functools import wraps
 from typing import Any, TypeVar
@@ -17,7 +16,6 @@ from . import (
     elementwise_dtypes,
     extract_shape,
     is_cpu_scalar_tensor,
-    same_shape,
     type_to_dtype,
 )
 
@@ -42,26 +40,6 @@ def _maybe_convert_to_dtype(a, dtype):
     raise ValueError(
         f"Received unsupported type {type(a)}. Expected TensorLike, Number, or Sequence."
     )
-
-
-def _resize_output_check(out, shape):
-    if same_shape(out.shape, shape):
-        return False
-    if out.numel() != 0:
-        warnings.warn(
-            f"An output with one or more elements was resized since it had shape "
-            f"{str(out.shape)} which does not match the required output shape "
-            f"{str(shape)}. This behavior is deprecated, and in a future release "
-            f"outputs will not be resized unless they have zero elements.",
-            stacklevel=2,
-        )
-    return True
-
-
-def _maybe_resize_out(out, shape, memory_format=None):
-    if _resize_output_check(out, shape):
-        return out.resize_(shape)
-    return out
 
 
 def is_cpu_scalar(x) -> bool:

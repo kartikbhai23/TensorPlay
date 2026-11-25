@@ -12,7 +12,7 @@ from ..transforms._presets import ImageClassification
 from ..utils import _log_api_usage_once
 from ._api import register_model, Weights, WeightsEnum
 from ._meta import _IMAGENET_CATEGORIES
-from ._utils import _ovewrite_named_param, handle_legacy_interface
+from ._utils import _ovewrite_named_param
 
 
 __all__ = [
@@ -287,7 +287,6 @@ class ConvNeXt_Large_Weights(WeightsEnum):
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", ConvNeXt_Tiny_Weights.IMAGENET1K_V1))
 def convnext_tiny(*, weights: Optional[ConvNeXt_Tiny_Weights] = None, progress: bool = True, **kwargs: Any) -> ConvNeXt:
     """ConvNeXt Tiny model architecture from the
     `A ConvNet for the 2020s <https://arxiv.org/abs/2201.03545>`_ paper.
@@ -317,7 +316,6 @@ def convnext_tiny(*, weights: Optional[ConvNeXt_Tiny_Weights] = None, progress: 
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", ConvNeXt_Small_Weights.IMAGENET1K_V1))
 def convnext_small(
     *, weights: Optional[ConvNeXt_Small_Weights] = None, progress: bool = True, **kwargs: Any
 ) -> ConvNeXt:
@@ -349,7 +347,6 @@ def convnext_small(
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", ConvNeXt_Base_Weights.IMAGENET1K_V1))
 def convnext_base(*, weights: Optional[ConvNeXt_Base_Weights] = None, progress: bool = True, **kwargs: Any) -> ConvNeXt:
     """ConvNeXt Base model architecture from the
     `A ConvNet for the 2020s <https://arxiv.org/abs/2201.03545>`_ paper.
@@ -379,7 +376,6 @@ def convnext_base(*, weights: Optional[ConvNeXt_Base_Weights] = None, progress: 
 
 
 @register_model()
-@handle_legacy_interface(weights=("pretrained", ConvNeXt_Large_Weights.IMAGENET1K_V1))
 def convnext_large(
     *, weights: Optional[ConvNeXt_Large_Weights] = None, progress: bool = True, **kwargs: Any
 ) -> ConvNeXt:
